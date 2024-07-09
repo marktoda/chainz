@@ -20,7 +20,7 @@ async fn main() -> Result<()> {
     match opts.cmd {
         opt::Command::Add { args } => {
             let chain = chainz.add_chain(&args).await?;
-            println!("Adding chain {}", chain);
+            print_chain(&chain).await?;
             chainz.write().await?;
         }
         opt::Command::List => {
