@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 alloy = { version = "0.1.4", features = ["full"] }
+alloy-primitives = "0.7.7"
 anyhow = "1.0.86"
 dirs = "5.0.1"
 serde = "1.0.204"

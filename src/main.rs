@@ -2,6 +2,7 @@ use anyhow::Result;
 use std::fs::File;
 use std::io::prelude::*;
 use structopt::StructOpt;
+use alloy_primitives::utils::format_ether;
 
 pub mod config;
 pub mod opt;
@@ -64,7 +65,7 @@ async fn print_chain(chain: &Chain) -> Result<()> {
         chain.config.name,
         chain.config.chain_id,
         chain.wallet.address(),
-        balance
+        format_ether(balance)
     );
     Ok(())
 }
