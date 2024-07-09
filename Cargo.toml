@@ -1,0 +1,13 @@
+[package]
+name = "chainz"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+alloy = { version = "0.1.4", features = ["full"] }
+anyhow = "1.0.86"
+dirs = "5.0.1"
+serde = "1.0.204"
+serde_json = "1.0.120"
+structopt = "0.3.26"
+tokio = { version = "1.38.0", features = ["full"] }
