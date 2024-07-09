@@ -91,5 +91,8 @@ https://mainnet.infura.io/v3/{INFURA_KEY}
 > chainz set --env-prefix FOUNDRY
 ```
 
+### Importing a chainz config
+Configs are stored at $HOME/.chainz.json. If you have a pre-made chainz file, you can import it by simply copying it to this location.
+
 ## TODOs
 - Import config from 1password etc.
