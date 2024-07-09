@@ -25,7 +25,9 @@ pub enum Command {
         #[structopt(flatten)]
         args: AddArgs,
     },
-    #[structopt(about = "Use a chain by name or chainid. Writes to a local .env which can be sourced")]
+    #[structopt(
+        about = "Use a chain by name or chainid. Writes to a local .env which can be sourced"
+    )]
     Use {
         name_or_id: String,
         // default to false

@@ -1,8 +1,8 @@
+use alloy_primitives::utils::format_ether;
 use anyhow::Result;
 use std::fs::File;
 use std::io::prelude::*;
 use structopt::StructOpt;
-use alloy_primitives::utils::format_ether;
 
 pub mod config;
 pub mod opt;
