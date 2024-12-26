@@ -13,13 +13,14 @@ use std::path::PathBuf;
 
 pub const CONFIG_FILE_LOCATION: &str = ".chainz.json";
 pub const DEFAULT_ENV_PREFIX: &str = "FOUNDRY";
+pub const DEFAULT_KEY_NAME: &str = "default";
 
 #[derive(Serialize, Deserialize)]
 pub struct ChainzConfig {
-    pub default_private_key: String,
     pub env_prefix: String,
     pub chains: Vec<ChainConfig>,
     pub variables: HashMap<String, String>,
+    pub keys: HashMap<String, String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -28,8 +29,10 @@ pub struct ChainConfig {
     pub chain_id: u64,
     // sorted by order to attempt
     pub rpc_urls: Vec<String>,
+    // stores the last known working RPC URL
+    pub last_working_rpc: Option<String>,
     pub verification_api_key: Option<String>,
-    pub private_key: Option<String>,
+    pub key_name: Option<String>,
 }
 
 pub struct Chain {
@@ -43,24 +46,34 @@ pub struct Chain {
 impl Default for ChainzConfig {
     fn default() -> Self {
         // generate a random private key as default
-        let signer = PrivateKeySigner::random();
-        let private_key = signer.to_bytes().to_string();
         Self {
-            default_private_key: private_key,
             env_prefix: DEFAULT_ENV_PREFIX.to_string(),
             chains: vec![],
             variables: HashMap::new(),
+            keys: HashMap::new(),
         }
     }
 }
 
 impl ChainzConfig {
-    pub fn set_default_private_key(&mut self, default_private_key: String) {
-        self.default_private_key = default_private_key
+    pub async fn add_key(&mut self, name: &str, key: &str) -> Result<()> {
+        if self.keys.contains_key(name) {
+            anyhow::bail!("Key '{}' already exists", name);
+        }
+        self.keys.insert(name.to_string(), key.to_string());
+        Ok(())
     }
 
-    pub fn set_default_env_prefix(&mut self, env_prefix: String) {
-        self.env_prefix = env_prefix
+    pub async fn list_keys(&self) -> Result<Vec<String>> {
+        Ok(self.keys.keys().cloned().collect())
+    }
+
+    pub async fn remove_key(&mut self, name: &str) -> Result<()> {
+        if !self.keys.contains_key(name) {
+            anyhow::bail!("Key '{}' not found", name);
+        }
+        self.keys.remove(name);
+        Ok(())
     }
 
     pub async fn get_chain_by_name(&self, name: &str) -> Result<Chain> {
@@ -82,13 +95,14 @@ impl ChainzConfig {
     }
 
     // get a chain from a chain config
-    async fn get_chain(&self, config: &ChainConfig) -> Result<Chain> {
+    pub async fn get_chain(&self, config: &ChainConfig) -> Result<Chain> {
         let rpc_url = self.get_rpc(config).await?;
         let provider = create_provider(&rpc_url).await?;
-        let private_key = config
-            .private_key
+        let key_name = config
+            .key_name
             .clone()
-            .unwrap_or(self.default_private_key.clone());
+            .unwrap_or(DEFAULT_KEY_NAME.to_string());
+        let private_key = self.get_key(&key_name)?;
         let signer = private_key.parse::<PrivateKeySigner>()?;
         Ok(Chain {
             config: config.clone(),
@@ -99,36 +113,45 @@ impl ChainzConfig {
         })
     }
 
+    fn get_key(&self, key_name: &str) -> Result<String> {
+        self.keys
+            .get(key_name)
+            .cloned()
+            .ok_or(anyhow!("Key '{}' not found", key_name))
+    }
+
     // get the first rpc url that returns the correct chain id
     async fn get_rpc(&self, config: &ChainConfig) -> Result<String> {
-        // try RPC urls one by one
-        // injecting environment variables if needed
-        // returning the first one that successfully returns chainid
-        for rpc_url in &config.rpc_urls {
-            // Interpolate environment variables in the RPC URL
-            let interpolated_url = interpolate_variables(rpc_url, &self.variables);
-            if let Ok(provider) = create_provider(&interpolated_url).await {
-                // ensure it equals config.chainId
-                if let Ok(chain_id) = provider.get_chain_id().await {
-                    if chain_id == config.chain_id {
-                        return Ok(interpolated_url);
-                    }
-                }
+        // First try the last working RPC if available
+        if let Some(last_working) = &config.last_working_rpc {
+            if let Some(rpc_url) = test_rpc(last_working, config.chain_id, &self.variables).await {
+                return Ok(rpc_url);
             }
         }
+
+        // If last working RPC failed or doesn't exist, try others
+        for rpc_url in &config.rpc_urls {
+            if let Some(rpc_url) = test_rpc(rpc_url, config.chain_id, &self.variables).await {
+                return Ok(rpc_url);
+            }
+        }
+
         Err(anyhow!("No valid RPC urls found"))
     }
 
-    // get all chains
+    // get all chains, skipping ones that fail to load
     pub async fn get_chains(&self) -> Result<Vec<Chain>> {
         let mut chains = vec![];
         for chain in &self.chains {
-            chains.push(self.get_chain(chain).await?);
+            match self.get_chain(chain).await {
+                Ok(chain) => chains.push(chain),
+                Err(e) => eprintln!("Failed to load chain {}: {}", chain.name, e),
+            }
         }
         Ok(chains)
     }
 
-    pub async fn add_chain(&mut self, args: &AddArgs) -> Result<Chain> {
+    pub async fn add_chain(&mut self, args: &AddArgs) -> Result<ChainConfig> {
         let chain = ChainConfig::from_add_args(args).await?;
         // print
         // update chain if it already exists
@@ -137,7 +160,7 @@ impl ChainzConfig {
         } else {
             self.chains.push(chain.clone());
         }
-        self.get_chain_by_name(&chain.name).await
+        Ok(chain)
     }
 
     pub async fn write(&self) -> Result<()> {
@@ -147,6 +170,12 @@ impl ChainzConfig {
             json,
         )
         .await?;
+        Ok(())
+    }
+
+    pub async fn delete() -> Result<()> {
+        tokio::fs::remove_file(get_config_path().ok_or(anyhow!("Unable to find config path"))?)
+            .await?;
         Ok(())
     }
 
@@ -175,6 +204,7 @@ impl ChainConfig {
         Ok(Self {
             name,
             chain_id,
+            last_working_rpc: None,
             // given rpc url is first in list to try if given
             rpc_urls: match &args.rpc_url {
                 Some(rpc_url) => {
@@ -185,7 +215,7 @@ impl ChainConfig {
                 None => chain_data.rpc,
             },
             verification_api_key: args.verification_api_key.clone(),
-            private_key: args.private_key.clone(),
+            key_name: args.key_name.clone(),
         })
     }
 }
@@ -278,6 +308,27 @@ fn find_next_var(input: &str) -> Option<(usize, usize)> {
     let start = input.find("${")?;
     let end = input[start..].find("}")?.checked_add(start + 1)?;
     Some((start, end))
+}
+
+pub async fn config_exists() -> Result<bool> {
+    Ok(get_config_path().map(|p| p.exists()).unwrap_or(false))
+}
+
+async fn test_rpc(
+    rpc_url: &str,
+    expected_chain_id: u64,
+    variables: &HashMap<String, String>,
+) -> Option<String> {
+    // First try the last working RPC if available
+    let interpolated_url = interpolate_variables(rpc_url, variables);
+    if let Ok(provider) = create_provider(&interpolated_url).await {
+        if let Ok(chain_id) = provider.get_chain_id().await {
+            if chain_id == expected_chain_id {
+                return Some(interpolated_url);
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]

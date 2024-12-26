@@ -9,12 +9,16 @@ pub struct ChainlistEntry {
     pub rpc: Vec<String>,
 }
 
+pub async fn fetch_all_chains() -> Result<Vec<ChainlistEntry>> {
+    let url = "https://chainid.network/chains.json";
+    Ok(reqwest::get(url).await?.json().await?)
+}
+
 pub async fn fetch_chain_data(
     chain_id: Option<u64>,
     name: Option<String>,
 ) -> Result<ChainlistEntry> {
-    let url = "https://chainid.network/chains.json";
-    let chains: Vec<ChainlistEntry> = reqwest::get(url).await?.json().await?;
+    let chains = fetch_all_chains().await?;
 
     let chain = if let Some(id) = chain_id {
         chains.into_iter().find(|c| c.chain_id == id)

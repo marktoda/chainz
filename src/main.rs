@@ -6,6 +6,8 @@ use structopt::StructOpt;
 
 pub mod chainlist;
 pub mod config;
+pub mod init;
+pub mod key;
 pub mod opt;
 use config::{Chain, ChainzConfig};
 use opt::Opt;
@@ -20,28 +22,18 @@ async fn main() -> Result<()> {
         .await
         .unwrap_or_else(|_| ChainzConfig::default());
     match opts.cmd {
+        opt::Command::Init {} => init::handle_init().await?,
+        opt::Command::Key { cmd } => key::handle_key_command(chainz, cmd).await?,
         opt::Command::Add { args } => {
-            let chain = chainz.add_chain(&args).await?;
-            println!("Added chain {}", chain.config.name);
-            print_chain(&chain).await?;
+            let config = chainz.add_chain(&args).await?;
+            println!("Added chain {}", config.name);
+            print_chain(&chainz.get_chain(&config).await?).await?;
             chainz.write().await?;
         }
         opt::Command::List => {
             for chain in &chainz.get_chains().await? {
                 print_chain(chain).await?;
             }
-        }
-        opt::Command::Set {
-            default_private_key,
-            env_prefix,
-        } => {
-            if let Some(env_prefix) = env_prefix {
-                chainz.set_default_env_prefix(env_prefix);
-            }
-            if let Some(default_private_key) = default_private_key {
-                chainz.set_default_private_key(default_private_key);
-            }
-            chainz.write().await?;
         }
         opt::Command::Use { name_or_id, print } => {
             // try parse as a u64 id, else use as name

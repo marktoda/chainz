@@ -13,13 +13,8 @@ pub struct Opt {
 #[derive(Debug, StructOpt)]
 #[structopt(about = "Subcommands for chainz")]
 pub enum Command {
-    #[structopt(about = "Set a global config parameter")]
-    Set {
-        #[structopt(short, long)]
-        default_private_key: Option<String>,
-        #[structopt(short, long)]
-        env_prefix: Option<String>,
-    },
+    /// Initialize a new configuration with wizard
+    Init {},
     #[structopt(about = "Add a new chain")]
     Add {
         #[structopt(flatten)]
@@ -36,6 +31,30 @@ pub enum Command {
     },
     #[structopt(about = "List all chains")]
     List,
+    #[structopt(about = "Manage Private Keys")]
+    Key {
+        #[structopt(subcommand)]
+        cmd: KeyCommand,
+    },
+}
+
+#[derive(Debug, StructOpt)]
+pub enum KeyCommand {
+    /// Add a new private key
+    Add {
+        /// Name for the private key
+        name: String,
+        /// The private key (will prompt if not provided)
+        #[structopt(long)]
+        key: Option<String>,
+    },
+    /// List all stored private keys
+    List,
+    /// Remove a private key
+    Remove {
+        /// Name of the private key to remove
+        name: String,
+    },
 }
 
 #[derive(Debug, StructOpt)]
@@ -49,5 +68,5 @@ pub struct AddArgs {
     #[structopt(short, long)]
     pub verification_api_key: Option<String>,
     #[structopt(short, long)]
-    pub private_key: Option<String>,
+    pub key_name: Option<String>,
 }
