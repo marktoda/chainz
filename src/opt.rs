@@ -41,11 +41,13 @@ pub enum Command {
 #[derive(Debug, StructOpt)]
 pub struct AddArgs {
     #[structopt(short, long)]
-    pub name: String,
+    pub name: Option<String>,
     #[structopt(short, long)]
-    pub rpc_url: String,
+    pub chain_id: Option<u64>,
     #[structopt(short, long)]
-    pub verification_api_key: String,
+    pub rpc_url: Option<String>,
+    #[structopt(short, long)]
+    pub verification_api_key: Option<String>,
     #[structopt(short, long)]
     pub private_key: Option<String>,
 }

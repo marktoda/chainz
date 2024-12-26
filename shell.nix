@@ -4,6 +4,8 @@ pkgs.mkShell {
   inputsFrom = [(pkgs.callPackage ./default.nix {})];
   # Additional tooling
   buildInputs = with pkgs; [
+    openssl
+    pkg-config
     rust-analyzer # LSP Server
     rustfmt # Formatter
     clippy # Linter

@@ -4,6 +4,7 @@ use std::fs::File;
 use std::io::prelude::*;
 use structopt::StructOpt;
 
+pub mod chainlist;
 pub mod config;
 pub mod opt;
 use config::{Chain, ChainzConfig};
@@ -17,10 +18,11 @@ async fn main() -> Result<()> {
     // load or default to new
     let mut chainz = ChainzConfig::load()
         .await
-        .unwrap_or_else(|_| ChainzConfig::new());
+        .unwrap_or_else(|_| ChainzConfig::default());
     match opts.cmd {
         opt::Command::Add { args } => {
             let chain = chainz.add_chain(&args).await?;
+            println!("Added chain {}", chain.config.name);
             print_chain(&chain).await?;
             chainz.write().await?;
         }
@@ -74,10 +76,10 @@ fn get_env_file_str(chainz: &ChainzConfig, chain: &Chain) -> String {
     let mut res = String::new();
     res.push_str(&format!(
         "{}_RPC_URL={}\n",
-        chainz.env_prefix, chain.config.rpc_url
+        chainz.env_prefix, chain.rpc_url
     ));
     res.push_str(&format!(
-        "{}_VERIFICATION_API_KEY={}\n",
+        "{}_VERIFICATION_API_KEY={:?}\n",
         chainz.env_prefix, chain.config.verification_api_key
     ));
     res.push_str(&format!(
