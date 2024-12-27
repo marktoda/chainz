@@ -15,12 +15,19 @@ pub const CONFIG_FILE_LOCATION: &str = ".chainz.json";
 pub const DEFAULT_ENV_PREFIX: &str = "FOUNDRY";
 pub const DEFAULT_KEY_NAME: &str = "default";
 
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(tag = "type", content = "value")]
+pub enum Key {
+    #[serde(rename = "PrivateKey")]
+    PrivateKey(String),
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct ChainzConfig {
     pub env_prefix: String,
     pub chains: Vec<ChainConfig>,
     pub variables: HashMap<String, String>,
-    pub keys: HashMap<String, String>,
+    pub keys: HashMap<String, Key>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -56,11 +63,11 @@ impl Default for ChainzConfig {
 }
 
 impl ChainzConfig {
-    pub async fn add_key(&mut self, name: &str, key: &str) -> Result<()> {
+    pub async fn add_key(&mut self, name: &str, key: Key) -> Result<()> {
         if self.keys.contains_key(name) {
             anyhow::bail!("Key '{}' already exists", name);
         }
-        self.keys.insert(name.to_string(), key.to_string());
+        self.keys.insert(name.to_string(), key);
         Ok(())
     }
 
@@ -118,6 +125,9 @@ impl ChainzConfig {
             .get(key_name)
             .cloned()
             .ok_or(anyhow!("Key '{}' not found", key_name))
+            .map(|key| match key {
+                Key::PrivateKey(key) => key,
+            })
     }
 
     // get the first rpc url that returns the correct chain id

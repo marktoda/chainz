@@ -1,6 +1,9 @@
 // module for storing configurations of encrypted private keys
 
-use crate::{config::ChainzConfig, opt::KeyCommand};
+use crate::{
+    config::{ChainzConfig, Key},
+    opt::KeyCommand,
+};
 use anyhow::Result;
 
 // TODO: encrypt keys
@@ -12,7 +15,7 @@ pub async fn handle_key_command(mut chainz: ChainzConfig, cmd: KeyCommand) -> Re
             } else {
                 rpassword::prompt_password("Enter private key: ")?
             };
-            chainz.add_key(&name, &key).await?;
+            chainz.add_key(&name, Key::PrivateKey(key)).await?;
             println!("Added key '{}'", name);
             chainz.write().await?;
         }

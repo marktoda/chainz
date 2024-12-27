@@ -2,7 +2,7 @@
 
 use crate::{
     chainlist::fetch_all_chains,
-    config::{config_exists, ChainzConfig, DEFAULT_ENV_PREFIX, DEFAULT_KEY_NAME},
+    config::{config_exists, ChainzConfig, Key, DEFAULT_ENV_PREFIX, DEFAULT_KEY_NAME},
     opt,
 };
 use anyhow::Result;
@@ -45,7 +45,9 @@ async fn initialize_with_wizard() -> Result<ChainzConfig> {
 
     // TODO: allow generate in place
     let private_key = rpassword::prompt_password("Enter default private key: ")?;
-    config.add_key(DEFAULT_KEY_NAME, &private_key).await?;
+    config
+        .add_key(DEFAULT_KEY_NAME, Key::PrivateKey(private_key))
+        .await?;
 
     // get infura_api_key, optionally
     let infura_api_key: String = Input::new()
@@ -81,7 +83,7 @@ async fn initialize_with_wizard() -> Result<ChainzConfig> {
         let (name, chain_id) = &available_chains[idx];
         let args = opt::AddArgs {
             name: Some(name.to_lowercase().replace(" ", "_")),
-            chain_id: Some(chain_id.clone()),
+            chain_id: Some(*chain_id),
             rpc_url: None,
             verification_api_key: None,
             // TODO: allow key override
