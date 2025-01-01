@@ -182,7 +182,7 @@ impl Config {
         Ok(self
             .chains
             .iter()
-            .find(|chain| chain.name == name)
+            .find(|chain| chain.name.to_ascii_lowercase() == name.to_ascii_lowercase())
             .ok_or(anyhow!("Chain not found"))?
             .clone())
     }
