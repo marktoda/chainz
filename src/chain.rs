@@ -1,10 +1,16 @@
-use crate::{chainlist::fetch_chain_data, key::Key, opt::AddArgs};
+use crate::{
+    chainlist::{fetch_all_chains, fetch_chain_data, ChainlistEntry},
+    config::Chainz,
+    key::Key,
+    opt::{AddArgs, UpdateArgs},
+};
 use alloy::{
     providers::{Provider, ProviderBuilder},
     transports::BoxTransport,
 };
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use colored::*;
+use dialoguer::{FuzzySelect, Input};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::{Debug, Display};
@@ -16,7 +22,7 @@ pub struct ChainDefinition {
     pub name: String,
     pub chain_id: u64,
     pub rpc_urls: Vec<String>,
-    pub selected_rpc: Option<String>,
+    pub selected_rpc: String,
     pub verification_api_key: Option<String>,
     pub key_name: String,
 }
@@ -28,66 +34,20 @@ pub struct ChainInstance {
     pub key: Key,
 }
 
+pub struct Rpc {
+    pub rpc_url: String,
+    pub provider: Box<dyn Provider<BoxTransport>>,
+}
+
 impl ChainDefinition {
-    pub async fn new(args: &AddArgs) -> Result<Self> {
-        // if no chain_id or name, then throw
-        if args.chain_id.is_none() && args.name.is_none() {
-            return Err(anyhow!("Either chain_id or name must be provided"));
-        }
-
-        let chain_data = fetch_chain_data(args.chain_id, args.name.clone()).await?;
-
-        // Get name and chain_id from either args, chainlist, or generate from chain_id
-        let name = args.name.clone().unwrap_or(chain_data.name);
-        let chain_id = args.chain_id.unwrap_or(chain_data.chain_id);
-        Ok(Self {
-            name,
-            chain_id,
-            selected_rpc: None,
-            // given rpc url is first in list to try if given
-            rpc_urls: match &args.rpc_url {
-                Some(rpc_url) => {
-                    let mut urls = vec![rpc_url.clone()];
-                    urls.extend(chain_data.rpc);
-                    urls
-                }
-                None => chain_data.rpc,
-            },
-            verification_api_key: args.verification_api_key.clone(),
-            key_name: args
-                .key_name
-                .clone()
-                .unwrap_or(DEFAULT_KEY_NAME.to_string()),
-        })
+    pub async fn get_rpc(&self, variables: &HashMap<String, String>) -> Result<Rpc> {
+        resolve_rpc(&self.selected_rpc, variables).await
     }
+}
 
-    pub fn resolve_variables(&self, variables: &HashMap<String, String>) -> Self {
-        let new_rpc_urls = self
-            .rpc_urls
-            .iter()
-            .map(|url| interpolate_variables(url, variables))
-            .collect();
-        let mut new_config = self.clone();
-        new_config.rpc_urls = new_rpc_urls;
-        new_config
-    }
-
-    pub async fn get_rpc(&self) -> Result<(String, Box<dyn Provider<BoxTransport>>)> {
-        // First try the last working RPC if available
-        if let Some(selected) = &self.selected_rpc {
-            if let Some(rpc_url) = test_rpc(selected, self.chain_id).await {
-                return Ok((rpc_url.clone(), create_provider(&rpc_url).await?));
-            }
-        }
-
-        // If last working RPC failed or doesn't exist, try others
-        for rpc_url in &self.rpc_urls {
-            if let Some(rpc_url) = test_rpc(rpc_url, self.chain_id).await {
-                return Ok((rpc_url.clone(), create_provider(&rpc_url).await?));
-            }
-        }
-
-        Err(anyhow!("No valid RPC urls found"))
+impl Display for Rpc {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.rpc_url)
     }
 }
 
@@ -111,10 +71,7 @@ impl Display for ChainDefinition {
             "{}─ {}: {}",
             "├".bright_black(),
             "Active RPC".bright_blue(),
-            self.selected_rpc
-                .as_deref()
-                .unwrap_or("None")
-                .bright_green()
+            self.selected_rpc.bright_green()
         )?;
         writeln!(
             f,
@@ -171,6 +128,288 @@ impl Display for ChainInstance {
     }
 }
 
+/// Helper function to manually enter chain details
+pub async fn manual_chain_entry(
+    name: Option<String>,
+    chain_id: Option<u64>,
+) -> Result<ChainlistEntry> {
+    println!("\n{}", "Manual Chain Entry".bright_yellow().bold());
+    let name = if let Some(n) = name {
+        n
+    } else {
+        Input::new().with_prompt("Chain name").interact_text()?
+    };
+    let chain_id = if let Some(id) = chain_id {
+        id
+    } else {
+        Input::new().with_prompt("Chain ID").interact_text()?
+    };
+
+    Ok(ChainlistEntry {
+        name,
+        chain_id,
+        rpc: vec![],
+    })
+}
+
+/// Helper function to select or enter RPC URL
+pub async fn select_rpc(
+    chain_name: &str,
+    chain_id: u64,
+    available_rpcs: Vec<Rpc>,
+) -> Result<String> {
+    println!("\nTesting RPCs...");
+
+    // Initialize displays with "testing" status
+    let mut rpc_displays: Vec<String> = available_rpcs
+        .iter()
+        .map(|rpc| format!("{} {}", "⋯".bright_yellow(), rpc))
+        .collect();
+
+    // Create a vector of futures for testing RPCs
+    let mut test_futures = Vec::new();
+    for (idx, rpc) in available_rpcs.iter().enumerate() {
+        // Clone the necessary data for the spawned task
+        let rpc_to_test = Rpc {
+            rpc_url: rpc.rpc_url.clone(),
+            provider: create_provider(&rpc.rpc_url).await?,
+        };
+
+        let test_future = async move {
+            let result = test_rpc(&rpc_to_test, chain_id).await;
+            (idx, result)
+        };
+        test_futures.push(tokio::spawn(test_future));
+    }
+
+    // Process results as they complete
+    for (idx, result) in (futures::future::join_all(test_futures).await)
+        .into_iter()
+        .flatten()
+    {
+        if result.is_ok() {
+            rpc_displays[idx] = format!("{} {}", "✓".bright_green(), available_rpcs[idx]);
+        } else {
+            rpc_displays[idx] = format!("{} {}", "✗".bright_red(), available_rpcs[idx]);
+        }
+    }
+
+    // Add manual entry option
+    rpc_displays.push("Enter RPC URL manually...".to_string());
+
+    let rpc_selection = fuzzy_select(
+        &format!("Select an RPC URL for {}", chain_name.yellow()),
+        &rpc_displays,
+        0,
+    )?;
+
+    if rpc_selection == rpc_displays.len() - 1 {
+        Ok(select_manual_rpc(chain_id).await?.rpc_url)
+    } else if let Some(rpc) = available_rpcs.get(rpc_selection) {
+        Ok(rpc.rpc_url.clone())
+    } else {
+        anyhow::bail!("Selected RPC is not working")
+    }
+}
+
+async fn select_manual_rpc(chain_id: u64) -> Result<Rpc> {
+    loop {
+        let rpc_url: String = Input::new().with_prompt("Enter RPC URL").interact_text()?;
+        println!("Testing RPC...");
+        let rpc = resolve_rpc(&rpc_url, &HashMap::new()).await?;
+
+        if test_rpc(&rpc, chain_id).await.is_ok() {
+            println!("{} RPC working", "✓".bright_green());
+            return Ok(rpc);
+        }
+
+        println!(
+            "{} RPC failed. Try again? (Ctrl+C to exit)",
+            "✗".bright_red()
+        );
+    }
+}
+
+/// Helper function to select or create a key
+pub async fn select_key(chainz: &mut Chainz) -> Result<String> {
+    let keys = chainz.list_keys()?;
+
+    // Create display strings with addresses
+    let mut key_displays: Vec<(String, String)> = keys
+        .iter()
+        .map(|(name, key)| {
+            let addr = key
+                .address()
+                .map(|a| a.to_string())
+                .unwrap_or("Invalid key".to_string());
+            (name.clone(), format!("{} ({})", name, addr))
+        })
+        .collect();
+
+    // Add the "Add new key" option
+    key_displays.push(("Add new key".to_string(), "Add new key".to_string()));
+
+    let key_selection = fuzzy_select(
+        "Select a key",
+        &key_displays
+            .iter()
+            .map(|(_, display)| display)
+            .collect::<Vec<_>>(),
+        0,
+    )?;
+
+    if key_selection == key_displays.len() - 1 {
+        let kname: String = Input::new().with_prompt("Enter key name").interact_text()?;
+        let private_key: String = Input::new()
+            .with_prompt("Enter private key")
+            .interact_text()?;
+        chainz.add_key(&kname, Key::PrivateKey(private_key)).await?;
+        Ok(kname)
+    } else {
+        Ok(key_displays[key_selection].0.clone())
+    }
+}
+
+impl UpdateArgs {
+    pub async fn handle(&self, chainz: &mut Chainz) -> Result<ChainDefinition> {
+        println!("\n{}", "Chain Update".bright_blue().bold());
+        println!("{}", "═".bright_black().repeat(50));
+
+        // Select chain to update
+        let chains: Vec<String> = chainz
+            .list_chains()
+            .iter()
+            .map(|c| format!("{} ({})", c.name, c.chain_id))
+            .collect();
+
+        if chains.is_empty() {
+            anyhow::bail!("No chains configured. Use 'chainz add' to add a chain first.");
+        }
+
+        let chain_selection = fuzzy_select("Select chain to update", &chains, 0)?;
+
+        let mut chain = chainz.list_chains()[chain_selection].clone();
+
+        // Select what to update
+        let options = vec!["RPC URL", "Key", "Verification API Key"];
+
+        println!("\n{}", "Update Options".bright_blue().bold());
+        println!("{}", "═".bright_black().repeat(50));
+        println!("Current configuration:");
+        println!("{}", chain);
+
+        let selection = fuzzy_select("What would you like to update?", &options, 0)?;
+
+        match selection {
+            0 => {
+                // Update RPC URL
+                println!("\n{}", "RPC Configuration".bright_blue().bold());
+                println!("{}", "═".bright_black().repeat(50));
+
+                // Try to get fresh RPC list from chainlist
+                let chainlist_entry = fetch_chain_data(Some(chain.chain_id), None).await;
+                let available_rpcs = chainlist_entry
+                    .map(|c| c.rpc)
+                    .unwrap_or_else(|_| chain.rpc_urls.clone());
+
+                let new_rpc = select_rpc(
+                    &chain.name,
+                    chain.chain_id,
+                    resolve_rpcs(available_rpcs, &chainz.config.variables).await?,
+                )
+                .await?;
+                chain.selected_rpc = new_rpc;
+            }
+            1 => {
+                // Update key
+                println!("\n{}", "Key Configuration".bright_blue().bold());
+                println!("{}", "═".bright_black().repeat(50));
+
+                let new_key = select_key(chainz).await?;
+                chain.key_name = new_key;
+            }
+            2 => {
+                // Update verification API key
+                println!(
+                    "\n{}",
+                    "Verification Key Configuration".bright_blue().bold()
+                );
+                println!("{}", "═".bright_black().repeat(50));
+
+                let new_key: String = Input::new()
+                    .with_prompt("Enter verification API key (empty to remove)")
+                    .allow_empty(true)
+                    .default(chain.verification_api_key.clone().unwrap_or_default())
+                    .interact_text()?;
+
+                chain.verification_api_key = if new_key.is_empty() {
+                    None
+                } else {
+                    Some(new_key)
+                };
+            }
+            _ => unreachable!(),
+        }
+
+        // Save changes
+        chainz.add_chain(chain.clone()).await?;
+        chainz.save().await?;
+        println!("\n{}", "Chain updated successfully".bright_green());
+
+        Ok(chain)
+    }
+}
+
+impl AddArgs {
+    pub async fn handle(&self, chainz: &mut Chainz) -> Result<ChainDefinition> {
+        println!("\n{}", "Chain Selection".bright_blue().bold());
+        println!("{}", "═".bright_black().repeat(50));
+
+        // Interactive flow with chainlist
+        let chains = fetch_all_chains().await?;
+        let items: Vec<String> = chains
+            .iter()
+            .map(|c| format!("{} ({})", c.name, c.chain_id))
+            .collect();
+
+        let selected_chain = match fuzzy_select("Type to search and select a chain", &items, 0) {
+            Ok(selection) => chains[selection].clone(),
+            Err(_) => manual_chain_entry(None, None).await?,
+        };
+
+        println!("\n{}", "RPC Configuration".bright_blue().bold());
+        println!("{}", "═".bright_black().repeat(50));
+
+        let selected_rpc = select_rpc(
+            &selected_chain.name,
+            selected_chain.chain_id,
+            resolve_rpcs(selected_chain.rpc.clone(), &chainz.config.variables).await?,
+        )
+        .await?;
+
+        println!("\n{}", "Key Configuration".bright_blue().bold());
+        println!("{}", "═".bright_black().repeat(50));
+
+        let key_name = select_key(chainz).await?;
+
+        // TODO: add handler
+        let verification_api_key = None;
+
+        // Create and add the chain
+        let chain_def = ChainDefinition {
+            name: selected_chain.name.clone(),
+            chain_id: selected_chain.chain_id,
+            rpc_urls: selected_chain.rpc,
+            selected_rpc,
+            verification_api_key,
+            key_name,
+        };
+        chainz.add_chain(chain_def.clone()).await?;
+        chainz.save().await?;
+        Ok(chain_def)
+    }
+}
+
 fn interpolate_variables(input: &str, variables: &HashMap<String, String>) -> String {
     let mut result = input.to_string();
 
@@ -220,17 +459,38 @@ fn find_next_var(input: &str) -> Option<(usize, usize)> {
     let end = input[start..].find("}")?.checked_add(start + 1)?;
     Some((start, end))
 }
-async fn test_rpc(rpc_url: &str, expected_chain_id: u64) -> Option<String> {
-    // First try the last working RPC if available
-    if let Ok(provider) = create_provider(rpc_url).await {
-        if let Ok(chain_id) = provider.get_chain_id().await {
-            if chain_id == expected_chain_id {
-                return Some(rpc_url.to_string());
-            }
+
+async fn test_rpc(rpc: &Rpc, expected_chain_id: u64) -> Result<()> {
+    // Try the resolved RPC URL
+    if let Ok(chain_id) = rpc.provider.get_chain_id().await {
+        if chain_id == expected_chain_id {
+            return Ok(()); // Return original URL with variables
         }
     }
-    None
+    anyhow::bail!("Invalid chain ID");
 }
+
+pub async fn resolve_rpcs(
+    rpc_urls: Vec<String>,
+    variables: &HashMap<String, String>,
+) -> Result<Vec<Rpc>> {
+    let mut result = Vec::new();
+    for rpc in rpc_urls {
+        if let Ok(r) = resolve_rpc(&rpc, variables).await {
+            result.push(r);
+        }
+    }
+    Ok(result)
+}
+
+pub async fn resolve_rpc(rpc_url: &str, variables: &HashMap<String, String>) -> Result<Rpc> {
+    let rpc_url = interpolate_variables(rpc_url, variables);
+    Ok(Rpc {
+        rpc_url: rpc_url.clone(),
+        provider: create_provider(&rpc_url).await?,
+    })
+}
+
 async fn create_provider(rpc_url: &str) -> Result<Box<dyn Provider<BoxTransport>>> {
     Ok(Box::new(
         ProviderBuilder::new()
@@ -238,6 +498,19 @@ async fn create_provider(rpc_url: &str) -> Result<Box<dyn Provider<BoxTransport>
             .on_builtin(rpc_url)
             .await?,
     ))
+}
+
+// Helper function to handle fuzzy select with ESC cancellation
+fn fuzzy_select<T: ToString>(prompt: &str, items: &[T], default: usize) -> Result<usize> {
+    match FuzzySelect::new()
+        .with_prompt(format!("{} (ESC to exit)", prompt))
+        .items(items)
+        .default(default)
+        .interact_opt()?
+    {
+        Some(selection) => Ok(selection),
+        None => anyhow::bail!("Operation cancelled by user"),
+    }
 }
 
 #[cfg(test)]

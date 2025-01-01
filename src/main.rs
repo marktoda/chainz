@@ -8,6 +8,7 @@ pub mod config;
 pub mod init;
 pub mod key;
 pub mod opt;
+pub mod var;
 pub mod variables;
 
 use config::Chainz;
@@ -24,12 +25,19 @@ async fn main() -> Result<()> {
             init::handle_init().await?;
         }
         opt::Command::Key { cmd } => {
-            key::handle_key_command(&mut chainz, cmd).await?;
+            cmd.handle(&mut chainz).await?;
+        }
+        opt::Command::Var { cmd } => {
+            cmd.handle(&mut chainz).await?;
         }
         opt::Command::Add { args } => {
-            chainz.add_chain(&args).await?;
-            println!("Added chain {}", args.name.unwrap_or_default());
-            chainz.save().await?;
+            let chain = args.handle(&mut chainz).await?;
+            println!("Added chain {}", chain.name);
+        }
+        opt::Command::Update { args } => {
+            let chain = args.handle(&mut chainz).await?;
+            println!("\nFinal configuration:");
+            println!("{}", chain);
         }
         opt::Command::List => {
             let chains = chainz.list_chains();

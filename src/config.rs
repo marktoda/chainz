@@ -1,7 +1,6 @@
 use crate::{
     chain::{ChainDefinition, ChainInstance},
     key::Key,
-    opt::AddArgs,
 };
 use anyhow::{anyhow, Result};
 use dirs::home_dir;
@@ -26,9 +25,9 @@ pub struct Chainz {
 }
 
 impl Chainz {
-    pub fn new(config: Config) -> Self {
+    pub fn new() -> Self {
         Self {
-            config,
+            config: Config::default(),
             active_chains: HashMap::new(),
         }
     }
@@ -54,37 +53,94 @@ impl Chainz {
     }
 
     async fn instantiate_chain(&self, def: &ChainDefinition) -> Result<ChainInstance> {
-        let (rpc_url, provider) = def.get_rpc().await?;
-        let key = self.config.get_key(&def.key_name.clone())?;
+        let rpc = def.get_rpc(&self.config.variables).await?;
+        let key = self.get_key(&def.key_name.clone())?;
 
         Ok(ChainInstance {
             definition: def.clone(),
-            provider,
-            rpc_url,
+            provider: rpc.provider,
+            rpc_url: rpc.rpc_url,
             key,
         })
     }
 
     // Key management methods
     pub async fn add_key(&mut self, name: &str, key: Key) -> Result<()> {
-        self.config.add_key(name, key).await?;
+        if self.config.keys.contains_key(name) {
+            anyhow::bail!("Key '{}' already exists", name);
+        }
+        self.config.keys.insert(name.to_string(), key);
         Ok(())
     }
 
     pub fn list_keys(&self) -> Result<Vec<(String, Key)>> {
-        self.config.list_keys()
+        Ok(self
+            .config
+            .keys
+            .iter()
+            .map(|(n, k)| (n.clone(), k.clone()))
+            .collect())
     }
 
     pub fn remove_key(&mut self, name: &str) -> Result<()> {
-        self.config.remove_key(name)
+        if !self.config.keys.contains_key(name) {
+            anyhow::bail!("Key '{}' not found", name);
+        }
+        self.config.keys.remove(name);
+        Ok(())
     }
 
-    pub async fn add_chain(&mut self, args: &AddArgs) -> Result<ChainDefinition> {
-        self.config.add_chain(args).await
+    pub fn get_key(&self, key_name: &str) -> Result<Key> {
+        self.config
+            .keys
+            .get(key_name)
+            .cloned()
+            .ok_or(anyhow!("Key '{}' not found", key_name))
+    }
+
+    pub async fn add_chain(&mut self, chain: ChainDefinition) -> Result<()> {
+        // Replace if exists, otherwise add
+        if let Some(pos) = self.config.chains.iter().position(|c| c.name == chain.name) {
+            self.config.chains[pos] = chain.clone();
+        } else {
+            self.config.chains.push(chain.clone());
+        }
+
+        Ok(())
     }
 
     pub fn list_chains(&self) -> &[ChainDefinition] {
-        self.config.list_chains()
+        &self.config.chains
+    }
+
+    /// Add or update a custom variable
+    pub fn set_variable(&mut self, name: &str, value: &str) {
+        self.config
+            .variables
+            .insert(name.to_string(), value.to_string());
+    }
+
+    /// Get a custom variable's value
+    pub fn get_variable(&self, name: &str) -> Option<&String> {
+        self.config.variables.get(name)
+    }
+
+    /// Remove a custom variable
+    pub fn remove_variable(&mut self, name: &str) -> Result<()> {
+        if !self.config.variables.contains_key(name) {
+            anyhow::bail!("Variable '{}' not found", name);
+        }
+        self.config.variables.remove(name);
+        Ok(())
+    }
+
+    /// List all custom variables
+    pub fn list_variables(&self) -> Vec<(String, String)> {
+        self.config
+            .variables
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
     }
 
     pub async fn save(&self) -> Result<()> {
@@ -106,41 +162,6 @@ impl Config {
         Ok(config)
     }
 
-    pub async fn add_key(&mut self, name: &str, key: Key) -> Result<()> {
-        if self.keys.contains_key(name) {
-            anyhow::bail!("Key '{}' already exists", name);
-        }
-        self.keys.insert(name.to_string(), key);
-        Ok(())
-    }
-
-    pub fn list_keys(&self) -> Result<Vec<(String, Key)>> {
-        Ok(self
-            .keys
-            .iter()
-            .map(|(n, k)| (n.clone(), k.clone()))
-            .collect())
-    }
-
-    pub fn remove_key(&mut self, name: &str) -> Result<()> {
-        if !self.keys.contains_key(name) {
-            anyhow::bail!("Key '{}' not found", name);
-        }
-        self.keys.remove(name);
-        Ok(())
-    }
-
-    pub fn get_key(&self, key_name: &str) -> Result<Key> {
-        self.keys
-            .get(key_name)
-            .cloned()
-            .ok_or(anyhow!("Key '{}' not found", key_name))
-    }
-
-    pub fn list_chains(&self) -> &[ChainDefinition] {
-        &self.chains
-    }
-
     pub fn get_chain(&self, name_or_id: &str) -> Result<ChainDefinition> {
         // Try to parse as chain ID first
         if let Ok(chain_id) = name_or_id.parse::<u64>() {
@@ -159,7 +180,7 @@ impl Config {
 
     pub fn get_chain_config_by_name(&self, name: &str) -> Result<ChainDefinition> {
         Ok(self
-            .list_chains()
+            .chains
             .iter()
             .find(|chain| chain.name == name)
             .ok_or(anyhow!("Chain not found"))?
@@ -168,24 +189,11 @@ impl Config {
 
     pub fn get_chain_config_by_id(&self, chain_id: u64) -> Result<ChainDefinition> {
         Ok(self
-            .list_chains()
+            .chains
             .iter()
             .find(|chain| chain.chain_id == chain_id)
             .ok_or(anyhow!("Chain not found"))?
             .clone())
-    }
-
-    pub async fn add_chain(&mut self, args: &AddArgs) -> Result<ChainDefinition> {
-        let chain = ChainDefinition::new(args).await?;
-
-        // Replace if exists, otherwise add
-        if let Some(pos) = self.chains.iter().position(|c| c.name == chain.name) {
-            self.chains[pos] = chain.clone();
-        } else {
-            self.chains.push(chain.clone());
-        }
-
-        Ok(chain)
     }
 
     pub async fn write(&self) -> Result<()> {

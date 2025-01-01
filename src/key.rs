@@ -41,34 +41,36 @@ impl Key {
 }
 
 // TODO: encrypt keys
-pub async fn handle_key_command(config: &mut Chainz, cmd: KeyCommand) -> Result<()> {
-    match cmd {
-        KeyCommand::Add { name, key } => {
-            let key = if let Some(k) = key {
-                k
-            } else {
-                rpassword::prompt_password("Enter private key: ")?
-            };
-            config.add_key(&name, Key::PrivateKey(key)).await?;
-            println!("Added key '{}'", name);
-            config.save().await?;
-        }
-        KeyCommand::List => {
-            let keys = config.list_keys()?;
-            if keys.is_empty() {
-                println!("No stored keys");
-            } else {
-                println!("Stored keys:");
-                for (name, key) in keys {
-                    println!("- {}: {}", name, key.address().unwrap_or_default());
+impl KeyCommand {
+    pub async fn handle(self, config: &mut Chainz) -> Result<()> {
+        match self {
+            KeyCommand::Add { name, key } => {
+                let key = if let Some(k) = key {
+                    k
+                } else {
+                    rpassword::prompt_password("Enter private key: ")?
+                };
+                config.add_key(&name, Key::PrivateKey(key)).await?;
+                println!("Added key '{}'", name);
+                config.save().await?;
+            }
+            KeyCommand::List => {
+                let keys = config.list_keys()?;
+                if keys.is_empty() {
+                    println!("No stored keys");
+                } else {
+                    println!("Stored keys:");
+                    for (name, key) in keys {
+                        println!("- {}: {}", name, key.address().unwrap_or_default());
+                    }
                 }
             }
+            KeyCommand::Remove { name } => {
+                config.remove_key(&name)?;
+                println!("Removed key '{}'", name);
+                config.save().await?;
+            }
         }
-        KeyCommand::Remove { name } => {
-            config.remove_key(&name)?;
-            println!("Removed key '{}'", name);
-            config.save().await?;
-        }
+        Ok(())
     }
-    Ok(())
 }
