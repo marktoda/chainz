@@ -1,89 +1,79 @@
-use alloy_primitives::utils::format_ether;
 use anyhow::Result;
-use std::fs::File;
-use std::io::prelude::*;
+use std::process::Command as ProcessCommand;
 use structopt::StructOpt;
 
+pub mod chain;
 pub mod chainlist;
 pub mod config;
 pub mod init;
 pub mod key;
 pub mod opt;
-use config::{Chain, ChainzConfig};
-use opt::Opt;
+pub mod variables;
 
-pub const DOT_ENV: &str = ".env";
+use config::Chainz;
+use opt::Opt;
+use variables::ChainVariables;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let opts = Opt::from_args();
-    // load or default to new
-    let mut chainz = ChainzConfig::load()
-        .await
-        .unwrap_or_else(|_| ChainzConfig::default());
+    let mut chainz = Chainz::load().await?;
+
     match opts.cmd {
-        opt::Command::Init {} => init::handle_init().await?,
-        opt::Command::Key { cmd } => key::handle_key_command(chainz, cmd).await?,
+        opt::Command::Init {} => {
+            init::handle_init().await?;
+        }
+        opt::Command::Key { cmd } => {
+            key::handle_key_command(&mut chainz, cmd).await?;
+        }
         opt::Command::Add { args } => {
-            let config = chainz.add_chain(&args).await?;
-            println!("Added chain {}", config.name);
-            print_chain(&chainz.get_chain(&config).await?).await?;
-            chainz.write().await?;
+            chainz.add_chain(&args).await?;
+            println!("Added chain {}", args.name.unwrap_or_default());
+            chainz.save().await?;
         }
         opt::Command::List => {
-            for chain in &chainz.get_chains().await? {
-                print_chain(chain).await?;
+            let chains = chainz.list_chains();
+            for chain_def in chains {
+                println!("{}", chain_def);
             }
         }
-        opt::Command::Use { name_or_id, print } => {
-            // try parse as a u64 id, else use as name
-            let chain = match name_or_id.parse::<u64>() {
-                Ok(chain_id) => chainz.get_chain_by_id(chain_id).await?,
-                Err(_) => chainz.get_chain_by_name(&name_or_id).await?,
-            };
-            println!("Using chain {}", chain.config.name);
-            print_chain(&chain).await?;
-            if print {
-                println!("{}", get_env_file_str(&chainz, &chain));
+        opt::Command::Use {
+            name_or_id,
+            print,
+            export,
+        } => {
+            let chain = chainz.get_chain(&name_or_id).await?;
+            eprintln!("{}", chain);
+            let variables = ChainVariables::new(chain);
+            if export {
+                print!("{}", variables.as_exports());
+            } else {
+                if print {
+                    println!("{}", variables.as_env_file());
+                }
+                variables.write_env()?;
             }
-            write_env(&chainz, &chain)?;
+        }
+        opt::Command::Exec {
+            name_or_id,
+            command,
+        } => {
+            if command.is_empty() {
+                anyhow::bail!("No command specified");
+            }
+            let chain = chainz.get_chain(&name_or_id).await?;
+            let variables = ChainVariables::new(chain);
+            let expanded_command = variables.expand(command);
+
+            let status = ProcessCommand::new(&expanded_command[0])
+                .args(&expanded_command[1..])
+                .envs(variables.as_map())
+                .status()?;
+
+            if !status.success() {
+                std::process::exit(status.code().unwrap_or(1));
+            }
         }
     }
-    Ok(())
-}
-
-async fn print_chain(chain: &Chain) -> Result<()> {
-    let balance = chain.provider.get_balance(chain.wallet.address()).await?;
-    println!(
-        "{} (ChainId: {})\nWallet: {} (Balance: {})\n",
-        chain.config.name,
-        chain.config.chain_id,
-        chain.wallet.address(),
-        format_ether(balance)
-    );
-    Ok(())
-}
-
-fn get_env_file_str(chainz: &ChainzConfig, chain: &Chain) -> String {
-    let mut res = String::new();
-    res.push_str(&format!(
-        "{}_RPC_URL={}\n",
-        chainz.env_prefix, chain.rpc_url
-    ));
-    res.push_str(&format!(
-        "{}_VERIFICATION_API_KEY={:?}\n",
-        chainz.env_prefix, chain.config.verification_api_key
-    ));
-    res.push_str(&format!(
-        "{}_PRIVATE_KEY={}\n",
-        chainz.env_prefix, chain.private_key
-    ));
-    res
-}
-
-fn write_env(chainz: &ChainzConfig, chain: &Chain) -> Result<()> {
-    // write to .env
-    let mut file = File::create(DOT_ENV)?;
-    file.write_all(get_env_file_str(chainz, chain).as_bytes())?;
     Ok(())
 }

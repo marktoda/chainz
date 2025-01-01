@@ -25,9 +25,10 @@ pub enum Command {
     )]
     Use {
         name_or_id: String,
-        // default to false
         #[structopt(short, long)]
         print: bool,
+        #[structopt(short, long)]
+        export: bool,
     },
     #[structopt(about = "List all chains")]
     List,
@@ -35,6 +36,25 @@ pub enum Command {
     Key {
         #[structopt(subcommand)]
         cmd: KeyCommand,
+    },
+    #[structopt(
+        about = "Execute a command",
+        long_about = "Execute a command with chain-specific variables expanded.\n\n\
+                  Available expansions:\n\
+                      @wallet : The wallet address\n\
+                      @rpc    : RPC URL\n\
+                      @chainid  : Chain ID\n\
+                      @chainname  : Chain name\n\
+                      @key    : Private key\n\
+                  \n\
+                  Example: chainz exec ethereum -- cast balance @wallet"
+    )]
+    Exec {
+        /// Chain name or ID to use
+        name_or_id: String,
+        /// Command to execute (after --)
+        #[structopt(last = true)]
+        command: Vec<String>,
     },
 }
 

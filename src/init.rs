@@ -1,10 +1,14 @@
 // module for storing configurations of encrypted private keys
+// #![allow(dead_code)]
 
 use crate::{
+    chain::DEFAULT_KEY_NAME,
     chainlist::fetch_all_chains,
-    config::{config_exists, ChainzConfig, Key, DEFAULT_ENV_PREFIX, DEFAULT_KEY_NAME},
+    config::{config_exists, Chainz, Config},
+    key::Key,
     opt,
 };
+use alloy::signers::local::PrivateKeySigner;
 use anyhow::Result;
 use dialoguer::{Confirm, Input, MultiSelect};
 
@@ -22,29 +26,32 @@ pub async fn handle_init() -> Result<()> {
             println!("Aborting initialization");
             return Ok(());
         }
-        ChainzConfig::delete().await?;
+        Chainz::delete().await?;
     }
 
     let chainz = initialize_with_wizard().await?;
 
-    chainz.write().await?;
+    chainz.save().await?;
     println!("Configuration initialized successfully!");
     Ok(())
 }
 
-async fn initialize_with_wizard() -> Result<ChainzConfig> {
+async fn initialize_with_wizard() -> Result<Chainz> {
     println!("Chainz Init");
-    let mut config = ChainzConfig::default();
+    let mut config = Config::default();
 
     // Configure environment prefix
-    let env_prefix: String = Input::new()
-        .with_prompt("Environment variable prefix")
-        .default(DEFAULT_ENV_PREFIX.to_string())
-        .interact_text()?;
-    config.env_prefix = env_prefix;
 
-    // TODO: allow generate in place
-    let private_key = rpassword::prompt_password("Enter default private key: ")?;
+    let private_key = {
+        let input = rpassword::prompt_password("Enter default private key (Optional): ")?;
+        if input.is_empty() {
+            let wallet = PrivateKeySigner::random();
+            println!("Generated new wallet address: {}", wallet.address());
+            format!("{:x}", wallet.credential().to_bytes())
+        } else {
+            input
+        }
+    };
     config
         .add_key(DEFAULT_KEY_NAME, Key::PrivateKey(private_key))
         .await?;
@@ -59,6 +66,8 @@ async fn initialize_with_wizard() -> Result<ChainzConfig> {
             .variables
             .insert(INFURA_API_KEY_ENV_VAR.to_string(), infura_api_key);
     }
+
+    let mut chainz = Chainz::new(config);
 
     // Select chains to add
     // TODO: fzf?
@@ -89,11 +98,11 @@ async fn initialize_with_wizard() -> Result<ChainzConfig> {
             // TODO: allow key override
             key_name: None,
         };
-        match config.add_chain(&args).await {
+        match chainz.add_chain(&args).await {
             Ok(_) => println!("Added {}", name),
             Err(e) => println!("Failed to add {}: {}", name, e),
         }
     }
 
-    Ok(config)
+    Ok(chainz)
 }

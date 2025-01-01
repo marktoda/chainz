@@ -2,10 +2,12 @@
   description = "Chainz";
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-24.11";
+    foundry.url = "github:shazow/foundry.nix";
   };
   outputs = {
     self,
     nixpkgs,
+    foundry,
   }: let
     systems = [
       "aarch64-linux"
@@ -17,15 +19,17 @@
     forAllSystems = f:
       nixpkgs.lib.genAttrs systems (system:
         f {
-          inherit system;
-          pkgs = nixpkgs.legacyPackages.${system};
+          pkgs = import nixpkgs {
+            inherit system;
+            overlays = [foundry.overlay];
+          };
         });
   in {
     packages = forAllSystems ({pkgs, ...}: {
       default = pkgs.callPackage ./default.nix {};
     });
     devShells = forAllSystems ({pkgs, ...}: {
-      default = pkgs.callPackage ./shell.nix {};
+      default = pkgs.callPackage ./shell.nix {inherit pkgs;};
     });
   };
 }

@@ -1,13 +1,47 @@
 // module for storing configurations of encrypted private keys
 
-use crate::{
-    config::{ChainzConfig, Key},
-    opt::KeyCommand,
+use crate::{config::Chainz, opt::KeyCommand};
+use alloy::{
+    primitives::Address,
+    signers::{local::PrivateKeySigner, Signer},
 };
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
+use std::fmt::Display;
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(tag = "type", content = "value")]
+pub enum Key {
+    #[serde(rename = "PrivateKey")]
+    PrivateKey(String),
+}
+
+impl Display for Key {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Key::PrivateKey(key) => write!(f, "{}", key),
+        }
+    }
+}
+
+impl Key {
+    pub fn private_key(&self) -> String {
+        match self {
+            Key::PrivateKey(key) => key.clone(),
+        }
+    }
+
+    pub fn signer(&self) -> Result<Box<dyn Signer>> {
+        Ok(Box::new(self.private_key().parse::<PrivateKeySigner>()?))
+    }
+
+    pub fn address(&self) -> Result<Address> {
+        Ok(self.signer()?.address())
+    }
+}
 
 // TODO: encrypt keys
-pub async fn handle_key_command(mut chainz: ChainzConfig, cmd: KeyCommand) -> Result<()> {
+pub async fn handle_key_command(config: &mut Chainz, cmd: KeyCommand) -> Result<()> {
     match cmd {
         KeyCommand::Add { name, key } => {
             let key = if let Some(k) = key {
@@ -15,25 +49,25 @@ pub async fn handle_key_command(mut chainz: ChainzConfig, cmd: KeyCommand) -> Re
             } else {
                 rpassword::prompt_password("Enter private key: ")?
             };
-            chainz.add_key(&name, Key::PrivateKey(key)).await?;
+            config.add_key(&name, Key::PrivateKey(key)).await?;
             println!("Added key '{}'", name);
-            chainz.write().await?;
+            config.save().await?;
         }
         KeyCommand::List => {
-            let keys = chainz.list_keys().await?;
+            let keys = config.list_keys()?;
             if keys.is_empty() {
                 println!("No stored keys");
             } else {
                 println!("Stored keys:");
-                for name in keys {
-                    println!("- {}", name);
+                for (name, key) in keys {
+                    println!("- {}: {}", name, key.address().unwrap_or_default());
                 }
             }
         }
         KeyCommand::Remove { name } => {
-            chainz.remove_key(&name).await?;
+            config.remove_key(&name)?;
             println!("Removed key '{}'", name);
-            chainz.write().await?;
+            config.save().await?;
         }
     }
     Ok(())

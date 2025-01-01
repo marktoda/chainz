@@ -9,5 +9,6 @@ pkgs.mkShell {
     rust-analyzer # LSP Server
     rustfmt # Formatter
     clippy # Linter
+    foundry-bin
   ];
 }
