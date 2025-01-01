@@ -165,17 +165,11 @@ impl Config {
     pub fn get_chain(&self, name_or_id: &str) -> Result<ChainDefinition> {
         // Try to parse as chain ID first
         if let Ok(chain_id) = name_or_id.parse::<u64>() {
-            if let Some(chain) = self.chains.iter().find(|c| c.chain_id == chain_id) {
-                return Ok(chain.clone());
-            }
+            return self.get_chain_config_by_id(chain_id);
         }
 
         // Try as name
-        if let Some(chain) = self.chains.iter().find(|c| c.name == name_or_id) {
-            return Ok(chain.clone());
-        }
-
-        Err(anyhow!("Chain '{}' not found", name_or_id))
+        self.get_chain_config_by_name(name_or_id)
     }
 
     pub fn get_chain_config_by_name(&self, name: &str) -> Result<ChainDefinition> {
