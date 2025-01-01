@@ -129,6 +129,28 @@ impl Display for ChainInstance {
 }
 
 /// Helper function to manually enter chain details
+// Helper function to handle text input with ESC cancellation
+fn text_input<T: std::str::FromStr>(prompt: &str, default: Option<String>) -> Result<T>
+where
+    <T as std::str::FromStr>::Err: std::fmt::Debug,
+{
+    let mut input = Input::new()
+        .with_prompt(format!("{} (Ctrl+C to exit)", prompt))
+        .allow_empty(true);
+
+    if let Some(def) = default {
+        input = input.default(def);
+    }
+
+    match input.interact() {
+        Ok(value) if !value.is_empty() => value
+            .parse()
+            .map_err(|_| anyhow::anyhow!("Failed to parse input")),
+        Ok(_) => anyhow::bail!("Operation cancelled by user"),
+        Err(_) => anyhow::bail!("Operation cancelled by user"),
+    }
+}
+
 pub async fn manual_chain_entry(
     name: Option<String>,
     chain_id: Option<u64>,
@@ -137,12 +159,12 @@ pub async fn manual_chain_entry(
     let name = if let Some(n) = name {
         n
     } else {
-        Input::new().with_prompt("Chain name").interact_text()?
+        text_input("Chain name", None)?
     };
     let chain_id = if let Some(id) = chain_id {
         id
     } else {
-        Input::new().with_prompt("Chain ID").interact_text()?
+        text_input("Chain ID", None)?
     };
 
     Ok(ChainlistEntry {
@@ -214,7 +236,7 @@ pub async fn select_rpc(
 
 async fn select_manual_rpc(chain_id: u64) -> Result<Rpc> {
     loop {
-        let rpc_url: String = Input::new().with_prompt("Enter RPC URL").interact_text()?;
+        let rpc_url: String = text_input("Enter RPC URL", None)?;
         println!("Testing RPC...");
         let rpc = resolve_rpc(&rpc_url, &HashMap::new()).await?;
 
@@ -223,10 +245,7 @@ async fn select_manual_rpc(chain_id: u64) -> Result<Rpc> {
             return Ok(rpc);
         }
 
-        println!(
-            "{} RPC failed. Try again? (Ctrl+C to exit)",
-            "✗".bright_red()
-        );
+        println!("{} RPC failed. Try again? (ESC to exit)", "✗".bright_red());
     }
 }
 
