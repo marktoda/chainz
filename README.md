@@ -1,6 +1,14 @@
 # Chainz
 
-A simple CLI tool for managing chain configurations
+A CLI tool for managing EVM chain configurations
+
+## Features
+
+- Interactive chain discovery and configuration
+- Dynamic RPC health checking and failover
+- Private key management
+- Multiple RPC support per chain
+- Environment variable interpolation
 
 ## Installation
 
@@ -10,89 +18,177 @@ cd chainz
 cargo install --path .
 ```
 
+## Quick Start
+
+```bash
+# Initialize with interactive wizard
+chainz init
+
+# Add a new chain
+chainz add
+
+# List configured chains
+chainz list
+
+# Switch to a chain
+chainz use ethereum
+source .env
+```
+
 ## Usage
 
-### Add a new chain
+### Adding Chains
+
+Chainz provides an interactive wizard for adding chains:
+
 ```bash
-> chainz add -h
-chainz-add 0.1.0
-Add a new chain
+> chainz add
+Chain Selection
+══════════════════════════════════════════════════════
+? Type to search and select a chain
+> ethereum (1)
+  optimism (10)
+  arbitrum (42161)
+  polygon (137)
+  ...
 
-USAGE:
-    chainz add [OPTIONS] --name <name> --rpc-url <rpc-url> --verification-api-key <verification-api-key>
+RPC Configuration
+══════════════════════════════════════════════════════
+Testing RPCs...
+✓ https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}
+✓ https://eth.llamarpc.com
+✗ https://mainnet.infura.io/v3/${INFURA_KEY}
 
-FLAGS:
-    -h, --help       Prints help information
-    -V, --version    Prints version information
+Key Configuration
+══════════════════════════════════════════════════════
+? Select a key
+> default (0x123...789)
+  deployer (0xabc...def)
+  Add new key
 
-OPTIONS:
-    -n, --name <name>
-    -p, --private-key <private-key>
-    -r, --rpc-url <rpc-url>
-    -v, --verification-api-key <verification-api-key>
-
-> chainz add --name mainnet -r https://mainnet.infura.io/v3/{INFURA_KEY} -v {ETHERSCAN_API_KEY}
-mainnet (ChainId: 1)
-Wallet: 0x0000000000000000000000000000000000000000 (Balance: 80072519714480901)
+Chain added: ethereum (ChainId: 1)
 ```
 
-### List chains
+### Managing Chains
+
+List configured chains and their status:
+
 ```bash
-> chainz list -h
-chainz-list 0.1.0
-List all chains
-
-USAGE:
-    chainz list
-
-FLAGS:
-    -h, --help       Prints help information
-    -V, --version    Prints version information
-
-
 > chainz list
-optimism (ChainId: 10)
-Wallet: 0x0000000000000000000000000000000000000000 (Balance: 1336192881671202)
+Chain: ethereum
+├─ ID: 1
+├─ Active RPC: https://eth-mainnet.g.alchemy.com/v2/...
+├─ Verification Key: 0xabc...def
+└─ Key Name: default
 
-arbitrum (ChainId: 42161)
-Wallet: 0x0000000000000000000000000000000000000000 (Balance: 10959312699843000)
+Chain: optimism
+├─ ID: 10
+├─ Active RPC: https://opt-mainnet.g.alchemy.com/v2/...
+├─ Verification Key: None
+└─ Key Name: deployer
 ```
 
-### Switch to a chain
+Update chain configuration:
+
 ```bash
-> chainz use -h
-chainz-use 0.1.0
-Use a chain by name or chainid. Writes to a local .env which can be sourced
+> chainz update
+Testing all RPCs...
+✓ ethereum: 2/3 RPCs working
+✓ optimism: 1/1 RPCs working
+✗ arbitrum: 0/1 RPCs working
 
-USAGE:
-    chainz use [FLAGS] <name-or-id>
+? Select chain to update
+? What would you like to update?
+> RPC URL
+  Key
+  Verification API Key
+```
 
-FLAGS:
-    -h, --help       Prints help information
-    -p, --print
-    -V, --version    Prints version information
+### Using Chains
 
-ARGS:
-    <name-or-id>
+Switch to a chain and set up environment:
 
-> chainz use mainnet && source .env
+```bash
+> chainz use ethereum
+Chain: ethereum
+├─ ID: 1
+├─ RPC: https://rpc.com
+└─ Wallet: 0x123...789
 
+> source .env
 > echo $FOUNDRY_RPC_URL
-https://mainnet.infura.io/v3/{INFURA_KEY}
-> echo $FOUNDRY_PRIVATE_KEY
-{PRIVATE_KEY}
-> echo $FOUNDRY_VERIFICATION_API_KEY
-{ETHERSCAN_API_KEY}
+https://rpc.com
 ```
 
-### Set global defaults
+Execute commands with chain context:
+
 ```bash
-> chainz set --default-private-key {key}
-> chainz set --env-prefix FOUNDRY
+> chainz exec 1 -- cast block-number
+21532741
+
+> chainz exec ethereum -- cast balance @wallet
+1.5 ETH
+
+> chainz exec 10 -- forge script Deploy
 ```
 
-### Importing a chainz config
-Configs are stored at $HOME/.chainz.json. If you have a pre-made chainz file, you can import it by simply copying it to this location.
+### Managing Keys
 
-## TODOs
-- Import config from 1password etc.
+Add and manage private keys:
+
+```bash
+> chainz key add deployer
+Enter private key: ****
+Added key 'deployer'
+
+> chainz key list
+Stored keys:
+- default: 0x123...789
+- deployer: 0xabc...def
+```
+
+### Custom Variables
+
+Set and use custom variables:
+
+```bash
+> chainz var set ALCHEMY_KEY abc123
+> chainz var set ETHERSCAN_KEY def456
+
+> chainz var list
+ALCHEMY_KEY=abc123
+ETHERSCAN_KEY=def456
+```
+
+## Configuration
+
+### Config File
+
+Configs are stored at `$HOME/.chainz.json`:
+
+```json
+{
+  "chains": [
+    {
+      "name": "ethereum",
+      "chain_id": 1,
+      "rpc_urls": [
+        "https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",
+        "https://eth.llamarpc.com"
+      ],
+      "selected_rpc": "https://eth.llamarpc.com",
+      "verification_api_key": "abc123",
+      "key_name": "default"
+    }
+  ],
+  "variables": {
+    "ALCHEMY_KEY": "def456"
+  },
+  "keys": {
+    "default": {
+      "type": "PrivateKey",
+      "value": "0x123..."
+    }
+  }
+}
+```
