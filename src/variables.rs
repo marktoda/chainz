@@ -12,7 +12,7 @@ pub struct ChainVariables {
 }
 
 impl ChainVariables {
-    pub fn new(chain: &ChainInstance) -> Self {
+    pub fn new(chain: &ChainInstance) -> Result<Self> {
         let env_vars = [
             (
                 "WALLET_ADDRESS",
@@ -26,7 +26,7 @@ impl ChainVariables {
                 chain.definition.chain_id.to_string(),
             ),
             ("CHAIN_NAME", "@chainname", chain.definition.name.clone()),
-            ("RAW_PRIVATE_KEY", "@key", chain.key.to_string()),
+            ("RAW_PRIVATE_KEY", "@key", chain.key.private_key()?),
         ];
 
         let mut env = HashMap::new();
@@ -37,7 +37,7 @@ impl ChainVariables {
             expansions.insert(expansion.to_string(), val.clone());
         }
 
-        Self { env, expansions }
+        Ok(Self { env, expansions })
     }
 
     pub fn as_map(&self) -> &HashMap<String, String> {

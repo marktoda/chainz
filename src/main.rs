@@ -52,7 +52,7 @@ async fn main() -> Result<()> {
         } => {
             let chain = chainz.get_chain(&name_or_id).await?;
             eprintln!("{}", chain);
-            let variables = ChainVariables::new(chain);
+            let variables = ChainVariables::new(chain)?;
             if export {
                 print!("{}", variables.as_exports());
             } else {
@@ -70,7 +70,7 @@ async fn main() -> Result<()> {
                 anyhow::bail!("No command specified");
             }
             let chain = chainz.get_chain(&name_or_id).await?;
-            let variables = ChainVariables::new(chain);
+            let variables = ChainVariables::new(chain)?;
             let expanded_command = variables.expand(command);
 
             let status = ProcessCommand::new(&expanded_command[0])

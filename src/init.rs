@@ -4,7 +4,7 @@
 use crate::{
     chain::DEFAULT_KEY_NAME,
     config::{config_exists, Chainz},
-    key::Key,
+    key::{Key, KeyType},
     opt,
 };
 use alloy::signers::local::PrivateKeySigner;
@@ -50,7 +50,13 @@ async fn initialize_with_wizard() -> Result<Chainz> {
         }
     };
     chainz
-        .add_key(DEFAULT_KEY_NAME, Key::PrivateKey(private_key))
+        .add_key(
+            DEFAULT_KEY_NAME,
+            Key {
+                name: DEFAULT_KEY_NAME.to_string(),
+                kind: KeyType::PrivateKey { value: private_key },
+            },
+        )
         .await?;
 
     // get infura_api_key, optionally

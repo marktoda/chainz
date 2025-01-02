@@ -1,7 +1,7 @@
 use crate::{
     chainlist::{fetch_all_chains, fetch_chain_data, ChainlistEntry},
     config::Chainz,
-    key::Key,
+    key::{Key, KeyType},
     opt::{AddArgs, UpdateArgs},
 };
 use alloy::{
@@ -282,7 +282,15 @@ pub async fn select_key(chainz: &mut Chainz) -> Result<String> {
         let private_key: String = Input::new()
             .with_prompt("Enter private key")
             .interact_text()?;
-        chainz.add_key(&kname, Key::PrivateKey(private_key)).await?;
+        chainz
+            .add_key(
+                &kname,
+                Key {
+                    name: kname.clone(),
+                    kind: KeyType::PrivateKey { value: private_key },
+                },
+            )
+            .await?;
         Ok(kname)
     } else {
         Ok(key_displays[key_selection].0.clone())
