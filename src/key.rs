@@ -54,7 +54,7 @@ impl Key {
             KeyType::PrivateKey { value } => Ok(value.clone()),
             KeyType::EncryptedKey { value, nonce } => {
                 let password =
-                    prompt_password(&format!("Enter decryption password for {}: ", self.name))?;
+                    prompt_password(format!("Enter decryption password for {}: ", self.name))?;
                 let key = Self::derive_key(&password);
                 let cipher = Aes256Gcm::new(&key.into());
                 let nonce_bytes = BASE64.decode(nonce)?;

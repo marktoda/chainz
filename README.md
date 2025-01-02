@@ -30,6 +30,10 @@ chainz add
 # List configured chains
 chainz list
 
+# execute a command for a given chain
+chainz exec ethereum -- cast block-number
+21532741
+
 # Switch to a chain
 chainz use ethereum
 source .env
