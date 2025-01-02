@@ -251,18 +251,12 @@ async fn select_manual_rpc(chain_id: u64) -> Result<Rpc> {
 
 /// Helper function to select or create a key
 pub async fn select_key(chainz: &mut Chainz) -> Result<String> {
-    let keys = chainz.list_keys()?;
+    let keys = chainz.list_keys();
 
     // Create display strings with addresses
     let mut key_displays: Vec<(String, String)> = keys
         .iter()
-        .map(|(name, key)| {
-            let addr = key
-                .address()
-                .map(|a| a.to_string())
-                .unwrap_or("Invalid key".to_string());
-            (name.clone(), format!("{} ({})", name, addr))
-        })
+        .map(|(name, key)| (name.clone(), key.to_string()))
         .collect();
 
     // Add the "Add new key" option

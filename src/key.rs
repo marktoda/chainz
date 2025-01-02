@@ -12,7 +12,7 @@ use alloy::{
 };
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
-use strum::{Display, EnumIter, IntoEnumIterator};
+use strum::{EnumIter, IntoEnumIterator};
 
 use aes_gcm::{
     aead::{Aead, KeyInit},
@@ -21,6 +21,7 @@ use aes_gcm::{
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use keyring::Entry;
 use rand::Rng;
+use std::fmt;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Key {
@@ -29,7 +30,7 @@ pub struct Key {
     pub kind: KeyType,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, Display, EnumIter)]
+#[derive(Serialize, Deserialize, Clone, Debug, strum::Display, EnumIter)]
 #[serde(tag = "type")]
 #[strum(serialize_all = "title_case")]
 pub enum KeyType {
@@ -198,7 +199,7 @@ impl KeyCommand {
                 config.save().await?;
             }
             KeyCommand::List => {
-                let keys = config.list_keys()?;
+                let keys = config.list_keys();
                 if keys.is_empty() {
                     println!("No stored keys");
                 } else {
@@ -223,6 +224,36 @@ impl KeyCommand {
             }
         }
         Ok(())
+    }
+}
+
+impl fmt::Display for Key {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let display = match &self.kind {
+            KeyType::PrivateKey { value } => {
+                // Only try to get address for unencrypted keys
+                let addr = Key::new(
+                    self.name.clone(),
+                    KeyType::PrivateKey {
+                        value: value.clone(),
+                    },
+                )
+                .address()
+                .map(|a| a.to_string())
+                .unwrap_or("Invalid key".to_string());
+                format!("{} ({})", self.name, addr)
+            }
+            KeyType::EncryptedKey { .. } => {
+                format!("{} (encrypted)", self.name)
+            }
+            KeyType::OnePassword { .. } => {
+                format!("{} (1password)", self.name)
+            }
+            KeyType::Keyring { .. } => {
+                format!("{} (keyring)", self.name)
+            }
+        };
+        write!(f, "{}", display)
     }
 }
 

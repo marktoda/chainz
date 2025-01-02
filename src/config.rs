@@ -73,13 +73,12 @@ impl Chainz {
         Ok(())
     }
 
-    pub fn list_keys(&self) -> Result<Vec<(String, Key)>> {
-        Ok(self
-            .config
+    pub fn list_keys(&self) -> Vec<(String, Key)> {
+        self.config
             .keys
             .iter()
             .map(|(n, k)| (n.clone(), k.clone()))
-            .collect())
+            .collect()
     }
 
     pub fn remove_key(&mut self, name: &str) -> Result<()> {
