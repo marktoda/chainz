@@ -120,7 +120,7 @@ Chain: ethereum
 └─ Wallet: 0x123...789
 
 > source .env
-> echo $FOUNDRY_RPC_URL
+> echo $ETH_RPC_URL
 https://rpc.com
 ```
 
