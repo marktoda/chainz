@@ -97,9 +97,10 @@ pub enum Command {
         cmd: KeyCommand,
     },
 
-    /// Manage custom variables
+    /// Manage global variables
     ///
-    /// Variables can be used in command expansion with @varname syntax
+    /// Variables can be used for dynamically creating RPC urls, setting environment variables, or
+    /// shell expansions
     ///
     /// Subcommands:
     ///     set   : Set or update a variable

@@ -8,7 +8,6 @@ pub mod config;
 pub mod init;
 pub mod key;
 pub mod opt;
-pub mod var;
 pub mod variables;
 
 use config::Chainz;

@@ -1,6 +1,7 @@
 use crate::{
     chain::{ChainDefinition, ChainInstance},
     key::Key,
+    variables::GlobalVariables,
 };
 use anyhow::{anyhow, Result};
 use dirs::home_dir;
@@ -14,7 +15,8 @@ pub const CONFIG_FILE_LOCATION: &str = ".chainz.json";
 #[derive(Default, Debug, Serialize, Deserialize)]
 pub struct Config {
     pub chains: Vec<ChainDefinition>,
-    pub variables: HashMap<String, String>,
+    #[serde(rename = "variables")]
+    pub globals: GlobalVariables,
     pub keys: HashMap<String, Key>,
 }
 
@@ -53,7 +55,7 @@ impl Chainz {
     }
 
     async fn instantiate_chain(&self, def: &ChainDefinition) -> Result<ChainInstance> {
-        let rpc = def.get_rpc(&self.config.variables).await?;
+        let rpc = def.get_rpc(&self.config.globals).await?;
         let key = self.get_key(&def.key_name.clone())?;
 
         Ok(ChainInstance {
@@ -118,36 +120,6 @@ impl Chainz {
 
     pub fn list_chains(&self) -> &[ChainDefinition] {
         &self.config.chains
-    }
-
-    /// Add or update a custom variable
-    pub fn set_variable(&mut self, name: &str, value: &str) {
-        self.config
-            .variables
-            .insert(name.to_string(), value.to_string());
-    }
-
-    /// Get a custom variable's value
-    pub fn get_variable(&self, name: &str) -> Option<&String> {
-        self.config.variables.get(name)
-    }
-
-    /// Remove a custom variable
-    pub fn remove_variable(&mut self, name: &str) -> Result<()> {
-        if !self.config.variables.contains_key(name) {
-            anyhow::bail!("Variable '{}' not found", name);
-        }
-        self.config.variables.remove(name);
-        Ok(())
-    }
-
-    /// List all custom variables
-    pub fn list_variables(&self) -> Vec<(String, String)> {
-        self.config
-            .variables
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect()
     }
 
     pub async fn save(&self) -> Result<()> {

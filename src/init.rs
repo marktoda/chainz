@@ -65,7 +65,10 @@ async fn initialize_with_wizard() -> Result<Chainz> {
         .allow_empty(true)
         .interact_text()?;
     if !infura_api_key.is_empty() {
-        chainz.set_variable(INFURA_API_KEY_ENV_VAR, &infura_api_key);
+        chainz
+            .config
+            .globals
+            .add_rpc_expansion(INFURA_API_KEY_ENV_VAR, &infura_api_key);
     }
 
     // Add chains in a loop until user chooses to exit

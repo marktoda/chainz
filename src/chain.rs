@@ -3,6 +3,7 @@ use crate::{
     config::Chainz,
     key::{Key, KeyType},
     opt::{AddArgs, UpdateArgs},
+    variables::GlobalVariables,
 };
 use alloy::{
     providers::{Provider, ProviderBuilder},
@@ -12,7 +13,6 @@ use anyhow::Result;
 use colored::*;
 use dialoguer::{FuzzySelect, Input};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fmt::{Debug, Display};
 
 pub const DEFAULT_KEY_NAME: &str = "default";
@@ -24,6 +24,7 @@ pub struct ChainDefinition {
     pub rpc_urls: Vec<String>,
     pub selected_rpc: String,
     pub verification_api_key: Option<String>,
+    pub verification_url: Option<String>,
     pub key_name: String,
 }
 
@@ -40,8 +41,8 @@ pub struct Rpc {
 }
 
 impl ChainDefinition {
-    pub async fn get_rpc(&self, variables: &HashMap<String, String>) -> Result<Rpc> {
-        resolve_rpc(&self.selected_rpc, variables).await
+    pub async fn get_rpc(&self, globals: &GlobalVariables) -> Result<Rpc> {
+        resolve_rpc(&self.selected_rpc, globals).await
     }
 }
 
@@ -72,6 +73,16 @@ impl Display for ChainDefinition {
             "├".bright_black(),
             "Active RPC".bright_blue(),
             self.selected_rpc.bright_green()
+        )?;
+        writeln!(
+            f,
+            "{}─ {}: {}",
+            "├".bright_black(),
+            "Verification URL".bright_blue(),
+            self.verification_url
+                .as_deref()
+                .map(|k| k.bright_green().to_string())
+                .unwrap_or_else(|| "None".bright_red().to_string())
         )?;
         writeln!(
             f,
@@ -238,7 +249,7 @@ async fn select_manual_rpc(chain_id: u64) -> Result<Rpc> {
     loop {
         let rpc_url: String = text_input("Enter RPC URL", None)?;
         println!("Testing RPC...");
-        let rpc = resolve_rpc(&rpc_url, &HashMap::new()).await?;
+        let rpc = resolve_rpc(&rpc_url, &GlobalVariables::default()).await?;
 
         if test_rpc(&rpc, chain_id).await.is_ok() {
             println!("{} RPC working", "✓".bright_green());
@@ -291,6 +302,27 @@ pub async fn select_key(chainz: &mut Chainz) -> Result<String> {
     }
 }
 
+/// Helper function to select or create a verifier
+pub fn select_verifier() -> Result<(Option<String>, Option<String>)> {
+    // TODO: try to autogenerate best guess etherscan
+    let new_url: String = Input::new()
+        .with_prompt("Enter verifier URL (empty to remove)")
+        .allow_empty(true)
+        .interact_text()?;
+
+    let new_key: String = Input::new()
+        .with_prompt("Enter verification API key (empty to remove)")
+        .allow_empty(true)
+        .interact_text()?;
+
+    match (new_url.is_empty(), new_key.is_empty()) {
+        (true, true) => Ok((None, None)),
+        (true, false) => Ok((None, Some(new_key))),
+        (false, true) => Ok((Some(new_url), None)),
+        (false, false) => Ok((Some(new_url), Some(new_key))),
+    }
+}
+
 impl UpdateArgs {
     pub async fn handle(&self, chainz: &mut Chainz) -> Result<ChainDefinition> {
         println!("\n{}", "Chain Update".bright_blue().bold());
@@ -312,7 +344,7 @@ impl UpdateArgs {
         let mut chain = chainz.list_chains()[chain_selection].clone();
 
         // Select what to update
-        let options = vec!["RPC URL", "Key", "Verification API Key"];
+        let options = vec!["RPC URL", "Key", "Verification"];
 
         println!("\n{}", "Update Options".bright_blue().bold());
         println!("{}", "═".bright_black().repeat(50));
@@ -336,7 +368,7 @@ impl UpdateArgs {
                 let new_rpc = select_rpc(
                     &chain.name,
                     chain.chain_id,
-                    resolve_rpcs(available_rpcs, &chainz.config.variables).await?,
+                    resolve_rpcs(available_rpcs, &chainz.config.globals).await?,
                 )
                 .await?;
                 chain.selected_rpc = new_rpc;
@@ -351,23 +383,12 @@ impl UpdateArgs {
             }
             2 => {
                 // Update verification API key
-                println!(
-                    "\n{}",
-                    "Verification Key Configuration".bright_blue().bold()
-                );
+                println!("\n{}", "Verification Configuration".bright_blue().bold());
                 println!("{}", "═".bright_black().repeat(50));
 
-                let new_key: String = Input::new()
-                    .with_prompt("Enter verification API key (empty to remove)")
-                    .allow_empty(true)
-                    .default(chain.verification_api_key.clone().unwrap_or_default())
-                    .interact_text()?;
-
-                chain.verification_api_key = if new_key.is_empty() {
-                    None
-                } else {
-                    Some(new_key)
-                };
+                let (verification_url, verification_key) = select_verifier()?;
+                chain.verification_url = verification_url;
+                chain.verification_api_key = verification_key;
             }
             _ => unreachable!(),
         }
@@ -404,7 +425,7 @@ impl AddArgs {
         let selected_rpc = select_rpc(
             &selected_chain.name,
             selected_chain.chain_id,
-            resolve_rpcs(selected_chain.rpc.clone(), &chainz.config.variables).await?,
+            resolve_rpcs(selected_chain.rpc.clone(), &chainz.config.globals).await?,
         )
         .await?;
 
@@ -413,8 +434,7 @@ impl AddArgs {
 
         let key_name = select_key(chainz).await?;
 
-        // TODO: add handler
-        let verification_api_key = None;
+        let (verification_url, verification_api_key) = select_verifier()?;
 
         // Create and add the chain
         let chain_def = ChainDefinition {
@@ -423,62 +443,13 @@ impl AddArgs {
             rpc_urls: selected_chain.rpc,
             selected_rpc,
             verification_api_key,
+            verification_url,
             key_name,
         };
         chainz.add_chain(chain_def.clone()).await?;
         chainz.save().await?;
         Ok(chain_def)
     }
-}
-
-fn interpolate_variables(input: &str, variables: &HashMap<String, String>) -> String {
-    let mut result = input.to_string();
-
-    // First replace from config variables
-    for (key, value) in variables {
-        let pattern = format!("${{{}}}", key);
-        result = result.replace(&pattern, value);
-    }
-
-    // Then try to replace any remaining ${VAR} patterns with environment variables
-    let mut final_result = String::new();
-    let mut last_end = 0;
-
-    while let Some((start, end)) = find_next_var(&result[last_end..]) {
-        let absolute_start = last_end + start;
-        let absolute_end = last_end + end;
-
-        // Add the part before the variable
-        final_result.push_str(&result[last_end..absolute_start]);
-
-        // Get the variable name
-        let var_name = &result[absolute_start + 2..absolute_end - 1]; // strip ${ and }
-
-        // Try to get the environment variable
-        if let Ok(value) = std::env::var(var_name) {
-            final_result.push_str(&value);
-        } else {
-            // If not found, keep the original ${VAR} syntax
-            final_result.push_str(&result[absolute_start..absolute_end]);
-        }
-
-        last_end = absolute_end;
-    }
-
-    // Add any remaining part of the string
-    final_result.push_str(&result[last_end..]);
-
-    if final_result.is_empty() {
-        result
-    } else {
-        final_result
-    }
-}
-
-fn find_next_var(input: &str) -> Option<(usize, usize)> {
-    let start = input.find("${")?;
-    let end = input[start..].find("}")?.checked_add(start + 1)?;
-    Some((start, end))
 }
 
 async fn test_rpc(rpc: &Rpc, expected_chain_id: u64) -> Result<()> {
@@ -491,21 +462,18 @@ async fn test_rpc(rpc: &Rpc, expected_chain_id: u64) -> Result<()> {
     anyhow::bail!("Invalid chain ID");
 }
 
-pub async fn resolve_rpcs(
-    rpc_urls: Vec<String>,
-    variables: &HashMap<String, String>,
-) -> Result<Vec<Rpc>> {
+pub async fn resolve_rpcs(rpc_urls: Vec<String>, globals: &GlobalVariables) -> Result<Vec<Rpc>> {
     let mut result = Vec::new();
     for rpc in rpc_urls {
-        if let Ok(r) = resolve_rpc(&rpc, variables).await {
+        if let Ok(r) = resolve_rpc(&rpc, globals).await {
             result.push(r);
         }
     }
     Ok(result)
 }
 
-pub async fn resolve_rpc(rpc_url: &str, variables: &HashMap<String, String>) -> Result<Rpc> {
-    let rpc_url = interpolate_variables(rpc_url, variables);
+pub async fn resolve_rpc(rpc_url: &str, globals: &GlobalVariables) -> Result<Rpc> {
+    let rpc_url = globals.expand_rpc_url(rpc_url);
     Ok(Rpc {
         rpc_url: rpc_url.clone(),
         provider: create_provider(&rpc_url).await?,
@@ -531,82 +499,5 @@ fn fuzzy_select<T: ToString>(prompt: &str, items: &[T], default: usize) -> Resul
     {
         Some(selection) => Ok(selection),
         None => anyhow::bail!("Operation cancelled by user"),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::env;
-    use std::sync::Once;
-
-    static INIT: Once = Once::new();
-
-    /// Setup function that is only run once, even if called multiple times.
-    fn setup() {
-        INIT.call_once(|| {
-            env::set_var("TEST_ENV_KEY", "env_key");
-            env::set_var("TEST_OTHER_KEY", "other_value");
-        });
-    }
-
-    #[test]
-    fn test_config_variables() {
-        let mut variables = HashMap::new();
-        variables.insert("API_KEY".to_string(), "config_key".to_string());
-        variables.insert("EMPTY".to_string(), "".to_string());
-
-        assert_eq!(
-            interpolate_variables("https://api.example.com/${API_KEY}/v1", &variables),
-            "https://api.example.com/config_key/v1"
-        );
-
-        assert_eq!(
-            interpolate_variables("empty:${EMPTY}:end", &variables),
-            "empty::end"
-        );
-    }
-
-    #[test]
-    fn test_environment_variables() {
-        setup();
-        let variables = HashMap::new();
-
-        assert_eq!(
-            interpolate_variables("https://api.example.com/${TEST_ENV_KEY}/v1", &variables),
-            "https://api.example.com/env_key/v1"
-        );
-    }
-
-    #[test]
-    fn test_multiple_replacements() {
-        setup();
-        let mut variables = HashMap::new();
-        variables.insert("API_KEY".to_string(), "config_key".to_string());
-
-        assert_eq!(
-            interpolate_variables("${API_KEY} and ${TEST_ENV_KEY}", &variables),
-            "config_key and env_key"
-        );
-    }
-
-    #[test]
-    fn test_missing_variables() {
-        let variables = HashMap::new();
-
-        assert_eq!(
-            interpolate_variables("https://api.example.com/${MISSING_KEY}/v1", &variables),
-            "https://api.example.com/${MISSING_KEY}/v1"
-        );
-    }
-
-    #[test]
-    fn test_no_variables() {
-        let variables = HashMap::new();
-
-        assert_eq!(
-            interpolate_variables("https://api.example.com/v1", &variables),
-            "https://api.example.com/v1"
-        );
     }
 }

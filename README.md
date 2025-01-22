@@ -196,3 +196,9 @@ Configs are stored at `$HOME/.chainz.json`:
   }
 }
 ```
+
+### TODO:
+
+- test onepassword key type
+- fix keychain type
+- clean up globalvariables structuring
