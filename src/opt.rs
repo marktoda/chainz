@@ -44,6 +44,7 @@ pub enum Command {
     /// Flags:
     ///     -p, --print  : Print variables to stdout instead of writing to .env
     ///     -e, --export : Include 'export' prefix in output
+    ///     -k, --key    : Override the key to use for this command
     ///
     /// Example: chainz use ethereum --print
     Use {
@@ -55,6 +56,9 @@ pub enum Command {
         /// Include 'export' prefix in output
         #[structopt(short, long)]
         export: bool,
+        /// Override the key to use for this command
+        #[structopt(short, long)]
+        key: Option<String>,
     },
 
     /// List all configured chains
@@ -84,6 +88,9 @@ pub enum Command {
         /// Command to execute (after --)
         #[structopt(last = true)]
         command: Vec<String>,
+        /// Override the key to use for this command
+        #[structopt(short, long)]
+        key: Option<String>,
     },
 
     /// Manage private keys
