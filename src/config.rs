@@ -51,7 +51,11 @@ impl Chainz {
             let instance = self.instantiate_chain(&definition).await?;
             self.active_chains.insert(name.clone(), instance);
         }
-        Ok(self.active_chains.get(&name).expect("Unable to get chain")().clone())
+        Ok(self
+            .active_chains
+            .get(&name)
+            .expect("Chain was just inserted")
+            .clone())
     }
 
     async fn instantiate_chain(&self, def: &ChainDefinition) -> Result<ChainInstance> {
