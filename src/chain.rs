@@ -14,6 +14,7 @@ use colored::*;
 use dialoguer::{FuzzySelect, Input};
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display};
+use std::sync::Arc;
 
 pub const DEFAULT_KEY_NAME: &str = "default";
 
@@ -28,11 +29,28 @@ pub struct ChainDefinition {
     pub key_name: String,
 }
 
+#[derive(Clone)]
 pub struct ChainInstance {
     pub definition: ChainDefinition,
-    pub provider: Box<dyn Provider<BoxTransport>>,
+    pub provider: Arc<dyn Provider<BoxTransport>>,
     pub rpc_url: String,
     pub key: Key,
+}
+
+impl ChainInstance {
+    pub fn new(definition: ChainDefinition, provider: Box<dyn Provider<BoxTransport>>, rpc_url: String, key: Key) -> Self {
+        Self {
+            definition,
+            provider: Arc::from(provider),
+            rpc_url,
+            key,
+        }
+    }
+
+    pub fn with_key(mut self, key: Key) -> Self {
+        self.key = key;
+        self
+    }
 }
 
 pub struct Rpc {

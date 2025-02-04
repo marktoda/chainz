@@ -43,7 +43,7 @@ impl Chainz {
         })
     }
 
-    pub async fn get_chain(&mut self, name_or_id: &str) -> Result<&ChainInstance> {
+    pub async fn get_chain(&mut self, name_or_id: &str) -> Result<ChainInstance> {
         let definition = self.config.get_chain(name_or_id)?;
         let name = definition.name.clone();
 
@@ -51,19 +51,19 @@ impl Chainz {
             let instance = self.instantiate_chain(&definition).await?;
             self.active_chains.insert(name.clone(), instance);
         }
-        Ok(&self.active_chains[&name])
+        Ok(self.active_chains.get(&name).unwrap().clone())
     }
 
     async fn instantiate_chain(&self, def: &ChainDefinition) -> Result<ChainInstance> {
         let rpc = def.get_rpc(&self.config.globals).await?;
-        let key = self.get_key(&def.key_name.clone())?;
+        let key = self.get_key(&def.key_name)?;
 
-        Ok(ChainInstance {
-            definition: def.clone(),
-            provider: rpc.provider,
-            rpc_url: rpc.rpc_url,
+        Ok(ChainInstance::new(
+            def.clone(),
+            rpc.provider,
+            rpc.rpc_url,
             key,
-        })
+        ))
     }
 
     // Key management methods
