@@ -1,17 +1,13 @@
-use structopt::StructOpt;
+use clap::{Args, Parser, Subcommand};
 
-#[derive(Debug, StructOpt)]
-#[structopt(
-    name = "chainz",
-    about = "CLI tool for managing EVM chain configurations"
-)]
+#[derive(Debug, Parser)]
+#[command(name = "chainz", about = "CLI tool for managing EVM chain configurations")]
 pub struct Opt {
-    #[structopt(subcommand)]
+    #[command(subcommand)]
     pub cmd: Command,
 }
 
-#[derive(Debug, StructOpt)]
-#[structopt(about = "Subcommands for chainz")]
+#[derive(Debug, Subcommand)]
 pub enum Command {
     /// Initialize a new configuration through an interactive wizard
     ///
@@ -26,13 +22,13 @@ pub enum Command {
     ///
     /// Example: chainz add --name ethereum --chain-id 1 --rpc-url https://eth.llamarpc.com
     Add {
-        #[structopt(flatten)]
+        #[command(flatten)]
         args: AddArgs,
     },
 
     /// Update an existing chain's configuration
     Update {
-        #[structopt(flatten)]
+        #[command(flatten)]
         args: UpdateArgs,
     },
 
@@ -45,26 +41,24 @@ pub enum Command {
     /// - Associated private key name
     List,
 
-    #[structopt(
-        about = "Execute a command",
-        long_about = "Execute a command with chain-specific variables expanded.\n\n\
-                  Available expansions:\n\
-                      @wallet : The wallet address\n\
-                      @rpc    : RPC URL\n\
-                      @chainid  : Chain ID\n\
-                      @chainname  : Chain name\n\
-                      @key    : Private key\n\
-                  \n\
-                  Example: chainz exec ethereum -- cast balance @wallet"
-    )]
+    /// Execute a command with chain-specific variables expanded
+    ///
+    /// Available expansions:
+    ///     @wallet : The wallet address
+    ///     @rpc    : RPC URL
+    ///     @chainid  : Chain ID
+    ///     @chainname  : Chain name
+    ///     @key    : Private key
+    ///
+    /// Example: chainz exec ethereum -- cast balance @wallet
     Exec {
         /// Chain name or ID to use
         name_or_id: String,
         /// Command to execute (after --)
-        #[structopt(last = true)]
+        #[arg(last = true)]
         command: Vec<String>,
         /// Override the key to use for this command
-        #[structopt(short, long)]
+        #[arg(short, long)]
         key: Option<String>,
     },
 
@@ -75,7 +69,7 @@ pub enum Command {
     ///
     /// Example: chainz key add mykey
     Key {
-        #[structopt(subcommand)]
+        #[command(subcommand)]
         cmd: KeyCommand,
     },
 
@@ -90,19 +84,19 @@ pub enum Command {
     ///     list  : List all variables
     ///     rm    : Remove a variable
     Var {
-        #[structopt(subcommand)]
+        #[command(subcommand)]
         cmd: VarCommand,
     },
 }
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Subcommand)]
 pub enum KeyCommand {
     /// Add a new private key
     Add {
         /// Name for the private key
         name: String,
         /// The private key (will prompt if not provided)
-        #[structopt(long)]
+        #[arg(long)]
         key: Option<String>,
     },
     /// List all stored private keys
@@ -114,7 +108,7 @@ pub enum KeyCommand {
     },
 }
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Subcommand)]
 pub enum VarCommand {
     /// Set or update a variable
     Set {
@@ -137,8 +131,8 @@ pub enum VarCommand {
     },
 }
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Args)]
 pub struct UpdateArgs {}
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Args)]
 pub struct AddArgs {}

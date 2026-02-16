@@ -159,7 +159,7 @@ impl Config {
         Ok(self
             .chains
             .iter()
-            .find(|chain| chain.name.to_ascii_lowercase() == name.to_ascii_lowercase())
+            .find(|chain| chain.name.eq_ignore_ascii_case(name))
             .ok_or(anyhow!("Chain not found"))?
             .clone())
     }

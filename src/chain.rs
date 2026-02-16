@@ -5,10 +5,7 @@ use crate::{
     opt::{AddArgs, UpdateArgs},
     variables::GlobalVariables,
 };
-use alloy::{
-    providers::{Provider, ProviderBuilder},
-    transports::BoxTransport,
-};
+use alloy::providers::{DynProvider, Provider, ProviderBuilder};
 use anyhow::Result;
 use colored::*;
 use dialoguer::{FuzzySelect, Input};
@@ -32,16 +29,16 @@ pub struct ChainDefinition {
 #[derive(Clone)]
 pub struct ChainInstance {
     pub definition: ChainDefinition,
-    pub provider: Arc<dyn Provider<BoxTransport>>,
+    pub provider: Arc<DynProvider>,
     pub rpc_url: String,
     pub key: Key,
 }
 
 impl ChainInstance {
-    pub fn new(definition: ChainDefinition, provider: Box<dyn Provider<BoxTransport>>, rpc_url: String, key: Key) -> Self {
+    pub fn new(definition: ChainDefinition, provider: DynProvider, rpc_url: String, key: Key) -> Self {
         Self {
             definition,
-            provider: Arc::from(provider),
+            provider: Arc::new(provider),
             rpc_url,
             key,
         }
@@ -55,7 +52,7 @@ impl ChainInstance {
 
 pub struct Rpc {
     pub rpc_url: String,
-    pub provider: Box<dyn Provider<BoxTransport>>,
+    pub provider: DynProvider,
 }
 
 impl ChainDefinition {
@@ -496,13 +493,11 @@ pub async fn resolve_rpc(rpc_url: &str, globals: &GlobalVariables) -> Result<Rpc
     })
 }
 
-async fn create_provider(rpc_url: &str) -> Result<Box<dyn Provider<BoxTransport>>> {
-    Ok(Box::new(
-        ProviderBuilder::new()
-            .with_recommended_fillers()
-            .on_builtin(rpc_url)
-            .await?,
-    ))
+async fn create_provider(rpc_url: &str) -> Result<DynProvider> {
+    Ok(ProviderBuilder::new()
+        .connect(rpc_url)
+        .await?
+        .erased())
 }
 
 // Helper function to handle fuzzy select with ESC cancellation

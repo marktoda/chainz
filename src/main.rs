@@ -1,6 +1,6 @@
 use anyhow::Result;
+use clap::Parser;
 use std::process::Command as ProcessCommand;
-use structopt::StructOpt;
 
 pub mod chain;
 pub mod chainlist;
@@ -16,7 +16,7 @@ use variables::ChainVariables;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let opts = Opt::from_args();
+    let opts = Opt::parse();
     let mut chainz = Chainz::load().await?;
 
     match opts.cmd {
