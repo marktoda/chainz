@@ -7,7 +7,6 @@ use anyhow::{anyhow, Result};
 use dirs::home_dir;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fmt::Debug;
 use std::path::PathBuf;
 
 pub const CONFIG_FILE_LOCATION: &str = ".chainz.json";
@@ -114,9 +113,9 @@ impl Chainz {
     pub async fn add_chain(&mut self, chain: ChainDefinition) -> Result<()> {
         // Replace if exists, otherwise add
         if let Some(pos) = self.config.chains.iter().position(|c| c.name == chain.name) {
-            self.config.chains[pos] = chain.clone();
+            self.config.chains[pos] = chain;
         } else {
-            self.config.chains.push(chain.clone());
+            self.config.chains.push(chain);
         }
 
         Ok(())
@@ -160,7 +159,7 @@ impl Config {
             .chains
             .iter()
             .find(|chain| chain.name.eq_ignore_ascii_case(name))
-            .ok_or(anyhow!("Chain not found"))?
+            .ok_or_else(|| anyhow!("Chain '{}' not found", name))?
             .clone())
     }
 
@@ -169,7 +168,7 @@ impl Config {
             .chains
             .iter()
             .find(|chain| chain.chain_id == chain_id)
-            .ok_or(anyhow!("Chain not found"))?
+            .ok_or_else(|| anyhow!("Chain with ID {} not found", chain_id))?
             .clone())
     }
 

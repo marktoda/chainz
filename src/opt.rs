@@ -52,8 +52,8 @@ pub enum Command {
     ///
     /// Example: chainz exec ethereum -- cast balance @wallet
     Exec {
-        /// Chain name or ID to use
-        name_or_id: String,
+        /// Chain name or ID to use (interactive picker if omitted)
+        name_or_id: Option<String>,
         /// Command to execute (after --)
         #[arg(last = true)]
         command: Vec<String>,

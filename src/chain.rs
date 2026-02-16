@@ -317,7 +317,6 @@ pub async fn select_key(chainz: &mut Chainz) -> Result<String> {
 
 /// Helper function to select or create a verifier
 pub fn select_verifier() -> Result<(Option<String>, Option<String>)> {
-    // TODO: try to autogenerate best guess etherscan
     let new_url: String = Input::new()
         .with_prompt("Enter verifier URL (empty to remove)")
         .allow_empty(true)

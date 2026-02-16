@@ -6,9 +6,10 @@ A CLI tool for managing EVM chain configurations
 
 - Interactive chain discovery and configuration
 - Dynamic RPC health checking and failover
-- Private key management
+- Private key management (encrypted, 1Password, keyring)
 - Multiple RPC support per chain
 - Environment variable interpolation
+- Command execution with chain-specific variable expansion
 
 ## Installation
 
@@ -30,13 +31,12 @@ chainz add
 # List configured chains
 chainz list
 
-# execute a command for a given chain
+# Execute a command for a given chain
 chainz exec ethereum -- cast block-number
 21532741
 
-# Switch to a chain
-chainz use ethereum
-source .env
+# Open a subshell with chain environment
+chainz exec ethereum -- bash
 ```
 
 ## Usage
@@ -96,11 +96,6 @@ Update chain configuration:
 
 ```bash
 > chainz update
-Testing all RPCs...
-✓ ethereum: 2/3 RPCs working
-✓ optimism: 1/1 RPCs working
-✗ arbitrum: 0/1 RPCs working
-
 ? Select chain to update
 ? What would you like to update?
 > RPC URL
@@ -108,23 +103,9 @@ Testing all RPCs...
   Verification API Key
 ```
 
-### Using Chains
+### Executing Commands
 
-Switch to a chain and set up environment:
-
-```bash
-> chainz use ethereum
-Chain: ethereum
-├─ ID: 1
-├─ RPC: https://rpc.com
-└─ Wallet: 0x123...789
-
-> source .env
-> echo $ETH_RPC_URL
-https://rpc.com
-```
-
-Execute commands with chain context:
+Execute commands with chain-specific variables expanded:
 
 ```bash
 > chainz exec 1 -- cast block-number
@@ -136,12 +117,39 @@ Execute commands with chain context:
 > chainz exec 10 -- forge script Deploy
 ```
 
+Available expansions:
+- `@wallet` — Wallet address
+- `@rpc` — RPC URL
+- `@chainid` — Chain ID
+- `@chainname` — Chain name
+- `@key` — Private key
+
+Override the key for a single command:
+
+```bash
+> chainz exec ethereum -k deployer -- forge script Deploy
+```
+
+Open a subshell with all chain variables in the environment:
+
+```bash
+> chainz exec ethereum -- bash
+$ echo $ETH_RPC_URL
+https://rpc.com
+$ exit
+```
+
 ### Managing Keys
 
 Add and manage private keys:
 
 ```bash
 > chainz key add deployer
+? Select key type
+> Private Key
+  Encrypted Key
+  One Password
+  Keyring
 Enter private key: ****
 Added key 'deployer'
 
@@ -153,15 +161,16 @@ Stored keys:
 
 ### Custom Variables
 
-Set and use custom variables:
+Set and use custom variables for RPC URL interpolation:
 
 ```bash
 > chainz var set ALCHEMY_KEY abc123
 > chainz var set ETHERSCAN_KEY def456
 
 > chainz var list
-ALCHEMY_KEY=abc123
-ETHERSCAN_KEY=def456
+Variables:
+  ALCHEMY_KEY = abc123
+  ETHERSCAN_KEY = def456
 ```
 
 ## Configuration
@@ -190,15 +199,11 @@ Configs are stored at `$HOME/.chainz.json`:
   },
   "keys": {
     "default": {
-      "type": "PrivateKey",
-      "value": "0x123..."
+      "type": "EncryptedKey",
+      "value": "<base64>",
+      "nonce": "<base64>",
+      "salt": "<base64>"
     }
   }
 }
 ```
-
-### TODO:
-
-- test onepassword key type
-- fix keychain type
-- clean up globalvariables structuring

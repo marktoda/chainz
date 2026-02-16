@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
+use dialoguer::FuzzySelect;
 use std::process::Command as ProcessCommand;
 
 pub mod chain;
@@ -52,6 +53,10 @@ async fn main() -> Result<()> {
             if command.is_empty() {
                 anyhow::bail!("No command specified");
             }
+            let name_or_id = match name_or_id {
+                Some(id) => id,
+                None => select_chain(&chainz)?,
+            };
             let mut chain = chainz.get_chain(&name_or_id).await?;
             if let Some(key_name) = key {
                 chain = chain.with_key(chainz.get_key(&key_name)?);
@@ -70,4 +75,22 @@ async fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn select_chain(chainz: &Chainz) -> Result<String> {
+    let chains = chainz.list_chains();
+    if chains.is_empty() {
+        anyhow::bail!("No chains configured. Use 'chainz add' to add a chain first.");
+    }
+    let items: Vec<String> = chains
+        .iter()
+        .map(|c| format!("{} ({})", c.name, c.chain_id))
+        .collect();
+    let selection = FuzzySelect::new()
+        .with_prompt("Select a chain")
+        .items(&items)
+        .default(0)
+        .interact_opt()?
+        .ok_or_else(|| anyhow::anyhow!("No chain selected"))?;
+    Ok(chains[selection].name.clone())
 }

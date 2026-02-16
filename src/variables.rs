@@ -108,7 +108,6 @@ impl GlobalVariables {
 }
 
 impl VarCommand {
-    // TODO: dynamically find all ${} fillins and list them
     pub async fn handle(self, chainz: &mut Chainz) -> Result<()> {
         match self {
             VarCommand::Set { name, value } => {

@@ -23,7 +23,6 @@ rand = "0.8.5"
 argon2 = "0.5"
 zeroize = "1"
 strum = { version = "0.26.3", features = ["derive"]}
-strum_macros = "0.26.4"
 
 [dev-dependencies]
 tempfile = "3.14.0"
