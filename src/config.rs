@@ -199,3 +199,179 @@ fn get_config_path() -> Option<PathBuf> {
 pub async fn config_exists() -> Result<bool> {
     Ok(get_config_path().map(|p| p.exists()).unwrap_or(false))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::chain::ChainDefinition;
+    use crate::key::{Key, KeyType};
+
+    fn test_chain(name: &str, chain_id: u64) -> ChainDefinition {
+        ChainDefinition {
+            name: name.to_string(),
+            chain_id,
+            rpc_urls: vec!["https://rpc.example.com".to_string()],
+            selected_rpc: "https://rpc.example.com".to_string(),
+            verification_api_key: None,
+            verification_url: None,
+            key_name: "default".to_string(),
+        }
+    }
+
+    fn test_key(name: &str) -> Key {
+        Key::new(
+            name.to_string(),
+            KeyType::PrivateKey {
+                value: "0000000000000000000000000000000000000000000000000000000000000001"
+                    .to_string(),
+            },
+        )
+    }
+
+    #[test]
+    fn config_json_round_trip() -> Result<()> {
+        let mut config = Config::default();
+        config.chains.push(test_chain("ethereum", 1));
+        config.chains.push(test_chain("polygon", 137));
+        config.globals.add_rpc_expansion("INFURA_KEY", "abc123");
+        config.keys.insert("default".to_string(), test_key("default"));
+        config
+            .keys
+            .insert("deployer".to_string(), test_key("deployer"));
+
+        let json = serde_json::to_string_pretty(&config)?;
+        let restored: Config = serde_json::from_str(&json)?;
+
+        assert_eq!(restored.chains.len(), 2);
+        assert_eq!(restored.chains[0].name, "ethereum");
+        assert_eq!(restored.chains[0].chain_id, 1);
+        assert_eq!(restored.chains[1].name, "polygon");
+        assert_eq!(restored.chains[1].chain_id, 137);
+        assert_eq!(
+            restored.globals.get_rpc_expansion("INFURA_KEY"),
+            Some("abc123".to_string())
+        );
+        assert_eq!(restored.keys.len(), 2);
+        assert!(restored.keys.contains_key("default"));
+        assert!(restored.keys.contains_key("deployer"));
+        Ok(())
+    }
+
+    #[test]
+    fn get_chain_by_name_case_insensitive() -> Result<()> {
+        let mut config = Config::default();
+        config.chains.push(test_chain("Ethereum", 1));
+
+        let found = config.get_chain("ethereum")?;
+        assert_eq!(found.name, "Ethereum");
+
+        let found = config.get_chain("ETHEREUM")?;
+        assert_eq!(found.name, "Ethereum");
+        Ok(())
+    }
+
+    #[test]
+    fn get_chain_by_id_string() -> Result<()> {
+        let mut config = Config::default();
+        config.chains.push(test_chain("ethereum", 1));
+        config.chains.push(test_chain("polygon", 137));
+
+        let found = config.get_chain("137")?;
+        assert_eq!(found.name, "polygon");
+
+        let found = config.get_chain("1")?;
+        assert_eq!(found.name, "ethereum");
+        Ok(())
+    }
+
+    #[test]
+    fn get_chain_not_found() {
+        let config = Config::default();
+        assert!(config.get_chain("nonexistent").is_err());
+        assert!(config.get_chain("999").is_err());
+    }
+
+    #[tokio::test]
+    async fn add_chain_new() -> Result<()> {
+        let mut chainz = Chainz::new();
+        chainz.add_chain(test_chain("ethereum", 1)).await?;
+
+        let chains = chainz.list_chains();
+        assert_eq!(chains.len(), 1);
+        assert_eq!(chains[0].name, "ethereum");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn add_chain_replaces_by_name() -> Result<()> {
+        let mut chainz = Chainz::new();
+        chainz.add_chain(test_chain("foo", 1)).await?;
+        chainz.add_chain(test_chain("foo", 42)).await?;
+
+        let chains = chainz.list_chains();
+        assert_eq!(chains.len(), 1);
+        assert_eq!(chains[0].chain_id, 42);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn add_key_and_get_key() -> Result<()> {
+        let mut chainz = Chainz::new();
+        chainz.add_key("mykey", test_key("mykey")).await?;
+
+        let retrieved = chainz.get_key("mykey")?;
+        assert_eq!(retrieved.name, "mykey");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn add_key_duplicate_errors() -> Result<()> {
+        let mut chainz = Chainz::new();
+        chainz.add_key("dup", test_key("dup")).await?;
+
+        let result = chainz.add_key("dup", test_key("dup")).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("already exists"));
+        Ok(())
+    }
+
+    #[test]
+    fn get_key_not_found() {
+        let chainz = Chainz::new();
+        let result = chainz.get_key("nonexistent");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn remove_key() -> Result<()> {
+        let mut chainz = Chainz::new();
+        chainz.add_key("temp", test_key("temp")).await?;
+        assert!(chainz.get_key("temp").is_ok());
+
+        chainz.remove_key("temp")?;
+        assert!(chainz.get_key("temp").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn remove_key_not_found() {
+        let mut chainz = Chainz::new();
+        let result = chainz.remove_key("ghost");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn list_keys_default_first() -> Result<()> {
+        let mut chainz = Chainz::new();
+        chainz.add_key("alpha", test_key("alpha")).await?;
+        chainz.add_key("zebra", test_key("zebra")).await?;
+        chainz.add_key("default", test_key("default")).await?;
+
+        let keys = chainz.list_keys();
+        assert_eq!(keys.len(), 3);
+        assert_eq!(keys[0].0, "default");
+        Ok(())
+    }
+}

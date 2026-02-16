@@ -8,12 +8,10 @@ pub mod config;
 pub mod init;
 pub mod key;
 pub mod opt;
-pub mod util;
 pub mod variables;
 
 use config::Chainz;
 use opt::Opt;
-use util::Pipe;
 use variables::ChainVariables;
 
 #[tokio::main]
@@ -46,32 +44,6 @@ async fn main() -> Result<()> {
                 println!("{}", chain_def);
             }
         }
-        opt::Command::Use {
-            name_or_id,
-            print,
-            export,
-            key,
-        } => {
-            let chain = chainz
-                .get_chain(&name_or_id)
-                .await?
-                .pipe(|chain| -> Result<_> {
-                    Ok(match key {
-                        Some(key_name) => chain.with_key(chainz.get_key(&key_name)?),
-                        None => chain,
-                    })
-                })?;
-            eprintln!("{}", chain);
-            let variables = ChainVariables::new(&chain)?;
-            if export {
-                print!("{}", variables.as_exports());
-            } else {
-                if print {
-                    println!("{}", variables.as_env_file());
-                }
-                variables.write_env()?;
-            }
-        }
         opt::Command::Exec {
             name_or_id,
             command,
@@ -80,15 +52,10 @@ async fn main() -> Result<()> {
             if command.is_empty() {
                 anyhow::bail!("No command specified");
             }
-            let chain = chainz
-                .get_chain(&name_or_id)
-                .await?
-                .pipe(|chain| -> Result<_> {
-                    Ok(match key {
-                        Some(key_name) => chain.with_key(chainz.get_key(&key_name)?),
-                        None => chain,
-                    })
-                })?;
+            let mut chain = chainz.get_chain(&name_or_id).await?;
+            if let Some(key_name) = key {
+                chain = chain.with_key(chainz.get_key(&key_name)?);
+            }
             let variables = ChainVariables::new(&chain)?;
             let expanded_command = variables.expand(command);
 

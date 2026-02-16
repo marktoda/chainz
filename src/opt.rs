@@ -36,31 +36,6 @@ pub enum Command {
         args: UpdateArgs,
     },
 
-    /// Use a specific chain configuration
-    ///
-    /// Sets up environment for working with a specific chain.
-    /// Can identify chain by name or chain ID.
-    ///
-    /// Flags:
-    ///     -p, --print  : Print variables to stdout instead of writing to .env
-    ///     -e, --export : Include 'export' prefix in output
-    ///     -k, --key    : Override the key to use for this command
-    ///
-    /// Example: chainz use ethereum --print
-    Use {
-        /// Chain name or ID to select
-        name_or_id: String,
-        /// Print to stdout instead of writing to .env
-        #[structopt(short, long)]
-        print: bool,
-        /// Include 'export' prefix in output
-        #[structopt(short, long)]
-        export: bool,
-        /// Override the key to use for this command
-        #[structopt(short, long)]
-        key: Option<String>,
-    },
-
     /// List all configured chains
     ///
     /// Displays all chains with their details:

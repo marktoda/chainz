@@ -302,9 +302,7 @@ pub async fn select_key(chainz: &mut Chainz) -> Result<String> {
 
     if key_selection == key_displays.len() - 1 {
         let kname: String = Input::new().with_prompt("Enter key name").interact_text()?;
-        let private_key: String = Input::new()
-            .with_prompt("Enter private key")
-            .interact_text()?;
+        let private_key = rpassword::prompt_password("Enter private key: ")?;
         chainz
             .add_key(
                 &kname,
@@ -517,5 +515,65 @@ fn fuzzy_select<T: ToString>(prompt: &str, items: &[T], default: usize) -> Resul
     {
         Some(selection) => Ok(selection),
         None => anyhow::bail!("Operation cancelled by user"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_chain_def(
+        verification_url: Option<&str>,
+        verification_api_key: Option<&str>,
+    ) -> ChainDefinition {
+        ChainDefinition {
+            name: "ethereum".to_string(),
+            chain_id: 1,
+            rpc_urls: vec!["https://eth.llamarpc.com".to_string()],
+            selected_rpc: "https://eth.llamarpc.com".to_string(),
+            verification_api_key: verification_api_key.map(String::from),
+            verification_url: verification_url.map(String::from),
+            key_name: "default".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_chain_definition_display_basic() {
+        let def = make_chain_def(None, None);
+        let output = format!("{}", def);
+
+        assert!(output.contains("ethereum"), "should contain chain name");
+        assert!(output.contains("1"), "should contain chain_id");
+        assert!(
+            output.contains("https://eth.llamarpc.com"),
+            "should contain rpc url"
+        );
+        assert!(output.contains("default"), "should contain key name");
+    }
+
+    #[test]
+    fn test_chain_definition_display_with_verification() {
+        let def = make_chain_def(Some("https://api.etherscan.io"), Some("abc123"));
+        let output = format!("{}", def);
+
+        assert!(
+            output.contains("https://api.etherscan.io"),
+            "should contain verification url"
+        );
+        assert!(
+            output.contains("abc123"),
+            "should contain verification api key"
+        );
+    }
+
+    #[test]
+    fn test_chain_definition_display_without_verification() {
+        let def = make_chain_def(None, None);
+        let output = format!("{}", def);
+
+        assert!(
+            output.contains("None"),
+            "should show None when verification fields are absent"
+        );
     }
 }

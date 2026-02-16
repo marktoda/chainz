@@ -2,10 +2,6 @@ use crate::{chain::ChainInstance, config::Chainz, opt::VarCommand};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::prelude::*;
-
-pub const DOT_ENV: &str = ".env";
 
 #[derive(Default, Debug, Serialize, Deserialize)]
 pub struct GlobalVariables {
@@ -34,7 +30,11 @@ impl ChainVariables {
                 chain.definition.chain_id.to_string(),
             ),
             ("CHAIN_NAME", "@chainname", chain.definition.name.clone()),
-            ("RAW_PRIVATE_KEY", "@key", chain.key.private_key()?),
+            (
+                "RAW_PRIVATE_KEY",
+                "@key",
+                chain.key.private_key()?.to_string(),
+            ),
             (
                 "VERIFIER_URL",
                 "@verification_url",
@@ -68,30 +68,6 @@ impl ChainVariables {
 
     pub fn as_map(&self) -> &HashMap<String, String> {
         &self.env
-    }
-
-    // make .env file text string with VAR=VAL
-    pub fn as_env_file(&self) -> String {
-        let mut res = String::new();
-        for (var, val) in &self.env {
-            res.push_str(&format!("{}={}\n", var, val));
-        }
-        res
-    }
-
-    // make evaluable exports
-    pub fn as_exports(&self) -> String {
-        let mut res = String::new();
-        for (var, val) in &self.env {
-            res.push_str(&format!("export {}={}\n", var, val));
-        }
-        res
-    }
-
-    pub fn write_env(&self) -> Result<()> {
-        let mut file = File::create(DOT_ENV)?;
-        file.write_all(self.as_env_file().as_bytes())?;
-        Ok(())
     }
 
     pub fn expand(&self, input: Vec<String>) -> Vec<String> {
@@ -287,5 +263,223 @@ mod tests {
             globals.expand_rpc_url("https://api.example.com/v1"),
             "https://api.example.com/v1"
         );
+    }
+
+    // ── GlobalVariables CRUD ─────────────────────────────────────────
+
+    #[test]
+    fn test_add_then_get_rpc_expansion() {
+        let mut globals = GlobalVariables::default();
+        globals.add_rpc_expansion("MY_KEY", "my_value");
+        assert_eq!(
+            globals.get_rpc_expansion("MY_KEY"),
+            Some("my_value".to_string())
+        );
+    }
+
+    #[test]
+    fn test_get_rpc_expansion_missing_key_returns_none() {
+        let globals = GlobalVariables::default();
+        assert_eq!(globals.get_rpc_expansion("DOES_NOT_EXIST"), None);
+    }
+
+    #[test]
+    fn test_remove_rpc_expansion_returns_old_value() {
+        let mut globals = GlobalVariables::default();
+        globals.add_rpc_expansion("TO_REMOVE", "old_val");
+        let removed = globals.remove_rpc_expansion("TO_REMOVE");
+        assert_eq!(removed, Some("old_val".to_string()));
+        // After removal, get returns None
+        assert_eq!(globals.get_rpc_expansion("TO_REMOVE"), None);
+    }
+
+    #[test]
+    fn test_remove_rpc_expansion_missing_key_returns_none() {
+        let mut globals = GlobalVariables::default();
+        assert_eq!(globals.remove_rpc_expansion("NONEXISTENT"), None);
+    }
+
+    #[test]
+    fn test_list_rpc_expansions_returns_all_entries() {
+        let mut globals = GlobalVariables::default();
+        globals.add_rpc_expansion("A", "1");
+        globals.add_rpc_expansion("B", "2");
+        globals.add_rpc_expansion("C", "3");
+
+        let listing = globals.list_rpc_expansions();
+        assert_eq!(listing.len(), 3);
+        assert_eq!(listing.get("A"), Some(&"1".to_string()));
+        assert_eq!(listing.get("B"), Some(&"2".to_string()));
+        assert_eq!(listing.get("C"), Some(&"3".to_string()));
+    }
+
+    #[test]
+    fn test_list_rpc_expansions_empty() {
+        let globals = GlobalVariables::default();
+        assert!(globals.list_rpc_expansions().is_empty());
+    }
+
+    #[test]
+    fn test_add_rpc_expansion_overwrites_existing() {
+        let mut globals = GlobalVariables::default();
+        globals.add_rpc_expansion("KEY", "first");
+        globals.add_rpc_expansion("KEY", "second");
+        assert_eq!(
+            globals.get_rpc_expansion("KEY"),
+            Some("second".to_string())
+        );
+        assert_eq!(globals.list_rpc_expansions().len(), 1);
+    }
+
+    // ── ChainVariables::expand() ─────────────────────────────────────
+
+    fn make_chain_variables() -> ChainVariables {
+        let mut env = HashMap::new();
+        let mut expansions = HashMap::new();
+
+        let vars = [
+            ("WALLET_ADDRESS", "@wallet", "0xABCD"),
+            ("ETH_RPC_URL", "@rpc", "http://localhost:8545"),
+            ("CHAIN_ID", "@chainid", "1"),
+            ("CHAIN_NAME", "@chainname", "mainnet"),
+            ("RAW_PRIVATE_KEY", "@key", "0xdeadbeef"),
+            ("VERIFIER_URL", "@verification_url", "https://etherscan.io"),
+            ("VERIFIER_API_KEY", "@verifier_api_key", "abc123"),
+        ];
+
+        for (env_key, expansion, val) in &vars {
+            env.insert(env_key.to_string(), val.to_string());
+            expansions.insert(expansion.to_string(), val.to_string());
+        }
+
+        ChainVariables { env, expansions }
+    }
+
+    #[test]
+    fn test_expand_wallet_token() {
+        let cv = make_chain_variables();
+        let result = cv.expand(vec!["--from".into(), "@wallet".into()]);
+        assert_eq!(result, vec!["--from", "0xABCD"]);
+    }
+
+    #[test]
+    fn test_expand_rpc_token() {
+        let cv = make_chain_variables();
+        let result = cv.expand(vec!["--rpc-url".into(), "@rpc".into()]);
+        assert_eq!(result, vec!["--rpc-url", "http://localhost:8545"]);
+    }
+
+    #[test]
+    fn test_expand_chainid_token() {
+        let cv = make_chain_variables();
+        let result = cv.expand(vec!["--chain".into(), "@chainid".into()]);
+        assert_eq!(result, vec!["--chain", "1"]);
+    }
+
+    #[test]
+    fn test_expand_chainname_token() {
+        let cv = make_chain_variables();
+        let result = cv.expand(vec!["echo".into(), "@chainname".into()]);
+        assert_eq!(result, vec!["echo", "mainnet"]);
+    }
+
+    #[test]
+    fn test_expand_key_token() {
+        let cv = make_chain_variables();
+        let result = cv.expand(vec!["--private-key".into(), "@key".into()]);
+        assert_eq!(result, vec!["--private-key", "0xdeadbeef"]);
+    }
+
+    #[test]
+    fn test_expand_multiple_tokens_in_args() {
+        let cv = make_chain_variables();
+        let result = cv.expand(vec![
+            "cast".into(),
+            "send".into(),
+            "--from".into(),
+            "@wallet".into(),
+            "--rpc-url".into(),
+            "@rpc".into(),
+            "--chain".into(),
+            "@chainid".into(),
+        ]);
+        assert_eq!(
+            result,
+            vec![
+                "cast",
+                "send",
+                "--from",
+                "0xABCD",
+                "--rpc-url",
+                "http://localhost:8545",
+                "--chain",
+                "1"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_expand_token_embedded_in_string() {
+        let cv = make_chain_variables();
+        let result = cv.expand(vec!["network=@chainname".into()]);
+        assert_eq!(result, vec!["network=mainnet"]);
+    }
+
+    #[test]
+    fn test_expand_leaves_unknown_tokens_unchanged() {
+        let cv = make_chain_variables();
+        let result = cv.expand(vec!["@unknown".into(), "plain".into()]);
+        assert_eq!(result, vec!["@unknown", "plain"]);
+    }
+
+    #[test]
+    fn test_expand_empty_input() {
+        let cv = make_chain_variables();
+        let result = cv.expand(vec![]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_expand_no_tokens_passes_through() {
+        let cv = make_chain_variables();
+        let result = cv.expand(vec!["echo".into(), "hello".into(), "world".into()]);
+        assert_eq!(result, vec!["echo", "hello", "world"]);
+    }
+
+    // ── ChainVariables::as_map() ─────────────────────────────────────
+
+    #[test]
+    fn test_as_map_has_correct_keys() {
+        let cv = make_chain_variables();
+        let map = cv.as_map();
+
+        let expected_keys = [
+            "WALLET_ADDRESS",
+            "ETH_RPC_URL",
+            "CHAIN_ID",
+            "CHAIN_NAME",
+            "RAW_PRIVATE_KEY",
+            "VERIFIER_URL",
+            "VERIFIER_API_KEY",
+        ];
+
+        for key in &expected_keys {
+            assert!(map.contains_key(*key), "Missing key: {}", key);
+        }
+        assert_eq!(map.len(), expected_keys.len());
+    }
+
+    #[test]
+    fn test_as_map_has_correct_values() {
+        let cv = make_chain_variables();
+        let map = cv.as_map();
+
+        assert_eq!(map.get("WALLET_ADDRESS").unwrap(), "0xABCD");
+        assert_eq!(map.get("ETH_RPC_URL").unwrap(), "http://localhost:8545");
+        assert_eq!(map.get("CHAIN_ID").unwrap(), "1");
+        assert_eq!(map.get("CHAIN_NAME").unwrap(), "mainnet");
+        assert_eq!(map.get("RAW_PRIVATE_KEY").unwrap(), "0xdeadbeef");
+        assert_eq!(map.get("VERIFIER_URL").unwrap(), "https://etherscan.io");
+        assert_eq!(map.get("VERIFIER_API_KEY").unwrap(), "abc123");
     }
 }

@@ -22,6 +22,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use keyring::Entry;
 use rand::Rng;
 use std::fmt;
+use zeroize::Zeroizing;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Key {
@@ -37,7 +38,11 @@ pub enum KeyType {
     #[serde(rename = "PrivateKey")]
     PrivateKey { value: String },
     #[serde(rename = "EncryptedKey")]
-    EncryptedKey { value: String, nonce: String },
+    EncryptedKey {
+        value: String,
+        nonce: String,
+        salt: String,
+    },
     #[serde(rename = "OnePassword")]
     OnePassword { vault: String, item: String },
     #[serde(rename = "Keyring")]
@@ -49,14 +54,19 @@ impl Key {
         Self { name, kind }
     }
 
-    pub fn private_key(&self) -> Result<String> {
+    pub fn private_key(&self) -> Result<Zeroizing<String>> {
         match &self.kind {
-            KeyType::PrivateKey { value } => Ok(value.clone()),
-            KeyType::EncryptedKey { value, nonce } => {
+            KeyType::PrivateKey { value } => Ok(Zeroizing::new(value.clone())),
+            KeyType::EncryptedKey {
+                value,
+                nonce,
+                salt,
+            } => {
                 let password = prompt_password(
                     format!("Enter decryption password for {}: ", self.name).as_str(),
                 )?;
-                let key = Self::derive_key(&password);
+                let salt_bytes = BASE64.decode(salt)?;
+                let key = Self::derive_key(&password, &salt_bytes)?;
                 let cipher = Aes256Gcm::new(&key.into());
                 let nonce_bytes = BASE64.decode(nonce)?;
                 let nonce = Nonce::from_slice(&nonce_bytes);
@@ -64,7 +74,7 @@ impl Key {
                 let plaintext = cipher
                     .decrypt(nonce, ciphertext.as_ref())
                     .map_err(|_| anyhow!("Failed to decrypt"))?;
-                Ok(String::from_utf8(plaintext)?)
+                Ok(Zeroizing::new(String::from_utf8(plaintext)?))
             }
             KeyType::OnePassword { vault, item } => {
                 let output = std::process::Command::new("op")
@@ -78,7 +88,9 @@ impl Key {
                                 String::from_utf8_lossy(&output.stderr)
                             );
                         } else {
-                            Ok(String::from_utf8(output.stdout)?.trim().to_string())
+                            Ok(Zeroizing::new(
+                                String::from_utf8(output.stdout)?.trim().to_string(),
+                            ))
                         }
                     }
                     Err(e) => {
@@ -88,15 +100,17 @@ impl Key {
             }
             KeyType::Keyring { service, username } => {
                 let entry = Entry::new(service, username)?;
-                Ok(entry.get_password()?)
+                Ok(Zeroizing::new(entry.get_password()?))
             }
         }
     }
 
     pub fn encrypt(name: String, private_key: &str, password: &str) -> Result<Self> {
-        let key = Self::derive_key(password);
-        let cipher = Aes256Gcm::new(&key.into());
         let mut rng = rand::thread_rng();
+        let mut salt_bytes = [0u8; 16];
+        rng.fill(&mut salt_bytes);
+        let key = Self::derive_key(password, &salt_bytes)?;
+        let cipher = Aes256Gcm::new(&key.into());
         let mut nonce_bytes = [0u8; 12];
         rng.fill(&mut nonce_bytes);
         let nonce = Nonce::from_slice(&nonce_bytes);
@@ -110,15 +124,17 @@ impl Key {
             KeyType::EncryptedKey {
                 value: BASE64.encode(ciphertext),
                 nonce: BASE64.encode(nonce_bytes),
+                salt: BASE64.encode(salt_bytes),
             },
         ))
     }
 
-    fn derive_key(password: &str) -> [u8; 32] {
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        hasher.update(password.as_bytes());
-        hasher.finalize().into()
+    fn derive_key(password: &str, salt: &[u8]) -> Result<[u8; 32]> {
+        let mut key = [0u8; 32];
+        argon2::Argon2::default()
+            .hash_password_into(password.as_bytes(), salt, &mut key)
+            .map_err(|e| anyhow!("Key derivation failed: {}", e))?;
+        Ok(key)
     }
 
     pub fn signer(&self) -> Result<Box<dyn Signer>> {
@@ -275,7 +291,7 @@ mod tests {
                 value: TEST_PRIVATE_KEY.to_string(),
             },
         );
-        assert_eq!(key.private_key()?, TEST_PRIVATE_KEY);
+        assert_eq!(key.private_key()?.as_str(), TEST_PRIVATE_KEY);
         assert_eq!(key.address()?.to_string(), TEST_ADDRESS);
         Ok(())
     }
@@ -286,7 +302,7 @@ mod tests {
         let encrypted = Key::encrypt("test".to_string(), TEST_PRIVATE_KEY, password)?;
 
         // Ensure the encrypted value is different from the original
-        if let KeyType::EncryptedKey { value, nonce: _ } = &encrypted.kind {
+        if let KeyType::EncryptedKey { value, .. } = &encrypted.kind {
             assert_ne!(value, TEST_PRIVATE_KEY);
         } else {
             panic!("Expected EncryptedKey variant");
@@ -298,7 +314,7 @@ mod tests {
 
         // Test decryption succeeds with correct password
         env::set_var("CLITEST_PASSWORD", password);
-        assert_eq!(encrypted.private_key()?, TEST_PRIVATE_KEY);
+        assert_eq!(encrypted.private_key()?.as_str(), TEST_PRIVATE_KEY);
         assert_eq!(encrypted.address()?.to_string(), TEST_ADDRESS);
         Ok(())
     }
@@ -326,7 +342,7 @@ mod tests {
                             },
                         );
 
-                        assert_eq!(key.private_key()?, TEST_PRIVATE_KEY);
+                        assert_eq!(key.private_key()?.as_str(), TEST_PRIVATE_KEY);
                         assert_eq!(key.address()?.to_string(), TEST_ADDRESS);
 
                         // Cleanup
@@ -379,13 +395,19 @@ mod tests {
 
     #[test]
     fn test_derive_key() {
+        let salt = [0u8; 16];
         let password = "test_password";
-        let key1 = Key::derive_key(password);
-        let key2 = Key::derive_key(password);
-        let key3 = Key::derive_key("different_password");
+        let key1 = Key::derive_key(password, &salt).unwrap();
+        let key2 = Key::derive_key(password, &salt).unwrap();
+        let key3 = Key::derive_key("different_password", &salt).unwrap();
 
         assert_eq!(key1, key2);
         assert_ne!(key1, key3);
+
+        // Different salt produces different key
+        let other_salt = [1u8; 16];
+        let key4 = Key::derive_key(password, &other_salt).unwrap();
+        assert_ne!(key1, key4);
     }
 
     // Helper function for testing password prompts in integration tests
