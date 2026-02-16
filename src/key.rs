@@ -62,9 +62,9 @@ impl Key {
                 nonce,
                 salt,
             } => {
-                let password = prompt_password(
+                let password = Zeroizing::new(prompt_password(
                     format!("Enter decryption password for {}: ", self.name).as_str(),
-                )?;
+                )?);
                 let salt_bytes = BASE64.decode(salt)?;
                 let key = Self::derive_key(&password, &salt_bytes)?;
                 let cipher = Aes256Gcm::new(&key.into());
@@ -144,6 +144,12 @@ impl Key {
     pub fn address(&self) -> Result<Address> {
         Ok(self.signer()?.address())
     }
+
+    pub fn validate_private_key(key: &str) -> Result<()> {
+        key.parse::<PrivateKeySigner>()
+            .map(|_| ())
+            .map_err(|e| anyhow!("Invalid private key: {}", e))
+    }
 }
 
 impl KeyCommand {
@@ -166,6 +172,7 @@ impl KeyCommand {
                         } else {
                             prompt_password("Enter private key: ")?
                         };
+                        Key::validate_private_key(&pk)?;
                         KeyType::PrivateKey { value: pk }
                     }
                     // encrypted private key
@@ -175,6 +182,7 @@ impl KeyCommand {
                         } else {
                             prompt_password("Enter private key: ")?
                         };
+                        Key::validate_private_key(&pk)?;
                         let password = prompt_password("Enter encryption password: ")?;
                         Key::encrypt(name.clone(), &pk, &password)?.kind
                     }
@@ -202,6 +210,7 @@ impl KeyCommand {
                         } else {
                             prompt_password("Enter private key: ")?
                         };
+                        Key::validate_private_key(&pk)?;
                         // Store in system keyring
                         let entry = Entry::new(&service, &username)?;
                         entry.set_password(&pk)?;

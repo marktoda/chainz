@@ -10,7 +10,7 @@ use anyhow::Result;
 use colored::*;
 use dialoguer::{FuzzySelect, Input};
 use serde::{Deserialize, Serialize};
-use std::fmt::{Debug, Display};
+use std::fmt::Display;
 use std::sync::Arc;
 
 pub const DEFAULT_KEY_NAME: &str = "default";
@@ -214,16 +214,19 @@ pub async fn select_rpc(
         .map(|rpc| format!("{} {}", "⋯".bright_yellow(), rpc))
         .collect();
 
-    // Create a vector of futures for testing RPCs
+    // Create a vector of futures for testing RPCs concurrently
     let mut test_futures = Vec::new();
     for (idx, rpc) in available_rpcs.iter().enumerate() {
-        // Clone the necessary data for the spawned task
-        let rpc_to_test = Rpc {
-            rpc_url: rpc.rpc_url.clone(),
-            provider: create_provider(&rpc.rpc_url).await?,
-        };
-
+        let rpc_url = rpc.rpc_url.clone();
         let test_future = async move {
+            let provider = match create_provider(&rpc_url).await {
+                Ok(p) => p,
+                Err(e) => return (idx, Err(e)),
+            };
+            let rpc_to_test = Rpc {
+                rpc_url,
+                provider,
+            };
             let result = test_rpc(&rpc_to_test, chain_id).await;
             (idx, result)
         };
@@ -465,13 +468,20 @@ impl AddArgs {
 }
 
 async fn test_rpc(rpc: &Rpc, expected_chain_id: u64) -> Result<()> {
-    // Try the resolved RPC URL
-    if let Ok(chain_id) = rpc.provider.get_chain_id().await {
-        if chain_id == expected_chain_id {
-            return Ok(()); // Return original URL with variables
-        }
+    let chain_id = rpc
+        .provider
+        .get_chain_id()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to connect to {}: {}", rpc.rpc_url, e))?;
+    if chain_id != expected_chain_id {
+        anyhow::bail!(
+            "Chain ID mismatch on {}: expected {}, got {}",
+            rpc.rpc_url,
+            expected_chain_id,
+            chain_id
+        );
     }
-    anyhow::bail!("Invalid chain ID");
+    Ok(())
 }
 
 pub async fn resolve_rpcs(rpc_urls: Vec<String>, globals: &GlobalVariables) -> Result<Vec<Rpc>> {
@@ -493,10 +503,13 @@ pub async fn resolve_rpc(rpc_url: &str, globals: &GlobalVariables) -> Result<Rpc
 }
 
 async fn create_provider(rpc_url: &str) -> Result<DynProvider> {
-    Ok(ProviderBuilder::new()
-        .connect(rpc_url)
-        .await?
-        .erased())
+    let provider = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        ProviderBuilder::new().connect(rpc_url),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("RPC connection timed out: {}", rpc_url))??;
+    Ok(provider.erased())
 }
 
 // Helper function to handle fuzzy select with ESC cancellation

@@ -3,7 +3,7 @@ use crate::{
     key::Key,
     variables::GlobalVariables,
 };
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use dirs::home_dir;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -136,11 +136,12 @@ impl Chainz {
 
 impl Config {
     pub async fn load() -> Result<Self> {
-        let json = tokio::fs::read_to_string(
-            get_config_path().ok_or(anyhow!("Unable to find config path"))?,
-        )
-        .await?;
-        let config = serde_json::from_str(&json)?;
+        let path = get_config_path().ok_or(anyhow!("Unable to find config path"))?;
+        let json = tokio::fs::read_to_string(&path)
+            .await
+            .with_context(|| format!("Failed to read config at {}", path.display()))?;
+        let config = serde_json::from_str(&json)
+            .with_context(|| "Failed to parse config (file may be corrupted)")?;
         Ok(config)
     }
 

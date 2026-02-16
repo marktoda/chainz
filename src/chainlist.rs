@@ -11,7 +11,10 @@ pub struct ChainlistEntry {
 
 pub async fn fetch_all_chains() -> Result<Vec<ChainlistEntry>> {
     let url = "https://chainid.network/chains.json";
-    Ok(reqwest::get(url).await?.json().await?)
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()?;
+    Ok(client.get(url).send().await?.json().await?)
 }
 
 pub async fn fetch_chain_data(
