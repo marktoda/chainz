@@ -1,5 +1,3 @@
-// module for storing configurations of encrypted private keys
-// #![allow(dead_code)]
 
 use crate::{
     chain::DEFAULT_KEY_NAME,

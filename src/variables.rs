@@ -102,9 +102,8 @@ impl GlobalVariables {
         self.rpc_expansions.get(key).cloned()
     }
 
-    // TODO: return iterator?
-    pub fn list_rpc_expansions(&self) -> HashMap<String, String> {
-        self.rpc_expansions.clone()
+    pub fn list_rpc_expansions(&self) -> &HashMap<String, String> {
+        &self.rpc_expansions
     }
 }
 

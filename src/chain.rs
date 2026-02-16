@@ -282,7 +282,7 @@ pub async fn select_key(chainz: &mut Chainz) -> Result<String> {
     // Create display strings with addresses
     let mut key_displays: Vec<(String, String)> = keys
         .iter()
-        .map(|(name, key)| (name.clone(), key.to_string()))
+        .map(|(name, key)| (name.to_string(), key.to_string()))
         .collect();
 
     // Add the "Add new key" option

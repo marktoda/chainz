@@ -79,16 +79,16 @@ impl Chainz {
         Ok(())
     }
 
-    pub fn list_keys(&self) -> Vec<(String, Key)> {
+    pub fn list_keys(&self) -> Vec<(&str, &Key)> {
         let mut keys: Vec<_> = self
             .config
             .keys
             .iter()
-            .map(|(n, k)| (n.clone(), k.clone()))
+            .map(|(n, k)| (n.as_str(), k))
             .collect();
 
         // If "default" exists, move it to the front
-        if let Some(default_pos) = keys.iter().position(|(name, _)| name == "default") {
+        if let Some(default_pos) = keys.iter().position(|(name, _)| *name == "default") {
             keys.swap(0, default_pos);
         }
 
