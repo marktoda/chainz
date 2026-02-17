@@ -1,7 +1,10 @@
 use clap::{Args, Parser, Subcommand};
 
 #[derive(Debug, Parser)]
-#[command(name = "chainz", about = "CLI tool for managing EVM chain configurations")]
+#[command(
+    name = "chainz",
+    about = "CLI tool for managing EVM chain configurations"
+)]
 pub struct Opt {
     #[command(subcommand)]
     pub cmd: Command,
@@ -135,4 +138,32 @@ pub enum VarCommand {
 pub struct UpdateArgs {}
 
 #[derive(Debug, Args)]
-pub struct AddArgs {}
+pub struct AddArgs {
+    /// Chain name
+    #[arg(long)]
+    pub name: Option<String>,
+
+    /// Chain ID
+    #[arg(long)]
+    pub chain_id: Option<u64>,
+
+    /// RPC URL
+    #[arg(long)]
+    pub rpc_url: Option<String>,
+
+    /// Key name (defaults to "default")
+    #[arg(long)]
+    pub key: Option<String>,
+
+    /// Block explorer API URL
+    #[arg(long)]
+    pub verification_url: Option<String>,
+
+    /// Block explorer API key
+    #[arg(long)]
+    pub verification_api_key: Option<String>,
+
+    /// Overwrite existing chain without prompting
+    #[arg(long, default_value_t = false)]
+    pub force: bool,
+}

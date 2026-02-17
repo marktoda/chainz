@@ -57,11 +57,7 @@ impl Key {
     pub fn private_key(&self) -> Result<Zeroizing<String>> {
         match &self.kind {
             KeyType::PrivateKey { value } => Ok(Zeroizing::new(value.clone())),
-            KeyType::EncryptedKey {
-                value,
-                nonce,
-                salt,
-            } => {
+            KeyType::EncryptedKey { value, nonce, salt } => {
                 let password = Zeroizing::new(prompt_password(
                     format!("Enter decryption password for {}: ", self.name).as_str(),
                 )?);

@@ -234,7 +234,9 @@ mod tests {
         config.chains.push(test_chain("ethereum", 1));
         config.chains.push(test_chain("polygon", 137));
         config.globals.add_rpc_expansion("INFURA_KEY", "abc123");
-        config.keys.insert("default".to_string(), test_key("default"));
+        config
+            .keys
+            .insert("default".to_string(), test_key("default"));
         config
             .keys
             .insert("deployer".to_string(), test_key("deployer"));

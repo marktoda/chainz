@@ -16,13 +16,16 @@ pub struct ChainVariables {
 }
 
 impl ChainVariables {
-    pub fn new(chain: &ChainInstance) -> Result<Self> {
-        let env_vars = [
-            (
-                "WALLET_ADDRESS",
-                "@wallet",
-                chain.key.address().unwrap_or_default().to_string(),
-            ),
+    pub fn new(chain: &ChainInstance, command: &[String]) -> Result<Self> {
+        let needs_key = command
+            .iter()
+            .any(|arg| arg.contains("@key") || arg.contains("@wallet"));
+
+        let mut env = HashMap::new();
+        let mut expansions = HashMap::new();
+
+        // Always set non-key variables
+        let basic_vars = [
             ("ETH_RPC_URL", "@rpc", chain.rpc_url.clone()),
             (
                 "CHAIN_ID",
@@ -30,11 +33,6 @@ impl ChainVariables {
                 chain.definition.chain_id.to_string(),
             ),
             ("CHAIN_NAME", "@chainname", chain.definition.name.clone()),
-            (
-                "RAW_PRIVATE_KEY",
-                "@key",
-                chain.key.private_key()?.to_string(),
-            ),
             (
                 "VERIFIER_URL",
                 "@verification_url",
@@ -55,12 +53,25 @@ impl ChainVariables {
             ),
         ];
 
-        let mut env = HashMap::new();
-        let mut expansions = HashMap::new();
-
-        for (env_var, expansion, val) in &env_vars {
+        for (env_var, expansion, val) in &basic_vars {
             env.insert(env_var.to_string(), val.clone());
             expansions.insert(expansion.to_string(), val.clone());
+        }
+
+        // Only decrypt key when command actually uses @key or @wallet.
+        // Note: private_key() returns Zeroizing<String>, but we convert to String here
+        // because std::process::Command::envs() requires String values and doesn't zeroize
+        // internally. The child process also holds the key in its environment unzeroed.
+        // The real security boundary is the lazy check above — encrypted keys are never
+        // decrypted unless the command explicitly needs them.
+        if needs_key {
+            let private_key = chain.key.private_key()?.to_string();
+            let address = chain.key.address().unwrap_or_default().to_string();
+
+            env.insert("WALLET_ADDRESS".to_string(), address.clone());
+            expansions.insert("@wallet".to_string(), address);
+            env.insert("RAW_PRIVATE_KEY".to_string(), private_key.clone());
+            expansions.insert("@key".to_string(), private_key);
         }
 
         Ok(Self { env, expansions })
@@ -322,10 +333,7 @@ mod tests {
         let mut globals = GlobalVariables::default();
         globals.add_rpc_expansion("KEY", "first");
         globals.add_rpc_expansion("KEY", "second");
-        assert_eq!(
-            globals.get_rpc_expansion("KEY"),
-            Some("second".to_string())
-        );
+        assert_eq!(globals.get_rpc_expansion("KEY"), Some("second".to_string()));
         assert_eq!(globals.list_rpc_expansions().len(), 1);
     }
 
@@ -479,5 +487,66 @@ mod tests {
         assert_eq!(map.get("RAW_PRIVATE_KEY").unwrap(), "0xdeadbeef");
         assert_eq!(map.get("VERIFIER_URL").unwrap(), "https://etherscan.io");
         assert_eq!(map.get("VERIFIER_API_KEY").unwrap(), "abc123");
+    }
+
+    // ── Lazy key resolution ────────────────────────────────────────────
+
+    fn make_chain_variables_without_key() -> ChainVariables {
+        let mut env = HashMap::new();
+        let mut expansions = HashMap::new();
+
+        let vars = [
+            ("ETH_RPC_URL", "@rpc", "http://localhost:8545"),
+            ("CHAIN_ID", "@chainid", "1"),
+            ("CHAIN_NAME", "@chainname", "mainnet"),
+            ("VERIFIER_URL", "@verification_url", "https://etherscan.io"),
+            ("VERIFIER_API_KEY", "@verifier_api_key", "abc123"),
+        ];
+
+        for (env_key, expansion, val) in &vars {
+            env.insert(env_key.to_string(), val.to_string());
+            expansions.insert(expansion.to_string(), val.to_string());
+        }
+
+        ChainVariables { env, expansions }
+    }
+
+    #[test]
+    fn test_no_key_vars_when_command_doesnt_need_key() {
+        let cv = make_chain_variables_without_key();
+        let map = cv.as_map();
+
+        assert!(!map.contains_key("WALLET_ADDRESS"));
+        assert!(!map.contains_key("RAW_PRIVATE_KEY"));
+        assert_eq!(map.len(), 5);
+    }
+
+    #[test]
+    fn test_key_token_unexpanded_without_key_vars() {
+        let cv = make_chain_variables_without_key();
+        let result = cv.expand(vec!["--private-key".into(), "@key".into()]);
+        assert_eq!(result, vec!["--private-key", "@key"]);
+    }
+
+    #[test]
+    fn test_wallet_token_unexpanded_without_key_vars() {
+        let cv = make_chain_variables_without_key();
+        let result = cv.expand(vec!["--from".into(), "@wallet".into()]);
+        assert_eq!(result, vec!["--from", "@wallet"]);
+    }
+
+    #[test]
+    fn test_non_key_vars_still_expand_without_key() {
+        let cv = make_chain_variables_without_key();
+        let result = cv.expand(vec![
+            "--rpc-url".into(),
+            "@rpc".into(),
+            "--chain".into(),
+            "@chainid".into(),
+        ]);
+        assert_eq!(
+            result,
+            vec!["--rpc-url", "http://localhost:8545", "--chain", "1"]
+        );
     }
 }

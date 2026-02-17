@@ -61,7 +61,7 @@ async fn main() -> Result<()> {
             if let Some(key_name) = key {
                 chain = chain.with_key(chainz.get_key(&key_name)?);
             }
-            let variables = ChainVariables::new(&chain)?;
+            let variables = ChainVariables::new(&chain, &command)?;
             let expanded_command = variables.expand(command);
 
             let status = ProcessCommand::new(&expanded_command[0])

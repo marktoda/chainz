@@ -1,4 +1,3 @@
-
 use crate::{
     chain::DEFAULT_KEY_NAME,
     config::{config_exists, Chainz},
@@ -82,7 +81,15 @@ async fn initialize_with_wizard() -> Result<Chainz> {
             break;
         }
 
-        let args = opt::AddArgs {};
+        let args = opt::AddArgs {
+            name: None,
+            chain_id: None,
+            rpc_url: None,
+            key: None,
+            verification_url: None,
+            verification_api_key: None,
+            force: false,
+        };
 
         match args.handle(&mut chainz).await {
             Ok(chain) => println!("Added chain: {}", chain.name),
