@@ -174,12 +174,18 @@ impl Config {
     }
 
     pub async fn write(&self) -> Result<()> {
+        let path = get_config_path().ok_or(anyhow!("Unable to find config path"))?;
+        let tmp_path = path.with_extension("json.tmp");
+
         let json = serde_json::to_string_pretty(self)?;
-        tokio::fs::write(
-            get_config_path().ok_or(anyhow!("Unable to find config path"))?,
-            json,
-        )
-        .await?;
+
+        // Write to temp file, sync to disk, then atomically rename over the real file.
+        // This ensures the config is never left in a partial/corrupt state.
+        tokio::fs::write(&tmp_path, &json).await?;
+        let file = tokio::fs::File::open(&tmp_path).await?;
+        file.sync_all().await?;
+        tokio::fs::rename(&tmp_path, &path).await?;
+
         Ok(())
     }
 
