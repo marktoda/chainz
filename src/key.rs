@@ -11,17 +11,17 @@ use crate::{
 };
 use alloy::{
     primitives::Address,
-    signers::{local::PrivateKeySigner, Signer},
+    signers::{Signer, local::PrivateKeySigner},
 };
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use strum::{EnumIter, IntoEnumIterator};
 
 use aes_gcm::{
-    aead::{Aead, KeyInit},
     Aes256Gcm, Nonce,
+    aead::{Aead, KeyInit},
 };
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use keyring::Entry;
 use rand::Rng;
 use std::fmt;
@@ -105,7 +105,7 @@ impl Key {
     }
 
     pub fn encrypt(name: String, private_key: &str, password: &str) -> Result<Self> {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let mut salt_bytes = [0u8; 16];
         rng.fill(&mut salt_bytes);
         let key = Self::derive_key(password, &salt_bytes)?;
@@ -322,11 +322,13 @@ mod tests {
         }
 
         // Test decryption fails with wrong password
-        env::set_var("CLITEST_PASSWORD", "wrong_password");
+        // SAFETY: tests that touch process env run single-threaded per binary here;
+        // this var is only read by the mock password prompt below.
+        unsafe { env::set_var("CLITEST_PASSWORD", "wrong_password") };
         assert!(encrypted.private_key().is_err());
 
         // Test decryption succeeds with correct password
-        env::set_var("CLITEST_PASSWORD", password);
+        unsafe { env::set_var("CLITEST_PASSWORD", password) };
         assert_eq!(encrypted.private_key()?.as_str(), TEST_PRIVATE_KEY);
         assert_eq!(encrypted.address()?.to_string(), TEST_ADDRESS);
         Ok(())
@@ -341,7 +343,7 @@ mod tests {
         match Entry::new(service, username) {
             Ok(entry) => {
                 // Clean up any existing test key
-                let _ = entry.delete_password();
+                let _ = entry.delete_credential();
 
                 // Attempt to set password
                 match entry.set_password(TEST_PRIVATE_KEY) {
@@ -359,7 +361,7 @@ mod tests {
                         assert_eq!(key.address()?.to_string(), TEST_ADDRESS);
 
                         // Cleanup
-                        let _ = entry.delete_password();
+                        let _ = entry.delete_credential();
                     }
                     Err(e) => {
                         println!("Skipping keyring test (failed to set password: {})", e);

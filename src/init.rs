@@ -1,6 +1,6 @@
 use crate::{
     chain::DEFAULT_KEY_NAME,
-    config::{config_exists, Chainz},
+    config::{Chainz, config_exists},
     key::{Key, KeyType},
     opt,
 };

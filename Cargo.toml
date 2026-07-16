@@ -1,25 +1,51 @@
 [package]
 name = "chainz"
-version = "0.2.0"
-edition = "2021"
+version = "0.3.0"
+edition = "2024"
+rust-version = "1.88"
+description = "CLI for managing EVM chain configurations, RPC endpoints, and private keys"
+repository = "https://github.com/marktoda/chainz"
+license = "MIT"
+readme = "README.md"
+keywords = ["ethereum", "evm", "cli", "web3", "blockchain"]
+categories = ["command-line-utilities", "cryptography::cryptocurrencies", "development-tools"]
 
 [dependencies]
-alloy = { version = "1", features = ["full"] }
-anyhow = "1.0.86"
-dialoguer = { version = "0.11.0", features = ["fuzzy-select"] }
-dirs = "5.0.1"
-reqwest = "0.12.9"
-rpassword = "7.3.1"
-serde = "1.0.204"
-serde_json = "1.0.120"
+alloy = { version = "1", default-features = false, features = [
+    "std",
+    "reqwest",
+    "reqwest-rustls-tls",
+    "provider-http",
+    "provider-ws",
+    "signer-local",
+] }
+anyhow = "1"
+dialoguer = { version = "0.11", features = ["fuzzy-select"] }
+dirs = "6"
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+    "json",
+] }
+rpassword = "7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 clap = { version = "4", features = ["derive"] }
-tokio = { version = "1.38.0", features = ["full"] }
-colored = "2.0"
-futures = "0.3.31"
-aes-gcm = "0.10.3"
-base64 = "0.21.4"
-keyring = "2.0.5"
-rand = "0.8.5"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs", "time"] }
+colored = "3"
+futures = "0.3"
+aes-gcm = "0.10"
+base64 = "0.22"
+keyring = { version = "3", features = [
+    "apple-native",
+    "windows-native",
+    "sync-secret-service",
+] }
+rand = "0.9"
 argon2 = "0.5"
 zeroize = "1"
-strum = { version = "0.26.3", features = ["derive"] }
+strum = { version = "0.27", features = ["derive"] }
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"

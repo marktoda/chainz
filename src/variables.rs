@@ -212,8 +212,11 @@ mod tests {
     /// Setup function that is only run once, even if called multiple times.
     fn setup() {
         INIT.call_once(|| {
-            env::set_var("TEST_ENV_KEY", "env_key");
-            env::set_var("TEST_OTHER_KEY", "other_value");
+            // SAFETY: set once before any test reads them; values never change after.
+            unsafe {
+                env::set_var("TEST_ENV_KEY", "env_key");
+                env::set_var("TEST_OTHER_KEY", "other_value");
+            }
         });
     }
 

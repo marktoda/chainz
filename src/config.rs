@@ -3,7 +3,7 @@ use crate::{
     key::Key,
     variables::GlobalVariables,
 };
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use dirs::home_dir;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

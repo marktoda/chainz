@@ -1,9 +1,9 @@
 use super::{
+    ChainDefinition, DEFAULT_KEY_NAME, Rpc,
     rpc::{create_provider, resolve_rpc, resolve_rpcs, test_rpc},
-    ChainDefinition, Rpc, DEFAULT_KEY_NAME,
 };
 use crate::{
-    chainlist::{fetch_all_chains, fetch_chain_data, ChainlistEntry},
+    chainlist::{ChainlistEntry, fetch_all_chains, fetch_chain_data},
     config::Chainz,
     key::{Key, KeyType},
     opt::{AddArgs, UpdateArgs},
