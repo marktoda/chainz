@@ -433,7 +433,11 @@ fn suggest_short_name(name: &str) -> String {
 }
 
 // Helper function to handle fuzzy select with ESC cancellation
-fn fuzzy_select<T: ToString>(prompt: &str, items: &[T], default: usize) -> Result<usize> {
+fn fuzzy_select<T: ToString + std::fmt::Display>(
+    prompt: &str,
+    items: &[T],
+    default: usize,
+) -> Result<usize> {
     match FuzzySelect::new()
         .with_prompt(format!("{} (ESC to exit)", prompt))
         .items(items)
