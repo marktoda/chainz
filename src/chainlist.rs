@@ -50,16 +50,38 @@ pub async fn fetch_all_chains(refresh: bool) -> Result<Vec<ChainlistEntry>> {
 }
 
 async fn fetch_from_network() -> Result<String> {
+    use indicatif::{ProgressBar, ProgressStyle};
+
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
         .build()?;
-    Ok(client
-        .get(CHAINLIST_URL)
-        .send()
-        .await?
-        .error_for_status()?
-        .text()
-        .await?)
+    let mut response = client.get(CHAINLIST_URL).send().await?.error_for_status()?;
+
+    let bar = match response.content_length() {
+        Some(len) => {
+            let bar = ProgressBar::new(len);
+            bar.set_style(
+                ProgressStyle::with_template(
+                    "downloading chainlist {bytes}/{total_bytes} [{bar:30}] {eta}",
+                )
+                .unwrap(),
+            );
+            bar
+        }
+        None => {
+            let bar = ProgressBar::new_spinner();
+            bar.set_message("downloading chainlist…");
+            bar
+        }
+    };
+
+    let mut body = Vec::with_capacity(response.content_length().unwrap_or(0) as usize);
+    while let Some(chunk) = response.chunk().await? {
+        body.extend_from_slice(&chunk);
+        bar.inc(chunk.len() as u64);
+    }
+    bar.finish_and_clear();
+    Ok(String::from_utf8(body)?)
 }
 
 fn cache_path() -> Option<PathBuf> {
