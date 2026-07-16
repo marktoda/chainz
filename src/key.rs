@@ -5,7 +5,10 @@ use self::tests::mock_password_prompt as prompt_password;
 #[cfg(not(test))]
 use rpassword::prompt_password;
 
-use crate::{config::Chainz, opt::KeyCommand};
+use crate::{
+    config::Chainz,
+    opt::{KeyCommand, KeyTypeArg},
+};
 use alloy::{
     primitives::Address,
     signers::{local::PrivateKeySigner, Signer},
@@ -151,39 +154,51 @@ impl Key {
 impl KeyCommand {
     pub async fn handle(self, config: &mut Chainz) -> Result<()> {
         match self {
-            KeyCommand::Add { name, key } => {
-                let key_types: Vec<_> = KeyType::iter().collect();
+            KeyCommand::Add {
+                name,
+                key,
+                key_type,
+            } => {
+                let choice = match key_type {
+                    Some(t) => t,
+                    // --key without --type implies a plain private key, so
+                    // `chainz key add <name> --key <key>` works without a TTY
+                    None if key.is_some() => KeyTypeArg::PrivateKey,
+                    None => {
+                        let key_types: Vec<_> = KeyType::iter().collect();
+                        let selection = dialoguer::Select::new()
+                            .with_prompt("Select key type")
+                            .items(&key_types)
+                            .default(0)
+                            .interact()?;
+                        [
+                            KeyTypeArg::PrivateKey,
+                            KeyTypeArg::Encrypted,
+                            KeyTypeArg::OnePassword,
+                            KeyTypeArg::Keyring,
+                        ][selection]
+                    }
+                };
 
-                let choice = dialoguer::Select::new()
-                    .with_prompt("Select key type")
-                    .items(&key_types)
-                    .default(0)
-                    .interact()?;
+                let get_pk = |key: Option<String>| -> Result<String> {
+                    let pk = match key {
+                        Some(k) => k,
+                        None => prompt_password("Enter private key: ")?,
+                    };
+                    Key::validate_private_key(&pk)?;
+                    Ok(pk)
+                };
 
                 let kind = match choice {
-                    // raw private key
-                    0 => {
-                        let pk = if let Some(k) = key {
-                            k
-                        } else {
-                            prompt_password("Enter private key: ")?
-                        };
-                        Key::validate_private_key(&pk)?;
-                        KeyType::PrivateKey { value: pk }
-                    }
-                    // encrypted private key
-                    1 => {
-                        let pk = if let Some(k) = key {
-                            k
-                        } else {
-                            prompt_password("Enter private key: ")?
-                        };
-                        Key::validate_private_key(&pk)?;
+                    KeyTypeArg::PrivateKey => KeyType::PrivateKey {
+                        value: get_pk(key)?,
+                    },
+                    KeyTypeArg::Encrypted => {
+                        let pk = get_pk(key)?;
                         let password = prompt_password("Enter encryption password: ")?;
                         Key::encrypt(name.clone(), &pk, &password)?.kind
                     }
-                    // 1password private key
-                    2 => {
+                    KeyTypeArg::OnePassword => {
                         let vault: String = dialoguer::Input::new()
                             .with_prompt("Enter 1Password vault name")
                             .interact()?;
@@ -192,8 +207,7 @@ impl KeyCommand {
                             .interact()?;
                         KeyType::OnePassword { vault, item }
                     }
-                    // keyring private key
-                    3 => {
+                    KeyTypeArg::Keyring => {
                         let service: String = dialoguer::Input::new()
                             .with_prompt("Enter service name")
                             .default("chainz".into())
@@ -201,18 +215,12 @@ impl KeyCommand {
                         let username: String = dialoguer::Input::new()
                             .with_prompt("Enter username")
                             .interact()?;
-                        let pk = if let Some(k) = key {
-                            k
-                        } else {
-                            prompt_password("Enter private key: ")?
-                        };
-                        Key::validate_private_key(&pk)?;
+                        let pk = get_pk(key)?;
                         // Store in system keyring
                         let entry = Entry::new(&service, &username)?;
                         entry.set_password(&pk)?;
                         KeyType::Keyring { service, username }
                     }
-                    _ => anyhow::bail!("Invalid choice"),
                 };
 
                 let key = Key::new(name.clone(), kind);

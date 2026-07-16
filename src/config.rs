@@ -7,7 +7,10 @@ use anyhow::{anyhow, Context, Result};
 use dirs::home_dir;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use tokio::io::AsyncWriteExt;
 
 pub const CONFIG_FILE_LOCATION: &str = ".chainz.json";
 
@@ -34,8 +37,14 @@ impl Chainz {
     }
 
     pub async fn load() -> Result<Self> {
-        // use default config if none
-        let config = Config::load().await.unwrap_or_default();
+        // Start fresh when no config exists yet, but propagate errors for a
+        // config that exists and can't be read/parsed — silently defaulting
+        // would wipe the real config on the next save.
+        let config = if config_exists().await? {
+            Config::load().await?
+        } else {
+            Config::default()
+        };
         Ok(Self {
             config,
             active_chains: HashMap::new(),
@@ -125,6 +134,13 @@ impl Chainz {
         &self.config.chains
     }
 
+    pub fn remove_chain(&mut self, name_or_id: &str) -> Result<ChainDefinition> {
+        let definition = self.config.get_chain(name_or_id)?;
+        self.config.chains.retain(|c| c.name != definition.name);
+        self.active_chains.remove(&definition.name);
+        Ok(definition)
+    }
+
     pub async fn save(&self) -> Result<()> {
         self.config.write().await
     }
@@ -137,11 +153,16 @@ impl Chainz {
 impl Config {
     pub async fn load() -> Result<Self> {
         let path = get_config_path().ok_or(anyhow!("Unable to find config path"))?;
+        restrict_permissions(&path).await;
         let json = tokio::fs::read_to_string(&path)
             .await
             .with_context(|| format!("Failed to read config at {}", path.display()))?;
-        let config = serde_json::from_str(&json)
-            .with_context(|| "Failed to parse config (file may be corrupted)")?;
+        let config = serde_json::from_str(&json).with_context(|| {
+            format!(
+                "Failed to parse config at {} (fix or remove the file, then retry)",
+                path.display()
+            )
+        })?;
         Ok(config)
     }
 
@@ -181,9 +202,17 @@ impl Config {
 
         // Write to temp file, sync to disk, then atomically rename over the real file.
         // This ensures the config is never left in a partial/corrupt state.
-        tokio::fs::write(&tmp_path, &json).await?;
-        let file = tokio::fs::File::open(&tmp_path).await?;
+        // The config may hold private keys, so it must only be readable by the owner;
+        // remove any stale temp file so the mode applies at creation.
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+        let mut open_options = tokio::fs::OpenOptions::new();
+        open_options.write(true).create_new(true);
+        #[cfg(unix)]
+        open_options.mode(0o600);
+        let mut file = open_options.open(&tmp_path).await?;
+        file.write_all(json.as_bytes()).await?;
         file.sync_all().await?;
+        drop(file);
         tokio::fs::rename(&tmp_path, &path).await?;
 
         Ok(())
@@ -194,6 +223,20 @@ impl Config {
             .await?;
         Ok(())
     }
+}
+
+/// Tighten permissions on an existing config to owner-only, since it may
+/// contain private keys. Best-effort: failures are ignored (e.g. missing file).
+async fn restrict_permissions(path: &Path) {
+    #[cfg(unix)]
+    if let Ok(meta) = tokio::fs::metadata(path).await {
+        let mode = meta.permissions().mode() & 0o777;
+        if mode & 0o077 != 0 {
+            let _ = tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).await;
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
 }
 
 fn get_config_path() -> Option<PathBuf> {

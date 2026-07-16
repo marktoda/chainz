@@ -1,8 +1,9 @@
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
 #[command(
     name = "chainz",
+    version,
     about = "CLI tool for managing EVM chain configurations"
 )]
 pub struct Opt {
@@ -33,6 +34,15 @@ pub enum Command {
     Update {
         #[command(flatten)]
         args: UpdateArgs,
+    },
+
+    /// Remove a chain configuration
+    ///
+    /// Example: chainz remove ethereum
+    #[command(alias = "rm")]
+    Remove {
+        /// Chain name or ID to remove
+        name_or_id: String,
     },
 
     /// List all configured chains
@@ -95,12 +105,18 @@ pub enum Command {
 #[derive(Debug, Subcommand)]
 pub enum KeyCommand {
     /// Add a new private key
+    ///
+    /// Fully non-interactive when both --key and --type are provided
+    /// (--key alone implies --type private-key).
     Add {
         /// Name for the private key
         name: String,
         /// The private key (will prompt if not provided)
         #[arg(long)]
         key: Option<String>,
+        /// How to store the key (interactive picker if omitted)
+        #[arg(long = "type", value_enum)]
+        key_type: Option<KeyTypeArg>,
     },
     /// List all stored private keys
     List,
@@ -109,6 +125,19 @@ pub enum KeyCommand {
         /// Name of the private key to remove
         name: String,
     },
+}
+
+/// Storage backend for a private key
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum KeyTypeArg {
+    /// Store the raw private key in the config file
+    PrivateKey,
+    /// Encrypt the key with a password (AES-256-GCM + Argon2)
+    Encrypted,
+    /// Reference a 1Password item (requires `op` CLI)
+    OnePassword,
+    /// Store the key in the OS keyring
+    Keyring,
 }
 
 #[derive(Debug, Subcommand)]

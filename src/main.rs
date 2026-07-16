@@ -39,8 +39,16 @@ async fn main() -> Result<()> {
             println!("\nFinal configuration:");
             println!("{}", chain);
         }
+        opt::Command::Remove { name_or_id } => {
+            let removed = chainz.remove_chain(&name_or_id)?;
+            chainz.save().await?;
+            println!("Removed chain '{}'", removed.name);
+        }
         opt::Command::List => {
             let chains = chainz.list_chains();
+            if chains.is_empty() {
+                println!("No chains configured. Run 'chainz init' or 'chainz add' to get started.");
+            }
             for chain_def in chains {
                 println!("{}", chain_def);
             }
