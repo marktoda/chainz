@@ -12,6 +12,11 @@ pub fn header(title: &str) -> String {
     )
 }
 
+/// A section title without header's separator rule.
+pub fn section(title: &str) -> String {
+    format!("\n{}", style(title).cyan().bold())
+}
+
 pub fn success(msg: &str) -> String {
     format!("{} {}", style("✓").green(), msg)
 }
@@ -49,5 +54,7 @@ mod tests {
         assert!(item("step").contains("▸"));
         assert!(header("Section").contains("Section"));
         assert!(header("Section").contains("═"));
+        assert!(section("Keys").contains("Keys"));
+        assert!(!section("Keys").contains("═"));
     }
 }

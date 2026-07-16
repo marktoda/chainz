@@ -58,7 +58,7 @@ pub async fn run(chainz: &mut Chainz, fix: bool) -> Result<Report> {
 }
 
 fn check_keys(chainz: &Chainz, report: &mut Report) {
-    println!("{}", ui::header("Keys"));
+    println!("{}", ui::section("Keys"));
     let keys = chainz.list_keys();
     if keys.is_empty() {
         println!("  no keys configured");
@@ -80,7 +80,7 @@ fn check_keys(chainz: &Chainz, report: &mut Report) {
 }
 
 fn check_key_references(chainz: &Chainz, report: &mut Report) {
-    println!("{}", ui::header("Key references"));
+    println!("{}", ui::section("Key references"));
     let mut ok = true;
     for chain in chainz.list_chains() {
         if chainz.get_key(&chain.key_name).is_err() {
@@ -103,7 +103,7 @@ fn check_key_references(chainz: &Chainz, report: &mut Report) {
 /// Concurrently health-check every chain's selected RPC.
 /// Returns the names of chains whose RPC failed.
 async fn check_rpc_health(chainz: &Chainz, report: &mut Report) -> Vec<String> {
-    println!("{}", ui::header("RPC health"));
+    println!("{}", ui::section("RPC health"));
     let chains = chainz.list_chains();
     if chains.is_empty() {
         println!("  no chains configured");
@@ -143,7 +143,7 @@ async fn healthy(expanded_url: &str, chain_id: u64) -> bool {
 }
 
 async fn fix_rpcs(chainz: &mut Chainz, failed: &[String], report: &mut Report) -> Result<()> {
-    println!("{}", ui::header("Fixing RPCs"));
+    println!("{}", ui::section("Fixing RPCs"));
     let mut fixed_any = false;
     for name in failed {
         let chain = chainz.config.get_chain(name)?;
