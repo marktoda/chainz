@@ -1,19 +1,8 @@
 use anyhow::Result;
+use chainz::{config::Chainz, init, opt, opt::Opt, variables::ChainVariables};
 use clap::Parser;
 use dialoguer::FuzzySelect;
 use std::process::Command as ProcessCommand;
-
-pub mod chain;
-pub mod chainlist;
-pub mod config;
-pub mod init;
-pub mod key;
-pub mod opt;
-pub mod variables;
-
-use config::Chainz;
-use opt::Opt;
-use variables::ChainVariables;
 
 #[tokio::main]
 async fn main() -> Result<()> {
