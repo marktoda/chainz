@@ -2,11 +2,10 @@ use crate::{
     chain::DEFAULT_KEY_NAME,
     config::{Chainz, config_exists},
     key::{Key, KeyType},
-    opt,
+    opt, ui,
 };
 use alloy::signers::local::PrivateKeySigner;
 use anyhow::Result;
-use colored::Colorize;
 use dialoguer::{Confirm, Input};
 
 const INFURA_API_KEY_ENV_VAR: &str = "INFURA_API_KEY";
@@ -31,8 +30,7 @@ pub async fn handle_init() -> Result<()> {
 }
 
 async fn initialize_with_wizard() -> Result<Chainz> {
-    println!("\n{}", "Chainz Initialization".bright_blue().bold());
-    println!("{}", "═".bright_black().repeat(50));
+    println!("{}", ui::header("Chainz Initialization"));
     let mut chainz = Chainz::new();
 
     let private_key = {
@@ -67,8 +65,7 @@ async fn initialize_with_wizard() -> Result<Chainz> {
 
     // Add chains in a loop until user chooses to exit
     loop {
-        println!("\n{}", "Chain Management".bright_blue().bold());
-        println!("{}", "═".bright_black().repeat(50));
+        println!("{}", ui::header("Chain Management"));
         let should_add = Confirm::new()
             .with_prompt("Would you like to add another chain?")
             .default(true)

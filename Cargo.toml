@@ -34,7 +34,6 @@ clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs", "time"] }
 indicatif = "0.18"
-colored = "3"
 aes-gcm = "0.10"
 base64 = "0.22"
 keyring = { version = "3", features = [

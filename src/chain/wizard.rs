@@ -2,6 +2,7 @@ use super::{
     ChainDefinition, DEFAULT_KEY_NAME, Rpc,
     rpc::{check_urls, resolve_rpc, resolve_rpcs, test_rpc},
 };
+use crate::ui;
 use crate::{
     chainlist::{ChainlistEntry, fetch_all_chains, fetch_chain_by_id},
     config::Chainz,
@@ -10,7 +11,7 @@ use crate::{
     variables::GlobalVariables,
 };
 use anyhow::Result;
-use colored::*;
+use console::style;
 use dialoguer::{FuzzySelect, Input};
 
 /// Helper function to handle text input with ESC cancellation
@@ -39,7 +40,7 @@ pub async fn manual_chain_entry(
     name: Option<String>,
     chain_id: Option<u64>,
 ) -> Result<ChainlistEntry> {
-    println!("\n{}", "Manual Chain Entry".bright_yellow().bold());
+    println!("\n{}", style("Manual Chain Entry").yellow().bold());
     let name = if let Some(n) = name {
         n
     } else {
@@ -69,16 +70,16 @@ pub async fn select_rpc(
     // Initialize displays with "testing" status
     let mut rpc_displays: Vec<String> = available_rpcs
         .iter()
-        .map(|rpc| format!("{} {}", "⋯".bright_yellow(), rpc))
+        .map(|rpc| ui::dim(&format!("⋯ {}", rpc)))
         .collect();
 
     // Test all RPCs concurrently against the expected chain id
     let urls: Vec<String> = available_rpcs.iter().map(|r| r.rpc_url.clone()).collect();
     for (idx, healthy) in check_urls(&urls, chain_id).await.into_iter().enumerate() {
         rpc_displays[idx] = if healthy {
-            format!("{} {}", "✓".bright_green(), available_rpcs[idx])
+            ui::success(&format!("{}", available_rpcs[idx]))
         } else {
-            format!("{} {}", "✗".bright_red(), available_rpcs[idx])
+            ui::fail(&format!("{}", available_rpcs[idx]))
         };
     }
 
@@ -86,7 +87,7 @@ pub async fn select_rpc(
     rpc_displays.push("Enter RPC URL manually...".to_string());
 
     let rpc_selection = fuzzy_select(
-        &format!("Select an RPC URL for {}", chain_name.yellow()),
+        &format!("Select an RPC URL for {}", ui::emph(chain_name)),
         &rpc_displays,
         0,
     )?;
@@ -107,11 +108,11 @@ async fn select_manual_rpc(chain_id: u64) -> Result<Rpc> {
         let rpc = resolve_rpc(&rpc_url, &GlobalVariables::default()).await?;
 
         if test_rpc(&rpc, chain_id).await.is_ok() {
-            println!("{} RPC working", "✓".bright_green());
+            println!("{}", ui::success("RPC working"));
             return Ok(rpc);
         }
 
-        println!("{} RPC failed. Try again? (ESC to exit)", "✗".bright_red());
+        println!("{}", ui::fail("RPC failed. Try again? (ESC to exit)"));
     }
 }
 
@@ -175,8 +176,7 @@ pub fn select_verifier() -> Result<(Option<String>, Option<String>)> {
 
 impl UpdateArgs {
     pub async fn handle(&self, chainz: &mut Chainz) -> Result<ChainDefinition> {
-        println!("\n{}", "Chain Update".bright_blue().bold());
-        println!("{}", "═".bright_black().repeat(50));
+        println!("{}", ui::header("Chain Update"));
 
         // Select chain to update
         let chains: Vec<String> = chainz
@@ -196,8 +196,7 @@ impl UpdateArgs {
         // Select what to update
         let options = vec!["RPC URL", "Key", "Verification"];
 
-        println!("\n{}", "Update Options".bright_blue().bold());
-        println!("{}", "═".bright_black().repeat(50));
+        println!("{}", ui::header("Update Options"));
         println!("Current configuration:");
         println!("{}", chain);
 
@@ -206,8 +205,7 @@ impl UpdateArgs {
         match selection {
             0 => {
                 // Update RPC URL
-                println!("\n{}", "RPC Configuration".bright_blue().bold());
-                println!("{}", "═".bright_black().repeat(50));
+                println!("{}", ui::header("RPC Configuration"));
 
                 // Try to get fresh RPC list from chainlist
                 let chainlist_entry = fetch_chain_by_id(chain.chain_id, self.refresh).await;
@@ -225,16 +223,14 @@ impl UpdateArgs {
             }
             1 => {
                 // Update key
-                println!("\n{}", "Key Configuration".bright_blue().bold());
-                println!("{}", "═".bright_black().repeat(50));
+                println!("{}", ui::header("Key Configuration"));
 
                 let new_key = select_key(chainz)?;
                 chain.key_name = new_key;
             }
             2 => {
                 // Update verification API key
-                println!("\n{}", "Verification Configuration".bright_blue().bold());
-                println!("{}", "═".bright_black().repeat(50));
+                println!("{}", ui::header("Verification Configuration"));
 
                 let (verification_url, verification_key) = select_verifier()?;
                 chain.verification_url = verification_url;
@@ -246,7 +242,7 @@ impl UpdateArgs {
         // Save changes
         chainz.add_chain(chain.clone())?;
         chainz.save().await?;
-        println!("\n{}", "Chain updated successfully".bright_green());
+        println!("\n{}", style("Chain updated successfully").green());
 
         Ok(chain)
     }
@@ -307,8 +303,7 @@ impl AddArgs {
     }
 
     async fn handle_interactive(&self, chainz: &mut Chainz) -> Result<ChainDefinition> {
-        println!("\n{}", "Chain Selection".bright_blue().bold());
-        println!("{}", "═".bright_black().repeat(50));
+        println!("{}", ui::header("Chain Selection"));
 
         let selected_chain = if self.name.is_some() || self.chain_id.is_some() {
             // Pre-fill from CLI args when partially provided
@@ -349,11 +344,10 @@ impl AddArgs {
             println!("Testing RPC...");
             let rpc = resolve_rpc(rpc_url, &chainz.config.globals).await?;
             test_rpc(&rpc, selected_chain.chain_id).await?;
-            println!("{} RPC working", "✓".bright_green());
+            println!("{}", ui::success("RPC working"));
             rpc_url.clone()
         } else {
-            println!("\n{}", "RPC Configuration".bright_blue().bold());
-            println!("{}", "═".bright_black().repeat(50));
+            println!("{}", ui::header("RPC Configuration"));
 
             select_rpc(
                 &selected_chain.name,
@@ -372,8 +366,7 @@ impl AddArgs {
             })?;
             key.clone()
         } else {
-            println!("\n{}", "Key Configuration".bright_blue().bold());
-            println!("{}", "═".bright_black().repeat(50));
+            println!("{}", ui::header("Key Configuration"));
             select_key(chainz)?
         };
 
