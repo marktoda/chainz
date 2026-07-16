@@ -5,12 +5,7 @@
 //! RPC failover deliberately lives here rather than in `exec`, which stays
 //! network-free and fast.
 
-use crate::{
-    chain::rpc::{check_url, check_urls},
-    config::Chainz,
-    key::KeyType,
-    ui,
-};
+use crate::{chain::rpc::check_urls, config::Chainz, key::KeyType, ui};
 use anyhow::Result;
 use console::style;
 
@@ -115,31 +110,34 @@ async fn check_rpc_health(chainz: &Chainz, report: &mut Report) -> Vec<String> {
     let checks: Vec<_> = chains
         .iter()
         .map(|c| {
-            let url = chainz.config.globals.expand_rpc_url(&c.selected_rpc);
+            let expanded = chainz.config.globals.expand_rpc_url(&c.selected_rpc);
+            let raw = c.selected_rpc.clone();
             let chain_id = c.chain_id;
             let name = c.name.clone();
-            tokio::spawn(async move { (name, healthy(&url, chain_id).await, url) })
+            tokio::spawn(async move {
+                let (healthy, latency) = crate::chain::rpc::probe(&expanded, chain_id).await;
+                (name, healthy, raw, latency)
+            })
         })
         .collect();
 
     let mut failed = Vec::new();
     for handle in checks {
-        let Ok((name, is_healthy, url)) = handle.await else {
+        let Ok((name, is_healthy, raw_url, latency)) = handle.await else {
             continue;
         };
         if is_healthy {
-            println!("  {}", ui::success(&format!("{} ({})", name, url)));
+            println!(
+                "  {}",
+                ui::success(&format!("{} ({}) {}ms", name, raw_url, latency.as_millis()))
+            );
         } else {
             report.failures += 1;
-            println!("  {}", ui::fail(&format!("{} ({})", name, url)));
+            println!("  {}", ui::fail(&format!("{} ({})", name, raw_url)));
             failed.push(name);
         }
     }
     failed
-}
-
-async fn healthy(expanded_url: &str, chain_id: u64) -> bool {
-    check_url(expanded_url, chain_id).await.is_ok()
 }
 
 async fn fix_rpcs(chainz: &mut Chainz, failed: &[String], report: &mut Report) -> Result<()> {
@@ -166,7 +164,7 @@ async fn fix_rpcs(chainz: &mut Chainz, failed: &[String], report: &mut Report) -
                 chainz.set_selected_rpc(name, candidates[i].clone())?;
                 println!(
                     "  {}",
-                    ui::success(&format!("{}: switched to {}", name, expanded[i]))
+                    ui::success(&format!("{}: switched to {}", name, candidates[i]))
                 );
                 report.failures = report.failures.saturating_sub(1);
                 fixed_any = true;
