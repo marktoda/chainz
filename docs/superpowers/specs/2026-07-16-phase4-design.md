@@ -96,9 +96,19 @@ Env-var use stays silent. No hard break.
 
 ### Streaming RPC checks
 
-- `check_urls` becomes a stream of `(index, latency, result)` events as
-  probes complete (data layer, no TTY knowledge). A render layer consumes
-  the stream.
+- Probing becomes an event stream: `probe(url, chain_id) -> (healthy,
+  latency)` is the single deadline-bearing health check; `probe_urls`
+  fans it out and yields `ProbeResult { index, healthy, latency }` events
+  in completion order (data layer, no TTY knowledge). `check_urls` remains
+  as a collecting wrapper. A render layer consumes the stream.
+- **Collapse:** the old `Rpc` struct (URL + live provider pair),
+  `resolve_rpc`, `resolve_rpcs`, and `test_rpc` are deleted;
+  `create_provider` becomes private. `select_rpc` takes plain URL strings.
+- **Raw-vs-expanded boundary:** pickers, doctor output, and config storage
+  always use raw URLs (`${VAR}` intact); expansion happens only inside
+  probe calls and exec-time resolution. This fixes the old flow, which
+  displayed expanded URLs on screen and stored them into `selected_rpc`
+  (baking API keys into the config).
 - `add` wizard: per-RPC lines update live (`⋯ → ✓ 89ms / ✗ timeout`) under
   an elapsed-time spinner; a **~4s global deadline** replaces the 10s worst
   case; unfinished probes render as timeouts; the picker opens immediately
