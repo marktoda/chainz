@@ -1,9 +1,9 @@
 use super::{
     ChainDefinition, DEFAULT_KEY_NAME, Rpc,
-    rpc::{create_provider, resolve_rpc, resolve_rpcs, test_rpc},
+    rpc::{check_urls, resolve_rpc, resolve_rpcs, test_rpc},
 };
 use crate::{
-    chainlist::{ChainlistEntry, fetch_all_chains, fetch_chain_data},
+    chainlist::{ChainlistEntry, fetch_all_chains, fetch_chain_by_id},
     config::Chainz,
     key::{Key, KeyType},
     opt::{AddArgs, UpdateArgs},
@@ -72,32 +72,14 @@ pub async fn select_rpc(
         .map(|rpc| format!("{} {}", "⋯".bright_yellow(), rpc))
         .collect();
 
-    // Create a vector of futures for testing RPCs concurrently
-    let mut test_futures = Vec::new();
-    for (idx, rpc) in available_rpcs.iter().enumerate() {
-        let rpc_url = rpc.rpc_url.clone();
-        let test_future = async move {
-            let provider = match create_provider(&rpc_url).await {
-                Ok(p) => p,
-                Err(e) => return (idx, Err(e)),
-            };
-            let rpc_to_test = Rpc { rpc_url, provider };
-            let result = test_rpc(&rpc_to_test, chain_id).await;
-            (idx, result)
-        };
-        test_futures.push(tokio::spawn(test_future));
-    }
-
-    // The tasks are already running concurrently; collect their results
-    for handle in test_futures {
-        let Ok((idx, result)) = handle.await else {
-            continue;
-        };
-        if result.is_ok() {
-            rpc_displays[idx] = format!("{} {}", "✓".bright_green(), available_rpcs[idx]);
+    // Test all RPCs concurrently against the expected chain id
+    let urls: Vec<String> = available_rpcs.iter().map(|r| r.rpc_url.clone()).collect();
+    for (idx, healthy) in check_urls(&urls, chain_id).await.into_iter().enumerate() {
+        rpc_displays[idx] = if healthy {
+            format!("{} {}", "✓".bright_green(), available_rpcs[idx])
         } else {
-            rpc_displays[idx] = format!("{} {}", "✗".bright_red(), available_rpcs[idx]);
-        }
+            format!("{} {}", "✗".bright_red(), available_rpcs[idx])
+        };
     }
 
     // Add manual entry option
@@ -228,8 +210,7 @@ impl UpdateArgs {
                 println!("{}", "═".bright_black().repeat(50));
 
                 // Try to get fresh RPC list from chainlist
-                let chainlist_entry =
-                    fetch_chain_data(Some(chain.chain_id), None, self.refresh).await;
+                let chainlist_entry = fetch_chain_by_id(chain.chain_id, self.refresh).await;
                 let available_rpcs = chainlist_entry
                     .map(|c| c.rpc)
                     .unwrap_or_else(|_| chain.rpc_urls.clone());
@@ -312,14 +293,8 @@ impl AddArgs {
             key_name,
         };
 
-        // Check for existing chain
-        if chainz
-            .config
-            .chains
-            .iter()
-            .any(|c| c.name == chain_def.name)
-            && !self.force
-        {
+        // Check for existing chain (by name or alias)
+        if chainz.chain_exists(&chain_def.name) && !self.force {
             anyhow::bail!(
                 "Chain '{}' already exists. Use --force to overwrite.",
                 chain_def.name
@@ -424,13 +399,8 @@ impl AddArgs {
             key_name,
         };
 
-        // Confirm before replacing an existing chain
-        if chainz
-            .config
-            .chains
-            .iter()
-            .any(|c| c.name == chain_def.name)
-        {
+        // Confirm before replacing an existing chain (matched by name or alias)
+        if chainz.chain_exists(&chain_def.name) {
             if self.force {
                 // Skip prompt with --force
             } else {

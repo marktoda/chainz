@@ -64,9 +64,7 @@ fn seed_config(home: &Path, chains: &[(&str, u64)]) {
         )]),
         ..Default::default()
     };
-    let path = config_path(home);
-    fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+    write_raw_config(home, &serde_json::to_string_pretty(&config).unwrap());
 }
 
 #[test]
@@ -455,9 +453,16 @@ fn list_json_outputs_machine_readable_chains() {
         .get_output()
         .stdout
         .clone();
-    let parsed: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    let text = String::from_utf8(output).unwrap();
+    assert!(
+        !text.contains("verification_api_key"),
+        "credentials must not appear in the scripting output"
+    );
+    let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
     assert_eq!(parsed[0]["name"], "ethereum");
     assert_eq!(parsed[0]["chain_id"], 1);
+    assert_eq!(parsed[0]["is_default"], false);
+    assert!(parsed[0]["aliases"].is_array(), "shape must be regular");
 }
 
 #[test]

@@ -43,9 +43,6 @@ async fn main() -> Result<()> {
         }
         opt::Command::Remove { name_or_id } => {
             let removed = chainz.remove_chain(&name_or_id)?;
-            if chainz.config.default_chain.as_deref() == Some(removed.name.as_str()) {
-                chainz.config.default_chain = None;
-            }
             chainz.save().await?;
             println!("Removed chain '{}'", removed.name);
         }
@@ -62,7 +59,20 @@ async fn main() -> Result<()> {
         opt::Command::List { json } => {
             let chains = chainz.list_chains();
             if json {
-                println!("{}", serde_json::to_string_pretty(chains)?);
+                let entries: Vec<_> = chains
+                    .iter()
+                    .map(|c| ChainListing {
+                        name: &c.name,
+                        aliases: &c.aliases,
+                        chain_id: c.chain_id,
+                        selected_rpc: &c.selected_rpc,
+                        rpc_urls: &c.rpc_urls,
+                        key_name: &c.key_name,
+                        verification_url: c.verification_url.as_deref(),
+                        is_default: chainz.config.default_chain.as_deref() == Some(c.name.as_str()),
+                    })
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&entries)?);
             } else {
                 if chains.is_empty() {
                     println!(
@@ -114,6 +124,21 @@ async fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The `list --json` scripting contract: a stable shape decoupled from the
+/// storage schema, which deliberately never includes credentials
+/// (`verification_api_key` stays out).
+#[derive(serde::Serialize)]
+struct ChainListing<'a> {
+    name: &'a str,
+    aliases: &'a [String],
+    chain_id: u64,
+    selected_rpc: &'a str,
+    rpc_urls: &'a [String],
+    key_name: &'a str,
+    verification_url: Option<&'a str>,
+    is_default: bool,
 }
 
 fn select_chain(chainz: &Chainz) -> Result<String> {

@@ -6,10 +6,7 @@
 //! network-free and fast.
 
 use crate::{
-    chain::{
-        Rpc,
-        rpc::{create_provider, test_rpc},
-    },
+    chain::rpc::{check_url, check_urls},
     config::Chainz,
     key::KeyType,
 };
@@ -112,25 +109,24 @@ async fn check_rpc_health(chainz: &Chainz, report: &mut Report) -> Vec<String> {
         return vec![];
     }
 
+    // The chain-id assertion inside check_urls means chains with different
+    // ids can't share one batch; check per chain, but all chains in parallel.
     let checks: Vec<_> = chains
         .iter()
         .map(|c| {
             let url = chainz.config.globals.expand_rpc_url(&c.selected_rpc);
-            let name = c.name.clone();
             let chain_id = c.chain_id;
-            tokio::spawn(async move {
-                let healthy = check_rpc(&url, chain_id).await.is_ok();
-                (name, url, healthy)
-            })
+            let name = c.name.clone();
+            tokio::spawn(async move { (name, healthy(&url, chain_id).await, url) })
         })
         .collect();
 
     let mut failed = Vec::new();
     for handle in checks {
-        let Ok((name, url, healthy)) = handle.await else {
+        let Ok((name, is_healthy, url)) = handle.await else {
             continue;
         };
-        if healthy {
+        if is_healthy {
             println!("  {} {} ({})", "✓".bright_green(), name, url);
         } else {
             report.failures += 1;
@@ -141,48 +137,51 @@ async fn check_rpc_health(chainz: &Chainz, report: &mut Report) -> Vec<String> {
     failed
 }
 
+async fn healthy(expanded_url: &str, chain_id: u64) -> bool {
+    check_url(expanded_url, chain_id).await.is_ok()
+}
+
 async fn fix_rpcs(chainz: &mut Chainz, failed: &[String], report: &mut Report) -> Result<()> {
     println!("\n{}", "Fixing RPCs".bright_blue().bold());
     let mut fixed_any = false;
     for name in failed {
         let chain = chainz.config.get_chain(name)?;
-        let mut fixed = false;
-        for candidate in &chain.rpc_urls {
-            if *candidate == chain.selected_rpc {
-                continue;
-            }
-            let url = chainz.config.globals.expand_rpc_url(candidate);
-            if check_rpc(&url, chain.chain_id).await.is_ok() {
-                let mut updated = chain.clone();
-                updated.selected_rpc = candidate.clone();
-                chainz.add_chain(updated)?;
-                println!("  {} {}: switched to {}", "✓".bright_green(), name, url);
+        // Probe all alternatives concurrently (chainlist chains can carry
+        // dozens of RPCs; sequential 10s timeouts would stall for minutes),
+        // then prefer the first healthy one in configured order.
+        let candidates: Vec<&String> = chain
+            .rpc_urls
+            .iter()
+            .filter(|url| **url != chain.selected_rpc)
+            .collect();
+        let expanded: Vec<String> = candidates
+            .iter()
+            .map(|url| chainz.config.globals.expand_rpc_url(url))
+            .collect();
+        let health = check_urls(&expanded, chain.chain_id).await;
+
+        match health.iter().position(|h| *h) {
+            Some(i) => {
+                chainz.set_selected_rpc(name, candidates[i].clone())?;
+                println!(
+                    "  {} {}: switched to {}",
+                    "✓".bright_green(),
+                    name,
+                    expanded[i]
+                );
                 report.failures = report.failures.saturating_sub(1);
-                fixed = true;
                 fixed_any = true;
-                break;
             }
-        }
-        if !fixed {
-            println!(
+            None => println!(
                 "  {} {}: no healthy alternative among {} configured RPC(s)",
                 "✗".bright_red(),
                 name,
                 chain.rpc_urls.len()
-            );
+            ),
         }
     }
     if fixed_any {
         chainz.save().await?;
     }
     Ok(())
-}
-
-async fn check_rpc(expanded_url: &str, chain_id: u64) -> Result<()> {
-    let provider = create_provider(expanded_url).await?;
-    let rpc = Rpc {
-        rpc_url: expanded_url.to_string(),
-        provider,
-    };
-    test_rpc(&rpc, chain_id).await
 }

@@ -38,6 +38,36 @@ pub async fn resolve_rpc(rpc_url: &str, globals: &GlobalVariables) -> Result<Rpc
     })
 }
 
+/// Test whether an (already-expanded) RPC URL serves the expected chain id.
+/// The single definition of "is this RPC healthy" — used by the add/update
+/// wizard and by `chainz doctor`.
+pub async fn check_url(rpc_url: &str, expected_chain_id: u64) -> Result<()> {
+    let provider = create_provider(rpc_url).await?;
+    test_rpc(
+        &Rpc {
+            rpc_url: rpc_url.to_string(),
+            provider,
+        },
+        expected_chain_id,
+    )
+    .await
+}
+
+/// Concurrently check many (already-expanded) RPC URLs against an expected
+/// chain id. Returns one health flag per input URL, in order.
+pub async fn check_urls(urls: &[String], expected_chain_id: u64) -> Vec<bool> {
+    let handles: Vec<_> = urls
+        .iter()
+        .cloned()
+        .map(|url| tokio::spawn(async move { check_url(&url, expected_chain_id).await.is_ok() }))
+        .collect();
+    let mut results = Vec::with_capacity(handles.len());
+    for handle in handles {
+        results.push(handle.await.unwrap_or(false));
+    }
+    results
+}
+
 pub async fn create_provider(rpc_url: &str) -> Result<DynProvider> {
     let provider = tokio::time::timeout(
         std::time::Duration::from_secs(10),

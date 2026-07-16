@@ -280,17 +280,10 @@ impl KeyCommand {
 impl fmt::Display for Key {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let display = match &self.kind {
-            KeyType::PrivateKey { value } => {
-                // Only try to get address for unencrypted keys
-                let addr = Key::new(
-                    self.name.clone(),
-                    KeyType::PrivateKey {
-                        value: value.clone(),
-                    },
-                )
-                .address()
-                .map(|a| a.to_string())
-                .unwrap_or("Invalid key".to_string());
+            KeyType::PrivateKey { .. } => {
+                let addr = self
+                    .address_noninteractive()
+                    .unwrap_or_else(|| "Invalid key".to_string());
                 format!("{} ({})", self.name, addr)
             }
             KeyType::EncryptedKey { .. } => {
@@ -417,6 +410,39 @@ mod tests {
             }
         }
         Ok(())
+    }
+
+    /// kind_name hand-maintains the serde `type` tag names; this pins them
+    /// together so a rename in one place can't silently desync the other.
+    #[test]
+    fn test_kind_name_matches_serde_tag() {
+        let keys = [
+            Key::new(
+                "a".into(),
+                KeyType::PrivateKey {
+                    value: TEST_PRIVATE_KEY.into(),
+                },
+            ),
+            Key::encrypt("b".into(), TEST_PRIVATE_KEY, "pw").unwrap(),
+            Key::new(
+                "c".into(),
+                KeyType::OnePassword {
+                    vault: "v".into(),
+                    item: "i".into(),
+                },
+            ),
+            Key::new(
+                "d".into(),
+                KeyType::Keyring {
+                    service: "s".into(),
+                    username: "u".into(),
+                },
+            ),
+        ];
+        for key in keys {
+            let serialized = serde_json::to_value(&key.kind).unwrap();
+            assert_eq!(serialized["type"], key.kind_name());
+        }
     }
 
     #[test]

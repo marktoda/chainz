@@ -83,25 +83,12 @@ async fn read_cache(path: Option<&std::path::Path>, ttl: Duration) -> Option<Vec
     serde_json::from_str(&json).ok()
 }
 
-pub async fn fetch_chain_data(
-    chain_id: Option<u64>,
-    name: Option<String>,
-    refresh: bool,
-) -> Result<ChainlistEntry> {
-    let chains = fetch_all_chains(refresh).await?;
-
-    let chain = if let Some(id) = chain_id {
-        chains.into_iter().find(|c| c.chain_id == id)
-    } else if let Some(name) = name {
-        let name_lower = name.to_lowercase();
-        chains
-            .into_iter()
-            .find(|c| c.name.to_lowercase() == name_lower)
-    } else {
-        None
-    };
-
-    chain.ok_or_else(|| anyhow!("Chain not found in chainlist"))
+pub async fn fetch_chain_by_id(chain_id: u64, refresh: bool) -> Result<ChainlistEntry> {
+    fetch_all_chains(refresh)
+        .await?
+        .into_iter()
+        .find(|c| c.chain_id == chain_id)
+        .ok_or_else(|| anyhow!("Chain {} not found in chainlist", chain_id))
 }
 
 #[cfg(test)]

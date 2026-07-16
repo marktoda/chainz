@@ -95,8 +95,15 @@ impl Chainz {
     }
 
     pub fn add_chain(&mut self, chain: ChainDefinition) -> Result<()> {
-        // Replace if exists, otherwise add
-        if let Some(pos) = self.config.chains.iter().position(|c| c.name == chain.name) {
+        // Replace if exists, otherwise add. Identity is the same
+        // case-insensitive name/alias matching used by lookups, so a new
+        // chain can never be shadowed by an existing chain's alias.
+        if let Some(pos) = self
+            .config
+            .chains
+            .iter()
+            .position(|c| c.matches_exact(&chain.name))
+        {
             self.config.chains[pos] = chain;
         } else {
             self.config.chains.push(chain);
@@ -105,13 +112,29 @@ impl Chainz {
         Ok(())
     }
 
+    /// Whether a chain would collide with `name` (by name or alias).
+    pub fn chain_exists(&self, name: &str) -> bool {
+        self.config.chains.iter().any(|c| c.matches_exact(name))
+    }
+
     pub fn list_chains(&self) -> &[ChainDefinition] {
         &self.config.chains
     }
 
     pub fn remove_chain(&mut self, name_or_id: &str) -> Result<ChainDefinition> {
         let pos = self.config.find_chain_index(name_or_id)?;
-        Ok(self.config.chains.remove(pos))
+        let removed = self.config.chains.remove(pos);
+        // Keep the default-chain invariant here so every caller gets it
+        if self.config.default_chain.as_deref() == Some(removed.name.as_str()) {
+            self.config.default_chain = None;
+        }
+        Ok(removed)
+    }
+
+    pub fn set_selected_rpc(&mut self, name_or_id: &str, rpc_url: String) -> Result<()> {
+        let pos = self.config.find_chain_index(name_or_id)?;
+        self.config.chains[pos].selected_rpc = rpc_url;
+        Ok(())
     }
 
     pub async fn save(&self) -> Result<()> {
@@ -186,9 +209,7 @@ impl Config {
     pub async fn write(&self) -> Result<()> {
         let path = get_config_path().ok_or(anyhow!("Unable to find config path"))?;
         if let Some(dir) = path.parent() {
-            tokio::fs::create_dir_all(dir).await?;
-            #[cfg(unix)]
-            let _ = tokio::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).await;
+            ensure_private_dir(dir).await?;
         }
         let tmp_path = path.with_extension("json.tmp");
 
@@ -212,11 +233,33 @@ impl Config {
         Ok(())
     }
 
+    /// Delete the config wherever it lives — both the current and the legacy
+    /// location, so a delete can never be undone by a later auto-migration.
     pub async fn delete() -> Result<()> {
-        tokio::fs::remove_file(get_config_path().ok_or(anyhow!("Unable to find config path"))?)
-            .await?;
+        for path in [get_config_path(), legacy_config_path()]
+            .into_iter()
+            .flatten()
+        {
+            match tokio::fs::remove_file(&path).await {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(e)
+                        .with_context(|| format!("Failed to delete config at {}", path.display()));
+                }
+            }
+        }
         Ok(())
     }
+}
+
+/// Create `dir` (if needed) with owner-only permissions; it will hold a
+/// config that can contain private keys.
+async fn ensure_private_dir(dir: &Path) -> std::io::Result<()> {
+    tokio::fs::create_dir_all(dir).await?;
+    #[cfg(unix)]
+    tokio::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).await?;
+    Ok(())
 }
 
 /// Tighten permissions on an existing config to owner-only, since it may
@@ -259,12 +302,10 @@ async fn migrate_legacy_config(new_path: &Path) {
     if tokio::fs::metadata(&legacy).await.is_err() {
         return;
     }
-    if let Some(dir) = new_path.parent() {
-        if tokio::fs::create_dir_all(dir).await.is_err() {
-            return;
-        }
-        #[cfg(unix)]
-        let _ = tokio::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).await;
+    if let Some(dir) = new_path.parent()
+        && ensure_private_dir(dir).await.is_err()
+    {
+        return;
     }
     if tokio::fs::rename(&legacy, new_path).await.is_ok() {
         eprintln!(
@@ -423,6 +464,37 @@ mod tests {
         let chains = chainz.list_chains();
         assert_eq!(chains.len(), 1);
         assert_eq!(chains[0].chain_id, 42);
+        Ok(())
+    }
+
+    #[test]
+    fn add_chain_replaces_by_alias_and_case() -> Result<()> {
+        let mut chainz = Chainz::new();
+        let mut eth = test_chain("ethereum", 1);
+        eth.aliases = vec!["Ethereum Mainnet".to_string()];
+        chainz.add_chain(eth)?;
+
+        // A new chain whose name collides with an existing ALIAS replaces
+        // that chain instead of being appended (and shadowed forever)
+        chainz.add_chain(test_chain("Ethereum Mainnet", 11))?;
+        assert_eq!(chainz.list_chains().len(), 1);
+        assert_eq!(chainz.list_chains()[0].chain_id, 11);
+
+        // Same for a case-variant of the primary name
+        chainz.add_chain(test_chain("ETHEREUM MAINNET", 12))?;
+        assert_eq!(chainz.list_chains().len(), 1);
+        assert_eq!(chainz.list_chains()[0].chain_id, 12);
+        Ok(())
+    }
+
+    #[test]
+    fn remove_chain_clears_default() -> Result<()> {
+        let mut chainz = Chainz::new();
+        chainz.add_chain(test_chain("ethereum", 1))?;
+        chainz.config.default_chain = Some("ethereum".to_string());
+
+        chainz.remove_chain("1")?;
+        assert_eq!(chainz.config.default_chain, None);
         Ok(())
     }
 
