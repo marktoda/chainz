@@ -4,14 +4,16 @@ A CLI tool for managing EVM chain configurations
 
 ## Features
 
-- Interactive chain discovery and configuration
-- Dynamic RPC health checking and failover
-- Private key management (encrypted, 1Password, keyring)
+- Interactive chain discovery and configuration (backed by [chainlist](https://chainid.network))
+- RPC health checking when adding or updating chains
+- Private key management (plaintext, encrypted, 1Password, keyring)
 - Multiple RPC support per chain
 - Environment variable interpolation
 - Command execution with chain-specific variable expansion
 
 ## Installation
+
+Requires Rust 1.88+.
 
 ```bash
 git clone https://github.com/marktoda/chainz.git
@@ -30,6 +32,9 @@ chainz add
 
 # List configured chains
 chainz list
+
+# Remove a chain
+chainz remove ethereum
 
 # Execute a command for a given chain
 chainz exec ethereum -- cast block-number
@@ -159,6 +164,14 @@ Stored keys:
 - deployer: 0xabc...def
 ```
 
+For scripting, `key add` is fully non-interactive when the key is passed on
+the command line (`--key` implies `--type private-key`):
+
+```bash
+> chainz key add ci-key --key 0xac09...ff80
+Added key 'ci-key'
+```
+
 ### Custom Variables
 
 Set and use custom variables for RPC URL interpolation:
@@ -177,7 +190,8 @@ Variables:
 
 ### Config File
 
-Configs are stored at `$HOME/.chainz.json`:
+Configs are stored at `$HOME/.chainz.json` with owner-only permissions
+(`0600`), since the file can contain private keys:
 
 ```json
 {
@@ -207,3 +221,7 @@ Configs are stored at `$HOME/.chainz.json`:
   }
 }
 ```
+
+## License
+
+MIT — see [LICENSE](LICENSE).
