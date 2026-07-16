@@ -4,12 +4,14 @@ A CLI tool for managing EVM chain configurations
 
 ## Features
 
-- Interactive chain discovery and configuration (backed by [chainlist](https://chainid.network))
-- RPC health checking when adding or updating chains
+- Interactive chain discovery and configuration (backed by [chainlist](https://chainid.network), cached locally)
+- Short chain names with aliases and prefix matching (`chainz exec eth`)
+- RPC health checking (`chainz doctor`, with `--fix` failover to healthy RPCs)
 - Private key management (plaintext, encrypted, 1Password, keyring)
-- Multiple RPC support per chain
+- Multiple RPC support per chain and a configurable default chain
 - Environment variable interpolation
 - Command execution with chain-specific variable expansion
+- Shell completions and `--json` output for scripting
 
 ## Installation
 
@@ -36,12 +38,22 @@ chainz list
 # Remove a chain
 chainz remove ethereum
 
-# Execute a command for a given chain
-chainz exec ethereum -- cast block-number
+# Execute a command for a given chain (prefix matching works)
+chainz exec eth -- cast block-number
 21532741
+
+# Set a default chain, then omit it
+chainz use ethereum
+chainz exec -- cast block-number
+
+# Check config and RPC health; switch dead RPCs to healthy ones
+chainz doctor --fix
 
 # Open a subshell with chain environment
 chainz exec ethereum -- bash
+
+# Install shell completions (zsh example)
+chainz completions zsh > ~/.zfunc/_chainz
 ```
 
 ## Usage
@@ -110,16 +122,26 @@ Update chain configuration:
 
 ### Executing Commands
 
-Execute commands with chain-specific variables expanded:
+Execute commands with chain-specific variables expanded. Chains can be
+referenced by name, alias, unambiguous prefix, or chain ID:
 
 ```bash
 > chainz exec 1 -- cast block-number
 21532741
 
-> chainz exec ethereum -- cast balance @wallet
+> chainz exec eth -- cast balance @wallet
 1.5 ETH
 
 > chainz exec 10 -- forge script Deploy
+```
+
+Set a default chain to omit the chain argument entirely:
+
+```bash
+> chainz use ethereum
+Default chain set to 'ethereum'
+> chainz exec -- cast block-number
+21532741
 ```
 
 Available expansions:
@@ -172,6 +194,38 @@ the command line (`--key` implies `--type private-key`):
 Added key 'ci-key'
 ```
 
+### Health Checks
+
+`chainz doctor` checks key storage, key references, and RPC connectivity for
+every chain (concurrently). With `--fix`, any dead selected RPC is switched to
+a healthy alternative from that chain's RPC list. Exits nonzero when failures
+are found, so it can gate scripts:
+
+```bash
+> chainz doctor --fix
+Keys
+  ⚠ 'default' is stored as a plaintext private key — consider re-adding it with --type encrypted or --type keyring
+
+Key references
+  ✓ all chains reference existing keys
+
+RPC health
+  ✓ ethereum (https://eth.llamarpc.com)
+  ✗ optimism (https://dead.example.com)
+
+Fixing RPCs
+  ✓ optimism: switched to https://mainnet.optimism.io
+```
+
+### Scripting
+
+`list` and `key list` support `--json` (key material is never included):
+
+```bash
+> chainz list --json | jq '.[].name'
+> chainz key list --json | jq '.[] | {name, address}'
+```
+
 ### Custom Variables
 
 Set and use custom variables for RPC URL interpolation:
@@ -190,14 +244,17 @@ Variables:
 
 ### Config File
 
-Configs are stored at `$HOME/.chainz.json` with owner-only permissions
-(`0600`), since the file can contain private keys:
+Configs are stored at `$XDG_CONFIG_HOME/chainz/config.json` (defaulting to
+`~/.config/chainz/config.json`) with owner-only permissions (`0600`), since
+the file can contain private keys. A legacy `~/.chainz.json` is migrated to
+the new location automatically on first run.
 
 ```json
 {
   "chains": [
     {
       "name": "ethereum",
+      "aliases": ["Ethereum Mainnet"],
       "chain_id": 1,
       "rpc_urls": [
         "https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",
@@ -218,9 +275,13 @@ Configs are stored at `$HOME/.chainz.json` with owner-only permissions
       "nonce": "<base64>",
       "salt": "<base64>"
     }
-  }
+  },
+  "default_chain": "ethereum"
 }
 ```
+
+The chainlist used by `chainz add` is cached at `~/.cache/chainz/chains.json`
+for 24 hours; pass `--refresh` to `add`/`update` to force a re-download.
 
 ## License
 

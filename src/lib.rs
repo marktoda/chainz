@@ -6,6 +6,7 @@
 pub mod chain;
 pub mod chainlist;
 pub mod config;
+pub mod doctor;
 pub mod init;
 pub mod key;
 pub mod opt;

@@ -12,7 +12,10 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
 
-pub const CONFIG_FILE_LOCATION: &str = ".chainz.json";
+/// Pre-0.3 config location, relative to $HOME. Migrated on first load.
+pub const LEGACY_CONFIG_FILE: &str = ".chainz.json";
+/// Config location relative to $HOME (when XDG_CONFIG_HOME is unset).
+pub const DEFAULT_CONFIG_RELATIVE: &str = ".config/chainz/config.json";
 
 #[derive(Default, Debug, Serialize, Deserialize)]
 pub struct Config {
@@ -20,6 +23,9 @@ pub struct Config {
     #[serde(rename = "variables")]
     pub globals: GlobalVariables,
     pub keys: HashMap<String, Key>,
+    /// Chain used by `exec` when none is specified; set via `chainz use`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_chain: Option<String>,
 }
 
 #[derive(Default)]
@@ -104,13 +110,7 @@ impl Chainz {
     }
 
     pub fn remove_chain(&mut self, name_or_id: &str) -> Result<ChainDefinition> {
-        let chain_id = name_or_id.parse::<u64>().ok();
-        let pos = self
-            .config
-            .chains
-            .iter()
-            .position(|c| Some(c.chain_id) == chain_id || c.name.eq_ignore_ascii_case(name_or_id))
-            .ok_or_else(|| anyhow!("Chain '{}' not found", name_or_id))?;
+        let pos = self.config.find_chain_index(name_or_id)?;
         Ok(self.config.chains.remove(pos))
     }
 
@@ -129,6 +129,7 @@ impl Config {
     /// broken config is never mistaken for a missing one.
     pub async fn load() -> Result<Option<Self>> {
         let path = get_config_path().ok_or(anyhow!("Unable to find config path"))?;
+        migrate_legacy_config(&path).await;
         restrict_permissions(&path).await;
         let json = match tokio::fs::read_to_string(&path).await {
             Ok(json) => json,
@@ -148,35 +149,47 @@ impl Config {
     }
 
     pub fn get_chain(&self, name_or_id: &str) -> Result<ChainDefinition> {
-        // Try to parse as chain ID first
-        if let Ok(chain_id) = name_or_id.parse::<u64>() {
-            return self.get_chain_config_by_id(chain_id);
+        self.find_chain_index(name_or_id)
+            .map(|i| self.chains[i].clone())
+    }
+
+    /// Resolve a chain reference: exact chain ID, then exact name/alias
+    /// (case-insensitive), then unambiguous name/alias prefix.
+    pub(crate) fn find_chain_index(&self, name_or_id: &str) -> Result<usize> {
+        if let Ok(chain_id) = name_or_id.parse::<u64>()
+            && let Some(i) = self.chains.iter().position(|c| c.chain_id == chain_id)
+        {
+            return Ok(i);
         }
 
-        // Try as name
-        self.get_chain_config_by_name(name_or_id)
-    }
+        if let Some(i) = self.chains.iter().position(|c| c.matches_exact(name_or_id)) {
+            return Ok(i);
+        }
 
-    pub fn get_chain_config_by_name(&self, name: &str) -> Result<ChainDefinition> {
-        Ok(self
-            .chains
-            .iter()
-            .find(|chain| chain.name.eq_ignore_ascii_case(name))
-            .ok_or_else(|| anyhow!("Chain '{}' not found", name))?
-            .clone())
-    }
-
-    pub fn get_chain_config_by_id(&self, chain_id: u64) -> Result<ChainDefinition> {
-        Ok(self
-            .chains
-            .iter()
-            .find(|chain| chain.chain_id == chain_id)
-            .ok_or_else(|| anyhow!("Chain with ID {} not found", chain_id))?
-            .clone())
+        let matches: Vec<usize> = (0..self.chains.len())
+            .filter(|&i| self.chains[i].matches_prefix(name_or_id))
+            .collect();
+        match matches.as_slice() {
+            [i] => Ok(*i),
+            [] => Err(anyhow!("Chain '{}' not found", name_or_id)),
+            many => Err(anyhow!(
+                "Chain '{}' is ambiguous: matches {}",
+                name_or_id,
+                many.iter()
+                    .map(|&i| self.chains[i].name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        }
     }
 
     pub async fn write(&self) -> Result<()> {
         let path = get_config_path().ok_or(anyhow!("Unable to find config path"))?;
+        if let Some(dir) = path.parent() {
+            tokio::fs::create_dir_all(dir).await?;
+            #[cfg(unix)]
+            let _ = tokio::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).await;
+        }
         let tmp_path = path.with_extension("json.tmp");
 
         let json = serde_json::to_string_pretty(self)?;
@@ -221,13 +234,50 @@ async fn restrict_permissions(path: &Path) {
 }
 
 fn get_config_path() -> Option<PathBuf> {
-    let mut path = home_dir()?;
-    path.push(CONFIG_FILE_LOCATION);
-    Some(path)
+    // Honor XDG_CONFIG_HOME when set; otherwise use ~/.config even on macOS,
+    // matching common CLI-tool convention.
+    match std::env::var_os("XDG_CONFIG_HOME") {
+        Some(dir) if !dir.is_empty() => Some(PathBuf::from(dir).join("chainz").join("config.json")),
+        _ => Some(home_dir()?.join(DEFAULT_CONFIG_RELATIVE)),
+    }
+}
+
+fn legacy_config_path() -> Option<PathBuf> {
+    Some(home_dir()?.join(LEGACY_CONFIG_FILE))
+}
+
+/// Move a pre-0.3 config from ~/.chainz.json to the current location.
+/// No-op when there is nothing to migrate or a config already exists at the
+/// new path (the legacy file is then left untouched).
+async fn migrate_legacy_config(new_path: &Path) {
+    if tokio::fs::metadata(new_path).await.is_ok() {
+        return;
+    }
+    let Some(legacy) = legacy_config_path() else {
+        return;
+    };
+    if tokio::fs::metadata(&legacy).await.is_err() {
+        return;
+    }
+    if let Some(dir) = new_path.parent() {
+        if tokio::fs::create_dir_all(dir).await.is_err() {
+            return;
+        }
+        #[cfg(unix)]
+        let _ = tokio::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).await;
+    }
+    if tokio::fs::rename(&legacy, new_path).await.is_ok() {
+        eprintln!(
+            "Migrated config from {} to {}",
+            legacy.display(),
+            new_path.display()
+        );
+    }
 }
 
 pub fn config_exists() -> bool {
     get_config_path().map(|p| p.exists()).unwrap_or(false)
+        || legacy_config_path().map(|p| p.exists()).unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -239,6 +289,7 @@ mod tests {
     fn test_chain(name: &str, chain_id: u64) -> ChainDefinition {
         ChainDefinition {
             name: name.to_string(),
+            aliases: vec![],
             chain_id,
             rpc_urls: vec!["https://rpc.example.com".to_string()],
             selected_rpc: "https://rpc.example.com".to_string(),
@@ -314,6 +365,35 @@ mod tests {
         let found = config.get_chain("1")?;
         assert_eq!(found.name, "ethereum");
         Ok(())
+    }
+
+    #[test]
+    fn get_chain_by_alias_and_prefix() -> Result<()> {
+        let mut config = Config::default();
+        let mut eth = test_chain("ethereum", 1);
+        eth.aliases = vec!["Ethereum Mainnet".to_string()];
+        config.chains.push(eth);
+        config.chains.push(test_chain("optimism", 10));
+
+        // exact alias, case-insensitive
+        assert_eq!(config.get_chain("ethereum mainnet")?.name, "ethereum");
+        // unambiguous prefix on name
+        assert_eq!(config.get_chain("opti")?.name, "optimism");
+        // exact match wins over prefix ambiguity
+        config.chains.push(test_chain("op", 130));
+        assert_eq!(config.get_chain("op")?.name, "op");
+        Ok(())
+    }
+
+    #[test]
+    fn get_chain_ambiguous_prefix_errors() {
+        let mut config = Config::default();
+        config.chains.push(test_chain("base", 8453));
+        config.chains.push(test_chain("basecamp", 123));
+
+        let err = config.get_chain("bas").unwrap_err().to_string();
+        assert!(err.contains("ambiguous"), "got: {}", err);
+        assert!(err.contains("base") && err.contains("basecamp"));
     }
 
     #[test]

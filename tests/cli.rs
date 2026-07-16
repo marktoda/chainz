@@ -3,7 +3,7 @@
 
 use assert_cmd::Command;
 use chainz::chain::ChainDefinition;
-use chainz::config::{CONFIG_FILE_LOCATION, Config};
+use chainz::config::{Config, DEFAULT_CONFIG_RELATIVE, LEGACY_CONFIG_FILE};
 use chainz::key::{Key, KeyType};
 use predicates::prelude::*;
 use std::fs;
@@ -19,11 +19,20 @@ const TEST_ADDRESS_2: &str = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
 fn chainz(home: &Path) -> Command {
     let mut cmd = Command::cargo_bin("chainz").unwrap();
     cmd.env("HOME", home);
+    // The ambient environment must not redirect the config out of the temp HOME
+    cmd.env_remove("XDG_CONFIG_HOME");
     cmd
 }
 
 fn config_path(home: &Path) -> std::path::PathBuf {
-    home.join(CONFIG_FILE_LOCATION)
+    home.join(DEFAULT_CONFIG_RELATIVE)
+}
+
+/// Write raw config content at the standard location (creating parent dirs).
+fn write_raw_config(home: &Path, content: &str) {
+    let path = config_path(home);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, content).unwrap();
 }
 
 /// Seed a config with one key and the given chains via the library's own
@@ -35,6 +44,7 @@ fn seed_config(home: &Path, chains: &[(&str, u64)]) {
             .iter()
             .map(|(name, id)| ChainDefinition {
                 name: name.to_string(),
+                aliases: vec![],
                 chain_id: *id,
                 rpc_urls: vec!["http://localhost:1".to_string()],
                 selected_rpc: "http://localhost:1".to_string(),
@@ -54,11 +64,9 @@ fn seed_config(home: &Path, chains: &[(&str, u64)]) {
         )]),
         ..Default::default()
     };
-    fs::write(
-        config_path(home),
-        serde_json::to_string_pretty(&config).unwrap(),
-    )
-    .unwrap();
+    let path = config_path(home);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
 }
 
 #[test]
@@ -190,7 +198,7 @@ fn loose_config_permissions_are_tightened_on_load() {
 #[test]
 fn corrupt_config_errors_and_is_not_overwritten() {
     let home = TempDir::new().unwrap();
-    fs::write(config_path(home.path()), "{not valid json").unwrap();
+    write_raw_config(home.path(), "{not valid json");
 
     // Read commands fail loudly
     chainz(home.path())
@@ -385,7 +393,7 @@ fn legacy_config_format_still_loads() {
             "default": { "name": "default", "type": "PrivateKey", "value": "REDACTED" }
         }
     }"#;
-    fs::write(config_path(home.path()), legacy).unwrap();
+    write_raw_config(home.path(), legacy);
 
     chainz(home.path())
         .arg("list")
@@ -397,6 +405,184 @@ fn legacy_config_format_still_loads() {
         .assert()
         .success()
         .stdout(predicate::str::contains("MY_VAR = abc"));
+}
+
+#[test]
+fn exec_resolves_prefix_and_alias() {
+    let home = TempDir::new().unwrap();
+    seed_config(home.path(), &[("ethereum", 1), ("optimism", 10)]);
+
+    // unambiguous prefix
+    chainz(home.path())
+        .args(["exec", "eth", "--", "echo", "@chainname"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ethereum"));
+
+    // ambiguous reference fails with candidates listed
+    seed_config(home.path(), &[("base", 8453), ("basecamp", 123)]);
+    chainz(home.path())
+        .args(["exec", "bas", "--", "echo", "hi"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("ambiguous"));
+}
+
+#[test]
+fn completions_generate_for_zsh_and_bash() {
+    let home = TempDir::new().unwrap();
+    chainz(home.path())
+        .args(["completions", "zsh"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("#compdef chainz"));
+    chainz(home.path())
+        .args(["completions", "bash"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("chainz"));
+}
+
+#[test]
+fn list_json_outputs_machine_readable_chains() {
+    let home = TempDir::new().unwrap();
+    seed_config(home.path(), &[("ethereum", 1)]);
+
+    let output = chainz(home.path())
+        .args(["list", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let parsed: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(parsed[0]["name"], "ethereum");
+    assert_eq!(parsed[0]["chain_id"], 1);
+}
+
+#[test]
+fn key_list_json_never_leaks_key_material() {
+    let home = TempDir::new().unwrap();
+    seed_config(home.path(), &[]);
+
+    let output = chainz(home.path())
+        .args(["key", "list", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(output).unwrap();
+    assert!(
+        !text.contains(TEST_KEY),
+        "key material must never appear in JSON output"
+    );
+    let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(parsed[0]["name"], "default");
+    assert_eq!(parsed[0]["type"], "PrivateKey");
+    assert_eq!(parsed[0]["address"], TEST_ADDRESS);
+}
+
+#[test]
+fn doctor_reports_dead_rpc_and_exits_nonzero() {
+    let home = TempDir::new().unwrap();
+    // selected RPC and the sole alternative are both dead
+    seed_config(home.path(), &[("deadchain", 31337)]);
+
+    chainz(home.path())
+        .arg("doctor")
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("deadchain"))
+        .stdout(predicate::str::contains("failure(s)"));
+
+    // --fix finds no healthy alternative but still exits gracefully
+    chainz(home.path())
+        .args(["doctor", "--fix"])
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("no healthy alternative"));
+}
+
+#[test]
+fn doctor_warns_on_plaintext_keys() {
+    let home = TempDir::new().unwrap();
+    seed_config(home.path(), &[]);
+    chainz(home.path())
+        .arg("doctor")
+        .assert()
+        .success() // warnings alone don't fail the check
+        .stdout(predicate::str::contains("plaintext"));
+}
+
+#[test]
+fn use_sets_default_chain_for_exec() {
+    let home = TempDir::new().unwrap();
+    seed_config(home.path(), &[("ethereum", 1), ("optimism", 10)]);
+
+    chainz(home.path())
+        .args(["use", "optimism"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Default chain set to 'optimism'"));
+
+    // bare exec uses the default; explicit chain still wins
+    chainz(home.path())
+        .args(["exec", "--", "echo", "@chainname"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("optimism"));
+    chainz(home.path())
+        .args(["exec", "ethereum", "--", "echo", "@chainname"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ethereum"));
+
+    // removing the default chain clears it
+    chainz(home.path())
+        .args(["remove", "optimism"])
+        .assert()
+        .success();
+    let config = fs::read_to_string(config_path(home.path())).unwrap();
+    assert!(!config.contains("default_chain"));
+}
+
+#[test]
+fn use_unknown_chain_fails() {
+    let home = TempDir::new().unwrap();
+    seed_config(home.path(), &[("ethereum", 1)]);
+    chainz(home.path())
+        .args(["use", "nope"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn legacy_config_location_is_migrated() {
+    let home = TempDir::new().unwrap();
+    // Seed at the pre-0.3 location: ~/.chainz.json
+    seed_config(home.path(), &[("ethereum", 1)]);
+    let new_path = config_path(home.path());
+    let legacy_path = home.path().join(LEGACY_CONFIG_FILE);
+    fs::rename(&new_path, &legacy_path).unwrap();
+
+    chainz(home.path())
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ethereum"))
+        .stderr(predicate::str::contains("Migrated config"));
+
+    assert!(new_path.exists(), "config should exist at the new location");
+    assert!(!legacy_path.exists(), "legacy config should be moved");
+
+    // subsequent runs are silent (nothing left to migrate)
+    chainz(home.path())
+        .arg("list")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Migrated").not());
 }
 
 #[test]

@@ -1,6 +1,6 @@
 use anyhow::Result;
-use chainz::{config::Chainz, init, opt, opt::Opt, variables::ChainVariables};
-use clap::Parser;
+use chainz::{config::Chainz, doctor, init, opt, opt::Opt, variables::ChainVariables};
+use clap::{CommandFactory, Parser};
 use dialoguer::FuzzySelect;
 use std::process::Command as ProcessCommand;
 
@@ -8,16 +8,24 @@ use std::process::Command as ProcessCommand;
 async fn main() -> Result<()> {
     let opts = Opt::parse();
 
-    // Init runs before the config is loaded so it can recover from a
-    // corrupt config (which Chainz::load rejects) by recreating it.
-    if let opt::Command::Init {} = opts.cmd {
-        return init::handle_init().await;
+    // These commands run before the config is loaded: completions needs no
+    // config, and init must be able to recover from a corrupt config
+    // (which Chainz::load rejects) by recreating it.
+    match opts.cmd {
+        opt::Command::Completions { shell } => {
+            clap_complete::generate(shell, &mut Opt::command(), "chainz", &mut std::io::stdout());
+            return Ok(());
+        }
+        opt::Command::Init {} => return init::handle_init().await,
+        _ => {}
     }
 
     let mut chainz = Chainz::load().await?;
 
     match opts.cmd {
-        opt::Command::Init {} => unreachable!("handled above"),
+        opt::Command::Init {} | opt::Command::Completions { .. } => {
+            unreachable!("handled above")
+        }
         opt::Command::Key { cmd } => {
             cmd.handle(&mut chainz).await?;
         }
@@ -35,16 +43,44 @@ async fn main() -> Result<()> {
         }
         opt::Command::Remove { name_or_id } => {
             let removed = chainz.remove_chain(&name_or_id)?;
+            if chainz.config.default_chain.as_deref() == Some(removed.name.as_str()) {
+                chainz.config.default_chain = None;
+            }
             chainz.save().await?;
             println!("Removed chain '{}'", removed.name);
         }
-        opt::Command::List => {
+        opt::Command::Use { name_or_id } => {
+            let target = match name_or_id {
+                Some(id) => id,
+                None => select_chain(&chainz)?,
+            };
+            let definition = chainz.config.get_chain(&target)?;
+            chainz.config.default_chain = Some(definition.name.clone());
+            chainz.save().await?;
+            println!("Default chain set to '{}'", definition.name);
+        }
+        opt::Command::List { json } => {
             let chains = chainz.list_chains();
-            if chains.is_empty() {
-                println!("No chains configured. Run 'chainz init' or 'chainz add' to get started.");
+            if json {
+                println!("{}", serde_json::to_string_pretty(chains)?);
+            } else {
+                if chains.is_empty() {
+                    println!(
+                        "No chains configured. Run 'chainz init' or 'chainz add' to get started."
+                    );
+                }
+                for chain_def in chains {
+                    println!("{}", chain_def);
+                }
+                if let Some(default) = &chainz.config.default_chain {
+                    println!("\nDefault chain: {}", default);
+                }
             }
-            for chain_def in chains {
-                println!("{}", chain_def);
+        }
+        opt::Command::Doctor { fix } => {
+            let report = doctor::run(&mut chainz, fix).await?;
+            if report.failures > 0 {
+                std::process::exit(1);
             }
         }
         opt::Command::Exec {
@@ -55,7 +91,8 @@ async fn main() -> Result<()> {
             if command.is_empty() {
                 anyhow::bail!("No command specified");
             }
-            let name_or_id = match name_or_id {
+            // Explicit chain > configured default > interactive picker
+            let name_or_id = match name_or_id.or_else(|| chainz.config.default_chain.clone()) {
                 Some(id) => id,
                 None => select_chain(&chainz)?,
             };

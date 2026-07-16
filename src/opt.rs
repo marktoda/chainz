@@ -52,7 +52,29 @@ pub enum Command {
     /// - Chain ID
     /// - RPC URL
     /// - Associated private key name
-    List,
+    List {
+        /// Output as JSON (for scripting)
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Set the default chain used by exec when no chain is given
+    ///
+    /// Example: chainz use base
+    Use {
+        /// Chain name or ID (interactive picker if omitted)
+        name_or_id: Option<String>,
+    },
+
+    /// Check config health: key storage, key references, RPC connectivity
+    ///
+    /// Exits nonzero if failures are found. With --fix, each dead selected
+    /// RPC is switched to a healthy alternative from the chain's RPC list.
+    Doctor {
+        /// Switch dead selected RPCs to a healthy configured alternative
+        #[arg(long)]
+        fix: bool,
+    },
 
     /// Execute a command with chain-specific variables expanded
     ///
@@ -84,6 +106,15 @@ pub enum Command {
     Key {
         #[command(subcommand)]
         cmd: KeyCommand,
+    },
+
+    /// Generate shell completions
+    ///
+    /// Example: chainz completions zsh > ~/.zfunc/_chainz
+    Completions {
+        /// Shell to generate completions for
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
     },
 
     /// Manage global variables
@@ -119,7 +150,11 @@ pub enum KeyCommand {
         key_type: Option<KeyTypeArg>,
     },
     /// List all stored private keys
-    List,
+    List {
+        /// Output as JSON (for scripting; never includes key material)
+        #[arg(long)]
+        json: bool,
+    },
     /// Remove a private key
     Remove {
         /// Name of the private key to remove
@@ -177,7 +212,11 @@ pub enum VarCommand {
 }
 
 #[derive(Debug, Args)]
-pub struct UpdateArgs {}
+pub struct UpdateArgs {
+    /// Re-download the chainlist instead of using the local cache
+    #[arg(long)]
+    pub refresh: bool,
+}
 
 #[derive(Debug, Args)]
 pub struct AddArgs {
@@ -208,4 +247,8 @@ pub struct AddArgs {
     /// Overwrite existing chain without prompting
     #[arg(long, default_value_t = false)]
     pub force: bool,
+
+    /// Re-download the chainlist instead of using the local cache
+    #[arg(long)]
+    pub refresh: bool,
 }

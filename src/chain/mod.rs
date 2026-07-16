@@ -14,12 +14,32 @@ pub const DEFAULT_KEY_NAME: &str = "default";
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChainDefinition {
     pub name: String,
+    /// Alternate lookup names (e.g. the full chainlist name when the user
+    /// picked a short one). Absent in configs written by older versions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
     pub chain_id: u64,
     pub rpc_urls: Vec<String>,
     pub selected_rpc: String,
     pub verification_api_key: Option<String>,
     pub verification_url: Option<String>,
     pub key_name: String,
+}
+
+impl ChainDefinition {
+    /// All names this chain answers to: primary name first, then aliases.
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.name.as_str()).chain(self.aliases.iter().map(String::as_str))
+    }
+
+    pub fn matches_exact(&self, query: &str) -> bool {
+        self.names().any(|n| n.eq_ignore_ascii_case(query))
+    }
+
+    pub fn matches_prefix(&self, query: &str) -> bool {
+        let query = query.to_lowercase();
+        self.names().any(|n| n.to_lowercase().starts_with(&query))
+    }
 }
 
 /// A chain resolved for use: RPC URL expanded and key attached.
@@ -61,9 +81,16 @@ impl Display for ChainDefinition {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(
             f,
-            "{}: {}",
+            "{}: {}{}",
             "Chain".bright_blue().bold(),
-            self.name.yellow()
+            self.name.yellow(),
+            if self.aliases.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", self.aliases.join(", "))
+                    .bright_black()
+                    .to_string()
+            }
         )?;
         writeln!(
             f,
@@ -154,6 +181,7 @@ mod tests {
     ) -> ChainDefinition {
         ChainDefinition {
             name: "ethereum".to_string(),
+            aliases: vec![],
             chain_id: 1,
             rpc_urls: vec!["https://eth.llamarpc.com".to_string()],
             selected_rpc: "https://eth.llamarpc.com".to_string(),

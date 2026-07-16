@@ -228,7 +228,8 @@ impl UpdateArgs {
                 println!("{}", "═".bright_black().repeat(50));
 
                 // Try to get fresh RPC list from chainlist
-                let chainlist_entry = fetch_chain_data(Some(chain.chain_id), None).await;
+                let chainlist_entry =
+                    fetch_chain_data(Some(chain.chain_id), None, self.refresh).await;
                 let available_rpcs = chainlist_entry
                     .map(|c| c.rpc)
                     .unwrap_or_else(|_| chain.rpc_urls.clone());
@@ -302,6 +303,7 @@ impl AddArgs {
 
         let chain_def = ChainDefinition {
             name: name.clone(),
+            aliases: vec![],
             chain_id,
             rpc_urls: vec![rpc_url.clone()],
             selected_rpc: rpc_url,
@@ -338,7 +340,7 @@ impl AddArgs {
             manual_chain_entry(self.name.clone(), self.chain_id).await?
         } else {
             // Full interactive flow with chainlist
-            let chains = fetch_all_chains().await?;
+            let chains = fetch_all_chains(self.refresh).await?;
             let items: Vec<String> = chains
                 .iter()
                 .map(|c| format!("{} ({})", c.name, c.chain_id))
@@ -348,6 +350,23 @@ impl AddArgs {
                 Ok(selection) => chains[selection].clone(),
                 Err(_) => manual_chain_entry(None, None).await?,
             }
+        };
+
+        // Chainlist names are long ("Ethereum Mainnet"); offer a short name
+        // for everyday use and keep the original as an alias.
+        let (name, aliases) = if self.name.is_none() {
+            let chosen: String = Input::new()
+                .with_prompt("Chain name")
+                .default(suggest_short_name(&selected_chain.name))
+                .interact_text()?;
+            let aliases = if chosen.eq_ignore_ascii_case(&selected_chain.name) {
+                vec![]
+            } else {
+                vec![selected_chain.name.clone()]
+            };
+            (chosen, aliases)
+        } else {
+            (selected_chain.name.clone(), vec![])
         };
 
         let selected_rpc = if let Some(rpc_url) = &self.rpc_url {
@@ -395,7 +414,8 @@ impl AddArgs {
 
         // Create and add the chain
         let chain_def = ChainDefinition {
-            name: selected_chain.name.clone(),
+            name,
+            aliases,
             chain_id: selected_chain.chain_id,
             rpc_urls: selected_chain.rpc,
             selected_rpc,
@@ -433,6 +453,15 @@ impl AddArgs {
     }
 }
 
+/// Suggest an everyday short name for a chainlist entry:
+/// "Ethereum Mainnet" -> "ethereum", "OP Mainnet" -> "op".
+fn suggest_short_name(name: &str) -> String {
+    name.split_whitespace()
+        .next()
+        .unwrap_or(name)
+        .to_lowercase()
+}
+
 // Helper function to handle fuzzy select with ESC cancellation
 fn fuzzy_select<T: ToString>(prompt: &str, items: &[T], default: usize) -> Result<usize> {
     match FuzzySelect::new()
@@ -443,5 +472,18 @@ fn fuzzy_select<T: ToString>(prompt: &str, items: &[T], default: usize) -> Resul
     {
         Some(selection) => Ok(selection),
         None => anyhow::bail!("Operation cancelled by user"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::suggest_short_name;
+
+    #[test]
+    fn short_name_suggestions() {
+        assert_eq!(suggest_short_name("Ethereum Mainnet"), "ethereum");
+        assert_eq!(suggest_short_name("OP Mainnet"), "op");
+        assert_eq!(suggest_short_name("Avalanche C-Chain"), "avalanche");
+        assert_eq!(suggest_short_name("zora"), "zora");
     }
 }

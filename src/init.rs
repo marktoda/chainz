@@ -86,6 +86,7 @@ async fn initialize_with_wizard() -> Result<Chainz> {
             verification_url: None,
             verification_api_key: None,
             force: false,
+            refresh: false,
         };
 
         match args.handle(&mut chainz).await {

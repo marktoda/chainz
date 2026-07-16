@@ -147,6 +147,25 @@ impl Key {
             .map(|_| ())
             .map_err(|e| anyhow!("Invalid private key: {}", e))
     }
+
+    /// Storage backend name, matching the serialized `type` tag.
+    pub fn kind_name(&self) -> &'static str {
+        match self.kind {
+            KeyType::PrivateKey { .. } => "PrivateKey",
+            KeyType::EncryptedKey { .. } => "EncryptedKey",
+            KeyType::OnePassword { .. } => "OnePassword",
+            KeyType::Keyring { .. } => "Keyring",
+        }
+    }
+
+    /// Wallet address, only when derivable without prompting the user
+    /// (i.e. plaintext keys). Returns None for all other backends.
+    pub fn address_noninteractive(&self) -> Option<String> {
+        match self.kind {
+            KeyType::PrivateKey { .. } => self.address().ok().map(|a| a.to_string()),
+            _ => None,
+        }
+    }
 }
 
 impl KeyCommand {
@@ -221,22 +240,30 @@ impl KeyCommand {
                 println!("Added key '{}'", name);
                 config.save().await?;
             }
-            KeyCommand::List => {
+            KeyCommand::List { json } => {
                 let keys = config.list_keys();
-                if keys.is_empty() {
+                if json {
+                    // Addresses only where derivable without prompting;
+                    // never includes key material.
+                    let entries: Vec<_> = keys
+                        .iter()
+                        .map(|(name, key)| {
+                            serde_json::json!({
+                                "name": name,
+                                "type": key.kind_name(),
+                                "address": key.address_noninteractive(),
+                            })
+                        })
+                        .collect();
+                    println!("{}", serde_json::to_string_pretty(&entries)?);
+                } else if keys.is_empty() {
                     println!("No stored keys");
                 } else {
                     println!("Stored keys:");
-                    for (name, key) in keys {
-                        // print error if there is one
-                        match key.address() {
-                            Ok(addr) => {
-                                println!("- {}: {}", name, addr);
-                            }
-                            Err(e) => {
-                                eprintln!("- {}: {}", name, e);
-                            }
-                        }
+                    for (_, key) in keys {
+                        // Display derives the address only for plaintext keys,
+                        // so listing never prompts for decryption
+                        println!("- {}", key);
                     }
                 }
             }
