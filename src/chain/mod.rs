@@ -3,12 +3,9 @@ pub mod wizard;
 
 use crate::key::Key;
 use crate::ui;
-use alloy::providers::DynProvider;
 use console::style;
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
-
-pub use rpc::{resolve_rpc, resolve_rpcs};
 
 pub const DEFAULT_KEY_NAME: &str = "default";
 
@@ -64,17 +61,6 @@ impl ChainInstance {
     pub fn with_key(mut self, key: Key) -> Self {
         self.key = key;
         self
-    }
-}
-
-pub struct Rpc {
-    pub rpc_url: String,
-    pub provider: DynProvider,
-}
-
-impl Display for Rpc {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.rpc_url)
     }
 }
 

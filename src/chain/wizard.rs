@@ -1,6 +1,6 @@
 use super::{
-    ChainDefinition, DEFAULT_KEY_NAME, Rpc,
-    rpc::{check_urls, resolve_rpc, resolve_rpcs, test_rpc},
+    ChainDefinition, DEFAULT_KEY_NAME,
+    rpc::{check_url, check_urls},
 };
 use crate::ui;
 use crate::{
@@ -59,27 +59,37 @@ pub async fn manual_chain_entry(
     })
 }
 
-/// Helper function to select or enter RPC URL
+/// Helper function to select or enter RPC URL.
+/// `available_rpcs` are raw (unexpanded) URLs; they are only expanded for
+/// the health probe itself and stored/displayed raw.
 pub async fn select_rpc(
     chain_name: &str,
     chain_id: u64,
-    available_rpcs: Vec<Rpc>,
+    available_rpcs: Vec<String>,
+    globals: &GlobalVariables,
 ) -> Result<String> {
     println!("\nTesting RPCs...");
 
     // Initialize displays with "testing" status
     let mut rpc_displays: Vec<String> = available_rpcs
         .iter()
-        .map(|rpc| ui::dim(&format!("⋯ {}", rpc)))
+        .map(|url| ui::dim(&format!("⋯ {}", url)))
         .collect();
 
     // Test all RPCs concurrently against the expected chain id
-    let urls: Vec<String> = available_rpcs.iter().map(|r| r.rpc_url.clone()).collect();
-    for (idx, healthy) in check_urls(&urls, chain_id).await.into_iter().enumerate() {
+    let expanded: Vec<String> = available_rpcs
+        .iter()
+        .map(|url| globals.expand_rpc_url(url))
+        .collect();
+    for (idx, healthy) in check_urls(&expanded, chain_id)
+        .await
+        .into_iter()
+        .enumerate()
+    {
         rpc_displays[idx] = if healthy {
-            ui::success(&format!("{}", available_rpcs[idx]))
+            ui::success(&available_rpcs[idx])
         } else {
-            ui::fail(&format!("{}", available_rpcs[idx]))
+            ui::fail(&available_rpcs[idx])
         };
     }
 
@@ -93,23 +103,25 @@ pub async fn select_rpc(
     )?;
 
     if rpc_selection == rpc_displays.len() - 1 {
-        Ok(select_manual_rpc(chain_id).await?.rpc_url)
+        select_manual_rpc(chain_id, globals).await
     } else if let Some(rpc) = available_rpcs.get(rpc_selection) {
-        Ok(rpc.rpc_url.clone())
+        Ok(rpc.clone())
     } else {
         anyhow::bail!("Selected RPC is not working")
     }
 }
 
-async fn select_manual_rpc(chain_id: u64) -> Result<Rpc> {
+async fn select_manual_rpc(chain_id: u64, globals: &GlobalVariables) -> Result<String> {
     loop {
         let rpc_url: String = text_input("Enter RPC URL", None)?;
         println!("Testing RPC...");
-        let rpc = resolve_rpc(&rpc_url, &GlobalVariables::default()).await?;
 
-        if test_rpc(&rpc, chain_id).await.is_ok() {
+        if check_url(&globals.expand_rpc_url(&rpc_url), chain_id)
+            .await
+            .is_ok()
+        {
             println!("{}", ui::success("RPC working"));
-            return Ok(rpc);
+            return Ok(rpc_url);
         }
 
         println!("{}", ui::fail("RPC failed. Try again? (ESC to exit)"));
@@ -216,7 +228,8 @@ impl UpdateArgs {
                 let new_rpc = select_rpc(
                     &chain.name,
                     chain.chain_id,
-                    resolve_rpcs(available_rpcs, &chainz.config.globals).await?,
+                    available_rpcs,
+                    &chainz.config.globals,
                 )
                 .await?;
                 chain.selected_rpc = new_rpc;
@@ -275,8 +288,7 @@ impl AddArgs {
         })?;
 
         // Test the RPC
-        let rpc = resolve_rpc(&rpc_url, &chainz.config.globals).await?;
-        test_rpc(&rpc, chain_id).await?;
+        check_url(&chainz.config.globals.expand_rpc_url(&rpc_url), chain_id).await?;
 
         let chain_def = ChainDefinition {
             name: name.clone(),
@@ -342,8 +354,11 @@ impl AddArgs {
         let selected_rpc = if let Some(rpc_url) = &self.rpc_url {
             // Use provided RPC URL directly
             println!("Testing RPC...");
-            let rpc = resolve_rpc(rpc_url, &chainz.config.globals).await?;
-            test_rpc(&rpc, selected_chain.chain_id).await?;
+            check_url(
+                &chainz.config.globals.expand_rpc_url(rpc_url),
+                selected_chain.chain_id,
+            )
+            .await?;
             println!("{}", ui::success("RPC working"));
             rpc_url.clone()
         } else {
@@ -352,7 +367,8 @@ impl AddArgs {
             select_rpc(
                 &selected_chain.name,
                 selected_chain.chain_id,
-                resolve_rpcs(selected_chain.rpc.clone(), &chainz.config.globals).await?,
+                selected_chain.rpc.clone(),
+                &chainz.config.globals,
             )
             .await?
         };
