@@ -1,5 +1,5 @@
 use anyhow::Result;
-use chainz::{config::Chainz, doctor, init, opt, opt::Opt, variables::ChainVariables};
+use chainz::{config::Chainz, doctor, init, opt, opt::Opt, ui, variables::ChainVariables};
 use clap::{CommandFactory, Parser};
 use dialoguer::FuzzySelect;
 use std::process::Command as ProcessCommand;
@@ -91,6 +91,36 @@ async fn main() -> Result<()> {
             let report = doctor::run(&mut chainz, fix).await?;
             if report.failures > 0 {
                 std::process::exit(1);
+            }
+        }
+        opt::Command::Shell { name_or_id } => {
+            let name_or_id = match name_or_id.or_else(|| chainz.config.default_chain.clone()) {
+                Some(id) => id,
+                None => select_chain(&chainz)?,
+            };
+            let chain = chainz.get_chain(&name_or_id)?;
+            // Empty command args → lazy rule: key backends are never touched
+            let variables = ChainVariables::new(&chain, &[])?;
+            let chain_name = chain.definition.name.clone();
+            let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
+
+            eprintln!(
+                "{}",
+                ui::item(&format!("entering {} shell — ctrl-d to exit", chain_name))
+            );
+            let ps1 = format!(
+                "(⛓ {}) {}",
+                chain_name,
+                std::env::var("PS1").unwrap_or_default()
+            );
+            let status = ProcessCommand::new(&shell)
+                .envs(variables.as_map())
+                .env("CHAINZ_CHAIN", &chain_name)
+                .env("PS1", ps1)
+                .status()?;
+            eprintln!("{}", ui::dim(&format!("left {} shell", chain_name)));
+            if !status.success() {
+                std::process::exit(status.code().unwrap_or(1));
             }
         }
         opt::Command::Exec {

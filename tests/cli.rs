@@ -591,6 +591,59 @@ fn legacy_config_location_is_migrated() {
 }
 
 #[test]
+fn shell_sets_env_and_passes_exit_code() {
+    let home = TempDir::new().unwrap();
+    seed_config(home.path(), &[("testchain", 31337)]);
+
+    // A fake "shell" that proves env vars arrive and exit codes pass through
+    let fake_shell = home.path().join("fakeshell.sh");
+    fs::write(
+        &fake_shell,
+        "#!/bin/sh\necho chain=$CHAINZ_CHAIN rpc=$ETH_RPC_URL key=${RAW_PRIVATE_KEY:-unset}\nexit 3\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&fake_shell, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    chainz(home.path())
+        .env("SHELL", &fake_shell)
+        .args(["shell", "testchain"])
+        .assert()
+        .code(3)
+        .stdout(predicate::str::contains(
+            "chain=testchain rpc=http://localhost:1 key=unset",
+        ));
+}
+
+#[test]
+fn shell_uses_default_chain_when_omitted() {
+    let home = TempDir::new().unwrap();
+    seed_config(home.path(), &[("testchain", 31337)]);
+    chainz(home.path())
+        .args(["use", "testchain"])
+        .assert()
+        .success();
+
+    let fake_shell = home.path().join("fakeshell.sh");
+    fs::write(&fake_shell, "#!/bin/sh\necho in=$CHAINZ_CHAIN\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&fake_shell, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    chainz(home.path())
+        .env("SHELL", &fake_shell)
+        .arg("shell")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("in=testchain"));
+}
+
+#[test]
 fn add_noninteractive_requires_existing_key() {
     let home = TempDir::new().unwrap();
     chainz(home.path())
