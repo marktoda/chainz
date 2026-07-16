@@ -39,6 +39,9 @@ keyring = { version = "3", features = [
     "apple-native",
     "windows-native",
     "sync-secret-service",
+    # Build libdbus from source on Linux so `cargo install chainz` works
+    # without system dbus dev headers (and CI needs no apt packages)
+    "vendored",
 ] }
 rand = "0.9"
 argon2 = "0.5"
