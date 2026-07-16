@@ -5,20 +5,22 @@ use self::tests::mock_password_prompt as prompt_password;
 #[cfg(not(test))]
 use rpassword::prompt_password;
 
-use crate::{config::Chainz, opt::KeyCommand};
+use crate::{
+    config::Chainz,
+    opt::{KeyCommand, KeyTypeArg},
+};
 use alloy::{
     primitives::Address,
-    signers::{local::PrivateKeySigner, Signer},
+    signers::{Signer, local::PrivateKeySigner},
 };
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
-use strum::{EnumIter, IntoEnumIterator};
 
 use aes_gcm::{
-    aead::{Aead, KeyInit},
     Aes256Gcm, Nonce,
+    aead::{Aead, KeyInit},
 };
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use keyring::Entry;
 use rand::Rng;
 use std::fmt;
@@ -31,9 +33,8 @@ pub struct Key {
     pub kind: KeyType,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, strum::Display, EnumIter)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(tag = "type")]
-#[strum(serialize_all = "title_case")]
 pub enum KeyType {
     #[serde(rename = "PrivateKey")]
     PrivateKey { value: String },
@@ -102,7 +103,7 @@ impl Key {
     }
 
     pub fn encrypt(name: String, private_key: &str, password: &str) -> Result<Self> {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let mut salt_bytes = [0u8; 16];
         rng.fill(&mut salt_bytes);
         let key = Self::derive_key(password, &salt_bytes)?;
@@ -146,44 +147,70 @@ impl Key {
             .map(|_| ())
             .map_err(|e| anyhow!("Invalid private key: {}", e))
     }
+
+    /// Storage backend name, matching the serialized `type` tag.
+    pub fn kind_name(&self) -> &'static str {
+        match self.kind {
+            KeyType::PrivateKey { .. } => "PrivateKey",
+            KeyType::EncryptedKey { .. } => "EncryptedKey",
+            KeyType::OnePassword { .. } => "OnePassword",
+            KeyType::Keyring { .. } => "Keyring",
+        }
+    }
+
+    /// Wallet address, only when derivable without prompting the user
+    /// (i.e. plaintext keys). Returns None for all other backends.
+    pub fn address_noninteractive(&self) -> Option<String> {
+        match self.kind {
+            KeyType::PrivateKey { .. } => self.address().ok().map(|a| a.to_string()),
+            _ => None,
+        }
+    }
 }
 
 impl KeyCommand {
     pub async fn handle(self, config: &mut Chainz) -> Result<()> {
         match self {
-            KeyCommand::Add { name, key } => {
-                let key_types: Vec<_> = KeyType::iter().collect();
+            KeyCommand::Add {
+                name,
+                key,
+                key_type,
+            } => {
+                let choice = match key_type {
+                    Some(t) => t,
+                    // --key without --type implies a plain private key, so
+                    // `chainz key add <name> --key <key>` works without a TTY
+                    None if key.is_some() => KeyTypeArg::PrivateKey,
+                    None => {
+                        let variants = <KeyTypeArg as clap::ValueEnum>::value_variants();
+                        let selection = dialoguer::Select::new()
+                            .with_prompt("Select key type")
+                            .items(variants)
+                            .default(0)
+                            .interact()?;
+                        variants[selection]
+                    }
+                };
 
-                let choice = dialoguer::Select::new()
-                    .with_prompt("Select key type")
-                    .items(&key_types)
-                    .default(0)
-                    .interact()?;
+                let get_pk = |key: Option<String>| -> Result<String> {
+                    let pk = match key {
+                        Some(k) => k,
+                        None => prompt_password("Enter private key: ")?,
+                    };
+                    Key::validate_private_key(&pk)?;
+                    Ok(pk)
+                };
 
                 let kind = match choice {
-                    // raw private key
-                    0 => {
-                        let pk = if let Some(k) = key {
-                            k
-                        } else {
-                            prompt_password("Enter private key: ")?
-                        };
-                        Key::validate_private_key(&pk)?;
-                        KeyType::PrivateKey { value: pk }
-                    }
-                    // encrypted private key
-                    1 => {
-                        let pk = if let Some(k) = key {
-                            k
-                        } else {
-                            prompt_password("Enter private key: ")?
-                        };
-                        Key::validate_private_key(&pk)?;
+                    KeyTypeArg::PrivateKey => KeyType::PrivateKey {
+                        value: get_pk(key)?,
+                    },
+                    KeyTypeArg::Encrypted => {
+                        let pk = get_pk(key)?;
                         let password = prompt_password("Enter encryption password: ")?;
                         Key::encrypt(name.clone(), &pk, &password)?.kind
                     }
-                    // 1password private key
-                    2 => {
+                    KeyTypeArg::OnePassword => {
                         let vault: String = dialoguer::Input::new()
                             .with_prompt("Enter 1Password vault name")
                             .interact()?;
@@ -192,8 +219,7 @@ impl KeyCommand {
                             .interact()?;
                         KeyType::OnePassword { vault, item }
                     }
-                    // keyring private key
-                    3 => {
+                    KeyTypeArg::Keyring => {
                         let service: String = dialoguer::Input::new()
                             .with_prompt("Enter service name")
                             .default("chainz".into())
@@ -201,41 +227,43 @@ impl KeyCommand {
                         let username: String = dialoguer::Input::new()
                             .with_prompt("Enter username")
                             .interact()?;
-                        let pk = if let Some(k) = key {
-                            k
-                        } else {
-                            prompt_password("Enter private key: ")?
-                        };
-                        Key::validate_private_key(&pk)?;
+                        let pk = get_pk(key)?;
                         // Store in system keyring
                         let entry = Entry::new(&service, &username)?;
                         entry.set_password(&pk)?;
                         KeyType::Keyring { service, username }
                     }
-                    _ => anyhow::bail!("Invalid choice"),
                 };
 
                 let key = Key::new(name.clone(), kind);
-                config.add_key(&name, key).await?;
+                config.add_key(&name, key)?;
                 println!("Added key '{}'", name);
                 config.save().await?;
             }
-            KeyCommand::List => {
+            KeyCommand::List { json } => {
                 let keys = config.list_keys();
-                if keys.is_empty() {
+                if json {
+                    // Addresses only where derivable without prompting;
+                    // never includes key material.
+                    let entries: Vec<_> = keys
+                        .iter()
+                        .map(|(name, key)| {
+                            serde_json::json!({
+                                "name": name,
+                                "type": key.kind_name(),
+                                "address": key.address_noninteractive(),
+                            })
+                        })
+                        .collect();
+                    println!("{}", serde_json::to_string_pretty(&entries)?);
+                } else if keys.is_empty() {
                     println!("No stored keys");
                 } else {
                     println!("Stored keys:");
-                    for (name, key) in keys {
-                        // print error if there is one
-                        match key.address() {
-                            Ok(addr) => {
-                                println!("- {}: {}", name, addr);
-                            }
-                            Err(e) => {
-                                eprintln!("- {}: {}", name, e);
-                            }
-                        }
+                    for (_, key) in keys {
+                        // Display derives the address only for plaintext keys,
+                        // so listing never prompts for decryption
+                        println!("- {}", key);
                     }
                 }
             }
@@ -252,17 +280,10 @@ impl KeyCommand {
 impl fmt::Display for Key {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let display = match &self.kind {
-            KeyType::PrivateKey { value } => {
-                // Only try to get address for unencrypted keys
-                let addr = Key::new(
-                    self.name.clone(),
-                    KeyType::PrivateKey {
-                        value: value.clone(),
-                    },
-                )
-                .address()
-                .map(|a| a.to_string())
-                .unwrap_or("Invalid key".to_string());
+            KeyType::PrivateKey { .. } => {
+                let addr = self
+                    .address_noninteractive()
+                    .unwrap_or_else(|| "Invalid key".to_string());
                 format!("{} ({})", self.name, addr)
             }
             KeyType::EncryptedKey { .. } => {
@@ -314,11 +335,13 @@ mod tests {
         }
 
         // Test decryption fails with wrong password
-        env::set_var("CLITEST_PASSWORD", "wrong_password");
+        // SAFETY: tests that touch process env run single-threaded per binary here;
+        // this var is only read by the mock password prompt below.
+        unsafe { env::set_var("CLITEST_PASSWORD", "wrong_password") };
         assert!(encrypted.private_key().is_err());
 
         // Test decryption succeeds with correct password
-        env::set_var("CLITEST_PASSWORD", password);
+        unsafe { env::set_var("CLITEST_PASSWORD", password) };
         assert_eq!(encrypted.private_key()?.as_str(), TEST_PRIVATE_KEY);
         assert_eq!(encrypted.address()?.to_string(), TEST_ADDRESS);
         Ok(())
@@ -333,7 +356,7 @@ mod tests {
         match Entry::new(service, username) {
             Ok(entry) => {
                 // Clean up any existing test key
-                let _ = entry.delete_password();
+                let _ = entry.delete_credential();
 
                 // Attempt to set password
                 match entry.set_password(TEST_PRIVATE_KEY) {
@@ -351,7 +374,7 @@ mod tests {
                         assert_eq!(key.address()?.to_string(), TEST_ADDRESS);
 
                         // Cleanup
-                        let _ = entry.delete_password();
+                        let _ = entry.delete_credential();
                     }
                     Err(e) => {
                         println!("Skipping keyring test (failed to set password: {})", e);
@@ -389,11 +412,47 @@ mod tests {
         Ok(())
     }
 
+    /// kind_name hand-maintains the serde `type` tag names; this pins them
+    /// together so a rename in one place can't silently desync the other.
     #[test]
-    fn test_key_display() {
-        let key_types: Vec<String> = KeyType::iter().map(|k| k.to_string()).collect();
+    fn test_kind_name_matches_serde_tag() {
+        let keys = [
+            Key::new(
+                "a".into(),
+                KeyType::PrivateKey {
+                    value: TEST_PRIVATE_KEY.into(),
+                },
+            ),
+            Key::encrypt("b".into(), TEST_PRIVATE_KEY, "pw").unwrap(),
+            Key::new(
+                "c".into(),
+                KeyType::OnePassword {
+                    vault: "v".into(),
+                    item: "i".into(),
+                },
+            ),
+            Key::new(
+                "d".into(),
+                KeyType::Keyring {
+                    service: "s".into(),
+                    username: "u".into(),
+                },
+            ),
+        ];
+        for key in keys {
+            let serialized = serde_json::to_value(&key.kind).unwrap();
+            assert_eq!(serialized["type"], key.kind_name());
+        }
+    }
+
+    #[test]
+    fn test_key_type_picker_labels() {
+        let labels: Vec<String> = <KeyTypeArg as clap::ValueEnum>::value_variants()
+            .iter()
+            .map(|k| k.to_string())
+            .collect();
         assert_eq!(
-            key_types,
+            labels,
             vec!["Private Key", "Encrypted Key", "One Password", "Keyring"]
         );
     }

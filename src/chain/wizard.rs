@@ -1,9 +1,9 @@
 use super::{
-    rpc::{create_provider, resolve_rpc, resolve_rpcs, test_rpc},
-    ChainDefinition, Rpc, DEFAULT_KEY_NAME,
+    ChainDefinition, DEFAULT_KEY_NAME, Rpc,
+    rpc::{check_urls, resolve_rpc, resolve_rpcs, test_rpc},
 };
 use crate::{
-    chainlist::{fetch_all_chains, fetch_chain_data, ChainlistEntry},
+    chainlist::{ChainlistEntry, fetch_all_chains, fetch_chain_by_id},
     config::Chainz,
     key::{Key, KeyType},
     opt::{AddArgs, UpdateArgs},
@@ -72,32 +72,14 @@ pub async fn select_rpc(
         .map(|rpc| format!("{} {}", "⋯".bright_yellow(), rpc))
         .collect();
 
-    // Create a vector of futures for testing RPCs concurrently
-    let mut test_futures = Vec::new();
-    for (idx, rpc) in available_rpcs.iter().enumerate() {
-        let rpc_url = rpc.rpc_url.clone();
-        let test_future = async move {
-            let provider = match create_provider(&rpc_url).await {
-                Ok(p) => p,
-                Err(e) => return (idx, Err(e)),
-            };
-            let rpc_to_test = Rpc { rpc_url, provider };
-            let result = test_rpc(&rpc_to_test, chain_id).await;
-            (idx, result)
-        };
-        test_futures.push(tokio::spawn(test_future));
-    }
-
-    // Process results as they complete
-    for (idx, result) in (futures::future::join_all(test_futures).await)
-        .into_iter()
-        .flatten()
-    {
-        if result.is_ok() {
-            rpc_displays[idx] = format!("{} {}", "✓".bright_green(), available_rpcs[idx]);
+    // Test all RPCs concurrently against the expected chain id
+    let urls: Vec<String> = available_rpcs.iter().map(|r| r.rpc_url.clone()).collect();
+    for (idx, healthy) in check_urls(&urls, chain_id).await.into_iter().enumerate() {
+        rpc_displays[idx] = if healthy {
+            format!("{} {}", "✓".bright_green(), available_rpcs[idx])
         } else {
-            rpc_displays[idx] = format!("{} {}", "✗".bright_red(), available_rpcs[idx]);
-        }
+            format!("{} {}", "✗".bright_red(), available_rpcs[idx])
+        };
     }
 
     // Add manual entry option
@@ -134,7 +116,7 @@ async fn select_manual_rpc(chain_id: u64) -> Result<Rpc> {
 }
 
 /// Helper function to select or create a key
-pub async fn select_key(chainz: &mut Chainz) -> Result<String> {
+pub fn select_key(chainz: &mut Chainz) -> Result<String> {
     let keys = chainz.list_keys();
 
     // Create display strings with addresses
@@ -158,15 +140,13 @@ pub async fn select_key(chainz: &mut Chainz) -> Result<String> {
     if key_selection == key_displays.len() - 1 {
         let kname: String = Input::new().with_prompt("Enter key name").interact_text()?;
         let private_key = rpassword::prompt_password("Enter private key: ")?;
-        chainz
-            .add_key(
-                &kname,
-                Key {
-                    name: kname.clone(),
-                    kind: KeyType::PrivateKey { value: private_key },
-                },
-            )
-            .await?;
+        chainz.add_key(
+            &kname,
+            Key {
+                name: kname.clone(),
+                kind: KeyType::PrivateKey { value: private_key },
+            },
+        )?;
         Ok(kname)
     } else {
         Ok(key_displays[key_selection].0.clone())
@@ -230,7 +210,7 @@ impl UpdateArgs {
                 println!("{}", "═".bright_black().repeat(50));
 
                 // Try to get fresh RPC list from chainlist
-                let chainlist_entry = fetch_chain_data(Some(chain.chain_id), None).await;
+                let chainlist_entry = fetch_chain_by_id(chain.chain_id, self.refresh).await;
                 let available_rpcs = chainlist_entry
                     .map(|c| c.rpc)
                     .unwrap_or_else(|_| chain.rpc_urls.clone());
@@ -248,7 +228,7 @@ impl UpdateArgs {
                 println!("\n{}", "Key Configuration".bright_blue().bold());
                 println!("{}", "═".bright_black().repeat(50));
 
-                let new_key = select_key(chainz).await?;
+                let new_key = select_key(chainz)?;
                 chain.key_name = new_key;
             }
             2 => {
@@ -264,7 +244,7 @@ impl UpdateArgs {
         }
 
         // Save changes
-        chainz.add_chain(chain.clone()).await?;
+        chainz.add_chain(chain.clone())?;
         chainz.save().await?;
         println!("\n{}", "Chain updated successfully".bright_green());
 
@@ -304,6 +284,7 @@ impl AddArgs {
 
         let chain_def = ChainDefinition {
             name: name.clone(),
+            aliases: vec![],
             chain_id,
             rpc_urls: vec![rpc_url.clone()],
             selected_rpc: rpc_url,
@@ -312,21 +293,15 @@ impl AddArgs {
             key_name,
         };
 
-        // Check for existing chain
-        if chainz
-            .config
-            .chains
-            .iter()
-            .any(|c| c.name == chain_def.name)
-            && !self.force
-        {
+        // Check for existing chain (by name or alias)
+        if chainz.chain_exists(&chain_def.name) && !self.force {
             anyhow::bail!(
                 "Chain '{}' already exists. Use --force to overwrite.",
                 chain_def.name
             );
         }
 
-        chainz.add_chain(chain_def.clone()).await?;
+        chainz.add_chain(chain_def.clone())?;
         chainz.save().await?;
         Ok(chain_def)
     }
@@ -340,7 +315,7 @@ impl AddArgs {
             manual_chain_entry(self.name.clone(), self.chain_id).await?
         } else {
             // Full interactive flow with chainlist
-            let chains = fetch_all_chains().await?;
+            let chains = fetch_all_chains(self.refresh).await?;
             let items: Vec<String> = chains
                 .iter()
                 .map(|c| format!("{} ({})", c.name, c.chain_id))
@@ -350,6 +325,23 @@ impl AddArgs {
                 Ok(selection) => chains[selection].clone(),
                 Err(_) => manual_chain_entry(None, None).await?,
             }
+        };
+
+        // Chainlist names are long ("Ethereum Mainnet"); offer a short name
+        // for everyday use and keep the original as an alias.
+        let (name, aliases) = if self.name.is_none() {
+            let chosen: String = Input::new()
+                .with_prompt("Chain name")
+                .default(suggest_short_name(&selected_chain.name))
+                .interact_text()?;
+            let aliases = if chosen.eq_ignore_ascii_case(&selected_chain.name) {
+                vec![]
+            } else {
+                vec![selected_chain.name.clone()]
+            };
+            (chosen, aliases)
+        } else {
+            (selected_chain.name.clone(), vec![])
         };
 
         let selected_rpc = if let Some(rpc_url) = &self.rpc_url {
@@ -382,7 +374,7 @@ impl AddArgs {
         } else {
             println!("\n{}", "Key Configuration".bright_blue().bold());
             println!("{}", "═".bright_black().repeat(50));
-            select_key(chainz).await?
+            select_key(chainz)?
         };
 
         let (verification_url, verification_api_key) =
@@ -397,7 +389,8 @@ impl AddArgs {
 
         // Create and add the chain
         let chain_def = ChainDefinition {
-            name: selected_chain.name.clone(),
+            name,
+            aliases,
             chain_id: selected_chain.chain_id,
             rpc_urls: selected_chain.rpc,
             selected_rpc,
@@ -406,13 +399,8 @@ impl AddArgs {
             key_name,
         };
 
-        // Confirm before replacing an existing chain
-        if chainz
-            .config
-            .chains
-            .iter()
-            .any(|c| c.name == chain_def.name)
-        {
+        // Confirm before replacing an existing chain (matched by name or alias)
+        if chainz.chain_exists(&chain_def.name) {
             if self.force {
                 // Skip prompt with --force
             } else {
@@ -429,10 +417,19 @@ impl AddArgs {
             }
         }
 
-        chainz.add_chain(chain_def.clone()).await?;
+        chainz.add_chain(chain_def.clone())?;
         chainz.save().await?;
         Ok(chain_def)
     }
+}
+
+/// Suggest an everyday short name for a chainlist entry:
+/// "Ethereum Mainnet" -> "ethereum", "OP Mainnet" -> "op".
+fn suggest_short_name(name: &str) -> String {
+    name.split_whitespace()
+        .next()
+        .unwrap_or(name)
+        .to_lowercase()
 }
 
 // Helper function to handle fuzzy select with ESC cancellation
@@ -445,5 +442,18 @@ fn fuzzy_select<T: ToString>(prompt: &str, items: &[T], default: usize) -> Resul
     {
         Some(selection) => Ok(selection),
         None => anyhow::bail!("Operation cancelled by user"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::suggest_short_name;
+
+    #[test]
+    fn short_name_suggestions() {
+        assert_eq!(suggest_short_name("Ethereum Mainnet"), "ethereum");
+        assert_eq!(suggest_short_name("OP Mainnet"), "op");
+        assert_eq!(suggest_short_name("Avalanche C-Chain"), "avalanche");
+        assert_eq!(suggest_short_name("zora"), "zora");
     }
 }

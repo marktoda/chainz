@@ -1,6 +1,6 @@
 use crate::{
     chain::DEFAULT_KEY_NAME,
-    config::{config_exists, Chainz},
+    config::{Chainz, config_exists},
     key::{Key, KeyType},
     opt,
 };
@@ -12,7 +12,7 @@ use dialoguer::{Confirm, Input};
 const INFURA_API_KEY_ENV_VAR: &str = "INFURA_API_KEY";
 
 pub async fn handle_init() -> Result<()> {
-    if config_exists().await? {
+    if config_exists() {
         let overwrite = Confirm::new()
             .with_prompt("Configuration already exists. Overwrite?")
             .interact()?;
@@ -33,7 +33,6 @@ pub async fn handle_init() -> Result<()> {
 async fn initialize_with_wizard() -> Result<Chainz> {
     println!("\n{}", "Chainz Initialization".bright_blue().bold());
     println!("{}", "═".bright_black().repeat(50));
-    println!("Chainz Init");
     let mut chainz = Chainz::new();
 
     let private_key = {
@@ -46,15 +45,13 @@ async fn initialize_with_wizard() -> Result<Chainz> {
             input
         }
     };
-    chainz
-        .add_key(
-            DEFAULT_KEY_NAME,
-            Key {
-                name: DEFAULT_KEY_NAME.to_string(),
-                kind: KeyType::PrivateKey { value: private_key },
-            },
-        )
-        .await?;
+    chainz.add_key(
+        DEFAULT_KEY_NAME,
+        Key {
+            name: DEFAULT_KEY_NAME.to_string(),
+            kind: KeyType::PrivateKey { value: private_key },
+        },
+    )?;
 
     // get infura_api_key, optionally
     let infura_api_key: String = Input::new()
@@ -89,6 +86,7 @@ async fn initialize_with_wizard() -> Result<Chainz> {
             verification_url: None,
             verification_api_key: None,
             force: false,
+            refresh: false,
         };
 
         match args.handle(&mut chainz).await {

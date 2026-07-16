@@ -3,13 +3,19 @@ use crate::{
     key::Key,
     variables::GlobalVariables,
 };
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use dirs::home_dir;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use tokio::io::AsyncWriteExt;
 
-pub const CONFIG_FILE_LOCATION: &str = ".chainz.json";
+/// Pre-0.3 config location, relative to $HOME. Migrated on first load.
+pub const LEGACY_CONFIG_FILE: &str = ".chainz.json";
+/// Config location relative to $HOME (when XDG_CONFIG_HOME is unset).
+pub const DEFAULT_CONFIG_RELATIVE: &str = ".config/chainz/config.json";
 
 #[derive(Default, Debug, Serialize, Deserialize)]
 pub struct Config {
@@ -17,60 +23,38 @@ pub struct Config {
     #[serde(rename = "variables")]
     pub globals: GlobalVariables,
     pub keys: HashMap<String, Key>,
+    /// Chain used by `exec` when none is specified; set via `chainz use`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_chain: Option<String>,
 }
 
 #[derive(Default)]
 pub struct Chainz {
     pub config: Config,
-    active_chains: HashMap<String, ChainInstance>, // keyed by name
 }
 
 impl Chainz {
     pub fn new() -> Self {
-        Self {
-            config: Config::default(),
-            active_chains: HashMap::new(),
-        }
+        Self::default()
     }
 
     pub async fn load() -> Result<Self> {
-        // use default config if none
-        let config = Config::load().await.unwrap_or_default();
-        Ok(Self {
-            config,
-            active_chains: HashMap::new(),
-        })
+        // Start fresh when no config exists yet; Config::load propagates
+        // errors for a config that exists but can't be read/parsed —
+        // silently defaulting would wipe the real config on the next save.
+        let config = Config::load().await?.unwrap_or_default();
+        Ok(Self { config })
     }
 
-    pub async fn get_chain(&mut self, name_or_id: &str) -> Result<ChainInstance> {
+    pub fn get_chain(&self, name_or_id: &str) -> Result<ChainInstance> {
         let definition = self.config.get_chain(name_or_id)?;
-        let name = definition.name.clone();
-
-        if !self.active_chains.contains_key(&name) {
-            let instance = self.instantiate_chain(&definition).await?;
-            self.active_chains.insert(name.clone(), instance);
-        }
-        Ok(self
-            .active_chains
-            .get(&name)
-            .expect("Chain was just inserted")
-            .clone())
-    }
-
-    async fn instantiate_chain(&self, def: &ChainDefinition) -> Result<ChainInstance> {
-        let rpc = def.get_rpc(&self.config.globals).await?;
-        let key = self.get_key(&def.key_name)?;
-
-        Ok(ChainInstance::new(
-            def.clone(),
-            rpc.provider,
-            rpc.rpc_url,
-            key,
-        ))
+        let rpc_url = self.config.globals.expand_rpc_url(&definition.selected_rpc);
+        let key = self.get_key(&definition.key_name)?;
+        Ok(ChainInstance::new(definition, rpc_url, key))
     }
 
     // Key management methods
-    pub async fn add_key(&mut self, name: &str, key: Key) -> Result<()> {
+    pub fn add_key(&mut self, name: &str, key: Key) -> Result<()> {
         if self.config.keys.contains_key(name) {
             anyhow::bail!("Key '{}' already exists", name);
         }
@@ -110,9 +94,16 @@ impl Chainz {
             .ok_or(anyhow!("Key '{}' not found", key_name))
     }
 
-    pub async fn add_chain(&mut self, chain: ChainDefinition) -> Result<()> {
-        // Replace if exists, otherwise add
-        if let Some(pos) = self.config.chains.iter().position(|c| c.name == chain.name) {
+    pub fn add_chain(&mut self, chain: ChainDefinition) -> Result<()> {
+        // Replace if exists, otherwise add. Identity is the same
+        // case-insensitive name/alias matching used by lookups, so a new
+        // chain can never be shadowed by an existing chain's alias.
+        if let Some(pos) = self
+            .config
+            .chains
+            .iter()
+            .position(|c| c.matches_exact(&chain.name))
+        {
             self.config.chains[pos] = chain;
         } else {
             self.config.chains.push(chain);
@@ -121,8 +112,29 @@ impl Chainz {
         Ok(())
     }
 
+    /// Whether a chain would collide with `name` (by name or alias).
+    pub fn chain_exists(&self, name: &str) -> bool {
+        self.config.chains.iter().any(|c| c.matches_exact(name))
+    }
+
     pub fn list_chains(&self) -> &[ChainDefinition] {
         &self.config.chains
+    }
+
+    pub fn remove_chain(&mut self, name_or_id: &str) -> Result<ChainDefinition> {
+        let pos = self.config.find_chain_index(name_or_id)?;
+        let removed = self.config.chains.remove(pos);
+        // Keep the default-chain invariant here so every caller gets it
+        if self.config.default_chain.as_deref() == Some(removed.name.as_str()) {
+            self.config.default_chain = None;
+        }
+        Ok(removed)
+    }
+
+    pub fn set_selected_rpc(&mut self, name_or_id: &str, rpc_url: String) -> Result<()> {
+        let pos = self.config.find_chain_index(name_or_id)?;
+        self.config.chains[pos].selected_rpc = rpc_url;
+        Ok(())
     }
 
     pub async fn save(&self) -> Result<()> {
@@ -135,75 +147,178 @@ impl Chainz {
 }
 
 impl Config {
-    pub async fn load() -> Result<Self> {
+    /// Load the config, returning `Ok(None)` when no config file exists yet.
+    /// Any other failure (unreadable file, parse error) is propagated so a
+    /// broken config is never mistaken for a missing one.
+    pub async fn load() -> Result<Option<Self>> {
         let path = get_config_path().ok_or(anyhow!("Unable to find config path"))?;
-        let json = tokio::fs::read_to_string(&path)
-            .await
-            .with_context(|| format!("Failed to read config at {}", path.display()))?;
-        let config = serde_json::from_str(&json)
-            .with_context(|| "Failed to parse config (file may be corrupted)")?;
-        Ok(config)
+        migrate_legacy_config(&path).await;
+        restrict_permissions(&path).await;
+        let json = match tokio::fs::read_to_string(&path).await {
+            Ok(json) => json,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => {
+                return Err(e)
+                    .with_context(|| format!("Failed to read config at {}", path.display()));
+            }
+        };
+        let config = serde_json::from_str(&json).with_context(|| {
+            format!(
+                "Failed to parse config at {} (fix or remove the file, then retry)",
+                path.display()
+            )
+        })?;
+        Ok(Some(config))
     }
 
     pub fn get_chain(&self, name_or_id: &str) -> Result<ChainDefinition> {
-        // Try to parse as chain ID first
-        if let Ok(chain_id) = name_or_id.parse::<u64>() {
-            return self.get_chain_config_by_id(chain_id);
+        self.find_chain_index(name_or_id)
+            .map(|i| self.chains[i].clone())
+    }
+
+    /// Resolve a chain reference: exact chain ID, then exact name/alias
+    /// (case-insensitive), then unambiguous name/alias prefix.
+    pub(crate) fn find_chain_index(&self, name_or_id: &str) -> Result<usize> {
+        if let Ok(chain_id) = name_or_id.parse::<u64>()
+            && let Some(i) = self.chains.iter().position(|c| c.chain_id == chain_id)
+        {
+            return Ok(i);
         }
 
-        // Try as name
-        self.get_chain_config_by_name(name_or_id)
-    }
+        if let Some(i) = self.chains.iter().position(|c| c.matches_exact(name_or_id)) {
+            return Ok(i);
+        }
 
-    pub fn get_chain_config_by_name(&self, name: &str) -> Result<ChainDefinition> {
-        Ok(self
-            .chains
-            .iter()
-            .find(|chain| chain.name.eq_ignore_ascii_case(name))
-            .ok_or_else(|| anyhow!("Chain '{}' not found", name))?
-            .clone())
-    }
-
-    pub fn get_chain_config_by_id(&self, chain_id: u64) -> Result<ChainDefinition> {
-        Ok(self
-            .chains
-            .iter()
-            .find(|chain| chain.chain_id == chain_id)
-            .ok_or_else(|| anyhow!("Chain with ID {} not found", chain_id))?
-            .clone())
+        let matches: Vec<usize> = (0..self.chains.len())
+            .filter(|&i| self.chains[i].matches_prefix(name_or_id))
+            .collect();
+        match matches.as_slice() {
+            [i] => Ok(*i),
+            [] => Err(anyhow!("Chain '{}' not found", name_or_id)),
+            many => Err(anyhow!(
+                "Chain '{}' is ambiguous: matches {}",
+                name_or_id,
+                many.iter()
+                    .map(|&i| self.chains[i].name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        }
     }
 
     pub async fn write(&self) -> Result<()> {
         let path = get_config_path().ok_or(anyhow!("Unable to find config path"))?;
+        if let Some(dir) = path.parent() {
+            ensure_private_dir(dir).await?;
+        }
         let tmp_path = path.with_extension("json.tmp");
 
         let json = serde_json::to_string_pretty(self)?;
 
         // Write to temp file, sync to disk, then atomically rename over the real file.
         // This ensures the config is never left in a partial/corrupt state.
-        tokio::fs::write(&tmp_path, &json).await?;
-        let file = tokio::fs::File::open(&tmp_path).await?;
+        // The config may hold private keys, so it must only be readable by the owner;
+        // remove any stale temp file so the mode applies at creation.
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+        let mut open_options = tokio::fs::OpenOptions::new();
+        open_options.write(true).create_new(true);
+        #[cfg(unix)]
+        open_options.mode(0o600);
+        let mut file = open_options.open(&tmp_path).await?;
+        file.write_all(json.as_bytes()).await?;
         file.sync_all().await?;
+        drop(file);
         tokio::fs::rename(&tmp_path, &path).await?;
 
         Ok(())
     }
 
+    /// Delete the config wherever it lives — both the current and the legacy
+    /// location, so a delete can never be undone by a later auto-migration.
     pub async fn delete() -> Result<()> {
-        tokio::fs::remove_file(get_config_path().ok_or(anyhow!("Unable to find config path"))?)
-            .await?;
+        for path in [get_config_path(), legacy_config_path()]
+            .into_iter()
+            .flatten()
+        {
+            match tokio::fs::remove_file(&path).await {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(e)
+                        .with_context(|| format!("Failed to delete config at {}", path.display()));
+                }
+            }
+        }
         Ok(())
     }
 }
 
-fn get_config_path() -> Option<PathBuf> {
-    let mut path = home_dir()?;
-    path.push(CONFIG_FILE_LOCATION);
-    Some(path)
+/// Create `dir` (if needed) with owner-only permissions; it will hold a
+/// config that can contain private keys.
+async fn ensure_private_dir(dir: &Path) -> std::io::Result<()> {
+    tokio::fs::create_dir_all(dir).await?;
+    #[cfg(unix)]
+    tokio::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).await?;
+    Ok(())
 }
 
-pub async fn config_exists() -> Result<bool> {
-    Ok(get_config_path().map(|p| p.exists()).unwrap_or(false))
+/// Tighten permissions on an existing config to owner-only, since it may
+/// contain private keys. Best-effort: failures are ignored (e.g. missing file).
+async fn restrict_permissions(path: &Path) {
+    #[cfg(unix)]
+    if let Ok(meta) = tokio::fs::metadata(path).await {
+        let mode = meta.permissions().mode() & 0o777;
+        if mode & 0o077 != 0 {
+            let _ = tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).await;
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
+fn get_config_path() -> Option<PathBuf> {
+    // Honor XDG_CONFIG_HOME when set; otherwise use ~/.config even on macOS,
+    // matching common CLI-tool convention.
+    match std::env::var_os("XDG_CONFIG_HOME") {
+        Some(dir) if !dir.is_empty() => Some(PathBuf::from(dir).join("chainz").join("config.json")),
+        _ => Some(home_dir()?.join(DEFAULT_CONFIG_RELATIVE)),
+    }
+}
+
+fn legacy_config_path() -> Option<PathBuf> {
+    Some(home_dir()?.join(LEGACY_CONFIG_FILE))
+}
+
+/// Move a pre-0.3 config from ~/.chainz.json to the current location.
+/// No-op when there is nothing to migrate or a config already exists at the
+/// new path (the legacy file is then left untouched).
+async fn migrate_legacy_config(new_path: &Path) {
+    if tokio::fs::metadata(new_path).await.is_ok() {
+        return;
+    }
+    let Some(legacy) = legacy_config_path() else {
+        return;
+    };
+    if tokio::fs::metadata(&legacy).await.is_err() {
+        return;
+    }
+    if let Some(dir) = new_path.parent()
+        && ensure_private_dir(dir).await.is_err()
+    {
+        return;
+    }
+    if tokio::fs::rename(&legacy, new_path).await.is_ok() {
+        eprintln!(
+            "Migrated config from {} to {}",
+            legacy.display(),
+            new_path.display()
+        );
+    }
+}
+
+pub fn config_exists() -> bool {
+    get_config_path().map(|p| p.exists()).unwrap_or(false)
+        || legacy_config_path().map(|p| p.exists()).unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -215,6 +330,7 @@ mod tests {
     fn test_chain(name: &str, chain_id: u64) -> ChainDefinition {
         ChainDefinition {
             name: name.to_string(),
+            aliases: vec![],
             chain_id,
             rpc_urls: vec!["https://rpc.example.com".to_string()],
             selected_rpc: "https://rpc.example.com".to_string(),
@@ -293,16 +409,45 @@ mod tests {
     }
 
     #[test]
+    fn get_chain_by_alias_and_prefix() -> Result<()> {
+        let mut config = Config::default();
+        let mut eth = test_chain("ethereum", 1);
+        eth.aliases = vec!["Ethereum Mainnet".to_string()];
+        config.chains.push(eth);
+        config.chains.push(test_chain("optimism", 10));
+
+        // exact alias, case-insensitive
+        assert_eq!(config.get_chain("ethereum mainnet")?.name, "ethereum");
+        // unambiguous prefix on name
+        assert_eq!(config.get_chain("opti")?.name, "optimism");
+        // exact match wins over prefix ambiguity
+        config.chains.push(test_chain("op", 130));
+        assert_eq!(config.get_chain("op")?.name, "op");
+        Ok(())
+    }
+
+    #[test]
+    fn get_chain_ambiguous_prefix_errors() {
+        let mut config = Config::default();
+        config.chains.push(test_chain("base", 8453));
+        config.chains.push(test_chain("basecamp", 123));
+
+        let err = config.get_chain("bas").unwrap_err().to_string();
+        assert!(err.contains("ambiguous"), "got: {}", err);
+        assert!(err.contains("base") && err.contains("basecamp"));
+    }
+
+    #[test]
     fn get_chain_not_found() {
         let config = Config::default();
         assert!(config.get_chain("nonexistent").is_err());
         assert!(config.get_chain("999").is_err());
     }
 
-    #[tokio::test]
-    async fn add_chain_new() -> Result<()> {
+    #[test]
+    fn add_chain_new() -> Result<()> {
         let mut chainz = Chainz::new();
-        chainz.add_chain(test_chain("ethereum", 1)).await?;
+        chainz.add_chain(test_chain("ethereum", 1))?;
 
         let chains = chainz.list_chains();
         assert_eq!(chains.len(), 1);
@@ -310,11 +455,11 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn add_chain_replaces_by_name() -> Result<()> {
+    #[test]
+    fn add_chain_replaces_by_name() -> Result<()> {
         let mut chainz = Chainz::new();
-        chainz.add_chain(test_chain("foo", 1)).await?;
-        chainz.add_chain(test_chain("foo", 42)).await?;
+        chainz.add_chain(test_chain("foo", 1))?;
+        chainz.add_chain(test_chain("foo", 42))?;
 
         let chains = chainz.list_chains();
         assert_eq!(chains.len(), 1);
@@ -322,22 +467,53 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn add_key_and_get_key() -> Result<()> {
+    #[test]
+    fn add_chain_replaces_by_alias_and_case() -> Result<()> {
         let mut chainz = Chainz::new();
-        chainz.add_key("mykey", test_key("mykey")).await?;
+        let mut eth = test_chain("ethereum", 1);
+        eth.aliases = vec!["Ethereum Mainnet".to_string()];
+        chainz.add_chain(eth)?;
+
+        // A new chain whose name collides with an existing ALIAS replaces
+        // that chain instead of being appended (and shadowed forever)
+        chainz.add_chain(test_chain("Ethereum Mainnet", 11))?;
+        assert_eq!(chainz.list_chains().len(), 1);
+        assert_eq!(chainz.list_chains()[0].chain_id, 11);
+
+        // Same for a case-variant of the primary name
+        chainz.add_chain(test_chain("ETHEREUM MAINNET", 12))?;
+        assert_eq!(chainz.list_chains().len(), 1);
+        assert_eq!(chainz.list_chains()[0].chain_id, 12);
+        Ok(())
+    }
+
+    #[test]
+    fn remove_chain_clears_default() -> Result<()> {
+        let mut chainz = Chainz::new();
+        chainz.add_chain(test_chain("ethereum", 1))?;
+        chainz.config.default_chain = Some("ethereum".to_string());
+
+        chainz.remove_chain("1")?;
+        assert_eq!(chainz.config.default_chain, None);
+        Ok(())
+    }
+
+    #[test]
+    fn add_key_and_get_key() -> Result<()> {
+        let mut chainz = Chainz::new();
+        chainz.add_key("mykey", test_key("mykey"))?;
 
         let retrieved = chainz.get_key("mykey")?;
         assert_eq!(retrieved.name, "mykey");
         Ok(())
     }
 
-    #[tokio::test]
-    async fn add_key_duplicate_errors() -> Result<()> {
+    #[test]
+    fn add_key_duplicate_errors() -> Result<()> {
         let mut chainz = Chainz::new();
-        chainz.add_key("dup", test_key("dup")).await?;
+        chainz.add_key("dup", test_key("dup"))?;
 
-        let result = chainz.add_key("dup", test_key("dup")).await;
+        let result = chainz.add_key("dup", test_key("dup"));
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("already exists"));
         Ok(())
@@ -351,10 +527,10 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
 
-    #[tokio::test]
-    async fn remove_key() -> Result<()> {
+    #[test]
+    fn remove_key() -> Result<()> {
         let mut chainz = Chainz::new();
-        chainz.add_key("temp", test_key("temp")).await?;
+        chainz.add_key("temp", test_key("temp"))?;
         assert!(chainz.get_key("temp").is_ok());
 
         chainz.remove_key("temp")?;
@@ -370,12 +546,12 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
 
-    #[tokio::test]
-    async fn list_keys_default_first() -> Result<()> {
+    #[test]
+    fn list_keys_default_first() -> Result<()> {
         let mut chainz = Chainz::new();
-        chainz.add_key("alpha", test_key("alpha")).await?;
-        chainz.add_key("zebra", test_key("zebra")).await?;
-        chainz.add_key("default", test_key("default")).await?;
+        chainz.add_key("alpha", test_key("alpha"))?;
+        chainz.add_key("zebra", test_key("zebra"))?;
+        chainz.add_key("default", test_key("default"))?;
 
         let keys = chainz.list_keys();
         assert_eq!(keys.len(), 3);

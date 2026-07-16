@@ -1,13 +1,11 @@
 pub mod rpc;
 pub mod wizard;
 
-use crate::{key::Key, variables::GlobalVariables};
+use crate::key::Key;
 use alloy::providers::DynProvider;
-use anyhow::Result;
 use colored::*;
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
-use std::sync::Arc;
 
 pub use rpc::{resolve_rpc, resolve_rpcs};
 
@@ -16,6 +14,10 @@ pub const DEFAULT_KEY_NAME: &str = "default";
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChainDefinition {
     pub name: String,
+    /// Alternate lookup names (e.g. the full chainlist name when the user
+    /// picked a short one). Absent in configs written by older versions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
     pub chain_id: u64,
     pub rpc_urls: Vec<String>,
     pub selected_rpc: String,
@@ -24,24 +26,35 @@ pub struct ChainDefinition {
     pub key_name: String,
 }
 
-#[derive(Clone)]
+impl ChainDefinition {
+    /// All names this chain answers to: primary name first, then aliases.
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.name.as_str()).chain(self.aliases.iter().map(String::as_str))
+    }
+
+    pub fn matches_exact(&self, query: &str) -> bool {
+        self.names().any(|n| n.eq_ignore_ascii_case(query))
+    }
+
+    pub fn matches_prefix(&self, query: &str) -> bool {
+        let query = query.to_lowercase();
+        self.names().any(|n| n.to_lowercase().starts_with(&query))
+    }
+}
+
+/// A chain resolved for use: RPC URL expanded and key attached.
+/// Deliberately holds no network state — commands that need the chain
+/// (e.g. `exec`) only consume strings and the key.
 pub struct ChainInstance {
     pub definition: ChainDefinition,
-    pub provider: Arc<DynProvider>,
     pub rpc_url: String,
     pub key: Key,
 }
 
 impl ChainInstance {
-    pub fn new(
-        definition: ChainDefinition,
-        provider: DynProvider,
-        rpc_url: String,
-        key: Key,
-    ) -> Self {
+    pub fn new(definition: ChainDefinition, rpc_url: String, key: Key) -> Self {
         Self {
             definition,
-            provider: Arc::new(provider),
             rpc_url,
             key,
         }
@@ -58,12 +71,6 @@ pub struct Rpc {
     pub provider: DynProvider,
 }
 
-impl ChainDefinition {
-    pub async fn get_rpc(&self, globals: &GlobalVariables) -> Result<Rpc> {
-        resolve_rpc(&self.selected_rpc, globals).await
-    }
-}
-
 impl Display for Rpc {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.rpc_url)
@@ -74,9 +81,16 @@ impl Display for ChainDefinition {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(
             f,
-            "{}: {}",
+            "{}: {}{}",
             "Chain".bright_blue().bold(),
-            self.name.yellow()
+            self.name.yellow(),
+            if self.aliases.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", self.aliases.join(", "))
+                    .bright_black()
+                    .to_string()
+            }
         )?;
         writeln!(
             f,
@@ -167,6 +181,7 @@ mod tests {
     ) -> ChainDefinition {
         ChainDefinition {
             name: "ethereum".to_string(),
+            aliases: vec![],
             chain_id: 1,
             rpc_urls: vec!["https://eth.llamarpc.com".to_string()],
             selected_rpc: "https://eth.llamarpc.com".to_string(),
