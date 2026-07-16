@@ -1,6 +1,6 @@
 use super::{
     ChainDefinition, DEFAULT_KEY_NAME,
-    rpc::{check_url, check_urls},
+    rpc::{check_url, probe_urls, rank_by_health},
 };
 use crate::ui;
 use crate::{
@@ -13,6 +13,7 @@ use crate::{
 use anyhow::Result;
 use console::style;
 use dialoguer::{FuzzySelect, Input};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
 /// Helper function to handle text input with ESC cancellation
 fn text_input<T: std::str::FromStr>(prompt: &str, default: Option<String>) -> Result<T>
@@ -59,55 +60,75 @@ pub async fn manual_chain_entry(
     })
 }
 
-/// Helper function to select or enter RPC URL.
-/// `available_rpcs` are raw (unexpanded) URLs; they are only expanded for
-/// the health probe itself and stored/displayed raw.
+/// Pick an RPC for a chain. `urls` are raw (may contain ${VAR}); they are
+/// expanded only for probing. Displays and returns raw URLs so secrets are
+/// never shown on screen or written to config.
 pub async fn select_rpc(
     chain_name: &str,
     chain_id: u64,
-    available_rpcs: Vec<String>,
+    urls: Vec<String>,
     globals: &GlobalVariables,
 ) -> Result<String> {
-    println!("\nTesting RPCs...");
+    let expanded: Vec<String> = urls.iter().map(|u| globals.expand_rpc_url(u)).collect();
 
-    // Initialize displays with "testing" status
-    let mut rpc_displays: Vec<String> = available_rpcs
+    // Live per-RPC status lines; hidden automatically when not a TTY
+    let multi = MultiProgress::new();
+    let bars: Vec<ProgressBar> = urls
         .iter()
-        .map(|url| ui::dim(&format!("⋯ {}", url)))
+        .map(|url| {
+            let bar = multi.add(ProgressBar::new_spinner());
+            bar.set_style(ProgressStyle::with_template("{spinner} {msg}").unwrap());
+            bar.enable_steady_tick(std::time::Duration::from_millis(120));
+            bar.set_message(url.clone());
+            bar
+        })
         .collect();
 
-    // Test all RPCs concurrently against the expected chain id
-    let expanded: Vec<String> = available_rpcs
-        .iter()
-        .map(|url| globals.expand_rpc_url(url))
-        .collect();
-    for (idx, healthy) in check_urls(&expanded, chain_id)
-        .await
-        .into_iter()
-        .enumerate()
-    {
-        rpc_displays[idx] = if healthy {
-            ui::success(&available_rpcs[idx])
+    let mut results = Vec::with_capacity(urls.len());
+    let mut rx = probe_urls(&expanded, chain_id);
+    while let Some(result) = rx.recv().await {
+        let bar = &bars[result.index];
+        if result.healthy {
+            bar.finish_with_message(ui::success(&format!(
+                "{}  {}ms",
+                urls[result.index],
+                result.latency.as_millis()
+            )));
         } else {
-            ui::fail(&available_rpcs[idx])
-        };
+            bar.finish_with_message(ui::fail(&format!(
+                "{}  {}",
+                urls[result.index],
+                ui::dim("unreachable")
+            )));
+        }
+        results.push(result);
     }
 
-    // Add manual entry option
-    rpc_displays.push("Enter RPC URL manually...".to_string());
+    // Healthy-first, fastest-first picker over RAW urls
+    let order = rank_by_health(&results);
+    let mut items: Vec<String> = order
+        .iter()
+        .map(|&i| {
+            let r = results.iter().find(|r| r.index == i).unwrap();
+            if r.healthy {
+                format!("{} ({}ms)", urls[i], r.latency.as_millis())
+            } else {
+                format!("{} (unreachable)", urls[i])
+            }
+        })
+        .collect();
+    items.push("Enter RPC URL manually...".to_string());
 
-    let rpc_selection = fuzzy_select(
+    let selection = fuzzy_select(
         &format!("Select an RPC URL for {}", ui::emph(chain_name)),
-        &rpc_displays,
+        &items,
         0,
     )?;
 
-    if rpc_selection == rpc_displays.len() - 1 {
+    if selection == items.len() - 1 {
         select_manual_rpc(chain_id, globals).await
-    } else if let Some(rpc) = available_rpcs.get(rpc_selection) {
-        Ok(rpc.clone())
     } else {
-        anyhow::bail!("Selected RPC is not working")
+        Ok(urls[order[selection]].clone())
     }
 }
 
