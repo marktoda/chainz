@@ -1,13 +1,11 @@
 pub mod rpc;
 pub mod wizard;
 
-use crate::{key::Key, variables::GlobalVariables};
+use crate::key::Key;
 use alloy::providers::DynProvider;
-use anyhow::Result;
 use colored::*;
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
-use std::sync::Arc;
 
 pub use rpc::{resolve_rpc, resolve_rpcs};
 
@@ -24,24 +22,19 @@ pub struct ChainDefinition {
     pub key_name: String,
 }
 
-#[derive(Clone)]
+/// A chain resolved for use: RPC URL expanded and key attached.
+/// Deliberately holds no network state — commands that need the chain
+/// (e.g. `exec`) only consume strings and the key.
 pub struct ChainInstance {
     pub definition: ChainDefinition,
-    pub provider: Arc<DynProvider>,
     pub rpc_url: String,
     pub key: Key,
 }
 
 impl ChainInstance {
-    pub fn new(
-        definition: ChainDefinition,
-        provider: DynProvider,
-        rpc_url: String,
-        key: Key,
-    ) -> Self {
+    pub fn new(definition: ChainDefinition, rpc_url: String, key: Key) -> Self {
         Self {
             definition,
-            provider: Arc::new(provider),
             rpc_url,
             key,
         }
@@ -56,12 +49,6 @@ impl ChainInstance {
 pub struct Rpc {
     pub rpc_url: String,
     pub provider: DynProvider,
-}
-
-impl ChainDefinition {
-    pub async fn get_rpc(&self, globals: &GlobalVariables) -> Result<Rpc> {
-        resolve_rpc(&self.selected_rpc, globals).await
-    }
 }
 
 impl Display for Rpc {

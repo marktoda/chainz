@@ -88,11 +88,11 @@ pub async fn select_rpc(
         test_futures.push(tokio::spawn(test_future));
     }
 
-    // Process results as they complete
-    for (idx, result) in (futures::future::join_all(test_futures).await)
-        .into_iter()
-        .flatten()
-    {
+    // The tasks are already running concurrently; collect their results
+    for handle in test_futures {
+        let Ok((idx, result)) = handle.await else {
+            continue;
+        };
         if result.is_ok() {
             rpc_displays[idx] = format!("{} {}", "✓".bright_green(), available_rpcs[idx]);
         } else {
@@ -134,7 +134,7 @@ async fn select_manual_rpc(chain_id: u64) -> Result<Rpc> {
 }
 
 /// Helper function to select or create a key
-pub async fn select_key(chainz: &mut Chainz) -> Result<String> {
+pub fn select_key(chainz: &mut Chainz) -> Result<String> {
     let keys = chainz.list_keys();
 
     // Create display strings with addresses
@@ -158,15 +158,13 @@ pub async fn select_key(chainz: &mut Chainz) -> Result<String> {
     if key_selection == key_displays.len() - 1 {
         let kname: String = Input::new().with_prompt("Enter key name").interact_text()?;
         let private_key = rpassword::prompt_password("Enter private key: ")?;
-        chainz
-            .add_key(
-                &kname,
-                Key {
-                    name: kname.clone(),
-                    kind: KeyType::PrivateKey { value: private_key },
-                },
-            )
-            .await?;
+        chainz.add_key(
+            &kname,
+            Key {
+                name: kname.clone(),
+                kind: KeyType::PrivateKey { value: private_key },
+            },
+        )?;
         Ok(kname)
     } else {
         Ok(key_displays[key_selection].0.clone())
@@ -248,7 +246,7 @@ impl UpdateArgs {
                 println!("\n{}", "Key Configuration".bright_blue().bold());
                 println!("{}", "═".bright_black().repeat(50));
 
-                let new_key = select_key(chainz).await?;
+                let new_key = select_key(chainz)?;
                 chain.key_name = new_key;
             }
             2 => {
@@ -264,7 +262,7 @@ impl UpdateArgs {
         }
 
         // Save changes
-        chainz.add_chain(chain.clone()).await?;
+        chainz.add_chain(chain.clone())?;
         chainz.save().await?;
         println!("\n{}", "Chain updated successfully".bright_green());
 
@@ -326,7 +324,7 @@ impl AddArgs {
             );
         }
 
-        chainz.add_chain(chain_def.clone()).await?;
+        chainz.add_chain(chain_def.clone())?;
         chainz.save().await?;
         Ok(chain_def)
     }
@@ -382,7 +380,7 @@ impl AddArgs {
         } else {
             println!("\n{}", "Key Configuration".bright_blue().bold());
             println!("{}", "═".bright_black().repeat(50));
-            select_key(chainz).await?
+            select_key(chainz)?
         };
 
         let (verification_url, verification_api_key) =
@@ -429,7 +427,7 @@ impl AddArgs {
             }
         }
 
-        chainz.add_chain(chain_def.clone()).await?;
+        chainz.add_chain(chain_def.clone())?;
         chainz.save().await?;
         Ok(chain_def)
     }

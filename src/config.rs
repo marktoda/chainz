@@ -25,61 +25,30 @@ pub struct Config {
 #[derive(Default)]
 pub struct Chainz {
     pub config: Config,
-    active_chains: HashMap<String, ChainInstance>, // keyed by name
 }
 
 impl Chainz {
     pub fn new() -> Self {
-        Self {
-            config: Config::default(),
-            active_chains: HashMap::new(),
-        }
+        Self::default()
     }
 
     pub async fn load() -> Result<Self> {
-        // Start fresh when no config exists yet, but propagate errors for a
-        // config that exists and can't be read/parsed — silently defaulting
-        // would wipe the real config on the next save.
-        let config = if config_exists().await? {
-            Config::load().await?
-        } else {
-            Config::default()
-        };
-        Ok(Self {
-            config,
-            active_chains: HashMap::new(),
-        })
+        // Start fresh when no config exists yet; Config::load propagates
+        // errors for a config that exists but can't be read/parsed —
+        // silently defaulting would wipe the real config on the next save.
+        let config = Config::load().await?.unwrap_or_default();
+        Ok(Self { config })
     }
 
-    pub async fn get_chain(&mut self, name_or_id: &str) -> Result<ChainInstance> {
+    pub fn get_chain(&self, name_or_id: &str) -> Result<ChainInstance> {
         let definition = self.config.get_chain(name_or_id)?;
-        let name = definition.name.clone();
-
-        if !self.active_chains.contains_key(&name) {
-            let instance = self.instantiate_chain(&definition).await?;
-            self.active_chains.insert(name.clone(), instance);
-        }
-        Ok(self
-            .active_chains
-            .get(&name)
-            .expect("Chain was just inserted")
-            .clone())
-    }
-
-    async fn instantiate_chain(&self, def: &ChainDefinition) -> Result<ChainInstance> {
-        let rpc = def.get_rpc(&self.config.globals).await?;
-        let key = self.get_key(&def.key_name)?;
-
-        Ok(ChainInstance::new(
-            def.clone(),
-            rpc.provider,
-            rpc.rpc_url,
-            key,
-        ))
+        let rpc_url = self.config.globals.expand_rpc_url(&definition.selected_rpc);
+        let key = self.get_key(&definition.key_name)?;
+        Ok(ChainInstance::new(definition, rpc_url, key))
     }
 
     // Key management methods
-    pub async fn add_key(&mut self, name: &str, key: Key) -> Result<()> {
+    pub fn add_key(&mut self, name: &str, key: Key) -> Result<()> {
         if self.config.keys.contains_key(name) {
             anyhow::bail!("Key '{}' already exists", name);
         }
@@ -119,7 +88,7 @@ impl Chainz {
             .ok_or(anyhow!("Key '{}' not found", key_name))
     }
 
-    pub async fn add_chain(&mut self, chain: ChainDefinition) -> Result<()> {
+    pub fn add_chain(&mut self, chain: ChainDefinition) -> Result<()> {
         // Replace if exists, otherwise add
         if let Some(pos) = self.config.chains.iter().position(|c| c.name == chain.name) {
             self.config.chains[pos] = chain;
@@ -135,10 +104,14 @@ impl Chainz {
     }
 
     pub fn remove_chain(&mut self, name_or_id: &str) -> Result<ChainDefinition> {
-        let definition = self.config.get_chain(name_or_id)?;
-        self.config.chains.retain(|c| c.name != definition.name);
-        self.active_chains.remove(&definition.name);
-        Ok(definition)
+        let chain_id = name_or_id.parse::<u64>().ok();
+        let pos = self
+            .config
+            .chains
+            .iter()
+            .position(|c| Some(c.chain_id) == chain_id || c.name.eq_ignore_ascii_case(name_or_id))
+            .ok_or_else(|| anyhow!("Chain '{}' not found", name_or_id))?;
+        Ok(self.config.chains.remove(pos))
     }
 
     pub async fn save(&self) -> Result<()> {
@@ -151,19 +124,27 @@ impl Chainz {
 }
 
 impl Config {
-    pub async fn load() -> Result<Self> {
+    /// Load the config, returning `Ok(None)` when no config file exists yet.
+    /// Any other failure (unreadable file, parse error) is propagated so a
+    /// broken config is never mistaken for a missing one.
+    pub async fn load() -> Result<Option<Self>> {
         let path = get_config_path().ok_or(anyhow!("Unable to find config path"))?;
         restrict_permissions(&path).await;
-        let json = tokio::fs::read_to_string(&path)
-            .await
-            .with_context(|| format!("Failed to read config at {}", path.display()))?;
+        let json = match tokio::fs::read_to_string(&path).await {
+            Ok(json) => json,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => {
+                return Err(e)
+                    .with_context(|| format!("Failed to read config at {}", path.display()));
+            }
+        };
         let config = serde_json::from_str(&json).with_context(|| {
             format!(
                 "Failed to parse config at {} (fix or remove the file, then retry)",
                 path.display()
             )
         })?;
-        Ok(config)
+        Ok(Some(config))
     }
 
     pub fn get_chain(&self, name_or_id: &str) -> Result<ChainDefinition> {
@@ -245,8 +226,8 @@ fn get_config_path() -> Option<PathBuf> {
     Some(path)
 }
 
-pub async fn config_exists() -> Result<bool> {
-    Ok(get_config_path().map(|p| p.exists()).unwrap_or(false))
+pub fn config_exists() -> bool {
+    get_config_path().map(|p| p.exists()).unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -342,10 +323,10 @@ mod tests {
         assert!(config.get_chain("999").is_err());
     }
 
-    #[tokio::test]
-    async fn add_chain_new() -> Result<()> {
+    #[test]
+    fn add_chain_new() -> Result<()> {
         let mut chainz = Chainz::new();
-        chainz.add_chain(test_chain("ethereum", 1)).await?;
+        chainz.add_chain(test_chain("ethereum", 1))?;
 
         let chains = chainz.list_chains();
         assert_eq!(chains.len(), 1);
@@ -353,11 +334,11 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn add_chain_replaces_by_name() -> Result<()> {
+    #[test]
+    fn add_chain_replaces_by_name() -> Result<()> {
         let mut chainz = Chainz::new();
-        chainz.add_chain(test_chain("foo", 1)).await?;
-        chainz.add_chain(test_chain("foo", 42)).await?;
+        chainz.add_chain(test_chain("foo", 1))?;
+        chainz.add_chain(test_chain("foo", 42))?;
 
         let chains = chainz.list_chains();
         assert_eq!(chains.len(), 1);
@@ -365,22 +346,22 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn add_key_and_get_key() -> Result<()> {
+    #[test]
+    fn add_key_and_get_key() -> Result<()> {
         let mut chainz = Chainz::new();
-        chainz.add_key("mykey", test_key("mykey")).await?;
+        chainz.add_key("mykey", test_key("mykey"))?;
 
         let retrieved = chainz.get_key("mykey")?;
         assert_eq!(retrieved.name, "mykey");
         Ok(())
     }
 
-    #[tokio::test]
-    async fn add_key_duplicate_errors() -> Result<()> {
+    #[test]
+    fn add_key_duplicate_errors() -> Result<()> {
         let mut chainz = Chainz::new();
-        chainz.add_key("dup", test_key("dup")).await?;
+        chainz.add_key("dup", test_key("dup"))?;
 
-        let result = chainz.add_key("dup", test_key("dup")).await;
+        let result = chainz.add_key("dup", test_key("dup"));
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("already exists"));
         Ok(())
@@ -394,10 +375,10 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
 
-    #[tokio::test]
-    async fn remove_key() -> Result<()> {
+    #[test]
+    fn remove_key() -> Result<()> {
         let mut chainz = Chainz::new();
-        chainz.add_key("temp", test_key("temp")).await?;
+        chainz.add_key("temp", test_key("temp"))?;
         assert!(chainz.get_key("temp").is_ok());
 
         chainz.remove_key("temp")?;
@@ -413,12 +394,12 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
 
-    #[tokio::test]
-    async fn list_keys_default_first() -> Result<()> {
+    #[test]
+    fn list_keys_default_first() -> Result<()> {
         let mut chainz = Chainz::new();
-        chainz.add_key("alpha", test_key("alpha")).await?;
-        chainz.add_key("zebra", test_key("zebra")).await?;
-        chainz.add_key("default", test_key("default")).await?;
+        chainz.add_key("alpha", test_key("alpha"))?;
+        chainz.add_key("zebra", test_key("zebra"))?;
+        chainz.add_key("default", test_key("default"))?;
 
         let keys = chainz.list_keys();
         assert_eq!(keys.len(), 3);

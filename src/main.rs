@@ -7,12 +7,17 @@ use std::process::Command as ProcessCommand;
 #[tokio::main]
 async fn main() -> Result<()> {
     let opts = Opt::parse();
+
+    // Init runs before the config is loaded so it can recover from a
+    // corrupt config (which Chainz::load rejects) by recreating it.
+    if let opt::Command::Init {} = opts.cmd {
+        return init::handle_init().await;
+    }
+
     let mut chainz = Chainz::load().await?;
 
     match opts.cmd {
-        opt::Command::Init {} => {
-            init::handle_init().await?;
-        }
+        opt::Command::Init {} => unreachable!("handled above"),
         opt::Command::Key { cmd } => {
             cmd.handle(&mut chainz).await?;
         }
@@ -54,7 +59,7 @@ async fn main() -> Result<()> {
                 Some(id) => id,
                 None => select_chain(&chainz)?,
             };
-            let mut chain = chainz.get_chain(&name_or_id).await?;
+            let mut chain = chainz.get_chain(&name_or_id)?;
             if let Some(key_name) = key {
                 chain = chain.with_key(chainz.get_key(&key_name)?);
             }

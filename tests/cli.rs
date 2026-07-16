@@ -2,14 +2,19 @@
 //! `~/.chainz.json` is never touched and tests can run in parallel.
 
 use assert_cmd::Command;
+use chainz::chain::ChainDefinition;
+use chainz::config::{CONFIG_FILE_LOCATION, Config};
+use chainz::key::{Key, KeyType};
 use predicates::prelude::*;
 use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
 
-/// Well-known anvil test key #0
+/// Well-known anvil test keys #0 and #1
 const TEST_KEY: &str = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
 const TEST_ADDRESS: &str = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
+const TEST_KEY_2: &str = "59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
+const TEST_ADDRESS_2: &str = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
 
 fn chainz(home: &Path) -> Command {
     let mut cmd = Command::cargo_bin("chainz").unwrap();
@@ -18,34 +23,42 @@ fn chainz(home: &Path) -> Command {
 }
 
 fn config_path(home: &Path) -> std::path::PathBuf {
-    home.join(".chainz.json")
+    home.join(CONFIG_FILE_LOCATION)
 }
 
-/// Seed a config with one key and the given chains, bypassing the CLI
-/// (non-interactive `add` requires a live RPC to health-check against).
+/// Seed a config with one key and the given chains via the library's own
+/// types, bypassing the CLI (non-interactive `add` requires a live RPC to
+/// health-check against).
 fn seed_config(home: &Path, chains: &[(&str, u64)]) {
-    let chains: Vec<serde_json::Value> = chains
-        .iter()
-        .map(|(name, id)| {
-            serde_json::json!({
-                "name": name,
-                "chain_id": id,
-                "rpc_urls": ["http://localhost:1"],
-                "selected_rpc": "http://localhost:1",
-                "verification_api_key": null,
-                "verification_url": null,
-                "key_name": "default",
+    let config = Config {
+        chains: chains
+            .iter()
+            .map(|(name, id)| ChainDefinition {
+                name: name.to_string(),
+                chain_id: *id,
+                rpc_urls: vec!["http://localhost:1".to_string()],
+                selected_rpc: "http://localhost:1".to_string(),
+                verification_api_key: None,
+                verification_url: None,
+                key_name: "default".to_string(),
             })
-        })
-        .collect();
-    let config = serde_json::json!({
-        "chains": chains,
-        "variables": {},
-        "keys": {
-            "default": { "name": "default", "type": "PrivateKey", "value": TEST_KEY }
-        },
-    });
-    fs::write(config_path(home), config.to_string()).unwrap();
+            .collect(),
+        keys: std::collections::HashMap::from([(
+            "default".to_string(),
+            Key::new(
+                "default".to_string(),
+                KeyType::PrivateKey {
+                    value: TEST_KEY.to_string(),
+                },
+            ),
+        )]),
+        ..Default::default()
+    };
+    fs::write(
+        config_path(home),
+        serde_json::to_string_pretty(&config).unwrap(),
+    )
+    .unwrap();
 }
 
 #[test]
@@ -240,7 +253,7 @@ fn exec_expands_env_and_tokens() {
     seed_config(home.path(), &[("testchain", 31337)]);
 
     // env vars are set for the child process; @-tokens expand in args.
-    // HTTP providers connect lazily, so no live RPC is needed for `echo`.
+    // exec resolves the chain from config alone — no live RPC is contacted.
     chainz(home.path())
         .args([
             "exec",
@@ -313,6 +326,77 @@ fn exec_unknown_chain_fails() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn exec_key_override_flag() {
+    let home = TempDir::new().unwrap();
+    seed_config(home.path(), &[("testchain", 31337)]);
+    chainz(home.path())
+        .args(["key", "add", "alt", "--key", TEST_KEY_2])
+        .assert()
+        .success();
+
+    // without -k: default key's wallet; with -k alt: the override's wallet
+    chainz(home.path())
+        .args(["exec", "testchain", "--", "echo", "@wallet"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(TEST_ADDRESS));
+    chainz(home.path())
+        .args(["exec", "testchain", "-k", "alt", "--", "echo", "@wallet"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(TEST_ADDRESS_2));
+}
+
+#[test]
+fn key_add_duplicate_name_fails() {
+    let home = TempDir::new().unwrap();
+    chainz(home.path())
+        .args(["key", "add", "dup", "--key", TEST_KEY])
+        .assert()
+        .success();
+    chainz(home.path())
+        .args(["key", "add", "dup", "--key", TEST_KEY_2])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already exists"));
+}
+
+/// Pins the on-disk wire format so existing user configs keep loading.
+/// This is the ONE test that intentionally hand-writes the JSON; behavioral
+/// tests should seed via the library types instead.
+#[test]
+fn legacy_config_format_still_loads() {
+    let home = TempDir::new().unwrap();
+    let legacy = r#"{
+        "chains": [{
+            "name": "ethereum",
+            "chain_id": 1,
+            "rpc_urls": ["https://eth.example.com"],
+            "selected_rpc": "https://eth.example.com",
+            "verification_api_key": null,
+            "verification_url": null,
+            "key_name": "default"
+        }],
+        "variables": { "MY_VAR": "abc" },
+        "keys": {
+            "default": { "name": "default", "type": "PrivateKey", "value": "REDACTED" }
+        }
+    }"#;
+    fs::write(config_path(home.path()), legacy).unwrap();
+
+    chainz(home.path())
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ethereum"));
+    chainz(home.path())
+        .args(["var", "get", "MY_VAR"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("MY_VAR = abc"));
 }
 
 #[test]

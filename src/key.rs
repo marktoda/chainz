@@ -15,7 +15,6 @@ use alloy::{
 };
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
-use strum::{EnumIter, IntoEnumIterator};
 
 use aes_gcm::{
     Aes256Gcm, Nonce,
@@ -34,9 +33,8 @@ pub struct Key {
     pub kind: KeyType,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, strum::Display, EnumIter)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(tag = "type")]
-#[strum(serialize_all = "title_case")]
 pub enum KeyType {
     #[serde(rename = "PrivateKey")]
     PrivateKey { value: String },
@@ -165,18 +163,13 @@ impl KeyCommand {
                     // `chainz key add <name> --key <key>` works without a TTY
                     None if key.is_some() => KeyTypeArg::PrivateKey,
                     None => {
-                        let key_types: Vec<_> = KeyType::iter().collect();
+                        let variants = <KeyTypeArg as clap::ValueEnum>::value_variants();
                         let selection = dialoguer::Select::new()
                             .with_prompt("Select key type")
-                            .items(&key_types)
+                            .items(variants)
                             .default(0)
                             .interact()?;
-                        [
-                            KeyTypeArg::PrivateKey,
-                            KeyTypeArg::Encrypted,
-                            KeyTypeArg::OnePassword,
-                            KeyTypeArg::Keyring,
-                        ][selection]
+                        variants[selection]
                     }
                 };
 
@@ -224,7 +217,7 @@ impl KeyCommand {
                 };
 
                 let key = Key::new(name.clone(), kind);
-                config.add_key(&name, key).await?;
+                config.add_key(&name, key)?;
                 println!("Added key '{}'", name);
                 config.save().await?;
             }
@@ -400,10 +393,13 @@ mod tests {
     }
 
     #[test]
-    fn test_key_display() {
-        let key_types: Vec<String> = KeyType::iter().map(|k| k.to_string()).collect();
+    fn test_key_type_picker_labels() {
+        let labels: Vec<String> = <KeyTypeArg as clap::ValueEnum>::value_variants()
+            .iter()
+            .map(|k| k.to_string())
+            .collect();
         assert_eq!(
-            key_types,
+            labels,
             vec!["Private Key", "Encrypted Key", "One Password", "Keyring"]
         );
     }

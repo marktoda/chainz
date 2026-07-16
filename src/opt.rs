@@ -140,6 +140,19 @@ pub enum KeyTypeArg {
     Keyring,
 }
 
+/// Human-readable labels, shared by the interactive picker
+impl std::fmt::Display for KeyTypeArg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = match self {
+            KeyTypeArg::PrivateKey => "Private Key",
+            KeyTypeArg::Encrypted => "Encrypted Key",
+            KeyTypeArg::OnePassword => "One Password",
+            KeyTypeArg::Keyring => "Keyring",
+        };
+        write!(f, "{}", label)
+    }
+}
+
 #[derive(Debug, Subcommand)]
 pub enum VarCommand {
     /// Set or update a variable
