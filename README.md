@@ -7,8 +7,9 @@ A CLI tool for managing EVM chain configurations
 - Interactive chain discovery and configuration (backed by [chainlist](https://chainid.network), cached locally)
 - Short chain names with aliases and prefix matching (`chainz exec eth`)
 - RPC health checking (`chainz doctor`, with `--fix` failover to healthy RPCs)
-- Private key management (plaintext, encrypted, 1Password, keyring)
+- Private key management with safe keyring/encrypted defaults and migration
 - Multiple RPC support per chain and a configurable default chain
+- RPC-only chain configurations when signing is not needed
 - Environment variable interpolation
 - Command execution with chain-specific variable expansion
 - Shell completions and `--json` output for scripting
@@ -35,7 +36,10 @@ chainz add
 # List configured chains
 chainz list
 
-# Remove a chain
+# Inspect one chain in detail
+chainz show ethereum
+
+# Removal requires an exact primary name or chain ID
 chainz remove ethereum
 
 # Execute a command for a given chain (prefix matching works)
@@ -76,9 +80,10 @@ Chain Selection
 RPC Configuration
 ══════════════════════════════════════════════════════
 Testing RPCs...
-✓ https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}
-✓ https://eth.llamarpc.com
-✗ https://mainnet.infura.io/v3/${INFURA_KEY}
+13 of 18 RPCs healthy
+? Select an RPC
+> RPC 1  120ms
+  RPC 2  184ms
 
 Key Configuration
 ══════════════════════════════════════════════════════
@@ -92,24 +97,26 @@ Chain added: ethereum (ChainId: 1)
 
 ### Managing Chains
 
-List configured chains and their status:
+`list` is a compact index; the active RPC is redacted so credential-bearing
+URLs are safe to display. The `*` marks the default chain:
 
 ```bash
 > chainz list
-Chain: ethereum
-├─ ID: 1
-├─ Active RPC: https://eth-mainnet.g.alchemy.com/v2/...
-├─ Verification Key: 0xabc...def
-└─ Key Name: default
-
-Chain: optimism
-├─ ID: 10
-├─ Active RPC: https://opt-mainnet.g.alchemy.com/v2/...
-├─ Verification Key: None
-└─ Key Name: deployer
+  CHAIN      ID  RPC                             KEY
+* ethereum    1  https://…llamarpc.com           default
+  optimism   10  https://…optimism.io            —
+* default chain
 ```
 
-Update chain configuration:
+Use `show` for one chain's details, or `list --verbose` for all details:
+
+```bash
+chainz show ethereum
+chainz show ethereum --json
+chainz list --verbose
+```
+
+Update interactively, or target a chain and make a direct change:
 
 ```bash
 > chainz update
@@ -117,8 +124,16 @@ Update chain configuration:
 ? What would you like to update?
 > RPC URL
   Key
-  Verification API Key
+  Verification
+  Rename
+  Save and finish
+
+> chainz update ethereum --name eth --no-key
+> chainz update eth --rpc-url https://eth.llamarpc.com
 ```
+
+Chains may omit a key entirely. This is useful for read-only RPC commands;
+`@wallet` and `@key` fail with a clear message until a key is attached.
 
 ### Executing Commands
 
@@ -174,31 +189,39 @@ format = "\\(⛓ $env_value\\) "
 
 ### Managing Keys
 
-Add and manage private keys:
+Add and manage private keys. With no `--type`, Chainz uses the OS keyring
+when available and otherwise offers encrypted storage. Plaintext storage
+requires the explicit `--type private-key` option and prints a warning:
 
 ```bash
 > chainz key add deployer
-? Select key type
-> Private Key
-  Encrypted Key
-  One Password
-  Keyring
 Enter private key: ****
 Added key 'deployer'
 
 > chainz key list
 Stored keys:
-- default: 0x123...789
-- deployer: 0xabc...def
+- default (0x123...789)
+- deployer (0xabc...def)
 ```
 
-For scripting, `key add` is fully non-interactive when the key is passed on
-the command line (`--key` implies `--type private-key`):
+For scripting, `key add` is fully non-interactive with `--key` when the OS
+keyring is available. Choose `--type encrypted` when a terminal password
+prompt is acceptable:
 
 ```bash
 > chainz key add ci-key --key 0xac09...ff80
 Added key 'ci-key'
 ```
+
+Move legacy plaintext keys to safe storage without changing chain references:
+
+```bash
+chainz key migrate default
+chainz key migrate --all --to encrypted
+```
+
+Removing an attached key is blocked by default. Use `--force` to detach it
+from every referencing chain before removal.
 
 ### Health Checks
 
@@ -212,7 +235,7 @@ list healthy endpoints fastest-first:
 ```bash
 > chainz doctor --fix
 Keys
-  ⚠ 'default' is stored as a plaintext private key — consider re-adding it with --type encrypted or --type keyring
+  ⚠ 'default' is stored as plaintext — run `chainz key migrate default`
 
 Key references
   ✓ all chains reference existing keys
@@ -227,10 +250,11 @@ Fixing RPCs
 
 ### Scripting
 
-`list` and `key list` support `--json` (key material is never included):
+`list`, `show`, and `key list` support `--json` (key material is never included):
 
 ```bash
 > chainz list --json | jq '.[].name'
+> chainz show ethereum --json | jq '.selected_rpc'
 > chainz key list --json | jq '.[] | {name, address}'
 ```
 
@@ -244,9 +268,13 @@ Set and use custom variables for RPC URL interpolation:
 
 > chainz var list
 Variables:
-  ALCHEMY_KEY = abc123
-  ETHERSCAN_KEY = def456
+  ALCHEMY_KEY
+  ETHERSCAN_KEY
 ```
+
+Human-readable `set` and `list` output does not echo values. Use
+`chainz var get NAME` for one value or the explicitly revealing
+`chainz var list --json` form in trusted scripting contexts.
 
 ## Configuration
 

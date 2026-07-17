@@ -41,17 +41,18 @@ pub enum Command {
     /// Example: chainz remove ethereum
     #[command(alias = "rm")]
     Remove {
-        /// Chain name or ID to remove
+        /// Exact primary chain name or chain ID to remove
         name_or_id: String,
     },
 
     /// List all configured chains
     ///
-    /// Displays all chains with their details:
+    /// Displays a compact index with:
     /// - Name
     /// - Chain ID
-    /// - RPC URL
+    /// - Redacted active RPC
     /// - Associated private key name
+    #[command(verbatim_doc_comment)]
     List {
         /// Output as JSON (for scripting)
         #[arg(long)]
@@ -98,11 +99,12 @@ pub enum Command {
     ///     @key    : Private key
     ///
     /// Example: chainz exec ethereum -- cast balance @wallet
+    #[command(verbatim_doc_comment)]
     Exec {
         /// Chain name or ID to use (interactive picker if omitted)
         name_or_id: Option<String>,
         /// Command to execute (after --)
-        #[arg(last = true)]
+        #[arg(last = true, required = true)]
         command: Vec<String>,
         /// Override the key to use for this command
         #[arg(short, long)]
@@ -127,6 +129,7 @@ pub enum Command {
     /// Safe storage is the default; plaintext requires an explicit type.
     ///
     /// Example: chainz key add mykey
+    #[command(verbatim_doc_comment)]
     Key {
         #[command(subcommand)]
         cmd: KeyCommand,
@@ -150,7 +153,8 @@ pub enum Command {
     ///     set   : Set or update a variable
     ///     get   : Get a variable's value
     ///     list  : List all variables
-    ///     rm    : Remove a variable
+    ///     remove: Remove a variable (`rm` is an alias)
+    #[command(verbatim_doc_comment)]
     Var {
         #[command(subcommand)]
         cmd: VarCommand,
@@ -265,9 +269,40 @@ pub enum VarCommand {
 
 #[derive(Debug, Args)]
 pub struct UpdateArgs {
+    /// Chain name, alias, prefix, or ID (interactive picker if omitted)
+    pub name_or_id: Option<String>,
+
     /// Re-download the chainlist instead of using the local cache
     #[arg(long)]
     pub refresh: bool,
+
+    /// Rename the chain
+    #[arg(long)]
+    pub name: Option<String>,
+
+    /// Select and add an RPC URL
+    #[arg(long)]
+    pub rpc_url: Option<String>,
+
+    /// Attach a stored key
+    #[arg(long, conflicts_with = "no_key")]
+    pub key: Option<String>,
+
+    /// Detach the chain's key
+    #[arg(long)]
+    pub no_key: bool,
+
+    /// Set the block explorer API URL
+    #[arg(long)]
+    pub verification_url: Option<String>,
+
+    /// Set the block explorer API key
+    #[arg(long)]
+    pub verification_api_key: Option<String>,
+
+    /// Remove block explorer configuration
+    #[arg(long, conflicts_with_all = ["verification_url", "verification_api_key"])]
+    pub clear_verification: bool,
 }
 
 #[derive(Debug, Args)]

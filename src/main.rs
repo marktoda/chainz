@@ -8,7 +8,18 @@ use dialoguer::FuzzySelect;
 use std::process::Command as ProcessCommand;
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() {
+    if let Err(error) = run().await {
+        if ui::is_cancelled(&error) {
+            eprintln!("Cancelled");
+            return;
+        }
+        eprintln!("Error: {error:#}");
+        std::process::exit(1);
+    }
+}
+
+async fn run() -> Result<()> {
     let opts = Opt::parse();
 
     // These commands run before the config is loaded: completions needs no
@@ -40,12 +51,10 @@ async fn main() -> Result<()> {
             println!("Added chain {}", chain.name);
         }
         opt::Command::Update { args } => {
-            let chain = args.handle(&mut chainz).await?;
-            println!("\nFinal configuration:");
-            println!("{}", chain);
+            args.handle(&mut chainz).await?;
         }
         opt::Command::Remove { name_or_id } => {
-            let removed = chainz.remove_chain(&name_or_id)?;
+            let removed = chainz.remove_chain_exact(&name_or_id)?;
             chainz.save().await?;
             println!("Removed chain '{}'", removed.name);
         }
@@ -208,6 +217,6 @@ fn select_chain(chainz: &Chainz) -> Result<String> {
         .items(&items)
         .default(0)
         .interact_opt()?
-        .ok_or_else(|| anyhow::anyhow!("No chain selected"))?;
+        .ok_or_else(ui::cancelled)?;
     Ok(chains[selection].name.clone())
 }

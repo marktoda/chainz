@@ -5,6 +5,25 @@
 use console::style;
 use std::net::IpAddr;
 
+#[derive(Debug)]
+pub struct Cancelled;
+
+impl std::fmt::Display for Cancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Cancelled")
+    }
+}
+
+impl std::error::Error for Cancelled {}
+
+pub fn cancelled() -> anyhow::Error {
+    anyhow::Error::new(Cancelled)
+}
+
+pub fn is_cancelled(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<Cancelled>().is_some()
+}
+
 pub fn header(title: &str) -> String {
     format!(
         "\n{}\n{}",
@@ -95,6 +114,13 @@ mod tests {
         assert!(header("Section").contains("═"));
         assert!(section("Keys").contains("Keys"));
         assert!(!section("Keys").contains("═"));
+    }
+
+    #[test]
+    fn cancellation_is_typed() {
+        let error = cancelled();
+        assert!(is_cancelled(&error));
+        assert_eq!(error.to_string(), "Cancelled");
     }
 
     #[test]

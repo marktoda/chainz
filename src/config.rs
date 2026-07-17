@@ -136,6 +136,12 @@ impl Chainz {
         Ok(())
     }
 
+    pub fn replace_chain(&mut self, name_or_id: &str, chain: ChainDefinition) -> Result<()> {
+        let index = self.config.find_chain_index(name_or_id)?;
+        self.config.chains[index] = chain;
+        Ok(())
+    }
+
     /// Whether a chain would collide with `name` (by name or alias).
     pub fn chain_exists(&self, name: &str) -> bool {
         self.config.chains.iter().any(|c| c.matches_exact(name))
@@ -147,6 +153,16 @@ impl Chainz {
 
     pub fn remove_chain(&mut self, name_or_id: &str) -> Result<ChainDefinition> {
         let pos = self.config.find_chain_index(name_or_id)?;
+        self.remove_chain_at(pos)
+    }
+
+    /// Destructive commands deliberately require an exact primary name or ID.
+    pub fn remove_chain_exact(&mut self, name_or_id: &str) -> Result<ChainDefinition> {
+        let pos = self.config.find_chain_exact_index(name_or_id)?;
+        self.remove_chain_at(pos)
+    }
+
+    fn remove_chain_at(&mut self, pos: usize) -> Result<ChainDefinition> {
         let removed = self.config.chains.remove(pos);
         // Keep the default-chain invariant here so every caller gets it
         if self.config.default_chain.as_deref() == Some(removed.name.as_str()) {
@@ -228,6 +244,26 @@ impl Config {
                     .join(", ")
             )),
         }
+    }
+
+    fn find_chain_exact_index(&self, name_or_id: &str) -> Result<usize> {
+        if let Ok(chain_id) = name_or_id.parse::<u64>()
+            && let Some(index) = self
+                .chains
+                .iter()
+                .position(|chain| chain.chain_id == chain_id)
+        {
+            return Ok(index);
+        }
+        self.chains
+            .iter()
+            .position(|chain| chain.name.eq_ignore_ascii_case(name_or_id))
+            .ok_or_else(|| {
+                anyhow!(
+                    "Chain '{}' not found; removal requires an exact chain name or ID",
+                    name_or_id
+                )
+            })
     }
 
     pub async fn write(&self) -> Result<()> {

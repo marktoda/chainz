@@ -31,8 +31,7 @@ where
         Ok(value) if !value.is_empty() => value
             .parse()
             .map_err(|_| anyhow::anyhow!("Failed to parse input")),
-        Ok(_) => anyhow::bail!("Operation cancelled by user"),
-        Err(_) => anyhow::bail!("Operation cancelled by user"),
+        Ok(_) | Err(_) => Err(ui::cancelled()),
     }
 }
 
@@ -227,75 +226,160 @@ pub fn select_verifier() -> Result<(Option<String>, Option<String>)> {
 impl UpdateArgs {
     pub async fn handle(&self, chainz: &mut Chainz) -> Result<ChainDefinition> {
         println!("{}", ui::header("Chain Update"));
-
-        // Select chain to update
-        let chains: Vec<String> = chainz
-            .list_chains()
-            .iter()
-            .map(|c| format!("{} ({})", c.name, c.chain_id))
-            .collect();
-
-        if chains.is_empty() {
-            anyhow::bail!("No chains configured. Use 'chainz add' to add a chain first.");
+        let direct = self.has_direct_changes();
+        if direct && self.name_or_id.is_none() {
+            anyhow::bail!("Direct update flags require a chain argument");
         }
 
-        let chain_selection = fuzzy_select("Select chain to update", &chains, 0)?;
-
-        let mut chain = chainz.list_chains()[chain_selection].clone();
-
-        // Select what to update
-        let options = vec!["RPC URL", "Key", "Verification"];
-
-        println!("{}", ui::header("Update Options"));
-        println!("Current configuration:");
-        println!("{}", chain);
-
-        let selection = fuzzy_select("What would you like to update?", &options, 0)?;
-
-        match selection {
-            0 => {
-                // Update RPC URL
-                println!("{}", ui::header("RPC Configuration"));
-
-                // Try to get fresh RPC list from chainlist
-                let chainlist_entry = fetch_chain_by_id(chain.chain_id, self.refresh).await;
-                let available_rpcs = chainlist_entry
-                    .map(|c| c.rpc)
-                    .unwrap_or_else(|_| chain.rpc_urls.clone());
-
-                let new_rpc = select_rpc(
-                    &chain.name,
-                    chain.chain_id,
-                    available_rpcs,
-                    &chainz.config.globals,
-                )
-                .await?;
-                chain.selected_rpc = new_rpc;
+        let original = match &self.name_or_id {
+            Some(name_or_id) => chainz.config.get_chain(name_or_id)?,
+            None => {
+                let chains: Vec<String> = chainz
+                    .list_chains()
+                    .iter()
+                    .map(|chain| format!("{} ({})", chain.name, chain.chain_id))
+                    .collect();
+                if chains.is_empty() {
+                    anyhow::bail!("No chains configured. Use 'chainz add' to add a chain first.");
+                }
+                let selection = fuzzy_select("Select chain to update", &chains, 0)?;
+                chainz.list_chains()[selection].clone()
             }
-            1 => {
-                // Update key
-                println!("{}", ui::header("Key Configuration"));
+        };
+        let original_name = original.name.clone();
+        let mut chain = original;
 
-                let new_key = select_key(chainz)?;
-                chain.key_name = new_key;
-            }
-            2 => {
-                // Update verification API key
-                println!("{}", ui::header("Verification Configuration"));
-
-                let (verification_url, verification_key) = select_verifier()?;
-                chain.verification_url = verification_url;
-                chain.verification_api_key = verification_key;
-            }
-            _ => unreachable!(),
+        if direct {
+            self.apply_direct(chainz, &mut chain).await?;
+        } else {
+            self.edit_interactively(chainz, &mut chain).await?;
         }
 
-        // Save changes
-        chainz.add_chain(chain.clone())?;
+        chainz.replace_chain(&original_name, chain.clone())?;
+        if chainz.config.default_chain.as_deref() == Some(original_name.as_str()) {
+            chainz.config.default_chain = Some(chain.name.clone());
+        }
         chainz.save().await?;
         println!("\n{}", style("Chain updated successfully").green());
-
         Ok(chain)
+    }
+
+    fn has_direct_changes(&self) -> bool {
+        self.name.is_some()
+            || self.rpc_url.is_some()
+            || self.key.is_some()
+            || self.no_key
+            || self.verification_url.is_some()
+            || self.verification_api_key.is_some()
+            || self.clear_verification
+    }
+
+    async fn apply_direct(&self, chainz: &Chainz, chain: &mut ChainDefinition) -> Result<()> {
+        if let Some(name) = &self.name {
+            let name = name.trim();
+            if name.is_empty() {
+                anyhow::bail!("Chain name cannot be empty");
+            }
+            if !chain.matches_exact(name) && chainz.chain_exists(name) {
+                anyhow::bail!("Chain '{}' already exists", name);
+            }
+            chain
+                .aliases
+                .retain(|alias| !alias.eq_ignore_ascii_case(name));
+            chain.name = name.to_string();
+        }
+        if let Some(rpc_url) = &self.rpc_url {
+            check_url(
+                &chainz.config.globals.expand_rpc_url(rpc_url),
+                chain.chain_id,
+            )
+            .await
+            .with_context(|| format!("RPC check failed for {}", ui::redact_url(rpc_url)))?;
+            if !chain.rpc_urls.contains(rpc_url) {
+                chain.rpc_urls.push(rpc_url.clone());
+            }
+            chain.selected_rpc = rpc_url.clone();
+        }
+        if let Some(key) = &self.key {
+            chainz.get_key(key)?;
+            chain.key_name = Some(key.clone());
+        } else if self.no_key {
+            chain.key_name = None;
+        }
+        if self.clear_verification {
+            chain.verification_url = None;
+            chain.verification_api_key = None;
+        } else {
+            if let Some(url) = &self.verification_url {
+                chain.verification_url = Some(url.clone());
+            }
+            if let Some(key) = &self.verification_api_key {
+                chain.verification_api_key = Some(key.clone());
+            }
+        }
+        Ok(())
+    }
+
+    async fn edit_interactively(
+        &self,
+        chainz: &mut Chainz,
+        chain: &mut ChainDefinition,
+    ) -> Result<()> {
+        loop {
+            println!("{}", ui::header("Update Options"));
+            println!("Current configuration:");
+            println!("{}", chain);
+            let options = [
+                "RPC URL",
+                "Key",
+                "Verification",
+                "Rename",
+                "Save and finish",
+            ];
+            match fuzzy_select("What would you like to update?", &options, 0)? {
+                0 => {
+                    println!("{}", ui::header("RPC Configuration"));
+                    let available_rpcs = fetch_chain_by_id(chain.chain_id, self.refresh)
+                        .await
+                        .map(|entry| entry.rpc)
+                        .unwrap_or_else(|_| chain.rpc_urls.clone());
+                    chain.selected_rpc = select_rpc(
+                        &chain.name,
+                        chain.chain_id,
+                        available_rpcs.clone(),
+                        &chainz.config.globals,
+                    )
+                    .await?;
+                    chain.rpc_urls = available_rpcs;
+                }
+                1 => {
+                    println!("{}", ui::header("Key Configuration"));
+                    chain.key_name = select_key(chainz)?;
+                }
+                2 => {
+                    println!("{}", ui::header("Verification Configuration"));
+                    let (url, key) = select_verifier()?;
+                    chain.verification_url = url;
+                    chain.verification_api_key = key;
+                }
+                3 => {
+                    let name: String = Input::new()
+                        .with_prompt("Chain name")
+                        .default(chain.name.clone())
+                        .interact_text()?;
+                    if !chain.matches_exact(&name) && chainz.chain_exists(&name) {
+                        anyhow::bail!("Chain '{}' already exists", name);
+                    }
+                    chain
+                        .aliases
+                        .retain(|alias| !alias.eq_ignore_ascii_case(&name));
+                    chain.name = name;
+                }
+                4 => break,
+                _ => unreachable!(),
+            }
+        }
+        Ok(())
     }
 }
 
@@ -369,10 +453,8 @@ impl AddArgs {
                 .map(|c| format!("{} ({})", c.name, c.chain_id))
                 .collect();
 
-            match fuzzy_select("Type to search and select a chain", &items, 0) {
-                Ok(selection) => chains[selection].clone(),
-                Err(_) => manual_chain_entry(None, None).await?,
-            }
+            let selection = fuzzy_select("Type to search and select a chain", &items, 0)?;
+            chains[selection].clone()
         };
 
         // Chainlist names are long ("Ethereum Mainnet"); offer a short name
@@ -466,7 +548,7 @@ impl AddArgs {
                     .default(false)
                     .interact()?;
                 if !confirm {
-                    anyhow::bail!("Cancelled");
+                    return Err(ui::cancelled());
                 }
             } else {
                 anyhow::bail!(
@@ -497,7 +579,7 @@ fn fuzzy_select<T: std::fmt::Display>(prompt: &str, items: &[T], default: usize)
         .interact_opt()?
     {
         Some(selection) => Ok(selection),
-        None => anyhow::bail!("Operation cancelled by user"),
+        None => Err(ui::cancelled()),
     }
 }
 
