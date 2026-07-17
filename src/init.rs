@@ -4,7 +4,6 @@ use crate::{
     key::{Key, KeyType, cleanup_external_key, create_safe_key, create_safe_replacement_key},
     opt, ui,
 };
-use alloy::signers::local::PrivateKeySigner;
 use anyhow::Result;
 use dialoguer::{Confirm, Input};
 
@@ -73,26 +72,21 @@ async fn initialize_with_wizard() -> Result<Chainz> {
     println!("{}", ui::header("Chainz Initialization"));
     let mut chainz = Chainz::new();
 
-    let private_key = {
-        let input = rpassword::prompt_password("Enter default private key (Optional): ")?;
-        if input.is_empty() {
-            let wallet = PrivateKeySigner::random();
-            println!("Generated new wallet address: {}", wallet.address());
-            format!("{:x}", wallet.credential().to_bytes())
-        } else {
-            input
-        }
-    };
-    Key::validate_private_key(&private_key)?;
-    // Keep the validated key only in this in-memory staging config. It is
-    // converted to safe storage by handle_init immediately before commit.
-    chainz.add_key(
-        DEFAULT_KEY_NAME,
-        Key::new(
-            DEFAULT_KEY_NAME.to_string(),
-            KeyType::PrivateKey { value: private_key },
-        ),
+    let private_key = rpassword::prompt_password(
+        "Enter default private key (optional; leave empty for RPC-only setup): ",
     )?;
+    if !private_key.is_empty() {
+        Key::validate_private_key(&private_key)?;
+        // Keep the validated key only in this in-memory staging config. It is
+        // converted to safe storage by handle_init immediately before commit.
+        chainz.add_key(
+            DEFAULT_KEY_NAME,
+            Key::new(
+                DEFAULT_KEY_NAME.to_string(),
+                KeyType::PrivateKey { value: private_key },
+            ),
+        )?;
+    }
 
     // get infura_api_key, optionally
     let infura_api_key: String = Input::new()

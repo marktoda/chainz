@@ -56,7 +56,11 @@ impl Chainz {
     pub fn get_chain(&self, name_or_id: &str) -> Result<ChainInstance> {
         let definition = self.config.get_chain(name_or_id)?;
         let rpc_url = self.config.globals.expand_rpc_url(&definition.selected_rpc);
-        let key = self.get_key(&definition.key_name)?;
+        let key = definition
+            .key_name
+            .as_deref()
+            .and_then(|name| self.config.keys.get(name))
+            .cloned();
         Ok(ChainInstance::new(definition, rpc_url, key))
     }
 
@@ -101,7 +105,7 @@ impl Chainz {
             .config
             .chains
             .iter()
-            .filter(|chain| chain.key_name == name)
+            .filter(|chain| chain.key_name.as_deref() == Some(name))
             .map(|chain| chain.name.as_str())
             .collect();
         if !referenced_by.is_empty() {
@@ -113,6 +117,26 @@ impl Chainz {
         }
         self.config.keys.remove(name);
         Ok(())
+    }
+
+    pub fn chains_using_key(&self, name: &str) -> Vec<String> {
+        self.config
+            .chains
+            .iter()
+            .filter(|chain| chain.key_name.as_deref() == Some(name))
+            .map(|chain| chain.name.clone())
+            .collect()
+    }
+
+    pub fn detach_key(&mut self, name: &str) -> usize {
+        let mut detached = 0;
+        for chain in &mut self.config.chains {
+            if chain.key_name.as_deref() == Some(name) {
+                chain.key_name = None;
+                detached += 1;
+            }
+        }
+        detached
     }
 
     pub fn get_key(&self, key_name: &str) -> Result<Key> {
@@ -178,6 +202,12 @@ impl Chainz {
         Ok(())
     }
 
+    pub fn replace_chain(&mut self, name_or_id: &str, chain: ChainDefinition) -> Result<()> {
+        let index = self.config.find_chain_index(name_or_id)?;
+        self.config.chains[index] = chain;
+        Ok(())
+    }
+
     /// Whether a chain would collide with `name` (by name or alias).
     pub fn chain_exists(&self, name: &str) -> bool {
         self.config.chains.iter().any(|c| c.matches_exact(name))
@@ -189,6 +219,16 @@ impl Chainz {
 
     pub fn remove_chain(&mut self, name_or_id: &str) -> Result<ChainDefinition> {
         let pos = self.config.find_chain_index(name_or_id)?;
+        self.remove_chain_at(pos)
+    }
+
+    /// Destructive commands deliberately require an exact primary name or ID.
+    pub fn remove_chain_exact(&mut self, name_or_id: &str) -> Result<ChainDefinition> {
+        let pos = self.config.find_chain_exact_index(name_or_id)?;
+        self.remove_chain_at(pos)
+    }
+
+    fn remove_chain_at(&mut self, pos: usize) -> Result<ChainDefinition> {
         let removed = self.config.chains.remove(pos);
         // Keep the default-chain invariant here so every caller gets it
         if self.config.default_chain.as_deref() == Some(removed.name.as_str()) {
@@ -280,6 +320,26 @@ impl Config {
         }
     }
 
+    fn find_chain_exact_index(&self, name_or_id: &str) -> Result<usize> {
+        if let Ok(chain_id) = name_or_id.parse::<u64>()
+            && let Some(index) = self
+                .chains
+                .iter()
+                .position(|chain| chain.chain_id == chain_id)
+        {
+            return Ok(index);
+        }
+        self.chains
+            .iter()
+            .position(|chain| chain.name.eq_ignore_ascii_case(name_or_id))
+            .ok_or_else(|| {
+                anyhow!(
+                    "Chain '{}' not found; removal requires an exact chain name or ID",
+                    name_or_id
+                )
+            })
+    }
+
     pub async fn write(&self) -> Result<()> {
         self.validate()
             .context("Refusing to write invalid config")?;
@@ -339,11 +399,13 @@ impl Config {
                     chain.name
                 );
             }
-            if !self.keys.contains_key(&chain.key_name) {
+            if let Some(key_name) = chain.key_name.as_deref()
+                && !self.keys.contains_key(key_name)
+            {
                 anyhow::bail!(
                     "Chain '{}' references missing key '{}'",
                     chain.name,
-                    chain.key_name
+                    key_name
                 );
             }
             if let Some(other) = ids.insert(chain.chain_id, chain.name.clone()) {
@@ -510,7 +572,7 @@ mod tests {
             selected_rpc: "https://rpc.example.com".to_string(),
             verification_api_key: None,
             verification_url: None,
-            key_name: "default".to_string(),
+            key_name: Some("default".to_string()),
         }
     }
 

@@ -7,6 +7,8 @@ use chainz::config::{Config, DEFAULT_CONFIG_RELATIVE, LEGACY_CONFIG_FILE};
 use chainz::key::{Key, KeyType};
 use predicates::prelude::*;
 use std::fs;
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::path::Path;
 use tempfile::TempDir;
 
@@ -26,6 +28,25 @@ fn chainz(home: &Path) -> Command {
 
 fn config_path(home: &Path) -> std::path::PathBuf {
     home.join(DEFAULT_CONFIG_RELATIVE)
+}
+
+/// Serve one deterministic `eth_chainId` response for noninteractive add.
+fn one_shot_rpc(chain_id: u64) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0_u8; 4096];
+        let _ = stream.read(&mut request);
+        let body = format!(r#"{{"jsonrpc":"2.0","id":1,"result":"0x{chain_id:x}"}}"#);
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(response.as_bytes()).unwrap();
+    });
+    format!("http://{address}")
 }
 
 /// Write raw config content at the standard location (creating parent dirs).
@@ -50,7 +71,7 @@ fn seed_config(home: &Path, chains: &[(&str, u64)]) {
                 selected_rpc: "http://localhost:1".to_string(),
                 verification_api_key: None,
                 verification_url: None,
-                key_name: "default".to_string(),
+                key_name: Some("default".to_string()),
             })
             .collect(),
         keys: std::collections::HashMap::from([(
@@ -111,8 +132,8 @@ fn var_set_get_list_rm_roundtrip() {
     chainz(home.path())
         .args(["var", "get", "MY_KEY"])
         .assert()
-        .success()
-        .stdout(predicate::str::contains("not found"));
+        .failure()
+        .stderr(predicate::str::contains("not found"));
 }
 
 #[test]
@@ -356,7 +377,7 @@ fn exec_without_command_fails() {
         .args(["exec", "testchain"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("No command specified"));
+        .stderr(predicate::str::contains("Usage:"));
 }
 
 #[test]
@@ -704,8 +725,9 @@ fn shell_uses_default_chain_when_omitted() {
 }
 
 #[test]
-fn add_noninteractive_requires_existing_key() {
+fn add_noninteractive_supports_rpc_only_chain() {
     let home = TempDir::new().unwrap();
+    let rpc = one_shot_rpc(31337);
     chainz(home.path())
         .args([
             "add",
@@ -714,11 +736,16 @@ fn add_noninteractive_requires_existing_key() {
             "--chain-id",
             "31337",
             "--rpc-url",
-            "http://localhost:1",
+            &rpc,
         ])
         .assert()
-        .failure()
-        .stderr(predicate::str::contains("Key 'default' not found"));
+        .success();
+
+    chainz(home.path())
+        .args(["show", "local", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#""key_name": null"#));
 }
 
 #[test]
@@ -792,7 +819,11 @@ fn chain_output_redacts_credentials_unless_explicitly_requested() {
         .success()
         .stdout(predicate::str::contains("rpc-secret").not())
         .stdout(predicate::str::contains("query-secret").not())
-        .stdout(predicate::str::contains("verifier-secret").not())
+        .stdout(predicate::str::contains("verifier-secret").not());
+    chainz(home.path())
+        .args(["show", "testchain"])
+        .assert()
+        .success()
         .stdout(predicate::str::contains("Configured"));
     chainz(home.path())
         .args(["list", "--json"])
@@ -837,7 +868,178 @@ fn referenced_key_removal_is_blocked() {
         .args(["key", "remove", "default"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("still used"));
+        .stderr(predicate::str::contains("used by chain"));
+
+    chainz(home.path())
+        .args(["key", "remove", "default", "--force"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Detached from 1 chain"));
+    chainz(home.path())
+        .args(["exec", "testchain", "--", "echo", "@chainname"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn remove_requires_exact_name_or_id() {
+    let home = TempDir::new().unwrap();
+    seed_config(home.path(), &[("ethereum", 1)]);
+
+    chainz(home.path())
+        .args(["remove", "eth"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("exact chain name or ID"));
+    chainz(home.path())
+        .args(["remove", "ethereum"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn update_accepts_target_and_direct_changes() {
+    let home = TempDir::new().unwrap();
+    seed_config(home.path(), &[("ethereum", 1)]);
+    chainz(home.path())
+        .args(["use", "ethereum"])
+        .assert()
+        .success();
+
+    chainz(home.path())
+        .args(["update", "ethereum", "--name", "eth", "--no-key"])
+        .assert()
+        .success();
+
+    chainz(home.path())
+        .args(["show", "eth", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#""name": "eth""#))
+        .stdout(predicate::str::contains(r#""key_name": null"#))
+        .stdout(predicate::str::contains(r#""is_default": true"#));
+    chainz(home.path())
+        .args(["show", "ethereum"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn update_flags_require_a_target() {
+    let home = TempDir::new().unwrap();
+    seed_config(home.path(), &[("ethereum", 1)]);
+    chainz(home.path())
+        .args(["update", "--no-key"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("chain argument"));
+}
+
+#[test]
+fn list_is_compact_and_show_owns_details() {
+    let home = TempDir::new().unwrap();
+    seed_config(home.path(), &[("ethereum", 1), ("optimism", 10)]);
+
+    chainz(home.path())
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("CHAIN"))
+        .stdout(predicate::str::contains("ethereum"))
+        .stdout(predicate::str::contains("Chain:").not());
+    chainz(home.path())
+        .args(["show", "ethereum"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Chain:"))
+        .stdout(predicate::str::contains("Key Name"));
+}
+
+#[test]
+fn rpc_only_chain_executes_until_key_material_is_requested() {
+    let home = TempDir::new().unwrap();
+    let config = Config {
+        chains: vec![ChainDefinition {
+            name: "readonly".to_string(),
+            aliases: vec![],
+            chain_id: 31337,
+            rpc_urls: vec!["http://localhost:1".to_string()],
+            selected_rpc: "http://localhost:1".to_string(),
+            verification_api_key: None,
+            verification_url: None,
+            key_name: None,
+        }],
+        ..Default::default()
+    };
+    write_raw_config(home.path(), &serde_json::to_string_pretty(&config).unwrap());
+
+    chainz(home.path())
+        .args(["exec", "readonly", "--", "echo", "@chainname"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("readonly"));
+    chainz(home.path())
+        .args(["exec", "readonly", "--", "echo", "@wallet"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("has no key attached"));
+}
+
+#[test]
+fn var_list_json_is_explicit_machine_readable_output() {
+    let home = TempDir::new().unwrap();
+    chainz(home.path())
+        .args(["var", "set", "TOKEN", "secret"])
+        .assert()
+        .success();
+    chainz(home.path())
+        .args(["var", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("secret").not());
+    chainz(home.path())
+        .args(["var", "list", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#""TOKEN": "secret""#));
+}
+
+#[test]
+fn doctor_does_not_offer_rpc_fix_for_key_only_failure() {
+    let home = TempDir::new().unwrap();
+    let rpc = one_shot_rpc(31337);
+    let config = Config {
+        chains: vec![ChainDefinition {
+            name: "local".to_string(),
+            aliases: vec![],
+            chain_id: 31337,
+            rpc_urls: vec![rpc.clone()],
+            selected_rpc: rpc,
+            verification_api_key: None,
+            verification_url: None,
+            key_name: Some("missing".to_string()),
+        }],
+        ..Default::default()
+    };
+    write_raw_config(home.path(), &serde_json::to_string_pretty(&config).unwrap());
+
+    chainz(home.path())
+        .arg("doctor")
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("missing key"))
+        .stdout(predicate::str::contains("--fix").not());
+}
+
+#[test]
+fn command_help_preserves_scannable_sections() {
+    let home = TempDir::new().unwrap();
+    chainz(home.path())
+        .args(["exec", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Available expansions:\n"))
+        .stdout(predicate::str::contains("    @wallet"));
 }
 
 #[test]

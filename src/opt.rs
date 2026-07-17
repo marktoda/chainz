@@ -1,6 +1,6 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
-#[derive(Parser)]
+#[derive(Debug, Parser)]
 #[command(
     name = "chainz",
     version,
@@ -11,7 +11,7 @@ pub struct Opt {
     pub cmd: Command,
 }
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 pub enum Command {
     /// Initialize a new configuration through an interactive wizard
     ///
@@ -41,18 +41,34 @@ pub enum Command {
     /// Example: chainz remove ethereum
     #[command(alias = "rm")]
     Remove {
-        /// Chain name or ID to remove
+        /// Exact primary chain name or chain ID to remove
         name_or_id: String,
     },
 
     /// List all configured chains
     ///
-    /// Displays all chains with their details:
+    /// Displays a compact index with:
     /// - Name
     /// - Chain ID
-    /// - RPC URL
+    /// - Redacted active RPC
     /// - Associated private key name
+    #[command(verbatim_doc_comment)]
     List {
+        /// Output as JSON (for scripting)
+        #[arg(long)]
+        json: bool,
+        /// Include credential-bearing URLs and verification keys
+        #[arg(long)]
+        show_secrets: bool,
+        /// Show full details for every chain
+        #[arg(long, conflicts_with = "json")]
+        verbose: bool,
+    },
+
+    /// Show one chain's full configuration
+    Show {
+        /// Chain name, alias, prefix, or ID
+        name_or_id: String,
         /// Output as JSON (for scripting)
         #[arg(long)]
         json: bool,
@@ -89,11 +105,12 @@ pub enum Command {
     ///     @key    : Private key
     ///
     /// Example: chainz exec ethereum -- cast balance @wallet
+    #[command(verbatim_doc_comment)]
     Exec {
         /// Chain name or ID to use (interactive picker if omitted)
         name_or_id: Option<String>,
         /// Command to execute (after --)
-        #[arg(last = true)]
+        #[arg(last = true, required = true)]
         command: Vec<String>,
         /// Override the key to use for this command
         #[arg(short, long)]
@@ -121,6 +138,7 @@ pub enum Command {
     /// Keys use the OS keyring or encrypted storage by default.
     ///
     /// Example: chainz key add mykey
+    #[command(verbatim_doc_comment)]
     Key {
         #[command(subcommand)]
         cmd: KeyCommand,
@@ -145,13 +163,14 @@ pub enum Command {
     ///     get   : Get a variable's value
     ///     list  : List all variables
     ///     rm    : Remove a variable
+    #[command(verbatim_doc_comment)]
     Var {
         #[command(subcommand)]
         cmd: VarCommand,
     },
 }
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 pub enum KeyCommand {
     /// Add a new private key
     ///
@@ -179,6 +198,9 @@ pub enum KeyCommand {
     Remove {
         /// Name of the private key to remove
         name: String,
+        /// Detach the key from chains that reference it
+        #[arg(long)]
+        force: bool,
     },
     /// Move keys from plaintext or another backend into safe storage
     Migrate {
@@ -212,7 +234,7 @@ pub enum KeyTypeArg {
     Keyring,
 }
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 pub enum VarCommand {
     /// Set or update a variable
     Set {
@@ -237,22 +259,68 @@ pub enum VarCommand {
         /// Print stored values instead of redacted markers
         #[arg(long)]
         show: bool,
+        /// Output names and values as JSON (explicitly reveals values)
+        #[arg(long, conflicts_with = "show")]
+        json: bool,
     },
     /// Remove a variable
-    Rm {
+    #[command(alias = "rm")]
+    Remove {
         /// Variable name
         name: String,
     },
 }
 
-#[derive(Args)]
+#[derive(Debug, Args)]
 pub struct UpdateArgs {
+    /// Chain name, alias, prefix, or ID (interactive picker if omitted)
+    pub name_or_id: Option<String>,
+
     /// Re-download the chainlist instead of using the local cache
     #[arg(long)]
     pub refresh: bool,
+
+    /// Rename the chain
+    #[arg(long)]
+    pub name: Option<String>,
+
+    /// Select and add an RPC URL
+    #[arg(long)]
+    pub rpc_url: Option<String>,
+
+    /// Attach a stored key
+    #[arg(long, conflicts_with = "no_key")]
+    pub key: Option<String>,
+
+    /// Detach the chain's key
+    #[arg(long)]
+    pub no_key: bool,
+
+    /// Set the block explorer API URL
+    #[arg(long)]
+    pub verification_url: Option<String>,
+
+    /// Set the block explorer API key
+    #[arg(long, conflicts_with = "verification_api_key_stdin")]
+    pub verification_api_key: Option<String>,
+
+    /// Read the block explorer API key from stdin instead of argv
+    #[arg(long, conflicts_with = "verification_api_key")]
+    pub verification_api_key_stdin: bool,
+
+    /// Remove block explorer configuration
+    #[arg(
+        long,
+        conflicts_with_all = [
+            "verification_url",
+            "verification_api_key",
+            "verification_api_key_stdin"
+        ]
+    )]
+    pub clear_verification: bool,
 }
 
-#[derive(Args)]
+#[derive(Debug, Args)]
 pub struct AddArgs {
     /// Chain name
     #[arg(long)]
@@ -266,7 +334,7 @@ pub struct AddArgs {
     #[arg(long)]
     pub rpc_url: Option<String>,
 
-    /// Key name (defaults to "default")
+    /// Key name (omit for an RPC-only chain)
     #[arg(long)]
     pub key: Option<String>,
 

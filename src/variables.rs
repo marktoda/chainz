@@ -79,15 +79,29 @@ impl ChainVariables {
         // internally. The child process also holds the key in its environment unzeroed.
         // The real security boundary is the lazy check above — encrypted keys are never
         // decrypted unless the command explicitly needs them.
+        let key = if needs_key_arg || needs_wallet || expose_key {
+            Some(chain.key.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Chain '{}' has no key attached; use `chainz update {} --key <name>`",
+                    chain.definition.name,
+                    chain.definition.name
+                )
+            })?)
+        } else {
+            None
+        };
         let cached_address = needs_wallet
-            .then(|| chain.key.address_noninteractive())
+            .then(|| {
+                key.expect("wallet expansion requires a key")
+                    .address_noninteractive()
+            })
             .flatten();
         let must_resolve_key =
             needs_key_arg || expose_key || (needs_wallet && cached_address.is_none());
 
         if must_resolve_key || cached_address.is_some() {
             let private_key = must_resolve_key
-                .then(|| chain.key.private_key())
+                .then(|| key.expect("private-key use requires a key").private_key())
                 .transpose()?;
             if needs_wallet {
                 let address = match cached_address {
@@ -205,12 +219,14 @@ impl VarCommand {
                 match chainz.config.globals.get_rpc_expansion(&name) {
                     Some(value) if show => println!("{} = {}", name, value),
                     Some(_) => println!("{} = [REDACTED]", name),
-                    None => println!("Variable '{}' not found", name),
+                    None => anyhow::bail!("Variable '{}' not found", name),
                 }
             }
-            VarCommand::List { show } => {
+            VarCommand::List { show, json } => {
                 let vars = chainz.config.globals.list_rpc_expansions();
-                if vars.is_empty() {
+                if json {
+                    println!("{}", serde_json::to_string_pretty(vars)?);
+                } else if vars.is_empty() {
                     println!("No variables set");
                 } else {
                     println!("Variables:");
@@ -225,8 +241,10 @@ impl VarCommand {
                     }
                 }
             }
-            VarCommand::Rm { name } => {
-                chainz.config.globals.remove_rpc_expansion(&name);
+            VarCommand::Remove { name } => {
+                if chainz.config.globals.remove_rpc_expansion(&name).is_none() {
+                    anyhow::bail!("Variable '{}' not found", name);
+                }
                 chainz.save().await?;
                 println!("Removed variable '{}'", name);
             }
@@ -577,17 +595,17 @@ mod tests {
                 selected_rpc: "http://localhost:8545".into(),
                 verification_api_key: None,
                 verification_url: None,
-                key_name: "deployer".into(),
+                key_name: Some("deployer".into()),
             },
             "http://localhost:8545".into(),
-            crate::key::Key {
+            Some(crate::key::Key {
                 name: "deployer".into(),
                 address: Some("0xABCD".into()),
                 kind: crate::key::KeyType::Keyring {
                     service: "deliberately-unavailable".into(),
                     username: "missing".into(),
                 },
-            },
+            }),
         );
 
         let cv = ChainVariables::new(&chain, &["echo".into(), "@wallet".into()], false)

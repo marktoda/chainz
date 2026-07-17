@@ -1,11 +1,25 @@
 use anyhow::Result;
-use chainz::{config::Chainz, doctor, init, opt, opt::Opt, ui, variables::ChainVariables};
+use chainz::{
+    chain::ChainDefinition, config::Chainz, doctor, init, listing, opt, opt::Opt, ui,
+    variables::ChainVariables,
+};
 use clap::{CommandFactory, Parser};
 use dialoguer::FuzzySelect;
 use std::process::Command as ProcessCommand;
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() {
+    if let Err(error) = run().await {
+        if ui::is_cancelled(&error) {
+            eprintln!("Cancelled");
+            return;
+        }
+        eprintln!("Error: {error:#}");
+        std::process::exit(1);
+    }
+}
+
+async fn run() -> Result<()> {
     let opts = Opt::parse();
 
     // These commands run before the config is loaded: completions needs no
@@ -45,12 +59,10 @@ async fn main() -> Result<()> {
             println!("Added chain {}", chain.name);
         }
         opt::Command::Update { args } => {
-            let chain = args.handle(&mut chainz).await?;
-            println!("\nFinal configuration:");
-            println!("{}", chain);
+            args.handle(&mut chainz).await?;
         }
         opt::Command::Remove { name_or_id } => {
-            let removed = chainz.remove_chain(&name_or_id)?;
+            let removed = chainz.remove_chain_exact(&name_or_id)?;
             chainz.save().await?;
             println!("Removed chain '{}'", removed.name);
         }
@@ -64,7 +76,11 @@ async fn main() -> Result<()> {
             chainz.save().await?;
             println!("Default chain set to '{}'", definition.name);
         }
-        opt::Command::List { json, show_secrets } => {
+        opt::Command::List {
+            json,
+            show_secrets,
+            verbose,
+        } => {
             let chains = chainz.list_chains();
             if json {
                 let entries: Vec<_> = chains
@@ -89,7 +105,7 @@ async fn main() -> Result<()> {
                                 }
                             })
                             .collect(),
-                        key_name: &c.key_name,
+                        key_name: c.key_name.as_deref(),
                         verification_url: c.verification_url.as_ref().map(|url| {
                             if show_secrets {
                                 url.clone()
@@ -106,18 +122,34 @@ async fn main() -> Result<()> {
                     })
                     .collect();
                 println!("{}", serde_json::to_string_pretty(&entries)?);
-            } else {
-                if chains.is_empty() {
-                    println!(
-                        "No chains configured. Run 'chainz init' or 'chainz add' to get started."
-                    );
-                }
+            } else if show_secrets {
                 for chain_def in chains {
-                    println!("{}", chain_def.display_with_secrets(show_secrets));
+                    println!("{}", chain_def.display_with_secrets(true));
                 }
-                if let Some(default) = &chainz.config.default_chain {
-                    println!("\nDefault chain: {}", default);
-                }
+            } else if verbose {
+                print!(
+                    "{}",
+                    listing::verbose(chains, chainz.config.default_chain.as_deref())
+                );
+            } else {
+                print!(
+                    "{}",
+                    listing::compact(chains, chainz.config.default_chain.as_deref())
+                );
+            }
+        }
+        opt::Command::Show {
+            name_or_id,
+            json,
+            show_secrets,
+        } => {
+            let chain = chainz.config.get_chain(&name_or_id)?;
+            let entry = ChainListing::new(&chain, &chainz.config.default_chain, show_secrets);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&entry)?);
+            } else {
+                println!("{}", chain.display_with_secrets(show_secrets));
+                println!("Default: {}", if entry.is_default { "Yes" } else { "No" });
             }
         }
         opt::Command::Shell { name_or_id } => {
@@ -156,9 +188,6 @@ async fn main() -> Result<()> {
             key,
             expose_key,
         } => {
-            if command.is_empty() {
-                anyhow::bail!("No command specified");
-            }
             // Explicit chain > configured default > interactive picker
             let name_or_id = match name_or_id.or_else(|| chainz.config.default_chain.clone()) {
                 Some(id) => id,
@@ -194,11 +223,49 @@ struct ChainListing<'a> {
     chain_id: u64,
     selected_rpc: String,
     rpc_urls: Vec<String>,
-    key_name: &'a str,
+    key_name: Option<&'a str>,
     verification_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     verification_api_key: Option<&'a str>,
     is_default: bool,
+}
+
+impl<'a> ChainListing<'a> {
+    fn new(chain: &'a ChainDefinition, default: &Option<String>, show_secrets: bool) -> Self {
+        Self {
+            name: &chain.name,
+            aliases: &chain.aliases,
+            chain_id: chain.chain_id,
+            selected_rpc: if show_secrets {
+                chain.selected_rpc.clone()
+            } else {
+                chainz::variables::redact_url(&chain.selected_rpc)
+            },
+            rpc_urls: chain
+                .rpc_urls
+                .iter()
+                .map(|url| {
+                    if show_secrets {
+                        url.clone()
+                    } else {
+                        chainz::variables::redact_url(url)
+                    }
+                })
+                .collect(),
+            key_name: chain.key_name.as_deref(),
+            verification_url: chain.verification_url.as_ref().map(|url| {
+                if show_secrets {
+                    url.clone()
+                } else {
+                    chainz::variables::redact_url(url)
+                }
+            }),
+            verification_api_key: show_secrets
+                .then_some(chain.verification_api_key.as_deref())
+                .flatten(),
+            is_default: default.as_deref() == Some(chain.name.as_str()),
+        }
+    }
 }
 
 fn select_chain(chainz: &Chainz) -> Result<String> {
@@ -215,6 +282,6 @@ fn select_chain(chainz: &Chainz) -> Result<String> {
         .items(&items)
         .default(0)
         .interact_opt()?
-        .ok_or_else(|| anyhow::anyhow!("No chain selected"))?;
+        .ok_or_else(ui::cancelled)?;
     Ok(chains[selection].name.clone())
 }

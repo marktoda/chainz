@@ -740,8 +740,17 @@ impl KeyCommand {
                     }
                 }
             }
-            KeyCommand::Remove { name } => {
+            KeyCommand::Remove { name, force } => {
                 let removed = chainz.get_key(&name)?;
+                let references = chainz.chains_using_key(&name);
+                if !references.is_empty() && !force {
+                    anyhow::bail!(
+                        "Key '{}' is used by chain(s): {}. Use --force to detach it.",
+                        name,
+                        references.join(", ")
+                    );
+                }
+                let detached = if force { chainz.detach_key(&name) } else { 0 };
                 chainz.remove_key(&name)?;
                 chainz.save().await?;
                 if let Err(error) = KeyVault::new(SystemKeyBackend).cleanup_external(&removed) {
@@ -751,6 +760,9 @@ impl KeyCommand {
                     );
                 }
                 println!("Removed key '{}'", name);
+                if detached > 0 {
+                    println!("Detached from {} chain(s)", detached);
+                }
             }
             KeyCommand::Migrate { name, all, to } => {
                 let names = if all {

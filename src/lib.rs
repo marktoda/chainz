@@ -9,6 +9,7 @@ pub mod config;
 pub mod doctor;
 pub mod init;
 pub mod key;
+pub mod listing;
 pub mod opt;
 pub mod ui;
 pub mod variables;

@@ -9,6 +9,7 @@ A CLI tool for managing EVM chain configurations
 - RPC health checking (`chainz doctor`, with `--fix` failover to healthy RPCs)
 - Safe-by-default private key management (OS keyring, encrypted, 1Password, explicit plaintext)
 - Multiple RPC support per chain and a configurable default chain
+- RPC-only chain configurations when signing is not needed
 - Environment variable interpolation
 - Command execution with chain-specific variable expansion
 - Shell completions and `--json` output for scripting
@@ -35,7 +36,10 @@ chainz add
 # List configured chains
 chainz list
 
-# Remove a chain
+# Inspect one chain in detail
+chainz show ethereum
+
+# Removal requires an exact primary name or chain ID
 chainz remove ethereum
 
 # Execute a command for a given chain (prefix matching works)
@@ -76,9 +80,10 @@ Chain Selection
 RPC Configuration
 ══════════════════════════════════════════════════════
 Testing RPCs...
-✓ https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}
-✓ https://eth.llamarpc.com
-✗ https://mainnet.infura.io/v3/${INFURA_KEY}
+13 of 18 RPCs healthy
+? Select an RPC
+> RPC 1 · https://…alchemy.com/… (120ms)
+  RPC 2 · https://…llamarpc.com (184ms)
 
 Key Configuration
 ══════════════════════════════════════════════════════
@@ -92,24 +97,27 @@ Chain added: ethereum (ChainId: 1)
 
 ### Managing Chains
 
-List configured chains and their status:
+`list` is a compact index; the active RPC is redacted so credential-bearing
+URLs are safe to display. The `*` marks the default chain:
 
 ```bash
 > chainz list
-Chain: ethereum
-├─ ID: 1
-├─ Active RPC: https://eth-mainnet.g.alchemy.com/v2/...
-├─ Verification Key: Configured
-└─ Key Name: default
-
-Chain: optimism
-├─ ID: 10
-├─ Active RPC: https://opt-mainnet.g.alchemy.com/v2/...
-├─ Verification Key: None
-└─ Key Name: deployer
+  CHAIN      ID  RPC                             KEY
+* ethereum    1  https://…llamarpc.com           default
+  optimism   10  https://…optimism.io            —
+* default chain
 ```
 
-Update chain configuration:
+Use `show` for one chain's details, or `list --verbose` for all details.
+Both support the explicit `--show-secrets` escape hatch:
+
+```bash
+chainz show ethereum
+chainz show ethereum --json
+chainz list --verbose
+```
+
+Update interactively, or target a chain and make a direct change:
 
 ```bash
 > chainz update
@@ -117,8 +125,17 @@ Update chain configuration:
 ? What would you like to update?
 > RPC URL
   Key
-  Verification API Key
+  Verification
+  Rename
+  Save and finish
+
+> chainz update ethereum --name eth --no-key
+> chainz update eth --rpc-url https://eth.llamarpc.com
 ```
+
+Chains may omit a key entirely. This is useful for read-only RPC commands;
+`@wallet`, `@key`, and `--expose-key` fail with a clear message until a key is
+attached.
 
 ### Executing Commands
 
@@ -225,6 +242,9 @@ chainz key migrate default
 chainz key migrate --all --to encrypted
 ```
 
+Removing an attached key is blocked by default. Use `--force` to detach it
+from every referencing chain before removal.
+
 ### Health Checks
 
 `chainz doctor` checks key storage, key references, and RPC connectivity for
@@ -236,6 +256,9 @@ list healthy endpoints fastest-first:
 
 ```bash
 > chainz doctor --fix
+Configuration
+  ✓ configuration invariants hold
+
 Keys
   ⚠ 'default' is stored as a plaintext private key — migrate with `chainz key migrate default`
 
@@ -252,12 +275,13 @@ Fixing RPCs
 
 ### Scripting
 
-`list` and `key list` support `--json`. Credential-bearing URLs are redacted
+`list`, `show`, and `key list` support `--json`. Credential-bearing URLs are redacted
 and key material is never included by default. `list --show-secrets` is the
 explicit escape hatch for trusted interactive use:
 
 ```bash
 > chainz list --json | jq '.[].name'
+> chainz show ethereum --json | jq '.selected_rpc'
 > chainz key list --json | jq '.[] | {name, address}'
 ```
 
@@ -278,6 +302,9 @@ Variables:
 > chainz var get ALCHEMY_KEY --show
 ALCHEMY_KEY = abc123
 ```
+
+`chainz var list --json` is an explicitly revealing machine-readable form;
+use it only in trusted scripting contexts.
 
 ## Configuration
 

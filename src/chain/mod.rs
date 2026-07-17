@@ -21,7 +21,8 @@ pub struct ChainDefinition {
     pub selected_rpc: String,
     pub verification_api_key: Option<String>,
     pub verification_url: Option<String>,
-    pub key_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_name: Option<String>,
 }
 
 impl fmt::Debug for ChainDefinition {
@@ -99,11 +100,11 @@ pub struct ChainDisplay<'a> {
 pub struct ChainInstance {
     pub definition: ChainDefinition,
     pub rpc_url: String,
-    pub key: Key,
+    pub key: Option<Key>,
 }
 
 impl ChainInstance {
-    pub fn new(definition: ChainDefinition, rpc_url: String, key: Key) -> Self {
+    pub fn new(definition: ChainDefinition, rpc_url: String, key: Option<Key>) -> Self {
         Self {
             definition,
             rpc_url,
@@ -112,7 +113,7 @@ impl ChainInstance {
     }
 
     pub fn with_key(mut self, key: Key) -> Self {
-        self.key = key;
+        self.key = Some(key);
         self
     }
 }
@@ -195,7 +196,7 @@ impl Display for ChainDisplay<'_> {
             "{}─ {}: {}",
             style("└").dim(),
             style("Key Name").cyan(),
-            style(&chain.key_name).green(),
+            style(chain.key_name.as_deref().unwrap_or("None")).green(),
         )
     }
 }
@@ -216,7 +217,7 @@ mod tests {
             selected_rpc: "https://eth.llamarpc.com".to_string(),
             verification_api_key: verification_api_key.map(String::from),
             verification_url: verification_url.map(String::from),
-            key_name: "default".to_string(),
+            key_name: Some("default".to_string()),
         }
     }
 

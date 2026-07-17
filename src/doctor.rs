@@ -53,7 +53,7 @@ pub async fn run(chainz: &mut Chainz, fix: bool) -> Result<Report> {
                 },
                 f,
                 w,
-                if f > 0 && !fix {
+                if !failed_chains.is_empty() && !fix {
                     " — run with --fix to attempt RPC repairs"
                 } else {
                     ""
@@ -104,14 +104,17 @@ fn check_key_references(chainz: &Chainz, report: &mut Report) {
     println!("{}", ui::section("Key references"));
     let mut ok = true;
     for chain in chainz.list_chains() {
-        if chainz.get_key(&chain.key_name).is_err() {
+        let Some(key_name) = chain.key_name.as_deref() else {
+            continue;
+        };
+        if chainz.get_key(key_name).is_err() {
             report.failures += 1;
             ok = false;
             println!(
                 "  {}",
                 ui::fail(&format!(
                     "chain '{}' references missing key '{}'",
-                    chain.name, chain.key_name
+                    chain.name, key_name
                 ))
             );
         }
