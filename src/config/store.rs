@@ -109,6 +109,13 @@ fn legacy_config_path() -> Option<PathBuf> {
 }
 
 pub(super) async fn migrate_legacy_config(new_path: &Path) -> Result<()> {
+    let Some(legacy) = legacy_config_path() else {
+        return Ok(());
+    };
+    migrate_legacy_config_from(&legacy, new_path).await
+}
+
+async fn migrate_legacy_config_from(legacy: &Path, new_path: &Path) -> Result<()> {
     match tokio::fs::metadata(new_path).await {
         Ok(_) => return Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -116,10 +123,7 @@ pub(super) async fn migrate_legacy_config(new_path: &Path) -> Result<()> {
             return Err(error).with_context(|| format!("Failed to inspect {}", new_path.display()));
         }
     }
-    let Some(legacy) = legacy_config_path() else {
-        return Ok(());
-    };
-    match tokio::fs::metadata(&legacy).await {
+    match tokio::fs::metadata(legacy).await {
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => {
@@ -131,15 +135,13 @@ pub(super) async fn migrate_legacy_config(new_path: &Path) -> Result<()> {
             .await
             .with_context(|| format!("Failed to create config directory at {}", dir.display()))?;
     }
-    tokio::fs::rename(&legacy, new_path)
-        .await
-        .with_context(|| {
-            format!(
-                "Failed to migrate config from {} to {}",
-                legacy.display(),
-                new_path.display()
-            )
-        })?;
+    tokio::fs::rename(legacy, new_path).await.with_context(|| {
+        format!(
+            "Failed to migrate config from {} to {}",
+            legacy.display(),
+            new_path.display()
+        )
+    })?;
     eprintln!(
         "Migrated config from {} to {}",
         legacy.display(),
@@ -153,4 +155,26 @@ pub(crate) fn config_exists() -> bool {
         || legacy_config_path()
             .map(|path| path.exists())
             .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::migrate_legacy_config_from;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn migration_moves_an_explicit_legacy_path() {
+        let home = TempDir::new().unwrap();
+        let legacy = home.path().join(".chainz.json");
+        let current = home.path().join("chainz").join("config.json");
+        tokio::fs::write(&legacy, "legacy config").await.unwrap();
+
+        migrate_legacy_config_from(&legacy, &current).await.unwrap();
+
+        assert_eq!(
+            tokio::fs::read_to_string(&current).await.unwrap(),
+            "legacy config"
+        );
+        assert!(!legacy.exists());
+    }
 }
