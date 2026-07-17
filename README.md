@@ -167,7 +167,7 @@ automatically; for zsh/starship, add e.g.:
 ```toml
 # starship.toml
 [env_var.CHAINZ_CHAIN]
-format = "(⛓ $env_value) "
+format = "\\(⛓ $env_value\\) "
 ```
 
 ### Managing Keys
