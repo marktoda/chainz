@@ -80,7 +80,7 @@ pub async fn select_rpc(
                 ProgressStyle::with_template("{spinner} {msg}").expect("static template"),
             );
             bar.enable_steady_tick(std::time::Duration::from_millis(120));
-            bar.set_message(url.clone());
+            bar.set_message(ui::redact_url(url));
             bar
         })
         .collect();
@@ -92,17 +92,22 @@ pub async fn select_rpc(
         if result.healthy {
             bar.finish_with_message(ui::success(&format!(
                 "{}  {}ms",
-                urls[result.index],
+                ui::redact_url(&urls[result.index]),
                 result.latency.as_millis()
             )));
         } else {
             bar.finish_with_message(ui::fail(&format!(
                 "{}  {}",
-                urls[result.index],
+                ui::redact_url(&urls[result.index]),
                 ui::dim("unreachable")
             )));
         }
         results.push(result);
+    }
+    let show_summary = !multi.is_hidden();
+    multi.clear()?;
+    if show_summary {
+        println!("{}", ui::success(&probe_summary(&results)));
     }
 
     // Healthy-first, fastest-first picker over RAW urls
@@ -117,9 +122,14 @@ pub async fn select_rpc(
         .map(|&i| {
             let r = by_index[i].expect("every url index has a probe result");
             if r.healthy {
-                format!("{} ({}ms)", urls[i], r.latency.as_millis())
+                format!(
+                    "RPC {} · {} ({}ms)",
+                    i + 1,
+                    ui::redact_url(&urls[i]),
+                    r.latency.as_millis()
+                )
             } else {
-                format!("{} (unreachable)", urls[i])
+                format!("RPC {} · {} (unreachable)", i + 1, ui::redact_url(&urls[i]))
             }
         })
         .collect();
@@ -136,6 +146,11 @@ pub async fn select_rpc(
     } else {
         Ok(urls[order[selection]].clone())
     }
+}
+
+fn probe_summary(results: &[super::rpc::ProbeResult]) -> String {
+    let healthy = results.iter().filter(|result| result.healthy).count();
+    format!("{} of {} RPCs healthy", healthy, results.len())
 }
 
 async fn select_manual_rpc(chain_id: u64, globals: &GlobalVariables) -> Result<String> {
@@ -326,7 +341,7 @@ impl AddArgs {
         // Test the RPC
         check_url(&chainz.config.globals.expand_rpc_url(&rpc_url), chain_id)
             .await
-            .with_context(|| format!("RPC check failed for {}", rpc_url))?;
+            .with_context(|| format!("RPC check failed for {}", ui::redact_url(&rpc_url)))?;
 
         Ok(ChainDefinition {
             name: name.clone(),
@@ -385,7 +400,7 @@ impl AddArgs {
                 selected_chain.chain_id,
             )
             .await
-            .with_context(|| format!("RPC check failed for {}", rpc_url))?;
+            .with_context(|| format!("RPC check failed for {}", ui::redact_url(rpc_url)))?;
             println!("{}", ui::success("RPC working"));
             rpc_url.clone()
         } else {
@@ -488,7 +503,9 @@ fn fuzzy_select<T: std::fmt::Display>(prompt: &str, items: &[T], default: usize)
 
 #[cfg(test)]
 mod tests {
-    use super::suggest_short_name;
+    use super::{probe_summary, suggest_short_name};
+    use crate::chain::rpc::ProbeResult;
+    use std::time::Duration;
 
     #[test]
     fn short_name_suggestions() {
@@ -496,5 +513,23 @@ mod tests {
         assert_eq!(suggest_short_name("OP Mainnet"), "op");
         assert_eq!(suggest_short_name("Avalanche C-Chain"), "avalanche");
         assert_eq!(suggest_short_name("zora"), "zora");
+    }
+
+    #[test]
+    fn probe_summary_collapses_endpoint_results() {
+        let results = vec![
+            ProbeResult {
+                index: 0,
+                healthy: true,
+                latency: Duration::from_millis(20),
+            },
+            ProbeResult {
+                index: 1,
+                healthy: false,
+                latency: Duration::from_secs(4),
+            },
+        ];
+
+        assert_eq!(probe_summary(&results), "1 of 2 RPCs healthy");
     }
 }
