@@ -1,7 +1,7 @@
 use crate::{
     chain::DEFAULT_KEY_NAME,
     config::{Chainz, config_exists},
-    key::{Key, KeyType},
+    key::{Key, KeyType, create_default_key},
     opt, ui,
 };
 use alloy::signers::local::PrivateKeySigner;
@@ -19,17 +19,21 @@ pub async fn handle_init() -> Result<()> {
             println!("Aborting initialization");
             return Ok(());
         }
-        Chainz::delete().await?;
     }
 
-    let chainz = initialize_with_wizard().await?;
+    let (mut chainz, private_key) = initialize_with_wizard().await?;
+    let secure_key = create_default_key(DEFAULT_KEY_NAME, private_key)?;
+    chainz
+        .config
+        .keys
+        .insert(DEFAULT_KEY_NAME.to_string(), secure_key);
 
     chainz.save().await?;
     println!("Configuration initialized successfully!");
     Ok(())
 }
 
-async fn initialize_with_wizard() -> Result<Chainz> {
+async fn initialize_with_wizard() -> Result<(Chainz, String)> {
     println!("{}", ui::header("Chainz Initialization"));
     let mut chainz = Chainz::new();
 
@@ -43,11 +47,16 @@ async fn initialize_with_wizard() -> Result<Chainz> {
             input
         }
     };
+    // Keep the key only in process memory while the wizard runs. It is
+    // converted to the selected safe backend immediately before the single,
+    // atomic config save in `handle_init`.
     chainz.add_key(
         DEFAULT_KEY_NAME,
         Key {
             name: DEFAULT_KEY_NAME.to_string(),
-            kind: KeyType::PrivateKey { value: private_key },
+            kind: KeyType::PrivateKey {
+                value: private_key.clone(),
+            },
         },
     )?;
 
@@ -67,7 +76,11 @@ async fn initialize_with_wizard() -> Result<Chainz> {
     loop {
         println!("{}", ui::header("Chain Management"));
         let should_add = Confirm::new()
-            .with_prompt("Would you like to add another chain?")
+            .with_prompt(if chainz.config.chains.is_empty() {
+                "Would you like to add a chain?"
+            } else {
+                "Would you like to add another chain?"
+            })
             .default(true)
             .interact()?;
 
@@ -86,11 +99,11 @@ async fn initialize_with_wizard() -> Result<Chainz> {
             refresh: false,
         };
 
-        match args.handle(&mut chainz).await {
+        match args.handle_in_memory(&mut chainz).await {
             Ok(chain) => println!("Added chain: {}", chain.name),
             Err(e) => println!("Failed to add chain: {}", e),
         }
     }
 
-    Ok(chainz)
+    Ok((chainz, private_key))
 }

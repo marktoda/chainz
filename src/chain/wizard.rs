@@ -6,7 +6,6 @@ use crate::ui;
 use crate::{
     chainlist::{ChainlistEntry, fetch_all_chains, fetch_chain_by_id},
     config::Chainz,
-    key::{Key, KeyType},
     opt::{AddArgs, UpdateArgs},
     variables::GlobalVariables,
 };
@@ -180,14 +179,8 @@ pub fn select_key(chainz: &mut Chainz) -> Result<String> {
 
     if key_selection == key_displays.len() - 1 {
         let kname: String = Input::new().with_prompt("Enter key name").interact_text()?;
-        let private_key = rpassword::prompt_password("Enter private key: ")?;
-        chainz.add_key(
-            &kname,
-            Key {
-                name: kname.clone(),
-                kind: KeyType::PrivateKey { value: private_key },
-            },
-        )?;
+        let key = crate::key::prompt_for_new_key(&kname)?;
+        chainz.add_key(&kname, key)?;
         Ok(kname)
     } else {
         Ok(key_displays[key_selection].0.clone())
@@ -291,14 +284,27 @@ impl UpdateArgs {
 
 impl AddArgs {
     pub async fn handle(&self, chainz: &mut Chainz) -> Result<ChainDefinition> {
-        if self.name.is_some() && self.chain_id.is_some() && self.rpc_url.is_some() {
-            self.handle_non_interactive(chainz).await
+        let interactive =
+            !(self.name.is_some() && self.chain_id.is_some() && self.rpc_url.is_some());
+        let chain = if interactive {
+            self.build_interactive(chainz).await?
         } else {
-            self.handle_interactive(chainz).await
-        }
+            self.build_non_interactive(chainz).await?
+        };
+        self.confirm_replacement(chainz, &chain, interactive)?;
+        chainz.add_chain(chain.clone())?;
+        chainz.save().await?;
+        Ok(chain)
     }
 
-    async fn handle_non_interactive(&self, chainz: &mut Chainz) -> Result<ChainDefinition> {
+    pub(crate) async fn handle_in_memory(&self, chainz: &mut Chainz) -> Result<ChainDefinition> {
+        let chain = self.build_interactive(chainz).await?;
+        self.confirm_replacement(chainz, &chain, true)?;
+        chainz.add_chain(chain.clone())?;
+        Ok(chain)
+    }
+
+    async fn build_non_interactive(&self, chainz: &mut Chainz) -> Result<ChainDefinition> {
         let name = self.name.clone().unwrap();
         let chain_id = self.chain_id.unwrap();
         let rpc_url = self.rpc_url.clone().unwrap();
@@ -320,7 +326,7 @@ impl AddArgs {
             .await
             .with_context(|| format!("RPC check failed for {}", rpc_url))?;
 
-        let chain_def = ChainDefinition {
+        Ok(ChainDefinition {
             name: name.clone(),
             aliases: vec![],
             chain_id,
@@ -329,22 +335,10 @@ impl AddArgs {
             verification_api_key: self.verification_api_key.clone(),
             verification_url: self.verification_url.clone(),
             key_name,
-        };
-
-        // Check for existing chain (by name or alias)
-        if chainz.chain_exists(&chain_def.name) && !self.force {
-            anyhow::bail!(
-                "Chain '{}' already exists. Use --force to overwrite.",
-                chain_def.name
-            );
-        }
-
-        chainz.add_chain(chain_def.clone())?;
-        chainz.save().await?;
-        Ok(chain_def)
+        })
     }
 
-    async fn handle_interactive(&self, chainz: &mut Chainz) -> Result<ChainDefinition> {
+    async fn build_interactive(&self, chainz: &mut Chainz) -> Result<ChainDefinition> {
         println!("{}", ui::header("Chain Selection"));
 
         let selected_chain = if self.name.is_some() || self.chain_id.is_some() {
@@ -427,8 +421,7 @@ impl AddArgs {
                 select_verifier()?
             };
 
-        // Create and add the chain
-        let chain_def = ChainDefinition {
+        Ok(ChainDefinition {
             name,
             aliases,
             chain_id: selected_chain.chain_id,
@@ -437,29 +430,35 @@ impl AddArgs {
             verification_api_key,
             verification_url,
             key_name,
-        };
+        })
+    }
 
-        // Confirm before replacing an existing chain (matched by name or alias)
-        if chainz.chain_exists(&chain_def.name) {
-            if self.force {
-                // Skip prompt with --force
-            } else {
+    fn confirm_replacement(
+        &self,
+        chainz: &Chainz,
+        chain: &ChainDefinition,
+        interactive: bool,
+    ) -> Result<()> {
+        if chainz.chain_exists(&chain.name) && !self.force {
+            if interactive {
                 let confirm = dialoguer::Confirm::new()
                     .with_prompt(format!(
                         "Chain '{}' already exists. Replace it?",
-                        chain_def.name
+                        chain.name
                     ))
                     .default(false)
                     .interact()?;
                 if !confirm {
                     anyhow::bail!("Cancelled");
                 }
+            } else {
+                anyhow::bail!(
+                    "Chain '{}' already exists. Use --force to overwrite.",
+                    chain.name
+                );
             }
         }
-
-        chainz.add_chain(chain_def.clone())?;
-        chainz.save().await?;
-        Ok(chain_def)
+        Ok(())
     }
 }
 

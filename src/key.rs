@@ -7,7 +7,8 @@ use rpassword::prompt_password;
 
 use crate::{
     config::Chainz,
-    opt::{KeyCommand, KeyTypeArg},
+    opt::{KeyCommand, KeyTypeArg, SafeKeyTypeArg},
+    ui,
 };
 use alloy::{
     primitives::Address,
@@ -23,8 +24,13 @@ use aes_gcm::{
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use keyring::Entry;
 use rand::Rng;
-use std::fmt;
+#[cfg(not(test))]
+use std::io::IsTerminal;
+use std::{fmt, sync::OnceLock};
 use zeroize::Zeroizing;
+
+const KEYRING_SERVICE: &str = "chainz";
+static KEYRING_AVAILABLE: OnceLock<bool> = OnceLock::new();
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Key {
@@ -168,6 +174,157 @@ impl Key {
     }
 }
 
+fn default_key_type(keyring_available: bool) -> KeyTypeArg {
+    if keyring_available {
+        KeyTypeArg::Keyring
+    } else {
+        KeyTypeArg::Encrypted
+    }
+}
+
+fn keyring_available() -> bool {
+    if std::env::var_os("CHAINZ_DISABLE_KEYRING").is_some() {
+        return false;
+    }
+    *KEYRING_AVAILABLE.get_or_init(probe_keyring)
+}
+
+fn probe_keyring() -> bool {
+    let username = format!("__chainz_probe_{}", rand::random::<u64>());
+    let Ok(entry) = Entry::new(KEYRING_SERVICE, &username) else {
+        return false;
+    };
+    let result = entry
+        .set_password("chainz-keyring-probe")
+        .and_then(|_| entry.get_password())
+        .is_ok_and(|value| value == "chainz-keyring-probe");
+    let _ = entry.delete_credential();
+    result
+}
+
+fn ensure_password_prompt_available() -> Result<()> {
+    #[cfg(test)]
+    return Ok(());
+
+    #[cfg(not(test))]
+    if !std::io::stdin().is_terminal() {
+        anyhow::bail!(
+            "encrypted storage needs a terminal for its password prompt; use --type private-key only if plaintext storage is intentional"
+        );
+    }
+
+    #[cfg(not(test))]
+    Ok(())
+}
+
+fn read_private_key(key: Option<String>) -> Result<String> {
+    let private_key = match key {
+        Some(key) => key,
+        None => prompt_password("Enter private key: ")?,
+    };
+    Key::validate_private_key(&private_key)?;
+    Ok(private_key)
+}
+
+fn create_key(name: &str, key: Option<String>, key_type: KeyTypeArg) -> Result<Key> {
+    let kind = match key_type {
+        KeyTypeArg::PrivateKey => {
+            let private_key = read_private_key(key)?;
+            eprintln!(
+                "{}",
+                ui::warn(&format!(
+                    "'{}' will be stored as plaintext; migrate later with `chainz key migrate {}`",
+                    name, name
+                ))
+            );
+            KeyType::PrivateKey { value: private_key }
+        }
+        KeyTypeArg::Encrypted => {
+            let private_key = read_private_key(key)?;
+            ensure_password_prompt_available()?;
+            let password = Zeroizing::new(prompt_password("Enter encryption password: ")?);
+            if password.is_empty() {
+                anyhow::bail!("Encryption password cannot be empty");
+            }
+            let confirmation = Zeroizing::new(prompt_password("Confirm encryption password: ")?);
+            if password.as_str() != confirmation.as_str() {
+                anyhow::bail!("Encryption passwords do not match");
+            }
+            Key::encrypt(name.to_string(), &private_key, &password)?.kind
+        }
+        KeyTypeArg::OnePassword => {
+            let vault: String = dialoguer::Input::new()
+                .with_prompt("Enter 1Password vault name")
+                .interact()?;
+            let item: String = dialoguer::Input::new()
+                .with_prompt("Enter 1Password item name")
+                .interact()?;
+            KeyType::OnePassword { vault, item }
+        }
+        KeyTypeArg::Keyring => {
+            let service = KEYRING_SERVICE.to_string();
+            let username = name.to_string();
+            let private_key = read_private_key(key)?;
+            Entry::new(&service, &username)?.set_password(&private_key)?;
+            KeyType::Keyring { service, username }
+        }
+    };
+
+    Ok(Key::new(name.to_string(), kind))
+}
+
+fn create_key_with_safe_default(name: &str, key: String) -> Result<Key> {
+    if keyring_available() {
+        match create_key(name, Some(key.clone()), KeyTypeArg::Keyring) {
+            Ok(stored) => return Ok(stored),
+            Err(error) => eprintln!(
+                "{}",
+                ui::warn(&format!(
+                    "OS keyring unavailable ({error}); falling back to encrypted storage"
+                ))
+            ),
+        }
+    }
+    create_key(name, Some(key), KeyTypeArg::Encrypted)
+}
+
+fn select_key_type() -> Result<KeyTypeArg> {
+    let variants = <KeyTypeArg as clap::ValueEnum>::value_variants();
+    let preferred = default_key_type(keyring_available());
+    let default = variants
+        .iter()
+        .position(|value| *value == preferred)
+        .unwrap_or(0);
+    let selection = dialoguer::Select::new()
+        .with_prompt("Select key storage")
+        .items(variants)
+        .default(default)
+        .interact()?;
+    Ok(variants[selection])
+}
+
+pub(crate) fn prompt_for_new_key(name: &str) -> Result<Key> {
+    let key_type = select_key_type()?;
+    create_key(name, None, key_type)
+}
+
+pub(crate) fn create_default_key(name: &str, private_key: String) -> Result<Key> {
+    create_key_with_safe_default(name, private_key)
+}
+
+fn migration_target(target: Option<SafeKeyTypeArg>) -> KeyTypeArg {
+    match target {
+        Some(SafeKeyTypeArg::Encrypted) => KeyTypeArg::Encrypted,
+        Some(SafeKeyTypeArg::Keyring) => KeyTypeArg::Keyring,
+        None => default_key_type(keyring_available()),
+    }
+}
+
+fn migrate_one(source: &Key, target: KeyTypeArg) -> Result<Key> {
+    let private_key = source.private_key()?.to_string();
+    create_key(&source.name, Some(private_key), target)
+}
+
 impl KeyCommand {
     pub async fn handle(self, config: &mut Chainz) -> Result<()> {
         match self {
@@ -176,66 +333,17 @@ impl KeyCommand {
                 key,
                 key_type,
             } => {
-                let choice = match key_type {
-                    Some(t) => t,
-                    // --key without --type implies a plain private key, so
-                    // `chainz key add <name> --key <key>` works without a TTY
-                    None if key.is_some() => KeyTypeArg::PrivateKey,
-                    None => {
-                        let variants = <KeyTypeArg as clap::ValueEnum>::value_variants();
-                        let selection = dialoguer::Select::new()
-                            .with_prompt("Select key type")
-                            .items(variants)
-                            .default(0)
-                            .interact()?;
-                        variants[selection]
+                if config.config.keys.contains_key(&name) {
+                    anyhow::bail!("Key '{}' already exists", name);
+                }
+                let key = match (key_type, key) {
+                    (Some(key_type), key) => create_key(&name, key, key_type)?,
+                    (None, Some(key)) => create_key_with_safe_default(&name, key)?,
+                    (None, None) => {
+                        let choice = select_key_type()?;
+                        create_key(&name, None, choice)?
                     }
                 };
-
-                let get_pk = |key: Option<String>| -> Result<String> {
-                    let pk = match key {
-                        Some(k) => k,
-                        None => prompt_password("Enter private key: ")?,
-                    };
-                    Key::validate_private_key(&pk)?;
-                    Ok(pk)
-                };
-
-                let kind = match choice {
-                    KeyTypeArg::PrivateKey => KeyType::PrivateKey {
-                        value: get_pk(key)?,
-                    },
-                    KeyTypeArg::Encrypted => {
-                        let pk = get_pk(key)?;
-                        let password = prompt_password("Enter encryption password: ")?;
-                        Key::encrypt(name.clone(), &pk, &password)?.kind
-                    }
-                    KeyTypeArg::OnePassword => {
-                        let vault: String = dialoguer::Input::new()
-                            .with_prompt("Enter 1Password vault name")
-                            .interact()?;
-                        let item: String = dialoguer::Input::new()
-                            .with_prompt("Enter 1Password item name")
-                            .interact()?;
-                        KeyType::OnePassword { vault, item }
-                    }
-                    KeyTypeArg::Keyring => {
-                        let service: String = dialoguer::Input::new()
-                            .with_prompt("Enter service name")
-                            .default("chainz".into())
-                            .interact()?;
-                        let username: String = dialoguer::Input::new()
-                            .with_prompt("Enter username")
-                            .interact()?;
-                        let pk = get_pk(key)?;
-                        // Store in system keyring
-                        let entry = Entry::new(&service, &username)?;
-                        entry.set_password(&pk)?;
-                        KeyType::Keyring { service, username }
-                    }
-                };
-
-                let key = Key::new(name.clone(), kind);
                 config.add_key(&name, key)?;
                 println!("Added key '{}'", name);
                 config.save().await?;
@@ -272,6 +380,52 @@ impl KeyCommand {
                 println!("Removed key '{}'", name);
                 config.save().await?;
             }
+            KeyCommand::Migrate { name, all, to } => {
+                if !all && name.is_none() {
+                    anyhow::bail!("Provide a key name or use --all");
+                }
+                let target = migration_target(to);
+                let names: Vec<String> = if all {
+                    let mut names: Vec<_> = config
+                        .config
+                        .keys
+                        .iter()
+                        .filter(|(_, key)| matches!(key.kind, KeyType::PrivateKey { .. }))
+                        .map(|(name, _)| name.clone())
+                        .collect();
+                    names.sort();
+                    names
+                } else {
+                    vec![name.expect("validated above")]
+                };
+
+                if names.is_empty() {
+                    println!("No plaintext keys to migrate");
+                    return Ok(());
+                }
+
+                let mut migrated = 0;
+                for name in names {
+                    let source = config.get_key(&name)?;
+                    match migrate_one(&source, target) {
+                        Ok(key) => {
+                            config.config.keys.insert(name.clone(), key);
+                            println!("{}", ui::success(&format!("Migrated key '{}'", name)));
+                            migrated += 1;
+                        }
+                        Err(error) if all => {
+                            println!(
+                                "{}",
+                                ui::fail(&format!("Could not migrate '{}': {}", name, error))
+                            );
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+                if migrated > 0 {
+                    config.save().await?;
+                }
+            }
         }
         Ok(())
     }
@@ -304,10 +458,36 @@ impl fmt::Display for Key {
 mod tests {
     use super::*;
     use std::env;
+    use std::sync::Mutex;
 
     const TEST_PRIVATE_KEY: &str =
         "0000000000000000000000000000000000000000000000000000000000000001";
     const TEST_ADDRESS: &str = "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf";
+    static PASSWORD_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn safe_default_prefers_keyring_then_encrypted() {
+        assert_eq!(default_key_type(true), KeyTypeArg::Keyring);
+        assert_eq!(default_key_type(false), KeyTypeArg::Encrypted);
+    }
+
+    #[test]
+    fn migrate_plaintext_to_encrypted_round_trips() {
+        let _guard = PASSWORD_ENV_LOCK.lock().unwrap();
+        let source = Key::new(
+            "deployer".to_string(),
+            KeyType::PrivateKey {
+                value: TEST_PRIVATE_KEY.to_string(),
+            },
+        );
+        // SAFETY: the test prompt reads this process-local fixture value.
+        unsafe { env::set_var("CLITEST_PASSWORD", "migration-password") };
+
+        let migrated = migrate_one(&source, KeyTypeArg::Encrypted).unwrap();
+
+        assert!(matches!(migrated.kind, KeyType::EncryptedKey { .. }));
+        assert_eq!(migrated.private_key().unwrap().as_str(), TEST_PRIVATE_KEY);
+    }
 
     #[test]
     fn test_plain_private_key() -> Result<()> {
@@ -324,6 +504,7 @@ mod tests {
 
     #[test]
     fn test_encrypted_key() -> Result<()> {
+        let _guard = PASSWORD_ENV_LOCK.lock().unwrap();
         let password = "test_password";
         let encrypted = Key::encrypt("test".to_string(), TEST_PRIVATE_KEY, password)?;
 

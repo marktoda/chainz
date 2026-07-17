@@ -19,6 +19,8 @@ const TEST_ADDRESS_2: &str = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
 fn chainz(home: &Path) -> Command {
     let mut cmd = Command::cargo_bin("chainz").unwrap();
     cmd.env("HOME", home);
+    // Keep tests deterministic and prevent real OS-keyring prompts/entries.
+    cmd.env("CHAINZ_DISABLE_KEYRING", "1");
     // The ambient environment must not redirect the config out of the temp HOME
     cmd.env_remove("XDG_CONFIG_HOME");
     cmd
@@ -193,15 +195,42 @@ fn human_chain_outputs_redact_credentials() {
 fn key_add_is_noninteractive_with_key_flag() {
     let home = TempDir::new().unwrap();
     chainz(home.path())
-        .args(["key", "add", "default", "--key", TEST_KEY])
+        .args([
+            "key",
+            "add",
+            "default",
+            "--key",
+            TEST_KEY,
+            "--type",
+            "private-key",
+        ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Added key 'default'"));
+        .stdout(predicate::str::contains("Added key 'default'"))
+        .stderr(predicate::str::contains("plaintext"));
     chainz(home.path())
         .args(["key", "list"])
         .assert()
         .success()
         .stdout(predicate::str::contains(TEST_ADDRESS));
+}
+
+#[test]
+fn bare_key_add_never_silently_falls_back_to_plaintext() {
+    let home = TempDir::new().unwrap();
+    chainz(home.path())
+        .args(["key", "add", "safe", "--key", TEST_KEY])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "encrypted storage needs a terminal",
+        ));
+
+    chainz(home.path())
+        .args(["key", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No stored keys"));
 }
 
 #[test]
@@ -218,7 +247,15 @@ fn key_add_rejects_invalid_key() {
 fn key_remove_works() {
     let home = TempDir::new().unwrap();
     chainz(home.path())
-        .args(["key", "add", "temp", "--key", TEST_KEY])
+        .args([
+            "key",
+            "add",
+            "temp",
+            "--key",
+            TEST_KEY,
+            "--type",
+            "private-key",
+        ])
         .assert()
         .success();
     chainz(home.path())
@@ -413,7 +450,15 @@ fn exec_key_override_flag() {
     let home = TempDir::new().unwrap();
     seed_config(home.path(), &[("testchain", 31337)]);
     chainz(home.path())
-        .args(["key", "add", "alt", "--key", TEST_KEY_2])
+        .args([
+            "key",
+            "add",
+            "alt",
+            "--key",
+            TEST_KEY_2,
+            "--type",
+            "private-key",
+        ])
         .assert()
         .success();
 
@@ -434,11 +479,27 @@ fn exec_key_override_flag() {
 fn key_add_duplicate_name_fails() {
     let home = TempDir::new().unwrap();
     chainz(home.path())
-        .args(["key", "add", "dup", "--key", TEST_KEY])
+        .args([
+            "key",
+            "add",
+            "dup",
+            "--key",
+            TEST_KEY,
+            "--type",
+            "private-key",
+        ])
         .assert()
         .success();
     chainz(home.path())
-        .args(["key", "add", "dup", "--key", TEST_KEY_2])
+        .args([
+            "key",
+            "add",
+            "dup",
+            "--key",
+            TEST_KEY_2,
+            "--type",
+            "private-key",
+        ])
         .assert()
         .failure()
         .stderr(predicate::str::contains("already exists"));
@@ -591,7 +652,8 @@ fn doctor_warns_on_plaintext_keys() {
         .arg("doctor")
         .assert()
         .success() // warnings alone don't fail the check
-        .stdout(predicate::str::contains("plaintext"));
+        .stdout(predicate::str::contains("plaintext"))
+        .stdout(predicate::str::contains("chainz key migrate default"));
 }
 
 #[test]

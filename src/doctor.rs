@@ -64,8 +64,8 @@ fn check_keys(chainz: &Chainz, report: &mut Report) {
             println!(
                 "  {}",
                 ui::warn(&format!(
-                    "'{}' is stored as a plaintext private key — consider re-adding it with --type encrypted or --type keyring",
-                    name
+                    "'{}' is stored as plaintext — run `chainz key migrate {}`",
+                    name, name
                 ))
             );
         } else {

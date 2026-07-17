@@ -112,7 +112,7 @@ pub enum Command {
     /// Manage private keys
     ///
     /// Subcommands for adding, listing, and removing private keys.
-    /// Keys are stored encrypted in the configuration.
+    /// Safe storage is the default; plaintext requires an explicit type.
     ///
     /// Example: chainz key add mykey
     Key {
@@ -149,8 +149,8 @@ pub enum Command {
 pub enum KeyCommand {
     /// Add a new private key
     ///
-    /// Fully non-interactive when both --key and --type are provided
-    /// (--key alone implies --type private-key).
+    /// Fully non-interactive with --key when the OS keyring is available.
+    /// Otherwise the encrypted fallback needs a terminal password prompt.
     Add {
         /// Name for the private key
         name: String,
@@ -172,6 +172,26 @@ pub enum KeyCommand {
         /// Name of the private key to remove
         name: String,
     },
+    /// Move keys out of plaintext storage
+    Migrate {
+        /// Key to migrate (omit when using --all)
+        name: Option<String>,
+        /// Migrate every plaintext key
+        #[arg(long, conflicts_with = "name")]
+        all: bool,
+        /// Safe destination (uses the platform default when omitted)
+        #[arg(long, value_enum)]
+        to: Option<SafeKeyTypeArg>,
+    },
+}
+
+/// Safe storage destinations used by `key migrate`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum SafeKeyTypeArg {
+    /// Encrypt the key with a password (AES-256-GCM + Argon2)
+    Encrypted,
+    /// Store the key in the OS keyring
+    Keyring,
 }
 
 /// Storage backend for a private key
