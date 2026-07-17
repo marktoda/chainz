@@ -19,6 +19,12 @@ A CLI tool for managing EVM chain configurations
 Requires Rust 1.88+.
 
 ```bash
+cargo install chainz --locked
+```
+
+To install the latest development version instead:
+
+```bash
 git clone https://github.com/marktoda/chainz.git
 cd chainz
 cargo install --path .
@@ -168,9 +174,9 @@ Available expansions:
 - `@chainname` — Chain name
 - `@key` — Private key
 
-`@key` is retained for compatibility but exposes the private key in child
-process arguments. Prefer env-only exposure when a tool accepts environment
-variables:
+`@key` is deprecated and planned for removal at 1.0 because it exposes the
+private key in child process arguments. Prefer env-only exposure when a tool
+accepts environment variables:
 
 ```bash
 chainz exec ethereum --expose-key -- sh -c 'PRIVATE_KEY="$RAW_PRIVATE_KEY" forge script Deploy'

@@ -6,13 +6,13 @@ use crate::ui;
 use crate::{
     chainlist::{ChainlistEntry, fetch_all_chains, fetch_chain_by_id},
     config::Chainz,
-    key::{Key, KeyType, create_safe_key_from_prompt},
+    key::{Key, KeyType, save_with_safe_new_keys},
     opt::{AddArgs, UpdateArgs},
+    prompt::{Prompt, SystemPrompt},
     variables::GlobalVariables,
 };
 use anyhow::{Context, Result};
 use console::style;
-use dialoguer::{FuzzySelect, Input};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
 /// Helper function to handle text input with ESC cancellation
@@ -20,19 +20,17 @@ fn text_input<T: std::str::FromStr>(prompt: &str, default: Option<String>) -> Re
 where
     <T as std::str::FromStr>::Err: std::fmt::Debug,
 {
-    let mut input = Input::new()
-        .with_prompt(format!("{} (Ctrl+C to exit)", prompt))
-        .allow_empty(true);
-
-    if let Some(def) = default {
-        input = input.default(def);
-    }
-
-    match input.interact() {
+    let mut terminal = SystemPrompt;
+    match terminal.text(
+        &format!("{} (Ctrl+C to exit)", prompt),
+        default.as_deref(),
+        true,
+    ) {
         Ok(value) if !value.is_empty() => value
             .parse()
             .map_err(|_| anyhow::anyhow!("Failed to parse input")),
-        Ok(_) | Err(_) => Err(ui::cancelled()),
+        Ok(_) => Err(ui::cancelled()),
+        Err(error) => Err(error),
     }
 }
 
@@ -176,14 +174,6 @@ async fn select_manual_rpc(chain_id: u64, globals: &GlobalVariables) -> Result<S
 
 /// Helper function to select or create a key
 fn select_key(chainz: &mut Chainz) -> Result<Option<String>> {
-    select_key_inner(chainz, true)
-}
-
-fn select_key_staged(chainz: &mut Chainz) -> Result<Option<String>> {
-    select_key_inner(chainz, false)
-}
-
-fn select_key_inner(chainz: &mut Chainz, store_safely_now: bool) -> Result<Option<String>> {
     let keys = chainz.list_keys();
 
     // Create display strings with addresses
@@ -205,17 +195,16 @@ fn select_key_inner(chainz: &mut Chainz, store_safely_now: bool) -> Result<Optio
     )?;
 
     if key_selection == key_displays.len() - 1 {
-        let kname: String = Input::new().with_prompt("Enter key name").interact_text()?;
+        let mut prompt = SystemPrompt;
+        let kname = prompt.text("Enter key name", None, false)?;
         if chainz.get_key(&kname).is_ok() {
             anyhow::bail!("Key '{}' already exists", kname);
         }
-        let key = if store_safely_now {
-            create_safe_key_from_prompt(&kname)?
-        } else {
-            let private_key = rpassword::prompt_password("Enter private key: ")?;
-            Key::validate_private_key(&private_key)?;
-            Key::new(kname.clone(), KeyType::PrivateKey { value: private_key })
-        };
+        let private_key = prompt.secret("Enter private key: ")?;
+        Key::validate_private_key(&private_key)?;
+        // Stage plaintext only in memory. The outer command provisions safe
+        // storage after all prompts and validation have succeeded.
+        let key = Key::new(kname.clone(), KeyType::PrivateKey { value: private_key });
         chainz.add_key(&kname, key)?;
         Ok(Some(kname))
     } else if key_selection == key_displays.len() - 2 {
@@ -227,12 +216,12 @@ fn select_key_inner(chainz: &mut Chainz, store_safely_now: bool) -> Result<Optio
 
 /// Helper function to select or create a verifier
 pub fn select_verifier() -> Result<(Option<String>, Option<String>)> {
-    let new_url: String = Input::new()
-        .with_prompt("Enter verifier URL (empty to remove)")
-        .allow_empty(true)
-        .interact_text()?;
+    select_verifier_with(&mut SystemPrompt)
+}
 
-    let new_key = rpassword::prompt_password("Enter verification API key (empty to remove): ")?;
+fn select_verifier_with(prompt: &mut impl Prompt) -> Result<(Option<String>, Option<String>)> {
+    let new_url = prompt.text("Enter verifier URL (empty to remove)", None, true)?;
+    let new_key = prompt.secret("Enter verification API key (empty to remove): ")?;
 
     match (new_url.is_empty(), new_key.is_empty()) {
         (true, true) => Ok((None, None)),
@@ -245,6 +234,8 @@ pub fn select_verifier() -> Result<(Option<String>, Option<String>)> {
 impl UpdateArgs {
     pub async fn handle(&self, chainz: &mut Chainz) -> Result<ChainDefinition> {
         println!("{}", ui::header("Chain Update"));
+        let existing_keys: std::collections::HashSet<String> =
+            chainz.config.keys.keys().cloned().collect();
         let direct = self.has_direct_changes();
         if direct && self.name_or_id.is_none() {
             anyhow::bail!("Direct update flags require a chain argument");
@@ -278,7 +269,14 @@ impl UpdateArgs {
         if chainz.config.default_chain.as_deref() == Some(original_name.as_str()) {
             chainz.config.default_chain = Some(chain.name.clone());
         }
-        chainz.save().await?;
+        let new_keys = chainz
+            .config
+            .keys
+            .keys()
+            .filter(|name| !existing_keys.contains(*name))
+            .cloned()
+            .collect::<Vec<_>>();
+        save_with_safe_new_keys(chainz, new_keys).await?;
         println!("\n{}", style("Chain updated successfully").green());
         Ok(chain)
     }
@@ -386,10 +384,7 @@ impl UpdateArgs {
                     chain.verification_api_key = key;
                 }
                 3 => {
-                    let name: String = Input::new()
-                        .with_prompt("Chain name")
-                        .default(chain.name.clone())
-                        .interact_text()?;
+                    let name = SystemPrompt.text("Chain name", Some(&chain.name), false)?;
                     if !chain.matches_exact(&name) && chainz.chain_exists(&name) {
                         anyhow::bail!("Chain '{}' already exists", name);
                     }
@@ -497,6 +492,8 @@ impl AddArgs {
         chainz: &mut Chainz,
         persist: bool,
     ) -> Result<ChainDefinition> {
+        let existing_keys: std::collections::HashSet<String> =
+            chainz.config.keys.keys().cloned().collect();
         println!("{}", ui::header("Chain Selection"));
 
         let selected_chain = if self.name.is_some() || self.chain_id.is_some() {
@@ -517,10 +514,11 @@ impl AddArgs {
         // Chainlist names are long ("Ethereum Mainnet"); offer a short name
         // for everyday use and keep the original as an alias.
         let (name, aliases) = if self.name.is_none() {
-            let chosen: String = Input::new()
-                .with_prompt("Chain name")
-                .default(suggest_short_name(&selected_chain.name))
-                .interact_text()?;
+            let chosen = SystemPrompt.text(
+                "Chain name",
+                Some(&suggest_short_name(&selected_chain.name)),
+                false,
+            )?;
             let aliases = if chosen.eq_ignore_ascii_case(&selected_chain.name) {
                 vec![]
             } else {
@@ -569,11 +567,7 @@ impl AddArgs {
             Some(key.clone())
         } else {
             println!("{}", ui::header("Key Configuration"));
-            if persist {
-                select_key(chainz)?
-            } else {
-                select_key_staged(chainz)?
-            }
+            select_key(chainz)?
         };
 
         let (verification_url, verification_api_key) = if self.verification_url.is_some()
@@ -606,13 +600,10 @@ impl AddArgs {
             if self.force {
                 // Skip prompt with --force
             } else {
-                let confirm = dialoguer::Confirm::new()
-                    .with_prompt(format!(
-                        "Chain '{}' already exists. Replace it?",
-                        chain_def.name
-                    ))
-                    .default(false)
-                    .interact()?;
+                let confirm = SystemPrompt.confirm(
+                    &format!("Chain '{}' already exists. Replace it?", chain_def.name),
+                    false,
+                )?;
                 if !confirm {
                     return Err(ui::cancelled());
                 }
@@ -621,7 +612,14 @@ impl AddArgs {
 
         chainz.add_chain(chain_def.clone())?;
         if persist {
-            chainz.save().await?;
+            let new_keys = chainz
+                .config
+                .keys
+                .keys()
+                .filter(|name| !existing_keys.contains(*name))
+                .cloned()
+                .collect::<Vec<_>>();
+            save_with_safe_new_keys(chainz, new_keys).await?;
         }
         Ok(chain_def)
     }
@@ -667,45 +665,12 @@ fn suggest_short_name(name: &str) -> String {
 
 // Helper function to handle fuzzy select with ESC cancellation
 fn fuzzy_select<T: std::fmt::Display>(prompt: &str, items: &[T], default: usize) -> Result<usize> {
-    match FuzzySelect::new()
-        .with_prompt(format!("{} (ESC to exit)", prompt))
-        .items(items)
-        .default(default)
-        .interact_opt()?
-    {
-        Some(selection) => Ok(selection),
-        None => Err(ui::cancelled()),
-    }
+    SystemPrompt.select(
+        prompt,
+        &items.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        default,
+    )
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{probe_summary, suggest_short_name};
-    use crate::chain::rpc::ProbeResult;
-    use std::time::Duration;
-
-    #[test]
-    fn short_name_suggestions() {
-        assert_eq!(suggest_short_name("Ethereum Mainnet"), "ethereum");
-        assert_eq!(suggest_short_name("OP Mainnet"), "op");
-        assert_eq!(suggest_short_name("Avalanche C-Chain"), "avalanche");
-        assert_eq!(suggest_short_name("zora"), "zora");
-    }
-
-    #[test]
-    fn probe_summary_collapses_endpoint_results() {
-        let results = vec![
-            ProbeResult {
-                index: 0,
-                healthy: true,
-                latency: Duration::from_millis(20),
-            },
-            ProbeResult {
-                index: 1,
-                healthy: false,
-                latency: Duration::from_millis(40),
-            },
-        ];
-        assert_eq!(probe_summary(&results), "1 of 2 RPCs healthy");
-    }
-}
+mod tests;

@@ -3,7 +3,7 @@
 
 use assert_cmd::Command;
 use chainz::chain::ChainDefinition;
-use chainz::config::{Config, DEFAULT_CONFIG_RELATIVE, LEGACY_CONFIG_FILE};
+use chainz::config::{Config, LEGACY_CONFIG_FILE};
 use chainz::key::{Key, KeyType};
 use predicates::prelude::*;
 use std::fs;
@@ -21,13 +21,21 @@ const TEST_ADDRESS_2: &str = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
 fn chainz(home: &Path) -> Command {
     let mut cmd = Command::cargo_bin("chainz").unwrap();
     cmd.env("HOME", home);
-    // The ambient environment must not redirect the config out of the temp HOME
-    cmd.env_remove("XDG_CONFIG_HOME");
+    // XDG_CONFIG_HOME is honored on every supported OS and keeps parallel
+    // tests away from the runner's real platform-specific home directory.
+    cmd.env("XDG_CONFIG_HOME", home.join("xdg"));
     cmd
 }
 
 fn config_path(home: &Path) -> std::path::PathBuf {
-    home.join(DEFAULT_CONFIG_RELATIVE)
+    home.join("xdg").join("chainz").join("config.json")
+}
+
+fn process_chainz(home: &Path) -> std::process::Command {
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("chainz"));
+    cmd.env("HOME", home)
+        .env("XDG_CONFIG_HOME", home.join("xdg"));
+    cmd
 }
 
 /// Serve one deterministic `eth_chainId` response for noninteractive add.
@@ -134,6 +142,31 @@ fn var_set_get_list_rm_roundtrip() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn concurrent_updates_do_not_lose_changes() {
+    let home = TempDir::new().unwrap();
+    let mut children = Vec::new();
+    for index in 0..8 {
+        let child = process_chainz(home.path())
+            .args(["var", "set", &format!("KEY_{index}"), &index.to_string()])
+            .spawn()
+            .unwrap();
+        children.push(child);
+    }
+    for mut child in children {
+        assert!(child.wait().unwrap().success());
+    }
+
+    let config: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(config_path(home.path())).unwrap()).unwrap();
+    for index in 0..8 {
+        assert_eq!(
+            config["variables"][format!("KEY_{index}")],
+            index.to_string()
+        );
+    }
 }
 
 #[test]
@@ -310,6 +343,7 @@ fn remove_unknown_chain_fails() {
         .stderr(predicate::str::contains("not found"));
 }
 
+#[cfg(unix)]
 #[test]
 fn exec_expands_env_and_tokens() {
     let home = TempDir::new().unwrap();
@@ -339,6 +373,7 @@ fn exec_expands_env_and_tokens() {
         .stdout(predicate::str::contains(format!("wallet={}", TEST_ADDRESS)));
 }
 
+#[cfg(unix)]
 #[test]
 fn exec_does_not_expose_key_unless_requested() {
     let home = TempDir::new().unwrap();
@@ -358,6 +393,7 @@ fn exec_does_not_expose_key_unless_requested() {
         .stdout(predicate::str::contains("key=unset"));
 }
 
+#[cfg(unix)]
 #[test]
 fn exec_passes_through_exit_code() {
     let home = TempDir::new().unwrap();
@@ -391,6 +427,7 @@ fn exec_unknown_chain_fails() {
         .stderr(predicate::str::contains("not found"));
 }
 
+#[cfg(unix)]
 #[test]
 fn exec_key_override_flag() {
     let home = TempDir::new().unwrap();
@@ -486,6 +523,7 @@ fn legacy_config_format_still_loads() {
         .stdout(predicate::str::contains("MY_VAR = abc"));
 }
 
+#[cfg(unix)]
 #[test]
 fn exec_resolves_prefix_and_alias() {
     let home = TempDir::new().unwrap();
@@ -601,6 +639,7 @@ fn doctor_warns_on_plaintext_keys() {
         .stdout(predicate::str::contains("plaintext"));
 }
 
+#[cfg(unix)]
 #[test]
 fn use_sets_default_chain_for_exec() {
     let home = TempDir::new().unwrap();
@@ -671,6 +710,7 @@ fn legacy_config_location_is_migrated() {
         .stderr(predicate::str::contains("Migrated").not());
 }
 
+#[cfg(unix)]
 #[test]
 fn shell_sets_env_and_passes_exit_code() {
     let home = TempDir::new().unwrap();
@@ -699,6 +739,7 @@ fn shell_sets_env_and_passes_exit_code() {
         ));
 }
 
+#[cfg(unix)]
 #[test]
 fn shell_uses_default_chain_when_omitted() {
     let home = TempDir::new().unwrap();
@@ -748,6 +789,7 @@ fn add_noninteractive_supports_rpc_only_chain() {
         .stdout(predicate::str::contains(r#""key_name": null"#));
 }
 
+#[cfg(unix)]
 #[test]
 fn wallet_expansion_does_not_expose_private_key() {
     let home = TempDir::new().unwrap();
@@ -770,6 +812,7 @@ fn wallet_expansion_does_not_expose_private_key() {
         )));
 }
 
+#[cfg(unix)]
 #[test]
 fn expose_key_uses_environment_without_argv_warning() {
     let home = TempDir::new().unwrap();
@@ -790,6 +833,7 @@ fn expose_key_uses_environment_without_argv_warning() {
         .stderr(predicate::str::contains("process arguments").not());
 }
 
+#[cfg(unix)]
 #[test]
 fn key_token_warns_about_process_argument_exposure() {
     let home = TempDir::new().unwrap();
@@ -860,6 +904,7 @@ fn rpc_failure_error_chain_never_leaks_the_url() {
         .stderr(predicate::str::contains("literal-secret").not());
 }
 
+#[cfg(unix)]
 #[test]
 fn referenced_key_removal_is_blocked() {
     let home = TempDir::new().unwrap();
@@ -955,6 +1000,7 @@ fn list_is_compact_and_show_owns_details() {
         .stdout(predicate::str::contains("Key Name"));
 }
 
+#[cfg(unix)]
 #[test]
 fn rpc_only_chain_executes_until_key_material_is_requested() {
     let home = TempDir::new().unwrap();

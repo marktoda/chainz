@@ -13,11 +13,13 @@ include = [
     "Cargo.toml",
     "Cargo.lock",
     "README.md",
+    "RELEASING.md",
     "CHANGELOG.md",
     "LICENSE",
 ]
 keywords = ["ethereum", "evm", "cli", "web3", "blockchain"]
 categories = ["command-line-utilities", "cryptography::cryptocurrencies", "development-tools"]
+publish = ["crates-io"]
 
 [dependencies]
 alloy = { version = "1", default-features = false, features = [
@@ -32,6 +34,7 @@ anyhow = "1"
 console = "0.16"
 dialoguer = { version = "0.12", features = ["fuzzy-select"] }
 dirs = "6"
+fs2 = "0.4"
 reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls",
     "json",
@@ -56,8 +59,8 @@ keyring = { version = "3", features = [
 rand = "0.9"
 argon2 = "0.5"
 zeroize = "1"
+tempfile = "3"
 
 [dev-dependencies]
 assert_cmd = "2"
 predicates = "3"
-tempfile = "3"

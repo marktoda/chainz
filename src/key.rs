@@ -127,7 +127,8 @@ trait KeyBackend {
     fn prompt_secret(&self, prompt: &str) -> Result<Zeroizing<String>>;
     fn keyring_available(&self) -> bool;
     fn keyring_get(&self, service: &str, username: &str) -> Result<Zeroizing<String>>;
-    fn keyring_set(&self, service: &str, username: &str, value: &str) -> Result<()>;
+    /// Store a credential, returning whether this call created the entry.
+    fn keyring_set(&self, service: &str, username: &str, value: &str) -> Result<bool>;
     fn keyring_delete(&self, service: &str, username: &str) -> Result<()>;
     fn one_password_get(&self, vault: &str, item: &str) -> Result<Zeroizing<String>>;
 }
@@ -168,16 +169,19 @@ impl KeyBackend for SystemKeyBackend {
         ))
     }
 
-    fn keyring_set(&self, service: &str, username: &str, value: &str) -> Result<()> {
+    fn keyring_set(&self, service: &str, username: &str, value: &str) -> Result<bool> {
         let entry = Entry::new(service, username)?;
         match entry.get_password() {
-            Ok(existing) if existing == value => Ok(()),
+            Ok(existing) if existing == value => Ok(false),
             Ok(_) => anyhow::bail!(
                 "A different credential already exists in the OS keyring for '{}/{}'; refusing to overwrite it",
                 service,
                 username
             ),
-            Err(keyring::Error::NoEntry) => Ok(entry.set_password(value)?),
+            Err(keyring::Error::NoEntry) => {
+                entry.set_password(value)?;
+                Ok(true)
+            }
             Err(error) => Err(error.into()),
         }
     }
@@ -209,6 +213,18 @@ impl KeyBackend for SystemKeyBackend {
 
 struct KeyVault<B> {
     backend: B,
+}
+
+#[derive(Debug)]
+pub(crate) struct KeyProvision {
+    key: Key,
+    created_external: bool,
+}
+
+impl KeyProvision {
+    pub(crate) fn key(&self) -> &Key {
+        &self.key
+    }
 }
 
 impl<B: KeyBackend> KeyVault<B> {
@@ -278,12 +294,12 @@ impl<B: KeyBackend> KeyVault<B> {
         }
     }
 
-    fn store_private_key(
+    fn provision_private_key(
         &self,
         name: &str,
         private_key: &str,
         requested: Option<KeyTypeArg>,
-    ) -> Result<Key> {
+    ) -> Result<KeyProvision> {
         Key::validate_private_key(private_key)?;
         let storage = match requested {
             Some(KeyTypeArg::PrivateKey) => {
@@ -291,12 +307,15 @@ impl<B: KeyBackend> KeyVault<B> {
                     "Warning: storing '{}' as plaintext; migrate with `chainz key migrate {}`",
                     name, name
                 );
-                return Ok(Key::new(
-                    name.to_string(),
-                    KeyType::PrivateKey {
-                        value: private_key.to_string(),
-                    },
-                ));
+                return Ok(KeyProvision {
+                    key: Key::new(
+                        name.to_string(),
+                        KeyType::PrivateKey {
+                            value: private_key.to_string(),
+                        },
+                    ),
+                    created_external: false,
+                });
             }
             Some(KeyTypeArg::Encrypted) => MigrationTargetArg::Encrypted,
             Some(KeyTypeArg::Keyring) => MigrationTargetArg::Keyring,
@@ -305,15 +324,15 @@ impl<B: KeyBackend> KeyVault<B> {
             }
             None => self.safe_default(),
         };
-        self.store_target(name, private_key, storage)
+        self.provision_target(name, private_key, storage)
     }
 
-    fn store_target(
+    fn provision_target(
         &self,
         name: &str,
         private_key: &str,
         target: MigrationTargetArg,
-    ) -> Result<Key> {
+    ) -> Result<KeyProvision> {
         match target {
             MigrationTargetArg::Keyring => {
                 if !self.backend.keyring_available() {
@@ -336,12 +355,19 @@ impl<B: KeyBackend> KeyVault<B> {
                 if password.as_str() != confirmation.as_str() {
                     anyhow::bail!("Encryption passwords do not match");
                 }
-                encrypt_with_password(name.to_string(), private_key, &password)
+                Ok(KeyProvision {
+                    key: encrypt_with_password(name.to_string(), private_key, &password)?,
+                    created_external: false,
+                })
             }
         }
     }
 
-    fn store_replacement_private_key(&self, name: &str, private_key: &str) -> Result<Key> {
+    fn provision_replacement_private_key(
+        &self,
+        name: &str,
+        private_key: &str,
+    ) -> Result<KeyProvision> {
         Key::validate_private_key(private_key)?;
         match self.safe_default() {
             MigrationTargetArg::Keyring => {
@@ -350,27 +376,35 @@ impl<B: KeyBackend> KeyVault<B> {
                 self.store_keyring(name, &username, private_key)
             }
             MigrationTargetArg::Encrypted => {
-                self.store_target(name, private_key, MigrationTargetArg::Encrypted)
+                self.provision_target(name, private_key, MigrationTargetArg::Encrypted)
             }
         }
     }
 
-    fn store_keyring(&self, name: &str, username: &str, private_key: &str) -> Result<Key> {
-        self.backend
+    fn store_keyring(&self, name: &str, username: &str, private_key: &str) -> Result<KeyProvision> {
+        let created_external = self
+            .backend
             .keyring_set(KEYRING_SERVICE, username, private_key)?;
-        Ok(Key::new(
-            name.to_string(),
-            KeyType::Keyring {
-                service: KEYRING_SERVICE.to_string(),
-                username: username.to_string(),
-            },
-        )
-        .with_public_address(private_key))
+        Ok(KeyProvision {
+            key: Key::new(
+                name.to_string(),
+                KeyType::Keyring {
+                    service: KEYRING_SERVICE.to_string(),
+                    username: username.to_string(),
+                },
+            )
+            .with_public_address(private_key),
+            created_external,
+        })
     }
 
-    fn migrate(&self, key: &Key, target: Option<MigrationTargetArg>) -> Result<Key> {
+    fn provision_migration(
+        &self,
+        key: &Key,
+        target: Option<MigrationTargetArg>,
+    ) -> Result<KeyProvision> {
         let private_key = self.resolve(key)?;
-        self.store_target(
+        self.provision_target(
             &key.name,
             &private_key,
             target.unwrap_or_else(|| self.safe_default()),
@@ -380,6 +414,13 @@ impl<B: KeyBackend> KeyVault<B> {
     fn cleanup_external(&self, key: &Key) -> Result<()> {
         if let KeyType::Keyring { service, username } = &key.kind {
             self.backend.keyring_delete(service, username)?;
+        }
+        Ok(())
+    }
+
+    fn rollback(&self, provision: &KeyProvision) -> Result<()> {
+        if provision.created_external {
+            self.cleanup_external(&provision.key)?;
         }
         Ok(())
     }
@@ -580,24 +621,72 @@ fn read_stdin_secret(label: &str) -> Result<Zeroizing<String>> {
     Ok(Zeroizing::new(trimmed))
 }
 
-pub(crate) fn create_safe_key(name: &str, private_key: &str) -> Result<Key> {
-    KeyVault::new(SystemKeyBackend).store_private_key(name, private_key, None)
+pub(crate) fn provision_safe_key(name: &str, private_key: &str) -> Result<KeyProvision> {
+    KeyVault::new(SystemKeyBackend).provision_private_key(name, private_key, None)
 }
 
 /// Provision a key for an in-progress config replacement without colliding
 /// with credentials still referenced by the current config.
-pub(crate) fn create_safe_replacement_key(name: &str, private_key: &str) -> Result<Key> {
-    KeyVault::new(SystemKeyBackend).store_replacement_private_key(name, private_key)
+pub(crate) fn provision_safe_replacement_key(
+    name: &str,
+    private_key: &str,
+) -> Result<KeyProvision> {
+    KeyVault::new(SystemKeyBackend).provision_replacement_private_key(name, private_key)
 }
 
-pub(crate) fn cleanup_external_key(key: &Key) -> Result<()> {
-    KeyVault::new(SystemKeyBackend).cleanup_external(key)
+pub(crate) fn rollback_key_provision(provision: &KeyProvision) -> Result<()> {
+    KeyVault::new(SystemKeyBackend).rollback(provision)
 }
 
-pub(crate) fn create_safe_key_from_prompt(name: &str) -> Result<Key> {
-    let backend = SystemKeyBackend;
-    let private_key = backend.prompt_secret("Enter private key: ")?;
-    KeyVault::new(backend).store_private_key(name, &private_key, None)
+/// Convert newly staged plaintext keys to safe storage and commit the config
+/// as one logical transaction. External credentials are rolled back if any
+/// provision or the config write fails.
+pub(crate) async fn save_with_safe_new_keys(
+    chainz: &mut Chainz,
+    names: impl IntoIterator<Item = String>,
+) -> Result<()> {
+    let vault = KeyVault::new(SystemKeyBackend);
+    let mut provisions: Vec<(String, Key, KeyProvision)> = Vec::new();
+    for name in names {
+        let staged = chainz.get_key(&name)?;
+        if !matches!(staged.kind, KeyType::PrivateKey { .. }) {
+            continue;
+        }
+        let private_key = staged.private_key()?;
+        let provision = match vault.provision_private_key(&name, &private_key, None) {
+            Ok(provision) => provision,
+            Err(error) => {
+                rollback_staged_provisions(chainz, &vault, &provisions);
+                return Err(error);
+            }
+        };
+        chainz
+            .config
+            .keys
+            .insert(name.clone(), provision.key().clone());
+        provisions.push((name, staged, provision));
+    }
+    if let Err(error) = chainz.save().await {
+        rollback_staged_provisions(chainz, &vault, &provisions);
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn rollback_staged_provisions<B: KeyBackend>(
+    chainz: &mut Chainz,
+    vault: &KeyVault<B>,
+    provisions: &[(String, Key, KeyProvision)],
+) {
+    for (name, staged, provision) in provisions.iter().rev() {
+        chainz.config.keys.insert(name.clone(), staged.clone());
+        if let Err(error) = vault.rollback(provision) {
+            eprintln!(
+                "Warning: could not roll back credential for '{}': {error}",
+                name
+            );
+        }
+    }
 }
 
 pub(crate) async fn migrate_plaintext_keys(chainz: &mut Chainz) -> Result<usize> {
@@ -617,24 +706,33 @@ async fn migrate_names(
     continue_on_error: bool,
 ) -> Result<usize> {
     let vault = KeyVault::new(SystemKeyBackend);
-    let mut migrated = Vec::new();
+    let mut migrated: Vec<(String, Key, KeyProvision)> = Vec::new();
     for name in names {
         let source = chainz.get_key(&name)?;
-        match vault.migrate(&source, target) {
-            Ok(replacement) => {
-                chainz.config.keys.insert(name.clone(), replacement.clone());
-                migrated.push((name, source, replacement));
+        match vault.provision_migration(&source, target) {
+            Ok(provision) => {
+                chainz
+                    .config
+                    .keys
+                    .insert(name.clone(), provision.key().clone());
+                migrated.push((name, source, provision));
             }
             Err(error) if continue_on_error => {
                 eprintln!("Failed to migrate '{}': {:#}", name, error);
             }
-            Err(error) => return Err(error),
+            Err(error) => {
+                rollback_migrations(chainz, &vault, &migrated);
+                return Err(error);
+            }
         }
     }
     if !migrated.is_empty() {
-        chainz.save().await?;
-        for (name, source, replacement) in &migrated {
-            if same_external_location(source, replacement) {
+        if let Err(error) = chainz.save().await {
+            rollback_migrations(chainz, &vault, &migrated);
+            return Err(error);
+        }
+        for (name, source, provision) in &migrated {
+            if same_external_location(source, provision.key()) {
                 continue;
             }
             if let Err(error) = vault.cleanup_external(source) {
@@ -646,6 +744,22 @@ async fn migrate_names(
         }
     }
     Ok(migrated.len())
+}
+
+fn rollback_migrations<B: KeyBackend>(
+    chainz: &mut Chainz,
+    vault: &KeyVault<B>,
+    migrated: &[(String, Key, KeyProvision)],
+) {
+    for (name, source, provision) in migrated.iter().rev() {
+        chainz.config.keys.insert(name.clone(), source.clone());
+        if let Err(error) = vault.rollback(provision) {
+            eprintln!(
+                "Warning: could not roll back credential for '{}': {error}",
+                name
+            );
+        }
+    }
 }
 
 fn same_external_location(left: &Key, right: &Key) -> bool {
@@ -682,7 +796,7 @@ impl KeyCommand {
                     );
                 }
                 let vault = KeyVault::new(SystemKeyBackend);
-                let stored = if key_type == Some(KeyTypeArg::OnePassword) {
+                let provision = if key_type == Some(KeyTypeArg::OnePassword) {
                     if key.is_some() || stdin {
                         anyhow::bail!("1Password references do not accept private-key input");
                     }
@@ -692,13 +806,16 @@ impl KeyCommand {
                     let item: String = dialoguer::Input::new()
                         .with_prompt("Enter 1Password item reference")
                         .interact_text()?;
-                    Key::new(
-                        name.clone(),
-                        KeyType::OnePassword {
-                            vault: vault_name,
-                            item,
-                        },
-                    )
+                    KeyProvision {
+                        key: Key::new(
+                            name.clone(),
+                            KeyType::OnePassword {
+                                vault: vault_name,
+                                item,
+                            },
+                        ),
+                        created_external: false,
+                    }
                 } else {
                     let private_key = match (key, stdin) {
                         (Some(value), false) => Zeroizing::new(value),
@@ -711,10 +828,22 @@ impl KeyCommand {
                         ),
                         (Some(_), true) => unreachable!("clap rejects conflicting inputs"),
                     };
-                    vault.store_private_key(&name, &private_key, key_type)?
+                    vault.provision_private_key(&name, &private_key, key_type)?
                 };
-                chainz.add_key(&name, stored)?;
-                chainz.save().await?;
+                if let Err(error) = chainz.add_key(&name, provision.key().clone()) {
+                    let _ = vault.rollback(&provision);
+                    return Err(error);
+                }
+                if let Err(error) = chainz.save().await {
+                    chainz.config.keys.remove(&name);
+                    if let Err(rollback_error) = vault.rollback(&provision) {
+                        eprintln!(
+                            "Warning: could not roll back credential for '{}': {rollback_error}",
+                            name
+                        );
+                    }
+                    return Err(error);
+                }
                 println!("Added key '{}'", name);
             }
             KeyCommand::List { json } => {
@@ -799,316 +928,4 @@ impl fmt::Display for Key {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::{cell::RefCell, collections::HashMap};
-
-    const TEST_PRIVATE_KEY: &str =
-        "0000000000000000000000000000000000000000000000000000000000000001";
-    const TEST_ADDRESS: &str = "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf";
-
-    struct MemoryBackend {
-        interactive: bool,
-        available: bool,
-        prompts: RefCell<Vec<String>>,
-        keyring: RefCell<HashMap<(String, String), String>>,
-        one_password: RefCell<HashMap<(String, String), String>>,
-    }
-
-    impl MemoryBackend {
-        fn new(interactive: bool, available: bool, prompts: &[&str]) -> Self {
-            Self {
-                interactive,
-                available,
-                prompts: RefCell::new(prompts.iter().rev().map(|s| s.to_string()).collect()),
-                keyring: RefCell::new(HashMap::new()),
-                one_password: RefCell::new(HashMap::new()),
-            }
-        }
-    }
-
-    impl KeyBackend for MemoryBackend {
-        fn is_interactive(&self) -> bool {
-            self.interactive
-        }
-        fn prompt_secret(&self, _prompt: &str) -> Result<Zeroizing<String>> {
-            Ok(Zeroizing::new(
-                self.prompts
-                    .borrow_mut()
-                    .pop()
-                    .ok_or_else(|| anyhow!("no prompt value"))?,
-            ))
-        }
-        fn keyring_available(&self) -> bool {
-            self.available
-        }
-        fn keyring_get(&self, service: &str, username: &str) -> Result<Zeroizing<String>> {
-            Ok(Zeroizing::new(
-                self.keyring
-                    .borrow()
-                    .get(&(service.to_string(), username.to_string()))
-                    .cloned()
-                    .ok_or_else(|| anyhow!("missing keyring entry"))?,
-            ))
-        }
-        fn keyring_set(&self, service: &str, username: &str, value: &str) -> Result<()> {
-            self.keyring.borrow_mut().insert(
-                (service.to_string(), username.to_string()),
-                value.to_string(),
-            );
-            Ok(())
-        }
-        fn keyring_delete(&self, service: &str, username: &str) -> Result<()> {
-            self.keyring
-                .borrow_mut()
-                .remove(&(service.to_string(), username.to_string()));
-            Ok(())
-        }
-        fn one_password_get(&self, vault: &str, item: &str) -> Result<Zeroizing<String>> {
-            Ok(Zeroizing::new(
-                self.one_password
-                    .borrow()
-                    .get(&(vault.to_string(), item.to_string()))
-                    .cloned()
-                    .ok_or_else(|| anyhow!("missing 1Password entry"))?,
-            ))
-        }
-    }
-
-    #[test]
-    fn plaintext_and_encrypted_round_trip() -> Result<()> {
-        let plaintext = Key::new(
-            "test".into(),
-            KeyType::PrivateKey {
-                value: TEST_PRIVATE_KEY.into(),
-            },
-        );
-        let plain_backend = MemoryBackend::new(true, false, &[]);
-        assert_eq!(
-            KeyVault::new(plain_backend).resolve(&plaintext)?.as_str(),
-            TEST_PRIVATE_KEY
-        );
-
-        let encrypted = Key::encrypt("test".into(), TEST_PRIVATE_KEY, "password")?;
-        let encrypted_backend = MemoryBackend::new(true, false, &["password"]);
-        assert_eq!(
-            KeyVault::new(encrypted_backend)
-                .resolve(&encrypted)?
-                .as_str(),
-            TEST_PRIVATE_KEY
-        );
-        assert_eq!(
-            Key::address_from_private_key(TEST_PRIVATE_KEY)?.to_string(),
-            TEST_ADDRESS
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn encrypted_key_rejects_wrong_password() -> Result<()> {
-        let encrypted = Key::encrypt("test".into(), TEST_PRIVATE_KEY, "correct")?;
-        let error = KeyVault::new(MemoryBackend::new(true, false, &["wrong"]))
-            .resolve(&encrypted)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("Failed to decrypt"));
-        Ok(())
-    }
-
-    #[test]
-    fn one_password_adapter_is_hermetic() -> Result<()> {
-        let backend = MemoryBackend::new(false, false, &[]);
-        backend.one_password.borrow_mut().insert(
-            ("vault".to_string(), "item/field".to_string()),
-            TEST_PRIVATE_KEY.to_string(),
-        );
-        let key = Key::new(
-            "deployer".into(),
-            KeyType::OnePassword {
-                vault: "vault".into(),
-                item: "item/field".into(),
-            },
-        );
-        assert_eq!(
-            KeyVault::new(backend).resolve(&key)?.as_str(),
-            TEST_PRIVATE_KEY
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn default_ladder_prefers_keyring_and_uses_standard_shape() -> Result<()> {
-        let backend = MemoryBackend::new(false, true, &[]);
-        let vault = KeyVault::new(backend);
-        let key = vault.store_private_key("deployer", TEST_PRIVATE_KEY, None)?;
-        assert!(matches!(
-            key.kind,
-            KeyType::Keyring { ref service, ref username }
-                if service == KEYRING_SERVICE && username == "deployer"
-        ));
-        assert_eq!(vault.resolve(&key)?.as_str(), TEST_PRIVATE_KEY);
-        Ok(())
-    }
-
-    #[test]
-    fn replacement_keyring_entry_avoids_the_standard_location() -> Result<()> {
-        let backend = MemoryBackend::new(false, true, &[]);
-        let vault = KeyVault::new(backend);
-        let key = vault.store_replacement_private_key("default", TEST_PRIVATE_KEY)?;
-        assert!(matches!(
-            key.kind,
-            KeyType::Keyring { ref service, ref username }
-                if service == KEYRING_SERVICE
-                    && username.starts_with("default-replacement-")
-                    && username != "default"
-        ));
-        assert_eq!(vault.resolve(&key)?.as_str(), TEST_PRIVATE_KEY);
-        Ok(())
-    }
-
-    #[test]
-    fn default_ladder_encrypts_with_confirmation() -> Result<()> {
-        let backend = MemoryBackend::new(true, false, &["password", "password"]);
-        let vault = KeyVault::new(backend);
-        let key = vault.store_private_key("deployer", TEST_PRIVATE_KEY, None)?;
-        assert!(matches!(key.kind, KeyType::EncryptedKey { .. }));
-        Ok(())
-    }
-
-    #[test]
-    fn noninteractive_encrypted_fallback_errors() {
-        let backend = MemoryBackend::new(false, false, &[]);
-        let error = KeyVault::new(backend)
-            .store_private_key("deployer", TEST_PRIVATE_KEY, None)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("interactive password prompt"), "{error}");
-    }
-
-    #[test]
-    fn plaintext_to_keyring_migration_is_hermetic() -> Result<()> {
-        let source = Key::new(
-            "deployer".into(),
-            KeyType::PrivateKey {
-                value: TEST_PRIVATE_KEY.into(),
-            },
-        );
-        let vault = KeyVault::new(MemoryBackend::new(false, true, &[]));
-        let migrated = vault.migrate(&source, Some(MigrationTargetArg::Keyring))?;
-        assert!(matches!(migrated.kind, KeyType::Keyring { .. }));
-        assert_eq!(vault.resolve(&migrated)?.as_str(), TEST_PRIVATE_KEY);
-        Ok(())
-    }
-
-    #[test]
-    fn plaintext_to_encrypted_migration_round_trips() -> Result<()> {
-        let source = Key::new(
-            "deployer".into(),
-            KeyType::PrivateKey {
-                value: TEST_PRIVATE_KEY.into(),
-            },
-        );
-        let vault = KeyVault::new(MemoryBackend::new(
-            true,
-            false,
-            &["password", "password", "password"],
-        ));
-        let migrated = vault.migrate(&source, Some(MigrationTargetArg::Encrypted))?;
-        assert!(matches!(migrated.kind, KeyType::EncryptedKey { .. }));
-        assert_eq!(vault.resolve(&migrated)?.as_str(), TEST_PRIVATE_KEY);
-        Ok(())
-    }
-
-    #[test]
-    fn debug_never_contains_key_material() {
-        let key = Key::new(
-            "test".into(),
-            KeyType::PrivateKey {
-                value: TEST_PRIVATE_KEY.into(),
-            },
-        );
-        assert!(!format!("{key:?}").contains(TEST_PRIVATE_KEY));
-    }
-
-    #[test]
-    fn plaintext_cached_address_must_match_private_key() {
-        let mut key = Key::new(
-            "test".into(),
-            KeyType::PrivateKey {
-                value: TEST_PRIVATE_KEY.into(),
-            },
-        );
-        key.address = Some("0x0000000000000000000000000000000000000001".into());
-        assert!(
-            key.validate_record()
-                .unwrap_err()
-                .to_string()
-                .contains("does not match")
-        );
-    }
-
-    #[test]
-    fn display_includes_cached_address_and_storage_backend() {
-        let key = Key {
-            name: "deployer".into(),
-            address: Some(TEST_ADDRESS.into()),
-            kind: KeyType::Keyring {
-                service: KEYRING_SERVICE.into(),
-                username: "deployer".into(),
-            },
-        };
-        let output = key.to_string();
-        assert!(output.contains(TEST_ADDRESS));
-        assert!(output.contains("keyring"));
-        assert!(!output.contains(TEST_PRIVATE_KEY));
-    }
-
-    #[test]
-    fn kind_names_match_serialized_tags() {
-        let keys = [
-            Key::new(
-                "plain".into(),
-                KeyType::PrivateKey {
-                    value: TEST_PRIVATE_KEY.into(),
-                },
-            ),
-            Key::encrypt("encrypted".into(), TEST_PRIVATE_KEY, "pw").unwrap(),
-            Key::new(
-                "op".into(),
-                KeyType::OnePassword {
-                    vault: "vault".into(),
-                    item: "item/field".into(),
-                },
-            ),
-            Key::new(
-                "keyring".into(),
-                KeyType::Keyring {
-                    service: "chainz".into(),
-                    username: "keyring".into(),
-                },
-            ),
-        ];
-        for key in keys {
-            let serialized = serde_json::to_value(&key.kind).unwrap();
-            assert_eq!(serialized["type"], key.kind_name());
-        }
-    }
-
-    #[test]
-    fn legacy_encrypted_record_gets_default_kdf_parameters() -> Result<()> {
-        let encrypted = Key::encrypt("test".into(), TEST_PRIVATE_KEY, "pw")?;
-        let mut json = serde_json::to_value(&encrypted)?;
-        let object = json.as_object_mut().unwrap();
-        object.remove("version");
-        object.remove("kdf_memory_kib");
-        object.remove("kdf_iterations");
-        object.remove("kdf_parallelism");
-        let restored: Key = serde_json::from_value(json)?;
-        let backend = MemoryBackend::new(true, false, &["pw"]);
-        assert_eq!(
-            KeyVault::new(backend).resolve(&restored)?.as_str(),
-            TEST_PRIVATE_KEY
-        );
-        Ok(())
-    }
-}
+mod tests;

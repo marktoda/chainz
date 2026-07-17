@@ -33,6 +33,9 @@ async fn run() -> Result<()> {
         opt::Command::Init {} => return init::handle_init().await,
         opt::Command::Doctor { fix } => {
             let mut chainz = Chainz::load_for_doctor().await?;
+            if !fix {
+                chainz.release_config_lock();
+            }
             let report = doctor::run(&mut chainz, fix).await?;
             if report.failures > 0 {
                 std::process::exit(1);
@@ -172,6 +175,7 @@ async fn run() -> Result<()> {
                 chain_name,
                 std::env::var("PS1").unwrap_or_default()
             );
+            chainz.release_config_lock();
             let status = ProcessCommand::new(&shell)
                 .envs(variables.as_map())
                 .env("CHAINZ_CHAIN", &chain_name)
@@ -200,6 +204,7 @@ async fn run() -> Result<()> {
             let variables = ChainVariables::new(&chain, &command, expose_key)?;
             let expanded_command = variables.expand(command);
 
+            chainz.release_config_lock();
             let status = ProcessCommand::new(&expanded_command[0])
                 .args(&expanded_command[1..])
                 .envs(variables.as_map())

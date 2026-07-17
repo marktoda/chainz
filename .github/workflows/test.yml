@@ -6,10 +6,17 @@ on:
 
 name: CI
 
+permissions:
+  contents: read
+
 jobs:
   test:
-    name: Test Suite
-    runs-on: ubuntu-latest
+    name: Test Suite (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout sources
         uses: actions/checkout@v4
@@ -21,7 +28,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run cargo test
-        run: cargo test --all-targets
+        run: cargo test --locked --all-targets
 
   lints:
     name: Lints
@@ -42,7 +49,7 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Run cargo clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
 
   msrv:
     name: MSRV (1.88)
@@ -60,7 +67,23 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run cargo check
-        run: cargo check --all-targets
+        run: cargo check --locked --all-targets
+
+  package:
+    name: Package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Verify publishable package
+        run: cargo package --locked
 
   audit:
     name: Security Audit
