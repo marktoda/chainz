@@ -56,7 +56,7 @@ keyring = { version = "3", features = [
     # without system dbus dev headers (and CI needs no apt packages)
     "vendored",
 ] }
-rand = "0.9"
+rand = "0.10"
 argon2 = "0.5"
 zeroize = "1"
 tempfile = "3"
