@@ -29,5 +29,5 @@ tests and package-content check.
    ```
 
 The release workflow rejects a tag that does not exactly match the package
-version. Never reuse or move a published version tag; prepare a new patch
-version instead.
+version or whose commit is not on `main`. Never reuse or move a published
+version tag; prepare a new patch version instead.

@@ -118,7 +118,7 @@ async fn initialize_with_wizard(prompt: &mut impl Prompt) -> Result<Chainz> {
             refresh: false,
         };
 
-        match args.handle_staged(&mut chainz).await {
+        match args.handle_staged(prompt, &mut chainz).await {
             Ok(chain) => println!("Added chain: {}", chain.name),
             Err(e) => println!("Failed to add chain: {}", e),
         }
@@ -148,7 +148,7 @@ mod tests {
                 .config
                 .globals
                 .get_rpc_expansion(INFURA_API_KEY_ENV_VAR),
-            Some("infura-token".to_string())
+            Some("infura-token")
         );
         Ok(())
     }

@@ -53,7 +53,7 @@ fn config_json_round_trip() -> Result<()> {
     assert_eq!(restored.chains[1].chain_id, 137);
     assert_eq!(
         restored.globals.get_rpc_expansion("INFURA_KEY"),
-        Some("abc123".to_string())
+        Some("abc123")
     );
     assert_eq!(restored.keys.len(), 2);
     assert!(restored.keys.contains_key("default"));
@@ -173,7 +173,7 @@ fn remove_chain_clears_default() -> Result<()> {
     chainz.add_chain(test_chain("ethereum", 1))?;
     chainz.config.default_chain = Some("ethereum".to_string());
 
-    chainz.remove_chain("1")?;
+    chainz.remove_chain_exact("1")?;
     assert_eq!(chainz.config.default_chain, None);
     Ok(())
 }
@@ -273,6 +273,38 @@ fn replacing_default_chain_tracks_new_canonical_name() -> Result<()> {
         chainz.config.default_chain.as_deref(),
         Some("Ethereum Mainnet")
     );
+    Ok(())
+}
+
+#[test]
+fn replace_chain_validates_and_rolls_back_as_one_operation() -> Result<()> {
+    let mut chainz = chainz_for_chains()?;
+    chainz.add_chain(test_chain("ethereum", 1))?;
+    chainz.add_chain(test_chain("optimism", 10))?;
+    chainz.set_default_chain("ethereum")?;
+
+    let mut invalid = test_chain("optimism", 1);
+    invalid.selected_rpc = "https://missing.example.com".into();
+    let error = chainz.replace_chain("ethereum", invalid).unwrap_err();
+
+    assert!(error.to_string().contains("selected RPC"));
+    assert_eq!(chainz.list_chains()[0].name, "ethereum");
+    assert_eq!(chainz.config.default_chain.as_deref(), Some("ethereum"));
+    assert!(chainz.config.validate().is_ok());
+    Ok(())
+}
+
+#[test]
+fn set_default_chain_resolves_alias_to_canonical_name() -> Result<()> {
+    let mut chainz = chainz_for_chains()?;
+    let mut ethereum = test_chain("ethereum", 1);
+    ethereum.aliases.push("Ethereum Mainnet".into());
+    chainz.add_chain(ethereum)?;
+
+    let selected = chainz.set_default_chain("ethereum mainnet")?;
+
+    assert_eq!(selected, "ethereum");
+    assert_eq!(chainz.config.default_chain.as_deref(), Some("ethereum"));
     Ok(())
 }
 

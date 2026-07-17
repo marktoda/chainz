@@ -148,7 +148,7 @@ pub(super) async fn migrate_legacy_config(new_path: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn config_exists() -> bool {
+pub(crate) fn config_exists() -> bool {
     get_config_path().map(|path| path.exists()).unwrap_or(false)
         || legacy_config_path()
             .map(|path| path.exists())

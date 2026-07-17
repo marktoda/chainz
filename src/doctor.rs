@@ -5,10 +5,15 @@
 //! RPC failover deliberately lives here rather than in `exec`, which stays
 //! network-free and fast.
 
-use crate::{chain::rpc::check_urls, config::Chainz, key::KeyType, ui};
+use crate::{
+    chain::rpc::check_urls,
+    config::Chainz,
+    key::KeyType,
+    prompt::{Prompt, SystemPrompt},
+    ui,
+};
 use anyhow::Result;
 use console::style;
-use std::io::IsTerminal;
 
 pub struct Report {
     pub failures: usize,
@@ -16,6 +21,10 @@ pub struct Report {
 }
 
 pub async fn run(chainz: &mut Chainz, fix: bool) -> Result<Report> {
+    run_with(&mut SystemPrompt, chainz, fix).await
+}
+
+async fn run_with(terminal: &mut impl Prompt, chainz: &mut Chainz, fix: bool) -> Result<Report> {
     let mut report = Report {
         failures: 0,
         warnings: 0,
@@ -23,11 +32,8 @@ pub async fn run(chainz: &mut Chainz, fix: bool) -> Result<Report> {
 
     check_config_invariants(chainz, &mut report);
     let plaintext_keys = check_keys(chainz, &mut report);
-    if fix && plaintext_keys > 0 && std::io::stdin().is_terminal() {
-        let migrate = dialoguer::Confirm::new()
-            .with_prompt("Migrate plaintext keys to safe storage now?")
-            .default(true)
-            .interact()?;
+    if fix && plaintext_keys > 0 && terminal.is_interactive() {
+        let migrate = terminal.confirm("Migrate plaintext keys to safe storage now?", true)?;
         if migrate {
             let migrated = crate::key::migrate_plaintext_keys(chainz).await?;
             report.warnings = report.warnings.saturating_sub(migrated);
@@ -161,7 +167,7 @@ async fn check_rpc_health(chainz: &Chainz, report: &mut Report) -> Vec<String> {
                 ui::success(&format!(
                     "{} ({}) {}ms",
                     name,
-                    crate::variables::redact_url(&raw_url),
+                    crate::endpoint::redact(&raw_url),
                     latency.as_millis()
                 ))
             );
@@ -169,11 +175,7 @@ async fn check_rpc_health(chainz: &Chainz, report: &mut Report) -> Vec<String> {
             report.failures += 1;
             println!(
                 "  {}",
-                ui::fail(&format!(
-                    "{} ({})",
-                    name,
-                    crate::variables::redact_url(&raw_url)
-                ))
+                ui::fail(&format!("{} ({})", name, crate::endpoint::redact(&raw_url)))
             );
             failed.push(name);
         }
@@ -185,7 +187,7 @@ async fn fix_rpcs(chainz: &mut Chainz, failed: &[String], report: &mut Report) -
     println!("{}", ui::section("Fixing RPCs"));
     let mut fixed_any = false;
     for name in failed {
-        let chain = chainz.config.get_chain(name)?;
+        let chain = chainz.config.get_chain(name)?.clone();
         // Probe all alternatives concurrently (chainlist chains can carry
         // dozens of RPCs; sequential 10s timeouts would stall for minutes),
         // then prefer the first healthy one in configured order.
@@ -208,7 +210,7 @@ async fn fix_rpcs(chainz: &mut Chainz, failed: &[String], report: &mut Report) -
                     ui::success(&format!(
                         "{}: switched to {}",
                         name,
-                        crate::variables::redact_url(candidates[i])
+                        crate::endpoint::redact(candidates[i])
                     ))
                 );
                 report.failures = report.failures.saturating_sub(1);
@@ -228,4 +230,35 @@ async fn fix_rpcs(chainz: &mut Chainz, failed: &[String], report: &mut Report) -
         chainz.save().await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        key::{Key, KeyType},
+        prompt::testing::{Answer, ScriptedPrompt},
+    };
+
+    #[tokio::test]
+    async fn scripted_prompt_drives_plaintext_migration_decision() -> Result<()> {
+        let mut chainz = Chainz::new();
+        chainz.add_key(
+            "default",
+            Key::new(
+                "default".into(),
+                KeyType::PrivateKey {
+                    value: "0000000000000000000000000000000000000000000000000000000000000001"
+                        .into(),
+                },
+            ),
+        )?;
+        let mut terminal = ScriptedPrompt::new([Answer::Confirm(false)]);
+
+        let report = run_with(&mut terminal, &mut chainz, true).await?;
+
+        assert_eq!(report.failures, 0);
+        assert_eq!(report.warnings, 1);
+        Ok(())
+    }
 }

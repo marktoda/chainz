@@ -1,9 +1,14 @@
-use crate::{chain::ChainInstance, config::Chainz, opt::VarCommand};
+use crate::{
+    chain::ChainInstance,
+    config::Chainz,
+    opt::VarCommand,
+    prompt::{Prompt, SystemPrompt},
+};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
-use std::io::{IsTerminal, Read};
+use std::io::Read;
 use zeroize::Zeroize;
 
 #[derive(Default, Serialize, Deserialize)]
@@ -183,8 +188,8 @@ impl GlobalVariables {
         self.rpc_expansions.remove(key)
     }
 
-    pub fn get_rpc_expansion(&self, key: &str) -> Option<String> {
-        self.rpc_expansions.get(key).cloned()
+    pub fn get_rpc_expansion(&self, key: &str) -> Option<&str> {
+        self.rpc_expansions.get(key).map(String::as_str)
     }
 
     pub fn list_rpc_expansions(&self) -> &HashMap<String, String> {
@@ -206,10 +211,12 @@ impl VarCommand {
                         "Warning: variable values in argv may be visible in shell history; prefer --stdin"
                     );
                     value
-                } else if std::io::stdin().is_terminal() {
-                    rpassword::prompt_password(format!("Value for {}: ", name))?
                 } else {
-                    anyhow::bail!("No value provided; use --stdin for scripts")
+                    let mut prompt = SystemPrompt;
+                    if !prompt.is_interactive() {
+                        anyhow::bail!("No value provided; use --stdin for scripts");
+                    }
+                    prompt.secret(&format!("Value for {}: ", name))?
                 };
                 chainz.config.globals.add_rpc_expansion(&name, &value);
                 chainz.save().await?;
@@ -264,55 +271,6 @@ fn read_value_from_stdin() -> Result<String> {
     Ok(normalized)
 }
 
-/// Redact credential-bearing URL shapes for display and JSON output.
-pub fn redact_url(input: &str) -> String {
-    let Ok(mut url) = reqwest::Url::parse(input) else {
-        return "[REDACTED URL]".to_string();
-    };
-    if !url.username().is_empty() {
-        let _ = url.set_username("REDACTED");
-    }
-    if url.password().is_some() {
-        let _ = url.set_password(Some("REDACTED"));
-    }
-    if url.query().is_some() {
-        let names: Vec<String> = url
-            .query_pairs()
-            .map(|(name, _)| name.into_owned())
-            .collect();
-        url.set_query(None);
-        for name in names {
-            url.query_pairs_mut().append_pair(&name, "REDACTED");
-        }
-    }
-    if url.path() != "/" && !url.path().is_empty() {
-        let readable_path = url.path().replace("%7B", "{").replace("%7D", "}");
-        let templates = variable_templates(&readable_path);
-        let redacted_path = if templates.is_empty() {
-            "/REDACTED".to_string()
-        } else {
-            format!("/REDACTED/{}", templates.join("/"))
-        };
-        url.set_path(&redacted_path);
-    }
-    if url.fragment().is_some() {
-        url.set_fragment(Some("REDACTED"));
-    }
-    // url::Url percent-encodes braces, but variable names are safe public
-    // metadata and keeping ${NAME} intact makes redacted output actionable.
-    url.to_string().replace("%7B", "{").replace("%7D", "}")
-}
-
-fn variable_templates(input: &str) -> Vec<String> {
-    let mut templates = Vec::new();
-    let mut remainder = input;
-    while let Some((start, end)) = find_next_var(remainder) {
-        templates.push(remainder[start..end].to_string());
-        remainder = &remainder[end..];
-    }
-    templates
-}
-
 fn interpolate_variables(input: &str, variables: &HashMap<String, String>) -> String {
     let mut result = input.to_string();
 
@@ -350,11 +308,7 @@ fn interpolate_variables(input: &str, variables: &HashMap<String, String>) -> St
     // Add any remaining part of the string
     final_result.push_str(&result[last_end..]);
 
-    if final_result.is_empty() {
-        result
-    } else {
-        final_result
-    }
+    final_result
 }
 
 fn find_next_var(input: &str) -> Option<(usize, usize)> {

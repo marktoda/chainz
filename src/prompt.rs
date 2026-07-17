@@ -1,13 +1,15 @@
 //! Small adapter around terminal prompting.
 //!
-//! Interactive workflows depend on this interface instead of terminal I/O
-//! directly, so their branching and cancellation behavior can be tested.
+//! Interactive command workflows depend on this interface instead of terminal
+//! I/O directly, so their branching and cancellation behavior can be tested.
 
 use crate::ui;
 use anyhow::Result;
 use dialoguer::{Confirm, FuzzySelect, Input};
+use std::io::IsTerminal;
 
 pub(crate) trait Prompt {
+    fn is_interactive(&self) -> bool;
     fn text(&mut self, message: &str, default: Option<&str>, allow_empty: bool) -> Result<String>;
     fn secret(&mut self, message: &str) -> Result<String>;
     fn confirm(&mut self, message: &str, default: bool) -> Result<bool>;
@@ -17,6 +19,10 @@ pub(crate) trait Prompt {
 pub(crate) struct SystemPrompt;
 
 impl Prompt for SystemPrompt {
+    fn is_interactive(&self) -> bool {
+        std::io::stdin().is_terminal()
+    }
+
     fn text(&mut self, message: &str, default: Option<&str>, allow_empty: bool) -> Result<String> {
         let mut input = Input::new().with_prompt(message).allow_empty(allow_empty);
         if let Some(default) = default {
@@ -100,6 +106,10 @@ pub(crate) mod testing {
     }
 
     impl Prompt for ScriptedPrompt {
+        fn is_interactive(&self) -> bool {
+            true
+        }
+
         fn text(&mut self, _: &str, _: Option<&str>, _: bool) -> Result<String> {
             match self.next()? {
                 Answer::Text(value) => Ok(value),

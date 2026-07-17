@@ -1,17 +1,29 @@
 //! Chainz: manage EVM chain configurations, RPC endpoints, and private keys.
 //!
-//! This library backs the `chainz` CLI. Before 1.0, its Rust API is an
-//! implementation interface rather than a stable SDK: minor releases may
-//! reorganize modules while the CLI and serialized config remain compatible.
+//! Its deliberately small public interface contains the binary entry point
+//! and serialized configuration records. Before 1.0, those Rust model types
+//! may move while the CLI and serialized configuration remain compatible.
 
-pub mod chain;
-pub mod chainlist;
-pub mod config;
-pub mod doctor;
-pub mod init;
-pub mod key;
-pub mod listing;
-pub mod opt;
-pub(crate) mod prompt;
-pub mod ui;
-pub mod variables;
+mod chain;
+mod chainlist;
+mod cli;
+mod config;
+mod doctor;
+mod endpoint;
+mod init;
+mod key;
+mod listing;
+mod opt;
+mod prompt;
+mod ui;
+mod variables;
+
+pub use cli::run_cli;
+
+/// Serialized configuration records supported by the pre-1.0 crate interface.
+pub mod model {
+    pub use crate::chain::ChainDefinition;
+    pub use crate::config::{Config, LEGACY_CONFIG_FILE};
+    pub use crate::key::{Key, KeyType};
+    pub use crate::variables::GlobalVariables;
+}

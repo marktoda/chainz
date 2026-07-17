@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 mod store;
-pub use store::config_exists;
+pub(crate) use store::config_exists;
 use store::{
     ConfigLock, ensure_private_dir, get_config_path, migrate_legacy_config, restrict_permissions,
     write_atomically,
@@ -17,7 +17,7 @@ use store::{
 /// Pre-0.3 config location, relative to $HOME. Migrated on first load.
 pub const LEGACY_CONFIG_FILE: &str = ".chainz.json";
 /// Config location relative to $HOME (when XDG_CONFIG_HOME is unset).
-pub const DEFAULT_CONFIG_RELATIVE: &str = ".config/chainz/config.json";
+const DEFAULT_CONFIG_RELATIVE: &str = ".config/chainz/config.json";
 
 #[derive(Default, Debug, Serialize, Deserialize)]
 pub struct Config {
@@ -44,9 +44,8 @@ impl Chainz {
     }
 
     pub async fn load() -> Result<Self> {
-        // Start fresh when no config exists yet; Config::load propagates
-        // errors for a config that exists but can't be read/parsed —
-        // silently defaulting would wipe the real config on the next save.
+        // Start fresh only when no config exists. Read and parse failures are
+        // propagated so the next save can never wipe a broken real config.
         let config_lock = ConfigLock::acquire().await?;
         let config = Config::load_locked(true).await?.unwrap_or_default();
         Ok(Self {
@@ -67,14 +66,18 @@ impl Chainz {
     }
 
     pub fn get_chain(&self, name_or_id: &str) -> Result<ChainInstance> {
-        let definition = self.config.get_chain(name_or_id)?;
+        let definition = self.config.get_chain(name_or_id)?.clone();
         let rpc_url = self.config.globals.expand_rpc_url(&definition.selected_rpc);
         let key = definition
             .key_name
             .as_deref()
             .and_then(|name| self.config.keys.get(name))
             .cloned();
-        Ok(ChainInstance::new(definition, rpc_url, key))
+        Ok(ChainInstance {
+            definition,
+            rpc_url,
+            key,
+        })
     }
 
     // Key management methods
@@ -190,21 +193,32 @@ impl Chainz {
             }
         }
 
+        self.commit_chain(replacement, chain)
+    }
+
+    pub fn replace_chain(&mut self, name_or_id: &str, chain: ChainDefinition) -> Result<()> {
+        let index = self.config.find_chain_index(name_or_id)?;
+        self.commit_chain(Some(index), chain)
+    }
+
+    /// Apply a chain mutation transactionally: canonical-default changes and
+    /// semantic validation either commit together or are both rolled back.
+    fn commit_chain(&mut self, replacement: Option<usize>, chain: ChainDefinition) -> Result<()> {
         let previous_default = self.config.default_chain.clone();
-        let previous_chain = replacement.map(|pos| self.config.chains[pos].clone());
-        if let Some(pos) = replacement {
-            let previous_name = self.config.chains[pos].name.clone();
-            if self.config.default_chain.as_deref() == Some(previous_name.as_str()) {
+        let previous_chain = replacement.map(|index| self.config.chains[index].clone());
+        if let Some(index) = replacement {
+            if self.config.default_chain.as_deref() == Some(self.config.chains[index].name.as_str())
+            {
                 self.config.default_chain = Some(chain.name.clone());
             }
-            self.config.chains[pos] = chain;
+            self.config.chains[index] = chain;
         } else {
             self.config.chains.push(chain);
         }
         if let Err(error) = self.config.validate() {
             self.config.default_chain = previous_default;
             match (replacement, previous_chain) {
-                (Some(pos), Some(previous)) => self.config.chains[pos] = previous,
+                (Some(index), Some(previous)) => self.config.chains[index] = previous,
                 (None, None) => {
                     self.config.chains.pop();
                 }
@@ -215,10 +229,12 @@ impl Chainz {
         Ok(())
     }
 
-    pub fn replace_chain(&mut self, name_or_id: &str, chain: ChainDefinition) -> Result<()> {
-        let index = self.config.find_chain_index(name_or_id)?;
-        self.config.chains[index] = chain;
-        Ok(())
+    /// Resolve and select a default chain while preserving the canonical
+    /// primary name in the persisted config.
+    pub fn set_default_chain(&mut self, name_or_id: &str) -> Result<String> {
+        let name = self.config.get_chain(name_or_id)?.name.clone();
+        self.config.default_chain = Some(name.clone());
+        Ok(name)
     }
 
     /// Whether a chain would collide with `name` (by name or alias).
@@ -228,11 +244,6 @@ impl Chainz {
 
     pub fn list_chains(&self) -> &[ChainDefinition] {
         &self.config.chains
-    }
-
-    pub fn remove_chain(&mut self, name_or_id: &str) -> Result<ChainDefinition> {
-        let pos = self.config.find_chain_index(name_or_id)?;
-        self.remove_chain_at(pos)
     }
 
     /// Destructive commands deliberately require an exact primary name or ID.
@@ -260,7 +271,8 @@ impl Chainz {
         if self._config_lock.is_some() {
             self.config.write_locked().await
         } else {
-            self.config.write().await
+            let _config_lock = ConfigLock::acquire().await?;
+            self.config.write_locked().await
         }
     }
 
@@ -275,11 +287,6 @@ impl Config {
     /// Load the config, returning `Ok(None)` when no config file exists yet.
     /// Any other failure (unreadable file, parse error) is propagated so a
     /// broken config is never mistaken for a missing one.
-    pub async fn load() -> Result<Option<Self>> {
-        let _config_lock = ConfigLock::acquire().await?;
-        Self::load_locked(true).await
-    }
-
     async fn load_locked(validate: bool) -> Result<Option<Self>> {
         let path = get_config_path().ok_or(anyhow!("Unable to find config path"))?;
         migrate_legacy_config(&path).await?;
@@ -307,9 +314,9 @@ impl Config {
         Ok(Some(config))
     }
 
-    pub fn get_chain(&self, name_or_id: &str) -> Result<ChainDefinition> {
+    pub(crate) fn get_chain(&self, name_or_id: &str) -> Result<&ChainDefinition> {
         self.find_chain_index(name_or_id)
-            .map(|i| self.chains[i].clone())
+            .map(|index| &self.chains[index])
     }
 
     /// Resolve a chain reference: exact chain ID, then exact name/alias
@@ -362,11 +369,6 @@ impl Config {
             })
     }
 
-    pub async fn write(&self) -> Result<()> {
-        let _config_lock = ConfigLock::acquire().await?;
-        self.write_locked().await
-    }
-
     async fn write_locked(&self) -> Result<()> {
         self.validate()
             .context("Refusing to write invalid config")?;
@@ -381,7 +383,7 @@ impl Config {
         Ok(())
     }
 
-    pub fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         self.globals.validate()?;
 
         for (map_name, key) in &self.keys {
