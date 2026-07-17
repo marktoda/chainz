@@ -69,7 +69,7 @@ fn check_keys(chainz: &Chainz, report: &mut Report) {
                 ))
             );
         } else {
-            println!("  {}", ui::success(&format!("{}", key)));
+            println!("  {}", ui::success(&key.to_string()));
         }
     }
 }

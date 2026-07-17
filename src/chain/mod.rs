@@ -121,41 +121,6 @@ impl Display for ChainDefinition {
     }
 }
 
-impl Display for ChainInstance {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(
-            f,
-            "{}: {}",
-            style("Chain").cyan().bold(),
-            ui::emph(&self.definition.name)
-        )?;
-        writeln!(
-            f,
-            "{}─ {}: {}",
-            style("├").dim(),
-            style("ID").cyan(),
-            ui::emph(&self.definition.chain_id.to_string())
-        )?;
-        writeln!(
-            f,
-            "{}─ {}: {}",
-            style("├").dim(),
-            style("RPC").cyan(),
-            style(&self.rpc_url).green()
-        )?;
-        write!(
-            f,
-            "{}─ {}: {}",
-            style("└").dim(),
-            style("Wallet").cyan(),
-            self.key
-                .address()
-                .map(|addr| style(addr.to_string()).green().to_string())
-                .unwrap_or_else(|_| style("None").red().to_string())
-        )
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

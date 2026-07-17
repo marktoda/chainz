@@ -1,6 +1,6 @@
 //! The single output vocabulary for chainz. Every user-facing styled line
 //! goes through these helpers so glyphs and palette stay coherent.
-//! `console` styles only when stderr/stdout is a TTY and honors NO_COLOR.
+//! `console` styles only when stdout is detected as a TTY, and honors NO_COLOR.
 
 use console::style;
 

@@ -161,8 +161,10 @@ Override the key for a single command:
 
 `chainz shell [chain]` opens your `$SHELL` with the chain's environment
 (`ETH_RPC_URL`, `CHAIN_ID`, `CHAIN_NAME`, `VERIFIER_*`, `CHAINZ_CHAIN`) —
-private keys are never injected. Bash prompts get a `(⛓ ethereum)` prefix
-automatically; for zsh/starship, add e.g.:
+private keys are never injected. Shells that honor an inherited `PS1` get
+a `(⛓ ethereum)` prefix, but interactive shells often reset `PS1` from rc
+files, so this isn't reliable everywhere. For a prompt that always works
+(zsh, starship, or a customized bash), key off `CHAINZ_CHAIN` instead, e.g.:
 
 ```toml
 # starship.toml

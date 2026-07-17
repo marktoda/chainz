@@ -10,7 +10,7 @@ use crate::{
     opt::{AddArgs, UpdateArgs},
     variables::GlobalVariables,
 };
-use anyhow::Result;
+use anyhow::{Context, Result};
 use console::style;
 use dialoguer::{FuzzySelect, Input};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
@@ -77,7 +77,9 @@ pub async fn select_rpc(
         .iter()
         .map(|url| {
             let bar = multi.add(ProgressBar::new_spinner());
-            bar.set_style(ProgressStyle::with_template("{spinner} {msg}").unwrap());
+            bar.set_style(
+                ProgressStyle::with_template("{spinner} {msg}").expect("static template"),
+            );
             bar.enable_steady_tick(std::time::Duration::from_millis(120));
             bar.set_message(url.clone());
             bar
@@ -106,10 +108,15 @@ pub async fn select_rpc(
 
     // Healthy-first, fastest-first picker over RAW urls
     let order = rank_by_health(&results);
+    // Index results by url position once, rather than a linear scan per item.
+    let mut by_index: Vec<Option<&_>> = vec![None; urls.len()];
+    for r in &results {
+        by_index[r.index] = Some(r);
+    }
     let mut items: Vec<String> = order
         .iter()
         .map(|&i| {
-            let r = results.iter().find(|r| r.index == i).unwrap();
+            let r = by_index[i].expect("every url index has a probe result");
             if r.healthy {
                 format!("{} ({}ms)", urls[i], r.latency.as_millis())
             } else {
@@ -309,7 +316,9 @@ impl AddArgs {
         })?;
 
         // Test the RPC
-        check_url(&chainz.config.globals.expand_rpc_url(&rpc_url), chain_id).await?;
+        check_url(&chainz.config.globals.expand_rpc_url(&rpc_url), chain_id)
+            .await
+            .with_context(|| format!("RPC check failed for {}", rpc_url))?;
 
         let chain_def = ChainDefinition {
             name: name.clone(),
@@ -379,7 +388,8 @@ impl AddArgs {
                 &chainz.config.globals.expand_rpc_url(rpc_url),
                 selected_chain.chain_id,
             )
-            .await?;
+            .await
+            .with_context(|| format!("RPC check failed for {}", rpc_url))?;
             println!("{}", ui::success("RPC working"));
             rpc_url.clone()
         } else {
@@ -463,11 +473,7 @@ fn suggest_short_name(name: &str) -> String {
 }
 
 // Helper function to handle fuzzy select with ESC cancellation
-fn fuzzy_select<T: ToString + std::fmt::Display>(
-    prompt: &str,
-    items: &[T],
-    default: usize,
-) -> Result<usize> {
+fn fuzzy_select<T: std::fmt::Display>(prompt: &str, items: &[T], default: usize) -> Result<usize> {
     match FuzzySelect::new()
         .with_prompt(format!("{} (ESC to exit)", prompt))
         .items(items)

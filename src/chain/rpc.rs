@@ -8,16 +8,19 @@ pub const CHECK_DEADLINE: Duration = Duration::from_secs(4);
 /// Test whether an (already-expanded) RPC URL serves the expected chain id.
 /// No sweep deadline: explicit single-URL validation keeps the provider's
 /// own 10s connect timeout. The single definition of "is this RPC healthy".
+///
+/// Error messages deliberately omit the URL (it may embed API keys); callers
+/// that report failures to the user should attach the *raw* (unexpanded)
+/// URL as context themselves.
 pub async fn check_url(rpc_url: &str, expected_chain_id: u64) -> Result<()> {
     let provider = create_provider(rpc_url).await?;
     let chain_id = provider
         .get_chain_id()
         .await
-        .map_err(|e| anyhow::anyhow!("Failed to connect to {}: {}", rpc_url, e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to connect: {}", e))?;
     if chain_id != expected_chain_id {
         anyhow::bail!(
-            "Chain ID mismatch on {}: expected {}, got {}",
-            rpc_url,
+            "Chain ID mismatch: expected {}, got {}",
             expected_chain_id,
             chain_id
         );
@@ -94,7 +97,7 @@ async fn create_provider(rpc_url: &str) -> Result<DynProvider> {
         ProviderBuilder::new().connect(rpc_url),
     )
     .await
-    .map_err(|_| anyhow::anyhow!("RPC connection timed out: {}", rpc_url))??;
+    .map_err(|_| anyhow::anyhow!("RPC connection timed out"))??;
     Ok(provider.erased())
 }
 

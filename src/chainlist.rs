@@ -64,7 +64,7 @@ async fn fetch_from_network() -> Result<String> {
                 ProgressStyle::with_template(
                     "downloading chainlist {bytes}/{total_bytes} [{bar:30}] {eta}",
                 )
-                .unwrap(),
+                .expect("static template"),
             );
             bar
         }
