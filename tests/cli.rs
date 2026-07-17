@@ -681,6 +681,11 @@ fn use_unknown_chain_fails() {
         .stderr(predicate::str::contains("not found"));
 }
 
+// On Windows, `dirs::home_dir` intentionally resolves FOLDERID_Profile rather
+// than the `HOME` environment variable, so a subprocess test cannot redirect
+// the legacy path without touching the runner's real profile. The underlying
+// move is covered cross-platform in `config::store::tests`.
+#[cfg(unix)]
 #[test]
 fn legacy_config_location_is_migrated() {
     let home = TempDir::new().unwrap();
