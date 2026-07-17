@@ -215,9 +215,14 @@ pub enum VarCommand {
         name: String,
     },
     /// List all variables
-    List,
+    List {
+        /// Output names and values as JSON (explicitly reveals values)
+        #[arg(long)]
+        json: bool,
+    },
     /// Remove a variable
-    Rm {
+    #[command(alias = "rm")]
+    Remove {
         /// Variable name
         name: String,
     },

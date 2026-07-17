@@ -89,7 +89,7 @@ impl Display for ChainDefinition {
             "{}─ {}: {}",
             style("├").dim(),
             style("Active RPC").cyan(),
-            style(&self.selected_rpc).green()
+            style(ui::redact_url(&self.selected_rpc)).green()
         )?;
         writeln!(
             f,
@@ -98,7 +98,7 @@ impl Display for ChainDefinition {
             style("Verification URL").cyan(),
             self.verification_url
                 .as_deref()
-                .map(|k| style(k).green().to_string())
+                .map(|url| style(ui::redact_url(url)).green().to_string())
                 .unwrap_or_else(|| style("None").red().to_string())
         )?;
         writeln!(
@@ -108,7 +108,7 @@ impl Display for ChainDefinition {
             style("Verification Key").cyan(),
             self.verification_api_key
                 .as_deref()
-                .map(|k| style(k).green().to_string())
+                .map(|_| style("Configured").green().to_string())
                 .unwrap_or_else(|| style("None").red().to_string())
         )?;
         write!(
@@ -149,8 +149,8 @@ mod tests {
         assert!(output.contains("ethereum"), "should contain chain name");
         assert!(output.contains("1"), "should contain chain_id");
         assert!(
-            output.contains("https://eth.llamarpc.com"),
-            "should contain rpc url"
+            output.contains("llamarpc.com"),
+            "should identify the RPC host"
         );
         assert!(output.contains("default"), "should contain key name");
     }
@@ -161,12 +161,13 @@ mod tests {
         let output = format!("{}", def);
 
         assert!(
-            output.contains("https://api.etherscan.io"),
-            "should contain verification url"
+            output.contains("etherscan.io"),
+            "should identify verifier host"
         );
+        assert!(output.contains("Configured"), "should show key presence");
         assert!(
-            output.contains("abc123"),
-            "should contain verification api key"
+            !output.contains("abc123"),
+            "must not expose verification key"
         );
     }
 

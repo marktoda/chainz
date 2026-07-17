@@ -124,25 +124,31 @@ impl VarCommand {
             VarCommand::Set { name, value } => {
                 chainz.config.globals.add_rpc_expansion(&name, &value);
                 chainz.save().await?;
-                println!("Set variable {} = {}", name, value);
+                println!("Set variable '{}'", name);
             }
             VarCommand::Get { name } => match chainz.config.globals.get_rpc_expansion(&name) {
                 Some(value) => println!("{} = {}", name, value),
-                None => println!("Variable '{}' not found", name),
+                None => anyhow::bail!("Variable '{}' not found", name),
             },
-            VarCommand::List => {
+            VarCommand::List { json } => {
                 let vars = chainz.config.globals.list_rpc_expansions();
-                if vars.is_empty() {
+                if json {
+                    println!("{}", serde_json::to_string_pretty(vars)?);
+                } else if vars.is_empty() {
                     println!("No variables set");
                 } else {
                     println!("Variables:");
-                    for (name, value) in vars {
-                        println!("  {} = {}", name, value);
+                    let mut names: Vec<_> = vars.keys().collect();
+                    names.sort();
+                    for name in names {
+                        println!("  {}", name);
                     }
                 }
             }
-            VarCommand::Rm { name } => {
-                chainz.config.globals.remove_rpc_expansion(&name);
+            VarCommand::Remove { name } => {
+                if chainz.config.globals.remove_rpc_expansion(&name).is_none() {
+                    anyhow::bail!("Variable '{}' not found", name);
+                }
                 chainz.save().await?;
                 println!("Removed variable '{}'", name);
             }

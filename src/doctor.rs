@@ -129,11 +129,19 @@ async fn check_rpc_health(chainz: &Chainz, report: &mut Report) -> Vec<String> {
         if is_healthy {
             println!(
                 "  {}",
-                ui::success(&format!("{} ({}) {}ms", name, raw_url, latency.as_millis()))
+                ui::success(&format!(
+                    "{} ({}) {}ms",
+                    name,
+                    ui::redact_url(&raw_url),
+                    latency.as_millis()
+                ))
             );
         } else {
             report.failures += 1;
-            println!("  {}", ui::fail(&format!("{} ({})", name, raw_url)));
+            println!(
+                "  {}",
+                ui::fail(&format!("{} ({})", name, ui::redact_url(&raw_url)))
+            );
             failed.push(name);
         }
     }
@@ -164,7 +172,11 @@ async fn fix_rpcs(chainz: &mut Chainz, failed: &[String], report: &mut Report) -
                 chainz.set_selected_rpc(name, candidates[i].clone())?;
                 println!(
                     "  {}",
-                    ui::success(&format!("{}: switched to {}", name, candidates[i]))
+                    ui::success(&format!(
+                        "{}: switched to {}",
+                        name,
+                        ui::redact_url(candidates[i])
+                    ))
                 );
                 report.failures = report.failures.saturating_sub(1);
                 fixed_any = true;

@@ -93,7 +93,9 @@ fn var_set_get_list_rm_roundtrip() {
     chainz(home.path())
         .args(["var", "set", "MY_KEY", "my_value"])
         .assert()
-        .success();
+        .success()
+        .stdout(predicate::str::contains("MY_KEY"))
+        .stdout(predicate::str::contains("my_value").not());
     chainz(home.path())
         .args(["var", "get", "MY_KEY"])
         .assert()
@@ -103,16 +105,88 @@ fn var_set_get_list_rm_roundtrip() {
         .args(["var", "list"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("MY_KEY"));
+        .stdout(predicate::str::contains("MY_KEY"))
+        .stdout(predicate::str::contains("my_value").not());
     chainz(home.path())
-        .args(["var", "rm", "MY_KEY"])
+        .args(["var", "remove", "MY_KEY"])
         .assert()
         .success();
     chainz(home.path())
         .args(["var", "get", "MY_KEY"])
         .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+
+    chainz(home.path())
+        .args(["var", "rm", "MY_KEY"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn var_list_json_is_explicit_machine_readable_output() {
+    let home = TempDir::new().unwrap();
+    chainz(home.path())
+        .args(["var", "set", "API_TOKEN", "secret-value"])
+        .assert()
+        .success();
+
+    let output = chainz(home.path())
+        .args(["var", "list", "--json"])
+        .assert()
         .success()
-        .stdout(predicate::str::contains("not found"));
+        .get_output()
+        .stdout
+        .clone();
+    let parsed: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(parsed["API_TOKEN"], "secret-value");
+}
+
+#[test]
+fn human_chain_outputs_redact_credentials() {
+    let home = TempDir::new().unwrap();
+    let config = Config {
+        chains: vec![ChainDefinition {
+            name: "ethereum".to_string(),
+            aliases: vec![],
+            chain_id: 1,
+            rpc_urls: vec!["https://eth-mainnet.g.alchemy.com/v2/super-secret".to_string()],
+            selected_rpc: "https://eth-mainnet.g.alchemy.com/v2/super-secret".to_string(),
+            verification_api_key: Some("verification-secret".to_string()),
+            verification_url: Some(
+                "https://api.etherscan.io/api?apikey=verification-secret".to_string(),
+            ),
+            key_name: "default".to_string(),
+        }],
+        keys: std::collections::HashMap::from([(
+            "default".to_string(),
+            Key::new(
+                "default".to_string(),
+                KeyType::PrivateKey {
+                    value: TEST_KEY.to_string(),
+                },
+            ),
+        )]),
+        ..Default::default()
+    };
+    write_raw_config(home.path(), &serde_json::to_string_pretty(&config).unwrap());
+
+    chainz(home.path())
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("alchemy.com"))
+        .stdout(predicate::str::contains("Configured"))
+        .stdout(predicate::str::contains("super-secret").not())
+        .stdout(predicate::str::contains("verification-secret").not());
+
+    chainz(home.path())
+        .arg("doctor")
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("alchemy.com"))
+        .stdout(predicate::str::contains("super-secret").not());
 }
 
 #[test]
