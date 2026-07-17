@@ -95,7 +95,7 @@ fn var_set_get_list_rm_roundtrip() {
         .assert()
         .success();
     chainz(home.path())
-        .args(["var", "get", "MY_KEY"])
+        .args(["var", "get", "MY_KEY", "--show"])
         .assert()
         .success()
         .stdout(predicate::str::contains("MY_KEY = my_value"));
@@ -116,10 +116,26 @@ fn var_set_get_list_rm_roundtrip() {
 }
 
 #[test]
-fn key_add_is_noninteractive_with_key_flag() {
+fn var_stdin_preserves_intentional_whitespace() {
     let home = TempDir::new().unwrap();
     chainz(home.path())
-        .args(["key", "add", "default", "--key", TEST_KEY])
+        .args(["var", "set", "SPACED", "--stdin"])
+        .write_stdin("  intentional value  \n")
+        .assert()
+        .success();
+    chainz(home.path())
+        .args(["var", "get", "SPACED", "--show"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("SPACED =   intentional value  \n"));
+}
+
+#[test]
+fn key_add_is_noninteractive_with_stdin_and_explicit_plaintext() {
+    let home = TempDir::new().unwrap();
+    chainz(home.path())
+        .args(["key", "add", "default", "--stdin", "--type", "private-key"])
+        .write_stdin(TEST_KEY)
         .assert()
         .success()
         .stdout(predicate::str::contains("Added key 'default'"));
@@ -128,6 +144,18 @@ fn key_add_is_noninteractive_with_key_flag() {
         .assert()
         .success()
         .stdout(predicate::str::contains(TEST_ADDRESS));
+}
+
+#[test]
+fn bare_key_add_never_silently_falls_back_to_plaintext() {
+    let home = TempDir::new().unwrap();
+    chainz(home.path())
+        .env("CHAINZ_DISABLE_KEYRING", "1")
+        .args(["key", "add", "default", "--key", TEST_KEY])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("interactive password prompt"));
+    assert!(!config_path(home.path()).exists());
 }
 
 #[test]
@@ -144,7 +172,15 @@ fn key_add_rejects_invalid_key() {
 fn key_remove_works() {
     let home = TempDir::new().unwrap();
     chainz(home.path())
-        .args(["key", "add", "temp", "--key", TEST_KEY])
+        .args([
+            "key",
+            "add",
+            "temp",
+            "--key",
+            TEST_KEY,
+            "--type",
+            "private-key",
+        ])
         .assert()
         .success();
     chainz(home.path())
@@ -339,7 +375,15 @@ fn exec_key_override_flag() {
     let home = TempDir::new().unwrap();
     seed_config(home.path(), &[("testchain", 31337)]);
     chainz(home.path())
-        .args(["key", "add", "alt", "--key", TEST_KEY_2])
+        .args([
+            "key",
+            "add",
+            "alt",
+            "--key",
+            TEST_KEY_2,
+            "--type",
+            "private-key",
+        ])
         .assert()
         .success();
 
@@ -360,11 +404,27 @@ fn exec_key_override_flag() {
 fn key_add_duplicate_name_fails() {
     let home = TempDir::new().unwrap();
     chainz(home.path())
-        .args(["key", "add", "dup", "--key", TEST_KEY])
+        .args([
+            "key",
+            "add",
+            "dup",
+            "--key",
+            TEST_KEY,
+            "--type",
+            "private-key",
+        ])
         .assert()
         .success();
     chainz(home.path())
-        .args(["key", "add", "dup", "--key", TEST_KEY_2])
+        .args([
+            "key",
+            "add",
+            "dup",
+            "--key",
+            TEST_KEY_2,
+            "--type",
+            "private-key",
+        ])
         .assert()
         .failure()
         .stderr(predicate::str::contains("already exists"));
@@ -388,7 +448,7 @@ fn legacy_config_format_still_loads() {
         }],
         "variables": { "MY_VAR": "abc" },
         "keys": {
-            "default": { "name": "default", "type": "PrivateKey", "value": "REDACTED" }
+            "default": { "name": "default", "type": "PrivateKey", "value": "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" }
         }
     }"#;
     write_raw_config(home.path(), legacy);
@@ -399,7 +459,7 @@ fn legacy_config_format_still_loads() {
         .success()
         .stdout(predicate::str::contains("ethereum"));
     chainz(home.path())
-        .args(["var", "get", "MY_VAR"])
+        .args(["var", "get", "MY_VAR", "--show"])
         .assert()
         .success()
         .stdout(predicate::str::contains("MY_VAR = abc"));
@@ -659,4 +719,154 @@ fn add_noninteractive_requires_existing_key() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("Key 'default' not found"));
+}
+
+#[test]
+fn wallet_expansion_does_not_expose_private_key() {
+    let home = TempDir::new().unwrap();
+    seed_config(home.path(), &[("testchain", 31337)]);
+    chainz(home.path())
+        .args([
+            "exec",
+            "testchain",
+            "--",
+            "sh",
+            "-c",
+            "echo wallet=$WALLET_ADDRESS key=${RAW_PRIVATE_KEY:-unset}",
+            "@wallet",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!(
+            "wallet={} key=unset",
+            TEST_ADDRESS
+        )));
+}
+
+#[test]
+fn expose_key_uses_environment_without_argv_warning() {
+    let home = TempDir::new().unwrap();
+    seed_config(home.path(), &[("testchain", 31337)]);
+    chainz(home.path())
+        .args([
+            "exec",
+            "testchain",
+            "--expose-key",
+            "--",
+            "sh",
+            "-c",
+            "echo key=$RAW_PRIVATE_KEY",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(TEST_KEY))
+        .stderr(predicate::str::contains("process arguments").not());
+}
+
+#[test]
+fn key_token_warns_about_process_argument_exposure() {
+    let home = TempDir::new().unwrap();
+    seed_config(home.path(), &[("testchain", 31337)]);
+    chainz(home.path())
+        .args(["exec", "testchain", "--", "echo", "@key"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("process arguments"));
+}
+
+#[test]
+fn chain_output_redacts_credentials_unless_explicitly_requested() {
+    let home = TempDir::new().unwrap();
+    seed_config(home.path(), &[("testchain", 31337)]);
+    let path = config_path(home.path());
+    let mut config: Config = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    let secret_url = "https://user:password@rpc.example.com/v2/rpc-secret?token=query-secret";
+    config.chains[0].selected_rpc = secret_url.to_string();
+    config.chains[0].rpc_urls = vec![secret_url.to_string()];
+    config.chains[0].verification_api_key = Some("verifier-secret".to_string());
+    write_raw_config(home.path(), &serde_json::to_string_pretty(&config).unwrap());
+
+    chainz(home.path())
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("rpc-secret").not())
+        .stdout(predicate::str::contains("query-secret").not())
+        .stdout(predicate::str::contains("verifier-secret").not())
+        .stdout(predicate::str::contains("Configured"));
+    chainz(home.path())
+        .args(["list", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("rpc-secret").not())
+        .stdout(predicate::str::contains("query-secret").not());
+    chainz(home.path())
+        .args(["list", "--show-secrets"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("rpc-secret"))
+        .stdout(predicate::str::contains("verifier-secret"));
+}
+
+#[test]
+fn rpc_failure_error_chain_never_leaks_the_url() {
+    let home = TempDir::new().unwrap();
+    seed_config(home.path(), &[]);
+    chainz(home.path())
+        .args([
+            "add",
+            "--name",
+            "leak-test",
+            "--chain-id",
+            "1",
+            "--rpc-url",
+            "http://user:password@127.0.0.1:1/literal-secret",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("REDACTED"))
+        .stderr(predicate::str::contains("password").not())
+        .stderr(predicate::str::contains("literal-secret").not());
+}
+
+#[test]
+fn referenced_key_removal_is_blocked() {
+    let home = TempDir::new().unwrap();
+    seed_config(home.path(), &[("testchain", 31337)]);
+    chainz(home.path())
+        .args(["key", "remove", "default"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("still used"));
+}
+
+#[test]
+fn doctor_can_report_semantically_invalid_config() {
+    let home = TempDir::new().unwrap();
+    seed_config(home.path(), &[("testchain", 31337)]);
+    let path = config_path(home.path());
+    let mut config: Config = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    config.keys.clear();
+    write_raw_config(home.path(), &serde_json::to_string_pretty(&config).unwrap());
+
+    chainz(home.path())
+        .arg("doctor")
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("Configuration"))
+        .stdout(predicate::str::contains("missing key"));
+}
+
+#[test]
+fn migrate_all_failure_never_prints_key_material() {
+    let home = TempDir::new().unwrap();
+    seed_config(home.path(), &[]);
+    chainz(home.path())
+        .env("CHAINZ_DISABLE_KEYRING", "1")
+        .args(["key", "migrate", "--all"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(TEST_KEY).not())
+        .stderr(predicate::str::contains(TEST_KEY).not())
+        .stderr(predicate::str::contains("Failed to migrate"));
 }

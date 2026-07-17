@@ -5,11 +5,11 @@ use crate::key::Key;
 use crate::ui;
 use console::style;
 use serde::{Deserialize, Serialize};
-use std::fmt::Display;
+use std::fmt::{self, Display};
 
 pub const DEFAULT_KEY_NAME: &str = "default";
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ChainDefinition {
     pub name: String,
     /// Alternate lookup names (e.g. the full chainlist name when the user
@@ -22,6 +22,38 @@ pub struct ChainDefinition {
     pub verification_api_key: Option<String>,
     pub verification_url: Option<String>,
     pub key_name: String,
+}
+
+impl fmt::Debug for ChainDefinition {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let rpc_urls: Vec<_> = self
+            .rpc_urls
+            .iter()
+            .map(|url| crate::variables::redact_url(url))
+            .collect();
+        f.debug_struct("ChainDefinition")
+            .field("name", &self.name)
+            .field("aliases", &self.aliases)
+            .field("chain_id", &self.chain_id)
+            .field("rpc_urls", &rpc_urls)
+            .field(
+                "selected_rpc",
+                &crate::variables::redact_url(&self.selected_rpc),
+            )
+            .field(
+                "verification_api_key",
+                &self.verification_api_key.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field(
+                "verification_url",
+                &self
+                    .verification_url
+                    .as_ref()
+                    .map(|url| crate::variables::redact_url(url)),
+            )
+            .field("key_name", &self.key_name)
+            .finish()
+    }
 }
 
 impl ChainDefinition {
@@ -38,6 +70,27 @@ impl ChainDefinition {
         let query = query.to_lowercase();
         self.names().any(|n| n.to_lowercase().starts_with(&query))
     }
+
+    pub fn display_with_secrets(&self, show_secrets: bool) -> ChainDisplay<'_> {
+        ChainDisplay {
+            chain: self,
+            show_secrets,
+        }
+    }
+
+    /// Select an RPC while preserving the config invariant that the selected
+    /// endpoint is present in the chain's configured endpoint list.
+    pub(crate) fn select_rpc(&mut self, rpc_url: String) {
+        if !self.rpc_urls.contains(&rpc_url) {
+            self.rpc_urls.push(rpc_url.clone());
+        }
+        self.selected_rpc = rpc_url;
+    }
+}
+
+pub struct ChainDisplay<'a> {
+    chain: &'a ChainDefinition,
+    show_secrets: bool,
 }
 
 /// A chain resolved for use: RPC URL expanded and key attached.
@@ -66,15 +119,22 @@ impl ChainInstance {
 
 impl Display for ChainDefinition {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.display_with_secrets(false).fmt(f)
+    }
+}
+
+impl Display for ChainDisplay<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let chain = self.chain;
         writeln!(
             f,
             "{}: {}{}",
             style("Chain").cyan().bold(),
-            ui::emph(&self.name),
-            if self.aliases.is_empty() {
+            ui::emph(&chain.name),
+            if chain.aliases.is_empty() {
                 String::new()
             } else {
-                ui::dim(&format!(" ({})", self.aliases.join(", ")))
+                ui::dim(&format!(" ({})", chain.aliases.join(", ")))
             }
         )?;
         writeln!(
@@ -82,23 +142,37 @@ impl Display for ChainDefinition {
             "{}─ {}: {}",
             style("├").dim(),
             style("ID").cyan(),
-            ui::emph(&self.chain_id.to_string())
+            ui::emph(&chain.chain_id.to_string())
         )?;
         writeln!(
             f,
             "{}─ {}: {}",
             style("├").dim(),
             style("Active RPC").cyan(),
-            style(&self.selected_rpc).green()
+            style(if self.show_secrets {
+                chain.selected_rpc.clone()
+            } else {
+                crate::variables::redact_url(&chain.selected_rpc)
+            })
+            .green()
         )?;
         writeln!(
             f,
             "{}─ {}: {}",
             style("├").dim(),
             style("Verification URL").cyan(),
-            self.verification_url
+            chain
+                .verification_url
                 .as_deref()
-                .map(|k| style(k).green().to_string())
+                .map(|url| {
+                    style(if self.show_secrets {
+                        url.to_string()
+                    } else {
+                        crate::variables::redact_url(url)
+                    })
+                    .green()
+                    .to_string()
+                })
                 .unwrap_or_else(|| style("None").red().to_string())
         )?;
         writeln!(
@@ -106,9 +180,14 @@ impl Display for ChainDefinition {
             "{}─ {}: {}",
             style("├").dim(),
             style("Verification Key").cyan(),
-            self.verification_api_key
+            chain
+                .verification_api_key
                 .as_deref()
-                .map(|k| style(k).green().to_string())
+                .map(|key| {
+                    style(if self.show_secrets { key } else { "Configured" })
+                        .green()
+                        .to_string()
+                })
                 .unwrap_or_else(|| style("None").red().to_string())
         )?;
         write!(
@@ -116,7 +195,7 @@ impl Display for ChainDefinition {
             "{}─ {}: {}",
             style("└").dim(),
             style("Key Name").cyan(),
-            style(&self.key_name).green(),
+            style(&chain.key_name).green(),
         )
     }
 }
@@ -164,10 +243,8 @@ mod tests {
             output.contains("https://api.etherscan.io"),
             "should contain verification url"
         );
-        assert!(
-            output.contains("abc123"),
-            "should contain verification api key"
-        );
+        assert!(!output.contains("abc123"), "should redact verification key");
+        assert!(output.contains("Configured"));
     }
 
     #[test]
@@ -179,5 +256,21 @@ mod tests {
             output.contains("None"),
             "should show None when verification fields are absent"
         );
+    }
+
+    #[test]
+    fn debug_redacts_chain_credentials() {
+        let chain = make_chain_def(
+            Some("https://verify.example/api/key"),
+            Some("verification-secret"),
+        );
+        let mut chain = chain;
+        chain.selected_rpc = "https://user:password@rpc.example/v2/rpc-secret".into();
+        chain.rpc_urls = vec![chain.selected_rpc.clone()];
+
+        let output = format!("{chain:?}");
+        for secret in ["verification-secret", "password", "rpc-secret"] {
+            assert!(!output.contains(secret), "{output}");
+        }
     }
 }

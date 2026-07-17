@@ -7,7 +7,7 @@ A CLI tool for managing EVM chain configurations
 - Interactive chain discovery and configuration (backed by [chainlist](https://chainid.network), cached locally)
 - Short chain names with aliases and prefix matching (`chainz exec eth`)
 - RPC health checking (`chainz doctor`, with `--fix` failover to healthy RPCs)
-- Private key management (plaintext, encrypted, 1Password, keyring)
+- Safe-by-default private key management (OS keyring, encrypted, 1Password, explicit plaintext)
 - Multiple RPC support per chain and a configurable default chain
 - Environment variable interpolation
 - Command execution with chain-specific variable expansion
@@ -99,7 +99,7 @@ List configured chains and their status:
 Chain: ethereum
 ├─ ID: 1
 ├─ Active RPC: https://eth-mainnet.g.alchemy.com/v2/...
-├─ Verification Key: 0xabc...def
+├─ Verification Key: Configured
 └─ Key Name: default
 
 Chain: optimism
@@ -151,6 +151,19 @@ Available expansions:
 - `@chainname` — Chain name
 - `@key` — Private key
 
+`@key` is retained for compatibility but exposes the private key in child
+process arguments. Prefer env-only exposure when a tool accepts environment
+variables:
+
+```bash
+chainz exec ethereum --expose-key -- sh -c 'PRIVATE_KEY="$RAW_PRIVATE_KEY" forge script Deploy'
+```
+
+Chainz resolves a key once and injects only what was requested: using
+`@wallet` does not put `RAW_PRIVATE_KEY` in the child environment. If a shell
+expands `$RAW_PRIVATE_KEY` into a downstream command argument, that downstream
+argument can still be visible to other processes.
+
 Override the key for a single command:
 
 ```bash
@@ -174,30 +187,42 @@ format = "\\(⛓ $env_value\\) "
 
 ### Managing Keys
 
-Add and manage private keys:
+Add and manage private keys. Without `--type`, Chainz uses the OS keyring when
+available and otherwise uses password-encrypted storage. Plaintext requires an
+explicit `--type private-key`:
 
 ```bash
 > chainz key add deployer
-? Select key type
-> Private Key
-  Encrypted Key
-  One Password
-  Keyring
 Enter private key: ****
 Added key 'deployer'
 
 > chainz key list
 Stored keys:
-- default: 0x123...789
-- deployer: 0xabc...def
+- default (0x123...789, keyring)
+- deployer (0xabc...def, encrypted)
 ```
 
-For scripting, `key add` is fully non-interactive when the key is passed on
-the command line (`--key` implies `--type private-key`):
+Read key material from stdin in scripts so it does not enter shell history or
+process listings:
 
 ```bash
-> chainz key add ci-key --key 0xac09...ff80
+> printf '%s\n' "$PRIVATE_KEY" | chainz key add ci-key --stdin
 Added key 'ci-key'
+```
+
+On a headless machine without an OS keyring, the safe encrypted fallback needs
+an interactive password prompt and exits clearly instead of hanging. Scripts
+that deliberately accept plaintext storage can opt in explicitly:
+
+```bash
+printf '%s\n' "$PRIVATE_KEY" | chainz key add ci-key --stdin --type private-key
+```
+
+Migrate one key, or every plaintext key, into safe storage:
+
+```bash
+chainz key migrate default
+chainz key migrate --all --to encrypted
 ```
 
 ### Health Checks
@@ -212,7 +237,7 @@ list healthy endpoints fastest-first:
 ```bash
 > chainz doctor --fix
 Keys
-  ⚠ 'default' is stored as a plaintext private key — consider re-adding it with --type encrypted or --type keyring
+  ⚠ 'default' is stored as a plaintext private key — migrate with `chainz key migrate default`
 
 Key references
   ✓ all chains reference existing keys
@@ -227,7 +252,9 @@ Fixing RPCs
 
 ### Scripting
 
-`list` and `key list` support `--json` (key material is never included):
+`list` and `key list` support `--json`. Credential-bearing URLs are redacted
+and key material is never included by default. `list --show-secrets` is the
+explicit escape hatch for trusted interactive use:
 
 ```bash
 > chainz list --json | jq '.[].name'
@@ -236,16 +263,20 @@ Fixing RPCs
 
 ### Custom Variables
 
-Set and use custom variables for RPC URL interpolation:
+Set and use custom variables for RPC URL interpolation. Stdin avoids placing
+values in shell history; values are redacted from ordinary output:
 
 ```bash
-> chainz var set ALCHEMY_KEY abc123
-> chainz var set ETHERSCAN_KEY def456
+> printf '%s\n' "$ALCHEMY_KEY" | chainz var set ALCHEMY_KEY --stdin
+> printf '%s\n' "$ETHERSCAN_KEY" | chainz var set ETHERSCAN_KEY --stdin
 
 > chainz var list
 Variables:
-  ALCHEMY_KEY = abc123
-  ETHERSCAN_KEY = def456
+  ALCHEMY_KEY = [REDACTED]
+  ETHERSCAN_KEY = [REDACTED]
+
+> chainz var get ALCHEMY_KEY --show
+ALCHEMY_KEY = abc123
 ```
 
 ## Configuration
@@ -278,10 +309,15 @@ the new location automatically on first run.
   },
   "keys": {
     "default": {
+      "address": "0x0123456789abcdef0123456789abcdef01234567",
       "type": "EncryptedKey",
       "value": "<base64>",
       "nonce": "<base64>",
-      "salt": "<base64>"
+      "salt": "<base64>",
+      "version": 1,
+      "kdf_memory_kib": 19456,
+      "kdf_iterations": 2,
+      "kdf_parallelism": 1
     }
   },
   "default_chain": "ethereum"

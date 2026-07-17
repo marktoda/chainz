@@ -17,13 +17,21 @@ async fn main() -> Result<()> {
             return Ok(());
         }
         opt::Command::Init {} => return init::handle_init().await,
+        opt::Command::Doctor { fix } => {
+            let mut chainz = Chainz::load_for_doctor().await?;
+            let report = doctor::run(&mut chainz, fix).await?;
+            if report.failures > 0 {
+                std::process::exit(1);
+            }
+            return Ok(());
+        }
         _ => {}
     }
 
     let mut chainz = Chainz::load().await?;
 
     match opts.cmd {
-        opt::Command::Init {} | opt::Command::Completions { .. } => {
+        opt::Command::Init {} | opt::Command::Completions { .. } | opt::Command::Doctor { .. } => {
             unreachable!("handled above")
         }
         opt::Command::Key { cmd } => {
@@ -56,7 +64,7 @@ async fn main() -> Result<()> {
             chainz.save().await?;
             println!("Default chain set to '{}'", definition.name);
         }
-        opt::Command::List { json } => {
+        opt::Command::List { json, show_secrets } => {
             let chains = chainz.list_chains();
             if json {
                 let entries: Vec<_> = chains
@@ -65,10 +73,35 @@ async fn main() -> Result<()> {
                         name: &c.name,
                         aliases: &c.aliases,
                         chain_id: c.chain_id,
-                        selected_rpc: &c.selected_rpc,
-                        rpc_urls: &c.rpc_urls,
+                        selected_rpc: if show_secrets {
+                            c.selected_rpc.clone()
+                        } else {
+                            chainz::variables::redact_url(&c.selected_rpc)
+                        },
+                        rpc_urls: c
+                            .rpc_urls
+                            .iter()
+                            .map(|url| {
+                                if show_secrets {
+                                    url.clone()
+                                } else {
+                                    chainz::variables::redact_url(url)
+                                }
+                            })
+                            .collect(),
                         key_name: &c.key_name,
-                        verification_url: c.verification_url.as_deref(),
+                        verification_url: c.verification_url.as_ref().map(|url| {
+                            if show_secrets {
+                                url.clone()
+                            } else {
+                                chainz::variables::redact_url(url)
+                            }
+                        }),
+                        verification_api_key: if show_secrets {
+                            c.verification_api_key.as_deref()
+                        } else {
+                            None
+                        },
                         is_default: chainz.config.default_chain.as_deref() == Some(c.name.as_str()),
                     })
                     .collect();
@@ -80,17 +113,11 @@ async fn main() -> Result<()> {
                     );
                 }
                 for chain_def in chains {
-                    println!("{}", chain_def);
+                    println!("{}", chain_def.display_with_secrets(show_secrets));
                 }
                 if let Some(default) = &chainz.config.default_chain {
                     println!("\nDefault chain: {}", default);
                 }
-            }
-        }
-        opt::Command::Doctor { fix } => {
-            let report = doctor::run(&mut chainz, fix).await?;
-            if report.failures > 0 {
-                std::process::exit(1);
             }
         }
         opt::Command::Shell { name_or_id } => {
@@ -100,7 +127,7 @@ async fn main() -> Result<()> {
             };
             let chain = chainz.get_chain(&name_or_id)?;
             // Empty command args → lazy rule: key backends are never touched
-            let variables = ChainVariables::new(&chain, &[])?;
+            let variables = ChainVariables::new(&chain, &[], false)?;
             let chain_name = chain.definition.name.clone();
             let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
 
@@ -127,6 +154,7 @@ async fn main() -> Result<()> {
             name_or_id,
             command,
             key,
+            expose_key,
         } => {
             if command.is_empty() {
                 anyhow::bail!("No command specified");
@@ -140,7 +168,7 @@ async fn main() -> Result<()> {
             if let Some(key_name) = key {
                 chain = chain.with_key(chainz.get_key(&key_name)?);
             }
-            let variables = ChainVariables::new(&chain, &command)?;
+            let variables = ChainVariables::new(&chain, &command, expose_key)?;
             let expanded_command = variables.expand(command);
 
             let status = ProcessCommand::new(&expanded_command[0])
@@ -157,17 +185,19 @@ async fn main() -> Result<()> {
 }
 
 /// The `list --json` scripting contract: a stable shape decoupled from the
-/// storage schema, which deliberately never includes credentials
-/// (`verification_api_key` stays out).
+/// storage schema. Credentials are omitted unless the caller explicitly uses
+/// `--show-secrets`.
 #[derive(serde::Serialize)]
 struct ChainListing<'a> {
     name: &'a str,
     aliases: &'a [String],
     chain_id: u64,
-    selected_rpc: &'a str,
-    rpc_urls: &'a [String],
+    selected_rpc: String,
+    rpc_urls: Vec<String>,
     key_name: &'a str,
-    verification_url: Option<&'a str>,
+    verification_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    verification_api_key: Option<&'a str>,
     is_default: bool,
 }
 

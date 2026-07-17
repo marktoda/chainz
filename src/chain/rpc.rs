@@ -17,7 +17,9 @@ pub async fn check_url(rpc_url: &str, expected_chain_id: u64) -> Result<()> {
     let chain_id = provider
         .get_chain_id()
         .await
-        .map_err(|e| anyhow::anyhow!("Failed to connect: {}", e))?;
+        // Provider errors may repeat credential-bearing URL paths. Keep the
+        // diagnostic at this seam URL-free; callers attach a redacted URL.
+        .map_err(|_| anyhow::anyhow!("Failed to query the RPC chain ID"))?;
     if chain_id != expected_chain_id {
         anyhow::bail!(
             "Chain ID mismatch: expected {}, got {}",
@@ -97,7 +99,8 @@ async fn create_provider(rpc_url: &str) -> Result<DynProvider> {
         ProviderBuilder::new().connect(rpc_url),
     )
     .await
-    .map_err(|_| anyhow::anyhow!("RPC connection timed out"))??;
+    .map_err(|_| anyhow::anyhow!("RPC connection timed out"))?
+    .map_err(|_| anyhow::anyhow!("Failed to initialize the RPC connection"))?;
     Ok(provider.erased())
 }
 
@@ -146,5 +149,16 @@ mod tests {
     async fn probe_urls_empty_input_closes_immediately() {
         let mut rx = probe_urls(&[], 1);
         assert!(rx.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn rpc_error_chain_never_repeats_the_url() {
+        let error = check_url("http://user:password@127.0.0.1:1/literal-secret", 1)
+            .await
+            .unwrap_err();
+        let diagnostic = format!("{error:#}");
+        for secret in ["user", "password", "literal-secret"] {
+            assert!(!diagnostic.contains(secret), "{diagnostic}");
+        }
     }
 }

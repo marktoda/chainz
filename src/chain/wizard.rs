@@ -6,7 +6,7 @@ use crate::ui;
 use crate::{
     chainlist::{ChainlistEntry, fetch_all_chains, fetch_chain_by_id},
     config::Chainz,
-    key::{Key, KeyType},
+    key::{Key, KeyType, create_safe_key_from_prompt},
     opt::{AddArgs, UpdateArgs},
     variables::GlobalVariables,
 };
@@ -81,7 +81,7 @@ pub async fn select_rpc(
                 ProgressStyle::with_template("{spinner} {msg}").expect("static template"),
             );
             bar.enable_steady_tick(std::time::Duration::from_millis(120));
-            bar.set_message(url.clone());
+            bar.set_message(crate::variables::redact_url(url));
             bar
         })
         .collect();
@@ -93,13 +93,13 @@ pub async fn select_rpc(
         if result.healthy {
             bar.finish_with_message(ui::success(&format!(
                 "{}  {}ms",
-                urls[result.index],
+                crate::variables::redact_url(&urls[result.index]),
                 result.latency.as_millis()
             )));
         } else {
             bar.finish_with_message(ui::fail(&format!(
                 "{}  {}",
-                urls[result.index],
+                crate::variables::redact_url(&urls[result.index]),
                 ui::dim("unreachable")
             )));
         }
@@ -118,9 +118,13 @@ pub async fn select_rpc(
         .map(|&i| {
             let r = by_index[i].expect("every url index has a probe result");
             if r.healthy {
-                format!("{} ({}ms)", urls[i], r.latency.as_millis())
+                format!(
+                    "{} ({}ms)",
+                    crate::variables::redact_url(&urls[i]),
+                    r.latency.as_millis()
+                )
             } else {
-                format!("{} (unreachable)", urls[i])
+                format!("{} (unreachable)", crate::variables::redact_url(&urls[i]))
             }
         })
         .collect();
@@ -157,7 +161,15 @@ async fn select_manual_rpc(chain_id: u64, globals: &GlobalVariables) -> Result<S
 }
 
 /// Helper function to select or create a key
-pub fn select_key(chainz: &mut Chainz) -> Result<String> {
+fn select_key(chainz: &mut Chainz) -> Result<String> {
+    select_key_inner(chainz, true)
+}
+
+fn select_key_staged(chainz: &mut Chainz) -> Result<String> {
+    select_key_inner(chainz, false)
+}
+
+fn select_key_inner(chainz: &mut Chainz, store_safely_now: bool) -> Result<String> {
     let keys = chainz.list_keys();
 
     // Create display strings with addresses
@@ -180,14 +192,17 @@ pub fn select_key(chainz: &mut Chainz) -> Result<String> {
 
     if key_selection == key_displays.len() - 1 {
         let kname: String = Input::new().with_prompt("Enter key name").interact_text()?;
-        let private_key = rpassword::prompt_password("Enter private key: ")?;
-        chainz.add_key(
-            &kname,
-            Key {
-                name: kname.clone(),
-                kind: KeyType::PrivateKey { value: private_key },
-            },
-        )?;
+        if chainz.get_key(&kname).is_ok() {
+            anyhow::bail!("Key '{}' already exists", kname);
+        }
+        let key = if store_safely_now {
+            create_safe_key_from_prompt(&kname)?
+        } else {
+            let private_key = rpassword::prompt_password("Enter private key: ")?;
+            Key::validate_private_key(&private_key)?;
+            Key::new(kname.clone(), KeyType::PrivateKey { value: private_key })
+        };
+        chainz.add_key(&kname, key)?;
         Ok(kname)
     } else {
         Ok(key_displays[key_selection].0.clone())
@@ -201,10 +216,7 @@ pub fn select_verifier() -> Result<(Option<String>, Option<String>)> {
         .allow_empty(true)
         .interact_text()?;
 
-    let new_key: String = Input::new()
-        .with_prompt("Enter verification API key (empty to remove)")
-        .allow_empty(true)
-        .interact_text()?;
+    let new_key = rpassword::prompt_password("Enter verification API key (empty to remove): ")?;
 
     match (new_url.is_empty(), new_key.is_empty()) {
         (true, true) => Ok((None, None)),
@@ -260,7 +272,7 @@ impl UpdateArgs {
                     &chainz.config.globals,
                 )
                 .await?;
-                chain.selected_rpc = new_rpc;
+                chain.select_rpc(new_rpc);
             }
             1 => {
                 // Update key
@@ -291,14 +303,31 @@ impl UpdateArgs {
 
 impl AddArgs {
     pub async fn handle(&self, chainz: &mut Chainz) -> Result<ChainDefinition> {
+        self.handle_with_persistence(chainz, true).await
+    }
+
+    /// Build an addition in memory for a larger transaction such as `init`.
+    pub(crate) async fn handle_staged(&self, chainz: &mut Chainz) -> Result<ChainDefinition> {
+        self.handle_with_persistence(chainz, false).await
+    }
+
+    async fn handle_with_persistence(
+        &self,
+        chainz: &mut Chainz,
+        persist: bool,
+    ) -> Result<ChainDefinition> {
         if self.name.is_some() && self.chain_id.is_some() && self.rpc_url.is_some() {
-            self.handle_non_interactive(chainz).await
+            self.handle_non_interactive(chainz, persist).await
         } else {
-            self.handle_interactive(chainz).await
+            self.handle_interactive(chainz, persist).await
         }
     }
 
-    async fn handle_non_interactive(&self, chainz: &mut Chainz) -> Result<ChainDefinition> {
+    async fn handle_non_interactive(
+        &self,
+        chainz: &mut Chainz,
+        persist: bool,
+    ) -> Result<ChainDefinition> {
         let name = self.name.clone().unwrap();
         let chain_id = self.chain_id.unwrap();
         let rpc_url = self.rpc_url.clone().unwrap();
@@ -318,7 +347,12 @@ impl AddArgs {
         // Test the RPC
         check_url(&chainz.config.globals.expand_rpc_url(&rpc_url), chain_id)
             .await
-            .with_context(|| format!("RPC check failed for {}", rpc_url))?;
+            .with_context(|| {
+                format!(
+                    "RPC check failed for {}",
+                    crate::variables::redact_url(&rpc_url)
+                )
+            })?;
 
         let chain_def = ChainDefinition {
             name: name.clone(),
@@ -326,7 +360,7 @@ impl AddArgs {
             chain_id,
             rpc_urls: vec![rpc_url.clone()],
             selected_rpc: rpc_url,
-            verification_api_key: self.verification_api_key.clone(),
+            verification_api_key: self.read_verification_api_key()?,
             verification_url: self.verification_url.clone(),
             key_name,
         };
@@ -340,11 +374,17 @@ impl AddArgs {
         }
 
         chainz.add_chain(chain_def.clone())?;
-        chainz.save().await?;
+        if persist {
+            chainz.save().await?;
+        }
         Ok(chain_def)
     }
 
-    async fn handle_interactive(&self, chainz: &mut Chainz) -> Result<ChainDefinition> {
+    async fn handle_interactive(
+        &self,
+        chainz: &mut Chainz,
+        persist: bool,
+    ) -> Result<ChainDefinition> {
         println!("{}", ui::header("Chain Selection"));
 
         let selected_chain = if self.name.is_some() || self.chain_id.is_some() {
@@ -389,7 +429,12 @@ impl AddArgs {
                 selected_chain.chain_id,
             )
             .await
-            .with_context(|| format!("RPC check failed for {}", rpc_url))?;
+            .with_context(|| {
+                format!(
+                    "RPC check failed for {}",
+                    crate::variables::redact_url(rpc_url)
+                )
+            })?;
             println!("{}", ui::success("RPC working"));
             rpc_url.clone()
         } else {
@@ -414,30 +459,37 @@ impl AddArgs {
             key.clone()
         } else {
             println!("{}", ui::header("Key Configuration"));
-            select_key(chainz)?
+            if persist {
+                select_key(chainz)?
+            } else {
+                select_key_staged(chainz)?
+            }
         };
 
-        let (verification_url, verification_api_key) =
-            if self.verification_url.is_some() || self.verification_api_key.is_some() {
-                (
-                    self.verification_url.clone(),
-                    self.verification_api_key.clone(),
-                )
-            } else {
-                select_verifier()?
-            };
+        let (verification_url, verification_api_key) = if self.verification_url.is_some()
+            || self.verification_api_key.is_some()
+            || self.verification_api_key_stdin
+        {
+            (
+                self.verification_url.clone(),
+                self.read_verification_api_key()?,
+            )
+        } else {
+            select_verifier()?
+        };
 
         // Create and add the chain
-        let chain_def = ChainDefinition {
+        let mut chain_def = ChainDefinition {
             name,
             aliases,
             chain_id: selected_chain.chain_id,
             rpc_urls: selected_chain.rpc,
-            selected_rpc,
+            selected_rpc: String::new(),
             verification_api_key,
             verification_url,
             key_name,
         };
+        chain_def.select_rpc(selected_rpc);
 
         // Confirm before replacing an existing chain (matched by name or alias)
         if chainz.chain_exists(&chain_def.name) {
@@ -458,8 +510,32 @@ impl AddArgs {
         }
 
         chainz.add_chain(chain_def.clone())?;
-        chainz.save().await?;
+        if persist {
+            chainz.save().await?;
+        }
         Ok(chain_def)
+    }
+
+    fn read_verification_api_key(&self) -> Result<Option<String>> {
+        if self.verification_api_key_stdin {
+            use std::io::Read;
+            use zeroize::Zeroize;
+            let mut value = String::new();
+            std::io::stdin().read_to_string(&mut value)?;
+            let normalized = value.trim().to_string();
+            value.zeroize();
+            if normalized.is_empty() {
+                anyhow::bail!("Verification API key from stdin was empty");
+            }
+            Ok(Some(normalized))
+        } else {
+            if self.verification_api_key.is_some() {
+                eprintln!(
+                    "Warning: verification API keys in argv may be visible in shell history; prefer --verification-api-key-stdin"
+                );
+            }
+            Ok(self.verification_api_key.clone())
+        }
     }
 }
 

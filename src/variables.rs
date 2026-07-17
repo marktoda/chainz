@@ -2,12 +2,25 @@ use crate::{chain::ChainInstance, config::Chainz, opt::VarCommand};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt;
+use std::io::{IsTerminal, Read};
+use zeroize::Zeroize;
 
-#[derive(Default, Debug, Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct GlobalVariables {
     /// INFURA_API_KEY etc
     #[serde(flatten)]
     rpc_expansions: HashMap<String, String>,
+}
+
+impl fmt::Debug for GlobalVariables {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut names: Vec<_> = self.rpc_expansions.keys().collect();
+        names.sort();
+        f.debug_struct("GlobalVariables")
+            .field("names", &names)
+            .finish()
+    }
 }
 
 pub struct ChainVariables {
@@ -16,10 +29,9 @@ pub struct ChainVariables {
 }
 
 impl ChainVariables {
-    pub fn new(chain: &ChainInstance, command: &[String]) -> Result<Self> {
-        let needs_key = command
-            .iter()
-            .any(|arg| arg.contains("@key") || arg.contains("@wallet"));
+    pub fn new(chain: &ChainInstance, command: &[String], expose_key: bool) -> Result<Self> {
+        let needs_key_arg = command.iter().any(|arg| arg.contains("@key"));
+        let needs_wallet = command.iter().any(|arg| arg.contains("@wallet"));
 
         let mut env = HashMap::new();
         let mut expansions = HashMap::new();
@@ -58,20 +70,59 @@ impl ChainVariables {
             expansions.insert(expansion.to_string(), val.clone());
         }
 
-        // Only decrypt key when command actually uses @key or @wallet.
+        // Only resolve the private key when the command explicitly needs it.
+        // New safe-storage records cache the public address, so @wallet does
+        // not need to unlock the backing credential store. Legacy records
+        // without that metadata derive it once at execution time.
         // Note: private_key() returns Zeroizing<String>, but we convert to String here
         // because std::process::Command::envs() requires String values and doesn't zeroize
         // internally. The child process also holds the key in its environment unzeroed.
         // The real security boundary is the lazy check above — encrypted keys are never
         // decrypted unless the command explicitly needs them.
-        if needs_key {
-            let private_key = chain.key.private_key()?.to_string();
-            let address = chain.key.address().unwrap_or_default().to_string();
+        let cached_address = needs_wallet
+            .then(|| chain.key.address_noninteractive())
+            .flatten();
+        let must_resolve_key =
+            needs_key_arg || expose_key || (needs_wallet && cached_address.is_none());
 
-            env.insert("WALLET_ADDRESS".to_string(), address.clone());
-            expansions.insert("@wallet".to_string(), address);
-            env.insert("RAW_PRIVATE_KEY".to_string(), private_key.clone());
-            expansions.insert("@key".to_string(), private_key);
+        if must_resolve_key || cached_address.is_some() {
+            let private_key = must_resolve_key
+                .then(|| chain.key.private_key())
+                .transpose()?;
+            if needs_wallet {
+                let address = match cached_address {
+                    Some(address) => address,
+                    None => crate::key::Key::address_from_private_key(
+                        private_key
+                            .as_deref()
+                            .expect("private key is resolved for legacy wallet metadata"),
+                    )?
+                    .to_string(),
+                };
+                env.insert("WALLET_ADDRESS".to_string(), address.clone());
+                expansions.insert("@wallet".to_string(), address);
+            }
+            if needs_key_arg || expose_key {
+                env.insert(
+                    "RAW_PRIVATE_KEY".to_string(),
+                    private_key
+                        .as_deref()
+                        .expect("private key is resolved when explicitly requested")
+                        .to_string(),
+                );
+            }
+            if needs_key_arg {
+                eprintln!(
+                    "Warning: @key expands the private key into process arguments; prefer --expose-key with $RAW_PRIVATE_KEY"
+                );
+                expansions.insert(
+                    "@key".to_string(),
+                    private_key
+                        .as_deref()
+                        .expect("private key is resolved for @key")
+                        .to_string(),
+                );
+            }
         }
 
         Ok(Self { env, expansions })
@@ -105,6 +156,15 @@ impl GlobalVariables {
             .insert(key.to_string(), value.to_string());
     }
 
+    pub(crate) fn validate(&self) -> Result<()> {
+        for key in self.rpc_expansions.keys() {
+            if key.is_empty() || key.contains(['{', '}']) {
+                anyhow::bail!("Invalid variable name '{}'", key);
+            }
+        }
+        Ok(())
+    }
+
     pub fn remove_rpc_expansion(&mut self, key: &str) -> Option<String> {
         self.rpc_expansions.remove(key)
     }
@@ -121,23 +181,47 @@ impl GlobalVariables {
 impl VarCommand {
     pub async fn handle(self, chainz: &mut Chainz) -> Result<()> {
         match self {
-            VarCommand::Set { name, value } => {
+            VarCommand::Set { name, value, stdin } => {
+                if stdin && value.is_some() {
+                    anyhow::bail!("Provide a value or --stdin, not both");
+                }
+                let value = if stdin {
+                    read_value_from_stdin()?
+                } else if let Some(value) = value {
+                    eprintln!(
+                        "Warning: variable values in argv may be visible in shell history; prefer --stdin"
+                    );
+                    value
+                } else if std::io::stdin().is_terminal() {
+                    rpassword::prompt_password(format!("Value for {}: ", name))?
+                } else {
+                    anyhow::bail!("No value provided; use --stdin for scripts")
+                };
                 chainz.config.globals.add_rpc_expansion(&name, &value);
                 chainz.save().await?;
-                println!("Set variable {} = {}", name, value);
+                println!("Set variable {}", name);
             }
-            VarCommand::Get { name } => match chainz.config.globals.get_rpc_expansion(&name) {
-                Some(value) => println!("{} = {}", name, value),
-                None => println!("Variable '{}' not found", name),
-            },
-            VarCommand::List => {
+            VarCommand::Get { name, show } => {
+                match chainz.config.globals.get_rpc_expansion(&name) {
+                    Some(value) if show => println!("{} = {}", name, value),
+                    Some(_) => println!("{} = [REDACTED]", name),
+                    None => println!("Variable '{}' not found", name),
+                }
+            }
+            VarCommand::List { show } => {
                 let vars = chainz.config.globals.list_rpc_expansions();
                 if vars.is_empty() {
                     println!("No variables set");
                 } else {
                     println!("Variables:");
-                    for (name, value) in vars {
-                        println!("  {} = {}", name, value);
+                    let mut entries: Vec<_> = vars.iter().collect();
+                    entries.sort_by_key(|(name, _)| *name);
+                    for (name, value) in entries {
+                        println!(
+                            "  {} = {}",
+                            name,
+                            if show { value.as_str() } else { "[REDACTED]" }
+                        );
                     }
                 }
             }
@@ -149,6 +233,66 @@ impl VarCommand {
         }
         Ok(())
     }
+}
+
+fn read_value_from_stdin() -> Result<String> {
+    let mut value = String::new();
+    std::io::stdin().read_to_string(&mut value)?;
+    let normalized = value.trim_end_matches(['\r', '\n']).to_string();
+    value.zeroize();
+    if normalized.is_empty() {
+        anyhow::bail!("Value from stdin was empty");
+    }
+    Ok(normalized)
+}
+
+/// Redact credential-bearing URL shapes for display and JSON output.
+pub fn redact_url(input: &str) -> String {
+    let Ok(mut url) = reqwest::Url::parse(input) else {
+        return "[REDACTED URL]".to_string();
+    };
+    if !url.username().is_empty() {
+        let _ = url.set_username("REDACTED");
+    }
+    if url.password().is_some() {
+        let _ = url.set_password(Some("REDACTED"));
+    }
+    if url.query().is_some() {
+        let names: Vec<String> = url
+            .query_pairs()
+            .map(|(name, _)| name.into_owned())
+            .collect();
+        url.set_query(None);
+        for name in names {
+            url.query_pairs_mut().append_pair(&name, "REDACTED");
+        }
+    }
+    if url.path() != "/" && !url.path().is_empty() {
+        let readable_path = url.path().replace("%7B", "{").replace("%7D", "}");
+        let templates = variable_templates(&readable_path);
+        let redacted_path = if templates.is_empty() {
+            "/REDACTED".to_string()
+        } else {
+            format!("/REDACTED/{}", templates.join("/"))
+        };
+        url.set_path(&redacted_path);
+    }
+    if url.fragment().is_some() {
+        url.set_fragment(Some("REDACTED"));
+    }
+    // url::Url percent-encodes braces, but variable names are safe public
+    // metadata and keeping ${NAME} intact makes redacted output actionable.
+    url.to_string().replace("%7B", "{").replace("%7D", "}")
+}
+
+fn variable_templates(input: &str) -> Vec<String> {
+    let mut templates = Vec::new();
+    let mut remainder = input;
+    while let Some((start, end)) = find_next_var(remainder) {
+        templates.push(remainder[start..end].to_string());
+        remainder = &remainder[end..];
+    }
+    templates
 }
 
 fn interpolate_variables(input: &str, variables: &HashMap<String, String>) -> String {
@@ -268,6 +412,38 @@ mod tests {
     }
 
     #[test]
+    fn redact_url_hides_all_literal_credential_locations() {
+        let redacted = redact_url(
+            "https://user:password@rpc.example.com/v2/path-secret?token=query-secret#fragment-secret",
+        );
+        for secret in [
+            "user",
+            "password",
+            "path-secret",
+            "query-secret",
+            "fragment-secret",
+        ] {
+            assert!(!redacted.contains(secret), "{redacted}");
+        }
+        assert!(redacted.contains("rpc.example.com"));
+        assert!(redacted.contains("REDACTED"));
+    }
+
+    #[test]
+    fn redact_url_preserves_variable_template_names() {
+        let redacted = redact_url("https://rpc.example.com/literal-secret/${ALCHEMY_KEY}");
+        assert!(redacted.contains("${ALCHEMY_KEY}"));
+        assert!(!redacted.contains("literal-secret"));
+    }
+
+    #[test]
+    fn redact_url_fails_closed_for_malformed_input() {
+        let redacted = redact_url("not a URL containing literal-secret");
+        assert_eq!(redacted, "[REDACTED URL]");
+        assert!(!redacted.contains("literal-secret"));
+    }
+
+    #[test]
     fn test_no_variables() {
         let globals = GlobalVariables::default();
 
@@ -340,6 +516,25 @@ mod tests {
         assert_eq!(globals.list_rpc_expansions().len(), 1);
     }
 
+    #[test]
+    fn variable_validation_preserves_legacy_names_but_rejects_template_syntax() {
+        let mut globals = GlobalVariables::default();
+        globals.add_rpc_expansion("legacy-name.with punctuation", "value");
+        assert!(globals.validate().is_ok());
+
+        globals.add_rpc_expansion("BAD}", "value");
+        assert!(globals.validate().is_err());
+    }
+
+    #[test]
+    fn global_variable_debug_never_contains_values() {
+        let mut globals = GlobalVariables::default();
+        globals.add_rpc_expansion("TOKEN", "literal-secret");
+        let output = format!("{globals:?}");
+        assert!(output.contains("TOKEN"));
+        assert!(!output.contains("literal-secret"));
+    }
+
     // ── ChainVariables::expand() ─────────────────────────────────────
 
     fn make_chain_variables() -> ChainVariables {
@@ -369,6 +564,36 @@ mod tests {
         let cv = make_chain_variables();
         let result = cv.expand(vec!["--from".into(), "@wallet".into()]);
         assert_eq!(result, vec!["--from", "0xABCD"]);
+    }
+
+    #[test]
+    fn cached_wallet_address_does_not_unlock_keyring() {
+        let chain = crate::chain::ChainInstance::new(
+            crate::chain::ChainDefinition {
+                name: "mainnet".into(),
+                aliases: vec![],
+                chain_id: 1,
+                rpc_urls: vec!["http://localhost:8545".into()],
+                selected_rpc: "http://localhost:8545".into(),
+                verification_api_key: None,
+                verification_url: None,
+                key_name: "deployer".into(),
+            },
+            "http://localhost:8545".into(),
+            crate::key::Key {
+                name: "deployer".into(),
+                address: Some("0xABCD".into()),
+                kind: crate::key::KeyType::Keyring {
+                    service: "deliberately-unavailable".into(),
+                    username: "missing".into(),
+                },
+            },
+        );
+
+        let cv = ChainVariables::new(&chain, &["echo".into(), "@wallet".into()], false)
+            .expect("cached address should avoid keyring access");
+        assert_eq!(cv.as_map().get("WALLET_ADDRESS"), Some(&"0xABCD".into()));
+        assert!(!cv.as_map().contains_key("RAW_PRIVATE_KEY"));
     }
 
     #[test]

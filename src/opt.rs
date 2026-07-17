@@ -1,6 +1,6 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
-#[derive(Debug, Parser)]
+#[derive(Parser)]
 #[command(
     name = "chainz",
     version,
@@ -11,7 +11,7 @@ pub struct Opt {
     pub cmd: Command,
 }
 
-#[derive(Debug, Subcommand)]
+#[derive(Subcommand)]
 pub enum Command {
     /// Initialize a new configuration through an interactive wizard
     ///
@@ -24,7 +24,7 @@ pub enum Command {
     /// Supports both interactive and command-line configuration.
     /// If options are omitted, will prompt for values.
     ///
-    /// Example: chainz add --name ethereum --chain-id 1 --rpc-url https://eth.llamarpc.com
+    /// Example: `chainz add --name ethereum --chain-id 1 --rpc-url https://eth.llamarpc.com`
     Add {
         #[command(flatten)]
         args: AddArgs,
@@ -56,6 +56,9 @@ pub enum Command {
         /// Output as JSON (for scripting)
         #[arg(long)]
         json: bool,
+        /// Include credential-bearing URLs and verification keys
+        #[arg(long)]
+        show_secrets: bool,
     },
 
     /// Set the default chain used by exec when no chain is given
@@ -95,6 +98,9 @@ pub enum Command {
         /// Override the key to use for this command
         #[arg(short, long)]
         key: Option<String>,
+        /// Expose the selected private key as RAW_PRIVATE_KEY without adding it to argv
+        #[arg(long)]
+        expose_key: bool,
     },
 
     /// Open a subshell with the chain's environment loaded
@@ -112,7 +118,7 @@ pub enum Command {
     /// Manage private keys
     ///
     /// Subcommands for adding, listing, and removing private keys.
-    /// Keys are stored encrypted in the configuration.
+    /// Keys use the OS keyring or encrypted storage by default.
     ///
     /// Example: chainz key add mykey
     Key {
@@ -145,19 +151,21 @@ pub enum Command {
     },
 }
 
-#[derive(Debug, Subcommand)]
+#[derive(Subcommand)]
 pub enum KeyCommand {
     /// Add a new private key
     ///
-    /// Fully non-interactive when both --key and --type are provided
-    /// (--key alone implies --type private-key).
+    /// Use --stdin instead of --key in scripts to keep secrets out of argv.
     Add {
         /// Name for the private key
         name: String,
         /// The private key (will prompt if not provided)
         #[arg(long)]
         key: Option<String>,
-        /// How to store the key (interactive picker if omitted)
+        /// Read the private key from stdin (safer for scripts than --key)
+        #[arg(long, conflicts_with = "key")]
+        stdin: bool,
+        /// How to store the key (safe OS-keyring/encrypted default if omitted)
         #[arg(long = "type", value_enum)]
         key_type: Option<KeyTypeArg>,
     },
@@ -172,6 +180,23 @@ pub enum KeyCommand {
         /// Name of the private key to remove
         name: String,
     },
+    /// Move keys from plaintext or another backend into safe storage
+    Migrate {
+        /// Key name to migrate (omit when using --all)
+        name: Option<String>,
+        /// Migrate every plaintext key; individual failures are reported and skipped
+        #[arg(long, conflicts_with = "name")]
+        all: bool,
+        /// Destination backend (safe default when omitted)
+        #[arg(long, value_enum)]
+        to: Option<MigrationTargetArg>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum MigrationTargetArg {
+    Keyring,
+    Encrypted,
 }
 
 /// Storage backend for a private key
@@ -187,35 +212,32 @@ pub enum KeyTypeArg {
     Keyring,
 }
 
-/// Human-readable labels, shared by the interactive picker
-impl std::fmt::Display for KeyTypeArg {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let label = match self {
-            KeyTypeArg::PrivateKey => "Private Key",
-            KeyTypeArg::Encrypted => "Encrypted Key",
-            KeyTypeArg::OnePassword => "One Password",
-            KeyTypeArg::Keyring => "Keyring",
-        };
-        write!(f, "{}", label)
-    }
-}
-
-#[derive(Debug, Subcommand)]
+#[derive(Subcommand)]
 pub enum VarCommand {
     /// Set or update a variable
     Set {
         /// Variable name
         name: String,
         /// Variable value
-        value: String,
+        value: Option<String>,
+        /// Read the value from stdin instead of argv
+        #[arg(long)]
+        stdin: bool,
     },
     /// Get a variable's value
     Get {
         /// Variable name
         name: String,
+        /// Print the stored value instead of a redacted marker
+        #[arg(long)]
+        show: bool,
     },
     /// List all variables
-    List,
+    List {
+        /// Print stored values instead of redacted markers
+        #[arg(long)]
+        show: bool,
+    },
     /// Remove a variable
     Rm {
         /// Variable name
@@ -223,14 +245,14 @@ pub enum VarCommand {
     },
 }
 
-#[derive(Debug, Args)]
+#[derive(Args)]
 pub struct UpdateArgs {
     /// Re-download the chainlist instead of using the local cache
     #[arg(long)]
     pub refresh: bool,
 }
 
-#[derive(Debug, Args)]
+#[derive(Args)]
 pub struct AddArgs {
     /// Chain name
     #[arg(long)]
@@ -255,6 +277,10 @@ pub struct AddArgs {
     /// Block explorer API key
     #[arg(long)]
     pub verification_api_key: Option<String>,
+
+    /// Read the block explorer API key from stdin instead of argv
+    #[arg(long, conflicts_with = "verification_api_key")]
+    pub verification_api_key_stdin: bool,
 
     /// Overwrite existing chain without prompting
     #[arg(long, default_value_t = false)]

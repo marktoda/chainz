@@ -46,6 +46,13 @@ impl Chainz {
         Ok(Self { config })
     }
 
+    /// Load deserializable config without enforcing semantic invariants so
+    /// `doctor` can report and help repair legacy-invalid states.
+    pub async fn load_for_doctor() -> Result<Self> {
+        let config = Config::load_unvalidated().await?.unwrap_or_default();
+        Ok(Self { config })
+    }
+
     pub fn get_chain(&self, name_or_id: &str) -> Result<ChainInstance> {
         let definition = self.config.get_chain(name_or_id)?;
         let rpc_url = self.config.globals.expand_rpc_url(&definition.selected_rpc);
@@ -58,6 +65,14 @@ impl Chainz {
         if self.config.keys.contains_key(name) {
             anyhow::bail!("Key '{}' already exists", name);
         }
+        if name != key.name {
+            anyhow::bail!(
+                "Key map name '{}' does not match record name '{}'",
+                name,
+                key.name
+            );
+        }
+        key.validate_record()?;
         self.config.keys.insert(name.to_string(), key);
         Ok(())
     }
@@ -82,6 +97,20 @@ impl Chainz {
         if !self.config.keys.contains_key(name) {
             anyhow::bail!("Key '{}' not found", name);
         }
+        let referenced_by: Vec<&str> = self
+            .config
+            .chains
+            .iter()
+            .filter(|chain| chain.key_name == name)
+            .map(|chain| chain.name.as_str())
+            .collect();
+        if !referenced_by.is_empty() {
+            anyhow::bail!(
+                "Key '{}' is still used by chain(s): {}",
+                name,
+                referenced_by.join(", ")
+            );
+        }
         self.config.keys.remove(name);
         Ok(())
     }
@@ -98,17 +127,54 @@ impl Chainz {
         // Replace if exists, otherwise add. Identity is the same
         // case-insensitive name/alias matching used by lookups, so a new
         // chain can never be shadowed by an existing chain's alias.
-        if let Some(pos) = self
+        let replacement = self
             .config
             .chains
             .iter()
-            .position(|c| c.matches_exact(&chain.name))
-        {
+            .position(|existing| existing.matches_exact(&chain.name));
+
+        for (index, existing) in self.config.chains.iter().enumerate() {
+            if Some(index) == replacement {
+                continue;
+            }
+            if existing.chain_id == chain.chain_id {
+                anyhow::bail!(
+                    "Chain ID {} is already configured as '{}'",
+                    chain.chain_id,
+                    existing.name
+                );
+            }
+            if let Some(collision) = chain.names().find(|name| existing.matches_exact(name)) {
+                anyhow::bail!(
+                    "Chain name or alias '{}' collides with '{}'",
+                    collision,
+                    existing.name
+                );
+            }
+        }
+
+        let previous_default = self.config.default_chain.clone();
+        let previous_chain = replacement.map(|pos| self.config.chains[pos].clone());
+        if let Some(pos) = replacement {
+            let previous_name = self.config.chains[pos].name.clone();
+            if self.config.default_chain.as_deref() == Some(previous_name.as_str()) {
+                self.config.default_chain = Some(chain.name.clone());
+            }
             self.config.chains[pos] = chain;
         } else {
             self.config.chains.push(chain);
         }
-
+        if let Err(error) = self.config.validate() {
+            self.config.default_chain = previous_default;
+            match (replacement, previous_chain) {
+                (Some(pos), Some(previous)) => self.config.chains[pos] = previous,
+                (None, None) => {
+                    self.config.chains.pop();
+                }
+                _ => unreachable!("replacement state is paired"),
+            }
+            return Err(error);
+        }
         Ok(())
     }
 
@@ -133,16 +199,12 @@ impl Chainz {
 
     pub fn set_selected_rpc(&mut self, name_or_id: &str, rpc_url: String) -> Result<()> {
         let pos = self.config.find_chain_index(name_or_id)?;
-        self.config.chains[pos].selected_rpc = rpc_url;
+        self.config.chains[pos].select_rpc(rpc_url);
         Ok(())
     }
 
     pub async fn save(&self) -> Result<()> {
         self.config.write().await
-    }
-
-    pub async fn delete() -> Result<()> {
-        Config::delete().await
     }
 }
 
@@ -151,9 +213,20 @@ impl Config {
     /// Any other failure (unreadable file, parse error) is propagated so a
     /// broken config is never mistaken for a missing one.
     pub async fn load() -> Result<Option<Self>> {
+        let config = Self::load_unvalidated().await?;
+        if let Some(config) = &config {
+            let path = get_config_path().ok_or(anyhow!("Unable to find config path"))?;
+            config
+                .validate()
+                .with_context(|| format!("Invalid config at {}", path.display()))?;
+        }
+        Ok(config)
+    }
+
+    async fn load_unvalidated() -> Result<Option<Self>> {
         let path = get_config_path().ok_or(anyhow!("Unable to find config path"))?;
-        migrate_legacy_config(&path).await;
-        restrict_permissions(&path).await;
+        migrate_legacy_config(&path).await?;
+        restrict_permissions(&path).await?;
         let json = match tokio::fs::read_to_string(&path).await {
             Ok(json) => json,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -162,12 +235,13 @@ impl Config {
                     .with_context(|| format!("Failed to read config at {}", path.display()));
             }
         };
-        let config = serde_json::from_str(&json).with_context(|| {
+        let mut config: Self = serde_json::from_str(&json).with_context(|| {
             format!(
                 "Failed to parse config at {} (fix or remove the file, then retry)",
                 path.display()
             )
         })?;
+        config.normalize_legacy();
         Ok(Some(config))
     }
 
@@ -207,6 +281,8 @@ impl Config {
     }
 
     pub async fn write(&self) -> Result<()> {
+        self.validate()
+            .context("Refusing to write invalid config")?;
         let path = get_config_path().ok_or(anyhow!("Unable to find config path"))?;
         if let Some(dir) = path.parent() {
             ensure_private_dir(dir).await?;
@@ -233,23 +309,91 @@ impl Config {
         Ok(())
     }
 
-    /// Delete the config wherever it lives — both the current and the legacy
-    /// location, so a delete can never be undone by a later auto-migration.
-    pub async fn delete() -> Result<()> {
-        for path in [get_config_path(), legacy_config_path()]
-            .into_iter()
-            .flatten()
-        {
-            match tokio::fs::remove_file(&path).await {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => {
-                    return Err(e)
-                        .with_context(|| format!("Failed to delete config at {}", path.display()));
+    pub fn validate(&self) -> Result<()> {
+        self.globals.validate()?;
+
+        for (map_name, key) in &self.keys {
+            if map_name != &key.name {
+                anyhow::bail!(
+                    "Key map name '{}' does not match record name '{}'",
+                    map_name,
+                    key.name
+                );
+            }
+            key.validate_record()
+                .with_context(|| format!("Invalid key '{}'", map_name))?;
+        }
+
+        let mut names = HashMap::<String, String>::new();
+        let mut ids = HashMap::<u64, String>::new();
+        for chain in &self.chains {
+            if chain.name.trim().is_empty() {
+                anyhow::bail!("Chain names cannot be empty");
+            }
+            if chain.rpc_urls.is_empty() {
+                anyhow::bail!("Chain '{}' has no RPC URLs", chain.name);
+            }
+            if !chain.rpc_urls.contains(&chain.selected_rpc) {
+                anyhow::bail!(
+                    "Chain '{}' selected RPC is not present in its RPC list",
+                    chain.name
+                );
+            }
+            if !self.keys.contains_key(&chain.key_name) {
+                anyhow::bail!(
+                    "Chain '{}' references missing key '{}'",
+                    chain.name,
+                    chain.key_name
+                );
+            }
+            if let Some(other) = ids.insert(chain.chain_id, chain.name.clone()) {
+                anyhow::bail!(
+                    "Chain ID {} is duplicated by '{}' and '{}'",
+                    chain.chain_id,
+                    other,
+                    chain.name
+                );
+            }
+            for name in chain.names() {
+                if name.trim().is_empty() {
+                    anyhow::bail!("Chain '{}' has an empty alias", chain.name);
+                }
+                let normalized = name.to_ascii_lowercase();
+                if let Some(other) = names.insert(normalized, chain.name.clone()) {
+                    anyhow::bail!(
+                        "Chain name or alias '{}' is shared by '{}' and '{}'",
+                        name,
+                        other,
+                        chain.name
+                    );
                 }
             }
         }
+
+        if let Some(default) = &self.default_chain
+            && !self.chains.iter().any(|chain| chain.name == *default)
+        {
+            anyhow::bail!("Default chain '{}' is not configured", default);
+        }
         Ok(())
+    }
+
+    fn normalize_legacy(&mut self) {
+        // Older manual-chain flows could persist only `selected_rpc`. Keep
+        // those configs usable while converging them to the current invariant.
+        for chain in &mut self.chains {
+            if !chain.selected_rpc.is_empty() && !chain.rpc_urls.contains(&chain.selected_rpc) {
+                chain.rpc_urls.push(chain.selected_rpc.clone());
+            }
+        }
+        if let Some(default) = self.default_chain.clone()
+            && let Some(chain) = self
+                .chains
+                .iter()
+                .find(|chain| chain.matches_exact(&default))
+        {
+            self.default_chain = Some(chain.name.clone());
+        }
     }
 }
 
@@ -263,17 +407,31 @@ async fn ensure_private_dir(dir: &Path) -> std::io::Result<()> {
 }
 
 /// Tighten permissions on an existing config to owner-only, since it may
-/// contain private keys. Best-effort: failures are ignored (e.g. missing file).
-async fn restrict_permissions(path: &Path) {
+/// contain private keys. A missing file is fine; other failures are fatal.
+async fn restrict_permissions(path: &Path) -> Result<()> {
     #[cfg(unix)]
-    if let Ok(meta) = tokio::fs::metadata(path).await {
-        let mode = meta.permissions().mode() & 0o777;
-        if mode & 0o077 != 0 {
-            let _ = tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).await;
+    match tokio::fs::metadata(path).await {
+        Ok(meta) => {
+            let mode = meta.permissions().mode() & 0o777;
+            if mode & 0o077 != 0 {
+                tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "Failed to restrict config permissions at {}",
+                            path.display()
+                        )
+                    })?;
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).with_context(|| format!("Failed to inspect {}", path.display()));
         }
     }
     #[cfg(not(unix))]
     let _ = path;
+    Ok(())
 }
 
 fn get_config_path() -> Option<PathBuf> {
@@ -292,28 +450,44 @@ fn legacy_config_path() -> Option<PathBuf> {
 /// Move a pre-0.3 config from ~/.chainz.json to the current location.
 /// No-op when there is nothing to migrate or a config already exists at the
 /// new path (the legacy file is then left untouched).
-async fn migrate_legacy_config(new_path: &Path) {
-    if tokio::fs::metadata(new_path).await.is_ok() {
-        return;
+async fn migrate_legacy_config(new_path: &Path) -> Result<()> {
+    match tokio::fs::metadata(new_path).await {
+        Ok(_) => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).with_context(|| format!("Failed to inspect {}", new_path.display()));
+        }
     }
     let Some(legacy) = legacy_config_path() else {
-        return;
+        return Ok(());
     };
-    if tokio::fs::metadata(&legacy).await.is_err() {
-        return;
+    match tokio::fs::metadata(&legacy).await {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error).with_context(|| format!("Failed to inspect {}", legacy.display()));
+        }
     }
-    if let Some(dir) = new_path.parent()
-        && ensure_private_dir(dir).await.is_err()
-    {
-        return;
+    if let Some(dir) = new_path.parent() {
+        ensure_private_dir(dir)
+            .await
+            .with_context(|| format!("Failed to create config directory at {}", dir.display()))?;
     }
-    if tokio::fs::rename(&legacy, new_path).await.is_ok() {
-        eprintln!(
-            "Migrated config from {} to {}",
-            legacy.display(),
-            new_path.display()
-        );
-    }
+    tokio::fs::rename(&legacy, new_path)
+        .await
+        .with_context(|| {
+            format!(
+                "Failed to migrate config from {} to {}",
+                legacy.display(),
+                new_path.display()
+            )
+        })?;
+    eprintln!(
+        "Migrated config from {} to {}",
+        legacy.display(),
+        new_path.display()
+    );
+    Ok(())
 }
 
 pub fn config_exists() -> bool {
@@ -348,6 +522,12 @@ mod tests {
                     .to_string(),
             },
         )
+    }
+
+    fn chainz_for_chains() -> Result<Chainz> {
+        let mut chainz = Chainz::new();
+        chainz.add_key("default", test_key("default"))?;
+        Ok(chainz)
     }
 
     #[test]
@@ -446,7 +626,7 @@ mod tests {
 
     #[test]
     fn add_chain_new() -> Result<()> {
-        let mut chainz = Chainz::new();
+        let mut chainz = chainz_for_chains()?;
         chainz.add_chain(test_chain("ethereum", 1))?;
 
         let chains = chainz.list_chains();
@@ -457,7 +637,7 @@ mod tests {
 
     #[test]
     fn add_chain_replaces_by_name() -> Result<()> {
-        let mut chainz = Chainz::new();
+        let mut chainz = chainz_for_chains()?;
         chainz.add_chain(test_chain("foo", 1))?;
         chainz.add_chain(test_chain("foo", 42))?;
 
@@ -469,7 +649,7 @@ mod tests {
 
     #[test]
     fn add_chain_replaces_by_alias_and_case() -> Result<()> {
-        let mut chainz = Chainz::new();
+        let mut chainz = chainz_for_chains()?;
         let mut eth = test_chain("ethereum", 1);
         eth.aliases = vec!["Ethereum Mainnet".to_string()];
         chainz.add_chain(eth)?;
@@ -489,7 +669,7 @@ mod tests {
 
     #[test]
     fn remove_chain_clears_default() -> Result<()> {
-        let mut chainz = Chainz::new();
+        let mut chainz = chainz_for_chains()?;
         chainz.add_chain(test_chain("ethereum", 1))?;
         chainz.config.default_chain = Some("ethereum".to_string());
 
@@ -556,6 +736,98 @@ mod tests {
         let keys = chainz.list_keys();
         assert_eq!(keys.len(), 3);
         assert_eq!(keys[0].0, "default");
+        Ok(())
+    }
+
+    #[test]
+    fn duplicate_chain_id_is_rejected_without_mutating_config() -> Result<()> {
+        let mut chainz = chainz_for_chains()?;
+        chainz.add_chain(test_chain("ethereum", 1))?;
+        let error = chainz.add_chain(test_chain("mainnet", 1)).unwrap_err();
+        assert!(error.to_string().contains("already configured"));
+        assert_eq!(chainz.list_chains().len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn alias_collision_is_rejected() -> Result<()> {
+        let mut chainz = chainz_for_chains()?;
+        chainz.add_chain(test_chain("ethereum", 1))?;
+        let mut optimism = test_chain("optimism", 10);
+        optimism.aliases.push("ethereum".to_string());
+        let error = chainz.add_chain(optimism).unwrap_err();
+        assert!(error.to_string().contains("collides"));
+        assert_eq!(chainz.list_chains().len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn replacing_default_chain_tracks_new_canonical_name() -> Result<()> {
+        let mut chainz = chainz_for_chains()?;
+        let mut ethereum = test_chain("ethereum", 1);
+        ethereum.aliases.push("Ethereum Mainnet".to_string());
+        chainz.add_chain(ethereum)?;
+        chainz.config.default_chain = Some("ethereum".to_string());
+        chainz.add_chain(test_chain("Ethereum Mainnet", 1))?;
+        assert_eq!(
+            chainz.config.default_chain.as_deref(),
+            Some("Ethereum Mainnet")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn referenced_key_cannot_be_removed() -> Result<()> {
+        let mut chainz = chainz_for_chains()?;
+        chainz.add_chain(test_chain("ethereum", 1))?;
+        let error = chainz.remove_key("default").unwrap_err();
+        assert!(error.to_string().contains("still used"));
+        assert!(chainz.get_key("default").is_ok());
+        Ok(())
+    }
+
+    #[test]
+    fn config_validation_rejects_selected_rpc_outside_list() {
+        let mut config = Config::default();
+        config.keys.insert("default".into(), test_key("default"));
+        let mut chain = test_chain("ethereum", 1);
+        chain.selected_rpc = "https://other.example.com".into();
+        config.chains.push(chain);
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("selected RPC")
+        );
+    }
+
+    #[test]
+    fn legacy_normalization_restores_selected_rpc_and_canonical_default() {
+        let mut config = Config::default();
+        config.keys.insert("default".into(), test_key("default"));
+        let mut chain = test_chain("ethereum", 1);
+        chain.aliases.push("Ethereum Mainnet".into());
+        chain.rpc_urls.clear();
+        config.chains.push(chain);
+        config.default_chain = Some("ethereum mainnet".into());
+
+        config.normalize_legacy();
+        assert_eq!(config.chains[0].rpc_urls, vec!["https://rpc.example.com"]);
+        assert_eq!(config.default_chain.as_deref(), Some("ethereum"));
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn selecting_a_new_rpc_adds_it_to_the_configured_list() -> Result<()> {
+        let mut chainz = chainz_for_chains()?;
+        chainz.add_chain(test_chain("ethereum", 1))?;
+        chainz.set_selected_rpc("ethereum", "https://backup.example.com".into())?;
+
+        let chain = &chainz.list_chains()[0];
+        assert_eq!(chain.selected_rpc, "https://backup.example.com");
+        assert!(chain.rpc_urls.contains(&chain.selected_rpc));
+        assert!(chainz.config.validate().is_ok());
         Ok(())
     }
 }

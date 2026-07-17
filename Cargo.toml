@@ -1,12 +1,21 @@
 [package]
 name = "chainz"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.88"
 description = "CLI for managing EVM chain configurations, RPC endpoints, and private keys"
 repository = "https://github.com/marktoda/chainz"
 license = "MIT"
 readme = "README.md"
+include = [
+    "src/**",
+    "tests/**",
+    "Cargo.toml",
+    "Cargo.lock",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+]
 keywords = ["ethereum", "evm", "cli", "web3", "blockchain"]
 categories = ["command-line-utilities", "cryptography::cryptocurrencies", "development-tools"]
 

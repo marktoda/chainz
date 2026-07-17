@@ -8,6 +8,7 @@
 use crate::{chain::rpc::check_urls, config::Chainz, key::KeyType, ui};
 use anyhow::Result;
 use console::style;
+use std::io::IsTerminal;
 
 pub struct Report {
     pub failures: usize,
@@ -20,7 +21,18 @@ pub async fn run(chainz: &mut Chainz, fix: bool) -> Result<Report> {
         warnings: 0,
     };
 
-    check_keys(chainz, &mut report);
+    check_config_invariants(chainz, &mut report);
+    let plaintext_keys = check_keys(chainz, &mut report);
+    if fix && plaintext_keys > 0 && std::io::stdin().is_terminal() {
+        let migrate = dialoguer::Confirm::new()
+            .with_prompt("Migrate plaintext keys to safe storage now?")
+            .default(true)
+            .interact()?;
+        if migrate {
+            let migrated = crate::key::migrate_plaintext_keys(chainz).await?;
+            report.warnings = report.warnings.saturating_sub(migrated);
+        }
+    }
     check_key_references(chainz, &mut report);
     let failed_chains = check_rpc_health(chainz, &mut report).await;
 
@@ -52,26 +64,40 @@ pub async fn run(chainz: &mut Chainz, fix: bool) -> Result<Report> {
     Ok(report)
 }
 
-fn check_keys(chainz: &Chainz, report: &mut Report) {
+fn check_config_invariants(chainz: &Chainz, report: &mut Report) {
+    println!("{}", ui::section("Configuration"));
+    match chainz.config.validate() {
+        Ok(()) => println!("  {}", ui::success("configuration invariants hold")),
+        Err(error) => {
+            report.failures += 1;
+            println!("  {}", ui::fail(&format!("{:#}", error)));
+        }
+    }
+}
+
+fn check_keys(chainz: &Chainz, report: &mut Report) -> usize {
     println!("{}", ui::section("Keys"));
     let keys = chainz.list_keys();
     if keys.is_empty() {
         println!("  no keys configured");
     }
+    let mut plaintext = 0;
     for (name, key) in keys {
         if let KeyType::PrivateKey { .. } = key.kind {
             report.warnings += 1;
+            plaintext += 1;
             println!(
                 "  {}",
                 ui::warn(&format!(
-                    "'{}' is stored as a plaintext private key — consider re-adding it with --type encrypted or --type keyring",
-                    name
+                    "'{}' is stored as a plaintext private key — migrate with `chainz key migrate {}`",
+                    name, name
                 ))
             );
         } else {
             println!("  {}", ui::success(&key.to_string()));
         }
     }
+    plaintext
 }
 
 fn check_key_references(chainz: &Chainz, report: &mut Report) {
@@ -129,11 +155,23 @@ async fn check_rpc_health(chainz: &Chainz, report: &mut Report) -> Vec<String> {
         if is_healthy {
             println!(
                 "  {}",
-                ui::success(&format!("{} ({}) {}ms", name, raw_url, latency.as_millis()))
+                ui::success(&format!(
+                    "{} ({}) {}ms",
+                    name,
+                    crate::variables::redact_url(&raw_url),
+                    latency.as_millis()
+                ))
             );
         } else {
             report.failures += 1;
-            println!("  {}", ui::fail(&format!("{} ({})", name, raw_url)));
+            println!(
+                "  {}",
+                ui::fail(&format!(
+                    "{} ({})",
+                    name,
+                    crate::variables::redact_url(&raw_url)
+                ))
+            );
             failed.push(name);
         }
     }
@@ -164,7 +202,11 @@ async fn fix_rpcs(chainz: &mut Chainz, failed: &[String], report: &mut Report) -
                 chainz.set_selected_rpc(name, candidates[i].clone())?;
                 println!(
                     "  {}",
-                    ui::success(&format!("{}: switched to {}", name, candidates[i]))
+                    ui::success(&format!(
+                        "{}: switched to {}",
+                        name,
+                        crate::variables::redact_url(candidates[i])
+                    ))
                 );
                 report.failures = report.failures.saturating_sub(1);
                 fixed_any = true;
