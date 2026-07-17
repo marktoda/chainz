@@ -1,5 +1,8 @@
 use anyhow::Result;
-use chainz::{config::Chainz, doctor, init, opt, opt::Opt, ui, variables::ChainVariables};
+use chainz::{
+    chain::ChainDefinition, config::Chainz, doctor, init, listing, opt, opt::Opt, ui,
+    variables::ChainVariables,
+};
 use clap::{CommandFactory, Parser};
 use dialoguer::FuzzySelect;
 use std::process::Command as ProcessCommand;
@@ -56,35 +59,40 @@ async fn main() -> Result<()> {
             chainz.save().await?;
             println!("Default chain set to '{}'", definition.name);
         }
-        opt::Command::List { json } => {
+        opt::Command::List { json, verbose } => {
             let chains = chainz.list_chains();
             if json {
                 let entries: Vec<_> = chains
                     .iter()
-                    .map(|c| ChainListing {
-                        name: &c.name,
-                        aliases: &c.aliases,
-                        chain_id: c.chain_id,
-                        selected_rpc: &c.selected_rpc,
-                        rpc_urls: &c.rpc_urls,
-                        key_name: c.key_name.as_deref(),
-                        verification_url: c.verification_url.as_deref(),
-                        is_default: chainz.config.default_chain.as_deref() == Some(c.name.as_str()),
-                    })
+                    .map(|chain| ChainListing::new(chain, &chainz.config.default_chain))
                     .collect();
                 println!("{}", serde_json::to_string_pretty(&entries)?);
+            } else if verbose {
+                print!(
+                    "{}",
+                    listing::verbose(chains, chainz.config.default_chain.as_deref())
+                );
             } else {
-                if chains.is_empty() {
-                    println!(
-                        "No chains configured. Run 'chainz init' or 'chainz add' to get started."
-                    );
-                }
-                for chain_def in chains {
-                    println!("{}", chain_def);
-                }
-                if let Some(default) = &chainz.config.default_chain {
-                    println!("\nDefault chain: {}", default);
-                }
+                print!(
+                    "{}",
+                    listing::compact(chains, chainz.config.default_chain.as_deref())
+                );
+            }
+        }
+        opt::Command::Show { name_or_id, json } => {
+            let chain = chainz.config.get_chain(&name_or_id)?;
+            let is_default = chainz.config.default_chain.as_deref() == Some(chain.name.as_str());
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&ChainListing::new(
+                        &chain,
+                        &chainz.config.default_chain
+                    ))?
+                );
+            } else {
+                println!("{}", chain);
+                println!("Default: {}", if is_default { "Yes" } else { "No" });
             }
         }
         opt::Command::Doctor { fix } => {
@@ -169,6 +177,21 @@ struct ChainListing<'a> {
     key_name: Option<&'a str>,
     verification_url: Option<&'a str>,
     is_default: bool,
+}
+
+impl<'a> ChainListing<'a> {
+    fn new(chain: &'a ChainDefinition, default: &Option<String>) -> Self {
+        Self {
+            name: &chain.name,
+            aliases: &chain.aliases,
+            chain_id: chain.chain_id,
+            selected_rpc: &chain.selected_rpc,
+            rpc_urls: &chain.rpc_urls,
+            key_name: chain.key_name.as_deref(),
+            verification_url: chain.verification_url.as_deref(),
+            is_default: default.as_deref() == Some(chain.name.as_str()),
+        }
+    }
 }
 
 fn select_chain(chainz: &Chainz) -> Result<String> {

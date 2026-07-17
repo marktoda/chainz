@@ -111,6 +111,58 @@ fn list_empty_config_shows_hint() {
 }
 
 #[test]
+fn list_is_compact_and_show_owns_details() {
+    let home = TempDir::new().unwrap();
+    seed_config(home.path(), &[("ethereum", 1), ("optimism", 10)]);
+    chainz(home.path())
+        .args(["use", "ethereum"])
+        .assert()
+        .success();
+
+    let output = chainz(home.path())
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("CHAIN"))
+        .stdout(predicate::str::contains("ethereum"))
+        .stdout(predicate::str::contains("Active RPC").not())
+        .get_output()
+        .stdout
+        .clone();
+    assert!(String::from_utf8(output).unwrap().lines().count() <= 5);
+
+    chainz(home.path())
+        .args(["show", "eth"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Active RPC"))
+        .stdout(predicate::str::contains("Default: Yes"));
+
+    chainz(home.path())
+        .args(["list", "--verbose"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Active RPC"));
+}
+
+#[test]
+fn show_json_uses_the_list_json_contract() {
+    let home = TempDir::new().unwrap();
+    seed_config(home.path(), &[("ethereum", 1)]);
+
+    let output = chainz(home.path())
+        .args(["show", "1", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let parsed: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(parsed["name"], "ethereum");
+    assert_eq!(parsed["chain_id"], 1);
+}
+
+#[test]
 fn var_set_get_list_rm_roundtrip() {
     let home = TempDir::new().unwrap();
     chainz(home.path())
@@ -196,7 +248,7 @@ fn human_chain_outputs_redact_credentials() {
     write_raw_config(home.path(), &serde_json::to_string_pretty(&config).unwrap());
 
     chainz(home.path())
-        .arg("list")
+        .args(["show", "ethereum"])
         .assert()
         .success()
         .stdout(predicate::str::contains("alchemy.com"))

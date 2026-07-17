@@ -56,6 +56,18 @@ pub enum Command {
         /// Output as JSON (for scripting)
         #[arg(long)]
         json: bool,
+        /// Show full details for every chain
+        #[arg(long, conflicts_with = "json")]
+        verbose: bool,
+    },
+
+    /// Show one chain's full configuration
+    Show {
+        /// Chain name, alias, prefix, or ID
+        name_or_id: String,
+        /// Output as JSON (for scripting)
+        #[arg(long)]
+        json: bool,
     },
 
     /// Set the default chain used by exec when no chain is given
