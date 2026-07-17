@@ -171,6 +171,9 @@ pub enum KeyCommand {
     Remove {
         /// Name of the private key to remove
         name: String,
+        /// Detach the key from chains that reference it
+        #[arg(long)]
+        force: bool,
     },
     /// Move keys out of plaintext storage
     Migrate {
@@ -269,7 +272,7 @@ pub struct AddArgs {
     #[arg(long)]
     pub rpc_url: Option<String>,
 
-    /// Key name (defaults to "default")
+    /// Key name (omit for an RPC-only chain)
     #[arg(long)]
     pub key: Option<String>,
 

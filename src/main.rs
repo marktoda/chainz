@@ -67,7 +67,7 @@ async fn main() -> Result<()> {
                         chain_id: c.chain_id,
                         selected_rpc: &c.selected_rpc,
                         rpc_urls: &c.rpc_urls,
-                        key_name: &c.key_name,
+                        key_name: c.key_name.as_deref(),
                         verification_url: c.verification_url.as_deref(),
                         is_default: chainz.config.default_chain.as_deref() == Some(c.name.as_str()),
                     })
@@ -166,7 +166,7 @@ struct ChainListing<'a> {
     chain_id: u64,
     selected_rpc: &'a str,
     rpc_urls: &'a [String],
-    key_name: &'a str,
+    key_name: Option<&'a str>,
     verification_url: Option<&'a str>,
     is_default: bool,
 }

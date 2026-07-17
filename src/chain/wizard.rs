@@ -1,5 +1,5 @@
 use super::{
-    ChainDefinition, DEFAULT_KEY_NAME,
+    ChainDefinition,
     rpc::{check_url, probe_urls, rank_by_health},
 };
 use crate::ui;
@@ -156,7 +156,7 @@ async fn select_manual_rpc(chain_id: u64, globals: &GlobalVariables) -> Result<S
 }
 
 /// Helper function to select or create a key
-pub fn select_key(chainz: &mut Chainz) -> Result<String> {
+pub fn select_key(chainz: &mut Chainz) -> Result<Option<String>> {
     let keys = chainz.list_keys();
 
     // Create display strings with addresses
@@ -165,7 +165,7 @@ pub fn select_key(chainz: &mut Chainz) -> Result<String> {
         .map(|(name, key)| (name.to_string(), key.to_string()))
         .collect();
 
-    // Add the "Add new key" option
+    key_displays.push(("No key".to_string(), "No key (RPC only)".to_string()));
     key_displays.push(("Add new key".to_string(), "Add new key".to_string()));
 
     let key_selection = fuzzy_select(
@@ -181,9 +181,11 @@ pub fn select_key(chainz: &mut Chainz) -> Result<String> {
         let kname: String = Input::new().with_prompt("Enter key name").interact_text()?;
         let key = crate::key::prompt_for_new_key(&kname)?;
         chainz.add_key(&kname, key)?;
-        Ok(kname)
+        Ok(Some(kname))
+    } else if key_selection == key_displays.len() - 2 {
+        Ok(None)
     } else {
-        Ok(key_displays[key_selection].0.clone())
+        Ok(Some(key_displays[key_selection].0.clone()))
     }
 }
 
@@ -308,18 +310,18 @@ impl AddArgs {
         let name = self.name.clone().unwrap();
         let chain_id = self.chain_id.unwrap();
         let rpc_url = self.rpc_url.clone().unwrap();
-        let key_name = self
-            .key
-            .clone()
-            .unwrap_or_else(|| DEFAULT_KEY_NAME.to_string());
-
-        // Validate that the key exists
-        chainz.get_key(&key_name).map_err(|_| {
-            anyhow::anyhow!(
-                "Key '{}' not found. Add it first with 'chainz key add'.",
-                key_name
-            )
-        })?;
+        let key_name = match &self.key {
+            Some(name) => {
+                chainz.get_key(name).map_err(|_| {
+                    anyhow::anyhow!(
+                        "Key '{}' not found. Add it first with 'chainz key add'.",
+                        name
+                    )
+                })?;
+                Some(name.clone())
+            }
+            None => None,
+        };
 
         // Test the RPC
         check_url(&chainz.config.globals.expand_rpc_url(&rpc_url), chain_id)
@@ -405,7 +407,7 @@ impl AddArgs {
                     key
                 )
             })?;
-            key.clone()
+            Some(key.clone())
         } else {
             println!("{}", ui::header("Key Configuration"));
             select_key(chainz)?

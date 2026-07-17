@@ -49,7 +49,11 @@ impl Chainz {
     pub fn get_chain(&self, name_or_id: &str) -> Result<ChainInstance> {
         let definition = self.config.get_chain(name_or_id)?;
         let rpc_url = self.config.globals.expand_rpc_url(&definition.selected_rpc);
-        let key = self.get_key(&definition.key_name)?;
+        let key = definition
+            .key_name
+            .as_deref()
+            .and_then(|name| self.config.keys.get(name))
+            .cloned();
         Ok(ChainInstance::new(definition, rpc_url, key))
     }
 
@@ -84,6 +88,26 @@ impl Chainz {
         }
         self.config.keys.remove(name);
         Ok(())
+    }
+
+    pub fn chains_using_key(&self, name: &str) -> Vec<String> {
+        self.config
+            .chains
+            .iter()
+            .filter(|chain| chain.key_name.as_deref() == Some(name))
+            .map(|chain| chain.name.clone())
+            .collect()
+    }
+
+    pub fn detach_key(&mut self, name: &str) -> usize {
+        let mut detached = 0;
+        for chain in &mut self.config.chains {
+            if chain.key_name.as_deref() == Some(name) {
+                chain.key_name = None;
+                detached += 1;
+            }
+        }
+        detached
     }
 
     pub fn get_key(&self, key_name: &str) -> Result<Key> {
@@ -336,7 +360,7 @@ mod tests {
             selected_rpc: "https://rpc.example.com".to_string(),
             verification_api_key: None,
             verification_url: None,
-            key_name: "default".to_string(),
+            key_name: Some("default".to_string()),
         }
     }
 

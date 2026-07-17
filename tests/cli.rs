@@ -7,6 +7,8 @@ use chainz::config::{Config, DEFAULT_CONFIG_RELATIVE, LEGACY_CONFIG_FILE};
 use chainz::key::{Key, KeyType};
 use predicates::prelude::*;
 use std::fs;
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::path::Path;
 use tempfile::TempDir;
 
@@ -28,6 +30,25 @@ fn chainz(home: &Path) -> Command {
 
 fn config_path(home: &Path) -> std::path::PathBuf {
     home.join(DEFAULT_CONFIG_RELATIVE)
+}
+
+/// Serve one deterministic `eth_chainId` response for noninteractive add.
+fn one_shot_rpc(chain_id: u64) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0_u8; 4096];
+        let _ = stream.read(&mut request);
+        let body = format!(r#"{{"jsonrpc":"2.0","id":1,"result":"0x{chain_id:x}"}}"#);
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(response.as_bytes()).unwrap();
+    });
+    format!("http://{address}")
 }
 
 /// Write raw config content at the standard location (creating parent dirs).
@@ -52,7 +73,7 @@ fn seed_config(home: &Path, chains: &[(&str, u64)]) {
                 selected_rpc: "http://localhost:1".to_string(),
                 verification_api_key: None,
                 verification_url: None,
-                key_name: "default".to_string(),
+                key_name: Some("default".to_string()),
             })
             .collect(),
         keys: std::collections::HashMap::from([(
@@ -159,7 +180,7 @@ fn human_chain_outputs_redact_credentials() {
             verification_url: Some(
                 "https://api.etherscan.io/api?apikey=verification-secret".to_string(),
             ),
-            key_name: "default".to_string(),
+            key_name: Some("default".to_string()),
         }],
         keys: std::collections::HashMap::from([(
             "default".to_string(),
@@ -267,6 +288,29 @@ fn key_remove_works() {
         .assert()
         .success()
         .stdout(predicate::str::contains("No stored keys"));
+}
+
+#[test]
+fn key_remove_blocks_references_and_force_detaches_them() {
+    let home = TempDir::new().unwrap();
+    seed_config(home.path(), &[("ethereum", 1)]);
+
+    chainz(home.path())
+        .args(["key", "remove", "default"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("used by chain"));
+
+    chainz(home.path())
+        .args(["key", "remove", "default", "--force"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Detached from 1 chain"));
+
+    chainz(home.path())
+        .args(["exec", "ethereum", "--", "echo", "@chainname"])
+        .assert()
+        .success();
 }
 
 #[cfg(unix)]
@@ -410,6 +454,36 @@ fn exec_does_not_expose_key_unless_requested() {
         .assert()
         .success()
         .stdout(predicate::str::contains("key=unset"));
+}
+
+#[test]
+fn rpc_only_chain_executes_until_key_material_is_requested() {
+    let home = TempDir::new().unwrap();
+    let config = r#"{
+        "chains": [{
+            "name": "readonly",
+            "chain_id": 31337,
+            "rpc_urls": ["http://localhost:1"],
+            "selected_rpc": "http://localhost:1",
+            "verification_api_key": null,
+            "verification_url": null,
+            "key_name": null
+        }],
+        "variables": {},
+        "keys": {}
+    }"#;
+    write_raw_config(home.path(), config);
+
+    chainz(home.path())
+        .args(["exec", "readonly", "--", "echo", "@chainname"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("readonly"));
+    chainz(home.path())
+        .args(["exec", "readonly", "--", "echo", "@wallet"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("has no key attached"));
 }
 
 #[test]
@@ -780,8 +854,9 @@ fn shell_uses_default_chain_when_omitted() {
 }
 
 #[test]
-fn add_noninteractive_requires_existing_key() {
+fn add_noninteractive_supports_rpc_only_chain() {
     let home = TempDir::new().unwrap();
+    let rpc = one_shot_rpc(31337);
     chainz(home.path())
         .args([
             "add",
@@ -790,9 +865,12 @@ fn add_noninteractive_requires_existing_key() {
             "--chain-id",
             "31337",
             "--rpc-url",
-            "http://localhost:1",
+            &rpc,
         ])
         .assert()
-        .failure()
-        .stderr(predicate::str::contains("Key 'default' not found"));
+        .success();
+
+    let config: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(config_path(home.path())).unwrap()).unwrap();
+    assert!(config["chains"][0].get("key_name").is_none());
 }

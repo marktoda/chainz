@@ -4,7 +4,6 @@ use crate::{
     key::{Key, KeyType, create_default_key},
     opt, ui,
 };
-use alloy::signers::local::PrivateKeySigner;
 use anyhow::Result;
 use dialoguer::{Confirm, Input};
 
@@ -22,43 +21,41 @@ pub async fn handle_init() -> Result<()> {
     }
 
     let (mut chainz, private_key) = initialize_with_wizard().await?;
-    let secure_key = create_default_key(DEFAULT_KEY_NAME, private_key)?;
-    chainz
-        .config
-        .keys
-        .insert(DEFAULT_KEY_NAME.to_string(), secure_key);
+    if let Some(private_key) = private_key {
+        let secure_key = create_default_key(DEFAULT_KEY_NAME, private_key)?;
+        chainz
+            .config
+            .keys
+            .insert(DEFAULT_KEY_NAME.to_string(), secure_key);
+    }
 
     chainz.save().await?;
     println!("Configuration initialized successfully!");
     Ok(())
 }
 
-async fn initialize_with_wizard() -> Result<(Chainz, String)> {
+async fn initialize_with_wizard() -> Result<(Chainz, Option<String>)> {
     println!("{}", ui::header("Chainz Initialization"));
     let mut chainz = Chainz::new();
 
-    let private_key = {
-        let input = rpassword::prompt_password("Enter default private key (Optional): ")?;
-        if input.is_empty() {
-            let wallet = PrivateKeySigner::random();
-            println!("Generated new wallet address: {}", wallet.address());
-            format!("{:x}", wallet.credential().to_bytes())
-        } else {
-            input
-        }
-    };
+    let input = rpassword::prompt_password(
+        "Default private key (optional; leave empty for RPC-only setup): ",
+    )?;
+    let private_key = (!input.is_empty()).then_some(input);
     // Keep the key only in process memory while the wizard runs. It is
     // converted to the selected safe backend immediately before the single,
     // atomic config save in `handle_init`.
-    chainz.add_key(
-        DEFAULT_KEY_NAME,
-        Key {
-            name: DEFAULT_KEY_NAME.to_string(),
-            kind: KeyType::PrivateKey {
-                value: private_key.clone(),
+    if let Some(private_key) = &private_key {
+        chainz.add_key(
+            DEFAULT_KEY_NAME,
+            Key {
+                name: DEFAULT_KEY_NAME.to_string(),
+                kind: KeyType::PrivateKey {
+                    value: private_key.clone(),
+                },
             },
-        },
-    )?;
+        )?;
+    }
 
     // get infura_api_key, optionally
     let infura_api_key: String = Input::new()

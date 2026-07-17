@@ -65,8 +65,19 @@ impl ChainVariables {
         // The real security boundary is the lazy check above — encrypted keys are never
         // decrypted unless the command explicitly needs them.
         if needs_key {
-            let private_key = chain.key.private_key()?.to_string();
-            let address = chain.key.address().unwrap_or_default().to_string();
+            let key = chain
+                .key
+                .as_ref()
+                .ok_or_else(|| match &chain.definition.key_name {
+                    Some(name) => anyhow::anyhow!("Key '{}' is not available", name),
+                    None => anyhow::anyhow!(
+                        "Chain '{}' has no key attached; attach one with `chainz update {}`",
+                        chain.definition.name,
+                        chain.definition.name
+                    ),
+                })?;
+            let private_key = key.private_key()?.to_string();
+            let address = key.address().unwrap_or_default().to_string();
 
             env.insert("WALLET_ADDRESS".to_string(), address.clone());
             expansions.insert("@wallet".to_string(), address);

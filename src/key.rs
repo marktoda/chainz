@@ -375,10 +375,26 @@ impl KeyCommand {
                     }
                 }
             }
-            KeyCommand::Remove { name } => {
+            KeyCommand::Remove { name, force } => {
+                let references = config.chains_using_key(&name);
+                if !references.is_empty() && !force {
+                    anyhow::bail!(
+                        "Key '{}' is used by chain(s): {}. Re-run with --force to detach it.",
+                        name,
+                        references.join(", ")
+                    );
+                }
+                let detached = if force { config.detach_key(&name) } else { 0 };
                 config.remove_key(&name)?;
-                println!("Removed key '{}'", name);
                 config.save().await?;
+                println!("Removed key '{}'", name);
+                if detached > 0 {
+                    println!(
+                        "Detached from {} chain{}",
+                        detached,
+                        if detached == 1 { "" } else { "s" }
+                    );
+                }
             }
             KeyCommand::Migrate { name, all, to } => {
                 if !all && name.is_none() {
