@@ -91,7 +91,7 @@ fn plaintext_and_encrypted_round_trip() -> Result<()> {
         TEST_PRIVATE_KEY
     );
 
-    let encrypted = Key::encrypt("test".into(), TEST_PRIVATE_KEY, "password")?;
+    let encrypted = encrypt_with_password("test".into(), TEST_PRIVATE_KEY, "password")?;
     let encrypted_backend = MemoryBackend::new(true, false, &["password"]);
     assert_eq!(
         KeyVault::new(encrypted_backend)
@@ -108,7 +108,7 @@ fn plaintext_and_encrypted_round_trip() -> Result<()> {
 
 #[test]
 fn encrypted_key_rejects_wrong_password() -> Result<()> {
-    let encrypted = Key::encrypt("test".into(), TEST_PRIVATE_KEY, "correct")?;
+    let encrypted = encrypt_with_password("test".into(), TEST_PRIVATE_KEY, "correct")?;
     let error = KeyVault::new(MemoryBackend::new(true, false, &["wrong"]))
         .resolve(&encrypted)
         .unwrap_err()
@@ -309,7 +309,7 @@ fn kind_names_match_serialized_tags() {
                 value: TEST_PRIVATE_KEY.into(),
             },
         ),
-        Key::encrypt("encrypted".into(), TEST_PRIVATE_KEY, "pw").unwrap(),
+        encrypt_with_password("encrypted".into(), TEST_PRIVATE_KEY, "pw").unwrap(),
         Key::new(
             "op".into(),
             KeyType::OnePassword {
@@ -333,7 +333,7 @@ fn kind_names_match_serialized_tags() {
 
 #[test]
 fn legacy_encrypted_record_gets_default_kdf_parameters() -> Result<()> {
-    let encrypted = Key::encrypt("test".into(), TEST_PRIVATE_KEY, "pw")?;
+    let encrypted = encrypt_with_password("test".into(), TEST_PRIVATE_KEY, "pw")?;
     let mut json = serde_json::to_value(&encrypted)?;
     let object = json.as_object_mut().unwrap();
     object.remove("version");

@@ -2,9 +2,7 @@
 //! `~/.chainz.json` is never touched and tests can run in parallel.
 
 use assert_cmd::Command;
-use chainz::chain::ChainDefinition;
-use chainz::config::{Config, LEGACY_CONFIG_FILE};
-use chainz::key::{Key, KeyType};
+use chainz::model::{ChainDefinition, Config, Key, KeyType, LEGACY_CONFIG_FILE};
 use predicates::prelude::*;
 use std::fs;
 use std::io::{Read, Write};

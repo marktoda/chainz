@@ -7,15 +7,13 @@
 use crate::{
     config::Chainz,
     opt::{KeyCommand, KeyTypeArg, MigrationTargetArg},
+    prompt::{Prompt, SystemPrompt},
 };
 use aes_gcm::{
     Aes256Gcm, Nonce,
     aead::{Aead, KeyInit},
 };
-use alloy::{
-    primitives::Address,
-    signers::{Signer, local::PrivateKeySigner},
-};
+use alloy::{primitives::Address, signers::local::PrivateKeySigner};
 use anyhow::{Context, Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use keyring::Entry;
@@ -448,28 +446,19 @@ impl Key {
         self
     }
 
-    pub fn private_key(&self) -> Result<Zeroizing<String>> {
+    pub(crate) fn private_key(&self) -> Result<Zeroizing<String>> {
         KeyVault::new(SystemKeyBackend).resolve(self)
     }
 
-    pub fn encrypt(name: String, private_key: &str, password: &str) -> Result<Self> {
-        Key::validate_private_key(private_key)?;
-        encrypt_with_password(name, private_key, password)
-    }
-
-    pub fn signer(&self) -> Result<Box<dyn Signer>> {
-        Ok(Box::new(self.private_key()?.parse::<PrivateKeySigner>()?))
-    }
-
-    pub fn address(&self) -> Result<Address> {
-        Ok(self.signer()?.address())
+    pub(crate) fn address(&self) -> Result<Address> {
+        Ok(self.private_key()?.parse::<PrivateKeySigner>()?.address())
     }
 
     pub(crate) fn address_from_private_key(private_key: &str) -> Result<Address> {
         Ok(private_key.parse::<PrivateKeySigner>()?.address())
     }
 
-    pub fn validate_private_key(key: &str) -> Result<()> {
+    pub(crate) fn validate_private_key(key: &str) -> Result<()> {
         key.parse::<PrivateKeySigner>()
             .map(|_| ())
             .map_err(|e| anyhow!("Invalid private key: {}", e))
@@ -646,7 +635,7 @@ pub(crate) async fn save_with_safe_new_keys(
     names: impl IntoIterator<Item = String>,
 ) -> Result<()> {
     let vault = KeyVault::new(SystemKeyBackend);
-    let mut provisions: Vec<(String, Key, KeyProvision)> = Vec::new();
+    let mut provisions = Vec::new();
     for name in names {
         let staged = chainz.get_key(&name)?;
         if !matches!(staged.kind, KeyType::PrivateKey { .. }) {
@@ -656,7 +645,7 @@ pub(crate) async fn save_with_safe_new_keys(
         let provision = match vault.provision_private_key(&name, &private_key, None) {
             Ok(provision) => provision,
             Err(error) => {
-                rollback_staged_provisions(chainz, &vault, &provisions);
+                rollback_provisions(chainz, &vault, &provisions);
                 return Err(error);
             }
         };
@@ -667,13 +656,13 @@ pub(crate) async fn save_with_safe_new_keys(
         provisions.push((name, staged, provision));
     }
     if let Err(error) = chainz.save().await {
-        rollback_staged_provisions(chainz, &vault, &provisions);
+        rollback_provisions(chainz, &vault, &provisions);
         return Err(error);
     }
     Ok(())
 }
 
-fn rollback_staged_provisions<B: KeyBackend>(
+fn rollback_provisions<B: KeyBackend>(
     chainz: &mut Chainz,
     vault: &KeyVault<B>,
     provisions: &[(String, Key, KeyProvision)],
@@ -706,7 +695,7 @@ async fn migrate_names(
     continue_on_error: bool,
 ) -> Result<usize> {
     let vault = KeyVault::new(SystemKeyBackend);
-    let mut migrated: Vec<(String, Key, KeyProvision)> = Vec::new();
+    let mut migrated = Vec::new();
     for name in names {
         let source = chainz.get_key(&name)?;
         match vault.provision_migration(&source, target) {
@@ -721,14 +710,14 @@ async fn migrate_names(
                 eprintln!("Failed to migrate '{}': {:#}", name, error);
             }
             Err(error) => {
-                rollback_migrations(chainz, &vault, &migrated);
+                rollback_provisions(chainz, &vault, &migrated);
                 return Err(error);
             }
         }
     }
     if !migrated.is_empty() {
         if let Err(error) = chainz.save().await {
-            rollback_migrations(chainz, &vault, &migrated);
+            rollback_provisions(chainz, &vault, &migrated);
             return Err(error);
         }
         for (name, source, provision) in &migrated {
@@ -744,22 +733,6 @@ async fn migrate_names(
         }
     }
     Ok(migrated.len())
-}
-
-fn rollback_migrations<B: KeyBackend>(
-    chainz: &mut Chainz,
-    vault: &KeyVault<B>,
-    migrated: &[(String, Key, KeyProvision)],
-) {
-    for (name, source, provision) in migrated.iter().rev() {
-        chainz.config.keys.insert(name.clone(), source.clone());
-        if let Err(error) = vault.rollback(provision) {
-            eprintln!(
-                "Warning: could not roll back credential for '{}': {error}",
-                name
-            );
-        }
-    }
 }
 
 fn same_external_location(left: &Key, right: &Key) -> bool {
@@ -800,12 +773,9 @@ impl KeyCommand {
                     if key.is_some() || stdin {
                         anyhow::bail!("1Password references do not accept private-key input");
                     }
-                    let vault_name: String = dialoguer::Input::new()
-                        .with_prompt("Enter 1Password vault name")
-                        .interact_text()?;
-                    let item: String = dialoguer::Input::new()
-                        .with_prompt("Enter 1Password item reference")
-                        .interact_text()?;
+                    let mut prompt = SystemPrompt;
+                    let vault_name = prompt.text("Enter 1Password vault name", None, false)?;
+                    let item = prompt.text("Enter 1Password item reference", None, false)?;
                     KeyProvision {
                         key: Key::new(
                             name.clone(),

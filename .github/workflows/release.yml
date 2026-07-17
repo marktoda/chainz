@@ -22,6 +22,17 @@ jobs:
     steps:
       - name: Checkout sources
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify tagged commit is on main
+        shell: bash
+        run: |
+          tagged_commit="$(git rev-parse "${GITHUB_REF_NAME}^{commit}")"
+          git merge-base --is-ancestor "${tagged_commit}" origin/main || {
+            echo "Tag ${GITHUB_REF_NAME} does not point to a commit on main" >&2
+            exit 1
+          }
 
       - name: Install stable toolchain
         uses: dtolnay/rust-toolchain@stable

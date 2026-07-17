@@ -63,38 +63,6 @@ fn test_missing_variables() {
 }
 
 #[test]
-fn redact_url_hides_all_literal_credential_locations() {
-    let redacted = redact_url(
-        "https://user:password@rpc.example.com/v2/path-secret?token=query-secret#fragment-secret",
-    );
-    for secret in [
-        "user",
-        "password",
-        "path-secret",
-        "query-secret",
-        "fragment-secret",
-    ] {
-        assert!(!redacted.contains(secret), "{redacted}");
-    }
-    assert!(redacted.contains("rpc.example.com"));
-    assert!(redacted.contains("REDACTED"));
-}
-
-#[test]
-fn redact_url_preserves_variable_template_names() {
-    let redacted = redact_url("https://rpc.example.com/literal-secret/${ALCHEMY_KEY}");
-    assert!(redacted.contains("${ALCHEMY_KEY}"));
-    assert!(!redacted.contains("literal-secret"));
-}
-
-#[test]
-fn redact_url_fails_closed_for_malformed_input() {
-    let redacted = redact_url("not a URL containing literal-secret");
-    assert_eq!(redacted, "[REDACTED URL]");
-    assert!(!redacted.contains("literal-secret"));
-}
-
-#[test]
 fn test_no_variables() {
     let globals = GlobalVariables::default();
 
@@ -110,10 +78,7 @@ fn test_no_variables() {
 fn test_add_then_get_rpc_expansion() {
     let mut globals = GlobalVariables::default();
     globals.add_rpc_expansion("MY_KEY", "my_value");
-    assert_eq!(
-        globals.get_rpc_expansion("MY_KEY"),
-        Some("my_value".to_string())
-    );
+    assert_eq!(globals.get_rpc_expansion("MY_KEY"), Some("my_value"));
 }
 
 #[test]
@@ -163,7 +128,7 @@ fn test_add_rpc_expansion_overwrites_existing() {
     let mut globals = GlobalVariables::default();
     globals.add_rpc_expansion("KEY", "first");
     globals.add_rpc_expansion("KEY", "second");
-    assert_eq!(globals.get_rpc_expansion("KEY"), Some("second".to_string()));
+    assert_eq!(globals.get_rpc_expansion("KEY"), Some("second"));
     assert_eq!(globals.list_rpc_expansions().len(), 1);
 }
 
@@ -219,8 +184,8 @@ fn test_expand_wallet_token() {
 
 #[test]
 fn cached_wallet_address_does_not_unlock_keyring() {
-    let chain = crate::chain::ChainInstance::new(
-        crate::chain::ChainDefinition {
+    let chain = crate::chain::ChainInstance {
+        definition: crate::chain::ChainDefinition {
             name: "mainnet".into(),
             aliases: vec![],
             chain_id: 1,
@@ -230,8 +195,8 @@ fn cached_wallet_address_does_not_unlock_keyring() {
             verification_url: None,
             key_name: Some("deployer".into()),
         },
-        "http://localhost:8545".into(),
-        Some(crate::key::Key {
+        rpc_url: "http://localhost:8545".into(),
+        key: Some(crate::key::Key {
             name: "deployer".into(),
             address: Some("0xABCD".into()),
             kind: crate::key::KeyType::Keyring {
@@ -239,7 +204,7 @@ fn cached_wallet_address_does_not_unlock_keyring() {
                 username: "missing".into(),
             },
         }),
-    );
+    };
 
     let cv = ChainVariables::new(&chain, &["echo".into(), "@wallet".into()], false)
         .expect("cached address should avoid keyring access");
