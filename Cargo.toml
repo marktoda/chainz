@@ -20,7 +20,8 @@ alloy = { version = "1", default-features = false, features = [
     "signer-local",
 ] }
 anyhow = "1"
-dialoguer = { version = "0.11", features = ["fuzzy-select"] }
+console = "0.16"
+dialoguer = { version = "0.12", features = ["fuzzy-select"] }
 dirs = "6"
 reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls",
@@ -32,7 +33,7 @@ serde_json = "1"
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs", "time"] }
-colored = "3"
+indicatif = "0.18"
 aes-gcm = "0.10"
 base64 = "0.22"
 keyring = { version = "3", features = [

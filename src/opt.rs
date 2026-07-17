@@ -97,6 +97,18 @@ pub enum Command {
         key: Option<String>,
     },
 
+    /// Open a subshell with the chain's environment loaded
+    ///
+    /// Sets ETH_RPC_URL, CHAIN_ID, CHAIN_NAME, VERIFIER_* and CHAINZ_CHAIN,
+    /// and prefixes PS1 with the chain name for bash-like shells.
+    /// Key material is NOT loaded into the environment.
+    ///
+    /// Example: chainz shell base
+    Shell {
+        /// Chain name or ID (default chain or interactive picker if omitted)
+        name_or_id: Option<String>,
+    },
+
     /// Manage private keys
     ///
     /// Subcommands for adding, listing, and removing private keys.

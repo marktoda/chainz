@@ -49,8 +49,8 @@ chainz exec -- cast block-number
 # Check config and RPC health; switch dead RPCs to healthy ones
 chainz doctor --fix
 
-# Open a subshell with chain environment
-chainz exec ethereum -- bash
+# Open a subshell with chain environment (prompt shows the chain)
+chainz shell ethereum
 
 # Install shell completions (zsh example)
 chainz completions zsh > ~/.zfunc/_chainz
@@ -157,13 +157,19 @@ Override the key for a single command:
 > chainz exec ethereum -k deployer -- forge script Deploy
 ```
 
-Open a subshell with all chain variables in the environment:
+### Chain Shells
 
-```bash
-> chainz exec ethereum -- bash
-$ echo $ETH_RPC_URL
-https://rpc.com
-$ exit
+`chainz shell [chain]` opens your `$SHELL` with the chain's environment
+(`ETH_RPC_URL`, `CHAIN_ID`, `CHAIN_NAME`, `VERIFIER_*`, `CHAINZ_CHAIN`) —
+private keys are never injected. Shells that honor an inherited `PS1` get
+a `(⛓ ethereum)` prefix, but interactive shells often reset `PS1` from rc
+files, so this isn't reliable everywhere. For a prompt that always works
+(zsh, starship, or a customized bash), key off `CHAINZ_CHAIN` instead, e.g.:
+
+```toml
+# starship.toml
+[env_var.CHAINZ_CHAIN]
+format = "\\(⛓ $env_value\\) "
 ```
 
 ### Managing Keys
@@ -199,7 +205,9 @@ Added key 'ci-key'
 `chainz doctor` checks key storage, key references, and RPC connectivity for
 every chain (concurrently). With `--fix`, any dead selected RPC is switched to
 a healthy alternative from that chain's RPC list. Exits nonzero when failures
-are found, so it can gate scripts:
+are found, so it can gate scripts. Interactive RPC tests and `doctor` probes
+time out after 4 seconds per endpoint; results stream in live and pickers
+list healthy endpoints fastest-first:
 
 ```bash
 > chainz doctor --fix

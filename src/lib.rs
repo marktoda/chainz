@@ -10,4 +10,5 @@ pub mod doctor;
 pub mod init;
 pub mod key;
 pub mod opt;
+pub mod ui;
 pub mod variables;

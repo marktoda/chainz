@@ -2,12 +2,10 @@ pub mod rpc;
 pub mod wizard;
 
 use crate::key::Key;
-use alloy::providers::DynProvider;
-use colored::*;
+use crate::ui;
+use console::style;
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
-
-pub use rpc::{resolve_rpc, resolve_rpcs};
 
 pub const DEFAULT_KEY_NAME: &str = "default";
 
@@ -66,107 +64,59 @@ impl ChainInstance {
     }
 }
 
-pub struct Rpc {
-    pub rpc_url: String,
-    pub provider: DynProvider,
-}
-
-impl Display for Rpc {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.rpc_url)
-    }
-}
-
 impl Display for ChainDefinition {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(
             f,
             "{}: {}{}",
-            "Chain".bright_blue().bold(),
-            self.name.yellow(),
+            style("Chain").cyan().bold(),
+            ui::emph(&self.name),
             if self.aliases.is_empty() {
                 String::new()
             } else {
-                format!(" ({})", self.aliases.join(", "))
-                    .bright_black()
-                    .to_string()
+                ui::dim(&format!(" ({})", self.aliases.join(", ")))
             }
         )?;
         writeln!(
             f,
             "{}─ {}: {}",
-            "├".bright_black(),
-            "ID".bright_blue(),
-            self.chain_id.to_string().yellow()
+            style("├").dim(),
+            style("ID").cyan(),
+            ui::emph(&self.chain_id.to_string())
         )?;
         writeln!(
             f,
             "{}─ {}: {}",
-            "├".bright_black(),
-            "Active RPC".bright_blue(),
-            self.selected_rpc.bright_green()
+            style("├").dim(),
+            style("Active RPC").cyan(),
+            style(&self.selected_rpc).green()
         )?;
         writeln!(
             f,
             "{}─ {}: {}",
-            "├".bright_black(),
-            "Verification URL".bright_blue(),
+            style("├").dim(),
+            style("Verification URL").cyan(),
             self.verification_url
                 .as_deref()
-                .map(|k| k.bright_green().to_string())
-                .unwrap_or_else(|| "None".bright_red().to_string())
+                .map(|k| style(k).green().to_string())
+                .unwrap_or_else(|| style("None").red().to_string())
         )?;
         writeln!(
             f,
             "{}─ {}: {}",
-            "├".bright_black(),
-            "Verification Key".bright_blue(),
+            style("├").dim(),
+            style("Verification Key").cyan(),
             self.verification_api_key
                 .as_deref()
-                .map(|k| k.bright_green().to_string())
-                .unwrap_or_else(|| "None".bright_red().to_string())
+                .map(|k| style(k).green().to_string())
+                .unwrap_or_else(|| style("None").red().to_string())
         )?;
         write!(
             f,
             "{}─ {}: {}",
-            "└".bright_black(),
-            "Key Name".bright_blue(),
-            self.key_name.bright_green(),
-        )
-    }
-}
-
-impl Display for ChainInstance {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(
-            f,
-            "{}: {}",
-            "Chain".bright_blue().bold(),
-            self.definition.name.yellow()
-        )?;
-        writeln!(
-            f,
-            "{}─ {}: {}",
-            "├".bright_black(),
-            "ID".bright_blue(),
-            self.definition.chain_id.to_string().yellow()
-        )?;
-        writeln!(
-            f,
-            "{}─ {}: {}",
-            "├".bright_black(),
-            "RPC".bright_blue(),
-            self.rpc_url.bright_green()
-        )?;
-        write!(
-            f,
-            "{}─ {}: {}",
-            "└".bright_black(),
-            "Wallet".bright_blue(),
-            self.key
-                .address()
-                .map(|addr| addr.to_string().bright_green())
-                .unwrap_or("None".bright_red())
+            style("└").dim(),
+            style("Key Name").cyan(),
+            style(&self.key_name).green(),
         )
     }
 }

@@ -5,13 +5,9 @@
 //! RPC failover deliberately lives here rather than in `exec`, which stays
 //! network-free and fast.
 
-use crate::{
-    chain::rpc::{check_url, check_urls},
-    config::Chainz,
-    key::KeyType,
-};
+use crate::{chain::rpc::check_urls, config::Chainz, key::KeyType, ui};
 use anyhow::Result;
-use colored::*;
+use console::style;
 
 pub struct Report {
     pub failures: usize,
@@ -34,14 +30,14 @@ pub async fn run(chainz: &mut Chainz, fix: bool) -> Result<Report> {
 
     println!();
     match (report.failures, report.warnings) {
-        (0, 0) => println!("{} no issues found", "✓".bright_green()),
+        (0, 0) => println!("{}", ui::success("no issues found")),
         (f, w) => {
             println!(
                 "{} {} failure(s), {} warning(s){}",
                 if f > 0 {
-                    "✗".bright_red().to_string()
+                    style("✗").red().to_string()
                 } else {
-                    "⚠".bright_yellow().to_string()
+                    style("⚠").yellow().to_string()
                 },
                 f,
                 w,
@@ -57,7 +53,7 @@ pub async fn run(chainz: &mut Chainz, fix: bool) -> Result<Report> {
 }
 
 fn check_keys(chainz: &Chainz, report: &mut Report) {
-    println!("\n{}", "Keys".bright_blue().bold());
+    println!("{}", ui::section("Keys"));
     let keys = chainz.list_keys();
     if keys.is_empty() {
         println!("  no keys configured");
@@ -66,43 +62,43 @@ fn check_keys(chainz: &Chainz, report: &mut Report) {
         if let KeyType::PrivateKey { .. } = key.kind {
             report.warnings += 1;
             println!(
-                "  {} '{}' is stored as a plaintext private key — consider re-adding it with --type encrypted or --type keyring",
-                "⚠".bright_yellow(),
-                name
+                "  {}",
+                ui::warn(&format!(
+                    "'{}' is stored as a plaintext private key — consider re-adding it with --type encrypted or --type keyring",
+                    name
+                ))
             );
         } else {
-            println!("  {} {}", "✓".bright_green(), key);
+            println!("  {}", ui::success(&key.to_string()));
         }
     }
 }
 
 fn check_key_references(chainz: &Chainz, report: &mut Report) {
-    println!("\n{}", "Key references".bright_blue().bold());
+    println!("{}", ui::section("Key references"));
     let mut ok = true;
     for chain in chainz.list_chains() {
         if chainz.get_key(&chain.key_name).is_err() {
             report.failures += 1;
             ok = false;
             println!(
-                "  {} chain '{}' references missing key '{}'",
-                "✗".bright_red(),
-                chain.name,
-                chain.key_name
+                "  {}",
+                ui::fail(&format!(
+                    "chain '{}' references missing key '{}'",
+                    chain.name, chain.key_name
+                ))
             );
         }
     }
     if ok {
-        println!(
-            "  {} all chains reference existing keys",
-            "✓".bright_green()
-        );
+        println!("  {}", ui::success("all chains reference existing keys"));
     }
 }
 
 /// Concurrently health-check every chain's selected RPC.
 /// Returns the names of chains whose RPC failed.
 async fn check_rpc_health(chainz: &Chainz, report: &mut Report) -> Vec<String> {
-    println!("\n{}", "RPC health".bright_blue().bold());
+    println!("{}", ui::section("RPC health"));
     let chains = chainz.list_chains();
     if chains.is_empty() {
         println!("  no chains configured");
@@ -114,35 +110,38 @@ async fn check_rpc_health(chainz: &Chainz, report: &mut Report) -> Vec<String> {
     let checks: Vec<_> = chains
         .iter()
         .map(|c| {
-            let url = chainz.config.globals.expand_rpc_url(&c.selected_rpc);
+            let expanded = chainz.config.globals.expand_rpc_url(&c.selected_rpc);
+            let raw = c.selected_rpc.clone();
             let chain_id = c.chain_id;
             let name = c.name.clone();
-            tokio::spawn(async move { (name, healthy(&url, chain_id).await, url) })
+            tokio::spawn(async move {
+                let (healthy, latency) = crate::chain::rpc::probe(&expanded, chain_id).await;
+                (name, healthy, raw, latency)
+            })
         })
         .collect();
 
     let mut failed = Vec::new();
     for handle in checks {
-        let Ok((name, is_healthy, url)) = handle.await else {
+        let Ok((name, is_healthy, raw_url, latency)) = handle.await else {
             continue;
         };
         if is_healthy {
-            println!("  {} {} ({})", "✓".bright_green(), name, url);
+            println!(
+                "  {}",
+                ui::success(&format!("{} ({}) {}ms", name, raw_url, latency.as_millis()))
+            );
         } else {
             report.failures += 1;
-            println!("  {} {} ({})", "✗".bright_red(), name, url);
+            println!("  {}", ui::fail(&format!("{} ({})", name, raw_url)));
             failed.push(name);
         }
     }
     failed
 }
 
-async fn healthy(expanded_url: &str, chain_id: u64) -> bool {
-    check_url(expanded_url, chain_id).await.is_ok()
-}
-
 async fn fix_rpcs(chainz: &mut Chainz, failed: &[String], report: &mut Report) -> Result<()> {
-    println!("\n{}", "Fixing RPCs".bright_blue().bold());
+    println!("{}", ui::section("Fixing RPCs"));
     let mut fixed_any = false;
     for name in failed {
         let chain = chainz.config.get_chain(name)?;
@@ -164,19 +163,19 @@ async fn fix_rpcs(chainz: &mut Chainz, failed: &[String], report: &mut Report) -
             Some(i) => {
                 chainz.set_selected_rpc(name, candidates[i].clone())?;
                 println!(
-                    "  {} {}: switched to {}",
-                    "✓".bright_green(),
-                    name,
-                    expanded[i]
+                    "  {}",
+                    ui::success(&format!("{}: switched to {}", name, candidates[i]))
                 );
                 report.failures = report.failures.saturating_sub(1);
                 fixed_any = true;
             }
             None => println!(
-                "  {} {}: no healthy alternative among {} configured RPC(s)",
-                "✗".bright_red(),
-                name,
-                chain.rpc_urls.len()
+                "  {}",
+                ui::fail(&format!(
+                    "{}: no healthy alternative among {} configured RPC(s)",
+                    name,
+                    chain.rpc_urls.len()
+                ))
             ),
         }
     }
