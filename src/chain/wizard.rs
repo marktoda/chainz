@@ -1,5 +1,5 @@
 use super::{
-    ChainDefinition,
+    ChainDefinition, RpcEndpoint,
     rpc::{check_url, probe_urls, rank_by_health},
 };
 use crate::ui;
@@ -61,47 +61,51 @@ async fn manual_chain_entry(
     })
 }
 
-/// Pick an RPC for a chain. `urls` are raw (may contain ${VAR}); they are
-/// expanded only for probing. Displays and returns raw URLs so secrets are
-/// never shown on screen or written to config.
+/// Pick an RPC for a chain. `endpoints` are raw (url and header values may
+/// contain ${VAR}); each is expanded, headers included, only for probing.
+/// Displays and returns the raw URL so secrets are never shown on screen or
+/// written to config.
 async fn select_rpc(
     terminal: &mut impl Prompt,
     chain_name: &str,
     chain_id: u64,
-    urls: Vec<String>,
+    endpoints: Vec<RpcEndpoint>,
     globals: &GlobalVariables,
 ) -> Result<String> {
-    let expanded: Vec<String> = urls.iter().map(|u| globals.expand_rpc_url(u)).collect();
+    let expanded: Vec<RpcEndpoint> = endpoints
+        .iter()
+        .map(|e| globals.expand_endpoint(e))
+        .collect();
 
     // Live per-RPC status lines; hidden automatically when not a TTY
     let multi = MultiProgress::new();
-    let bars: Vec<ProgressBar> = urls
+    let bars: Vec<ProgressBar> = endpoints
         .iter()
-        .map(|url| {
+        .map(|endpoint| {
             let bar = multi.add(ProgressBar::new_spinner());
             bar.set_style(
                 ProgressStyle::with_template("{spinner} {msg}").expect("static template"),
             );
             bar.enable_steady_tick(std::time::Duration::from_millis(120));
-            bar.set_message(crate::endpoint::redact(url));
+            bar.set_message(crate::endpoint::redact(&endpoint.url));
             bar
         })
         .collect();
 
-    let mut results = Vec::with_capacity(urls.len());
+    let mut results = Vec::with_capacity(endpoints.len());
     let mut rx = probe_urls(&expanded, chain_id);
     while let Some(result) = rx.recv().await {
         let bar = &bars[result.index];
         if result.healthy {
             bar.finish_with_message(ui::success(&format!(
                 "{}  {}ms",
-                crate::endpoint::redact(&urls[result.index]),
+                crate::endpoint::redact(&endpoints[result.index].url),
                 result.latency.as_millis()
             )));
         } else {
             bar.finish_with_message(ui::fail(&format!(
                 "{}  {}",
-                crate::endpoint::redact(&urls[result.index]),
+                crate::endpoint::redact(&endpoints[result.index].url),
                 ui::dim("unreachable")
             )));
         }
@@ -116,7 +120,7 @@ async fn select_rpc(
     // Healthy-first, fastest-first picker over RAW urls
     let order = rank_by_health(&results);
     // Index results by url position once, rather than a linear scan per item.
-    let mut by_index: Vec<Option<&_>> = vec![None; urls.len()];
+    let mut by_index: Vec<Option<&_>> = vec![None; endpoints.len()];
     for r in &results {
         by_index[r.index] = Some(r);
     }
@@ -128,14 +132,14 @@ async fn select_rpc(
                 format!(
                     "RPC {} · {} ({}ms)",
                     i + 1,
-                    crate::endpoint::redact(&urls[i]),
+                    crate::endpoint::redact(&endpoints[i].url),
                     r.latency.as_millis()
                 )
             } else {
                 format!(
                     "RPC {} · {} (unreachable)",
                     i + 1,
-                    crate::endpoint::redact(&urls[i])
+                    crate::endpoint::redact(&endpoints[i].url)
                 )
             }
         })
@@ -152,8 +156,32 @@ async fn select_rpc(
     if selection == items.len() - 1 {
         select_manual_rpc(terminal, chain_id, globals).await
     } else {
-        Ok(urls[order[selection]].clone())
+        Ok(endpoints[order[selection]].url.clone())
     }
+}
+
+/// Build the RPC candidate list for the update wizard's refresh step:
+/// refreshed chainlist URLs resolved through the chain's existing endpoints
+/// (so URLs already known to the chain keep their headers), plus any
+/// existing endpoint with non-empty headers whose URL fell off the refreshed
+/// list. This keeps private, headered gateways selectable and probed with
+/// their headers even after the chainlist refresh no longer lists them.
+fn merge_refreshed_rpcs(chain: &ChainDefinition, refreshed: Vec<String>) -> Vec<RpcEndpoint> {
+    let mut candidates: Vec<RpcEndpoint> = refreshed
+        .iter()
+        .map(|url| {
+            chain
+                .endpoint(url)
+                .cloned()
+                .unwrap_or_else(|| RpcEndpoint::new(url.clone()))
+        })
+        .collect();
+    for endpoint in &chain.rpc_urls {
+        if !endpoint.headers.is_empty() && !refreshed.iter().any(|url| url == &endpoint.url) {
+            candidates.push(endpoint.clone());
+        }
+    }
+    candidates
 }
 
 fn probe_summary(results: &[super::rpc::ProbeResult]) -> String {
@@ -170,7 +198,7 @@ async fn select_manual_rpc(
         let rpc_url: String = text_input(terminal, "Enter RPC URL", None)?;
         println!("Testing RPC...");
 
-        if check_url(&globals.expand_rpc_url(&rpc_url), chain_id)
+        if check_url(&RpcEndpoint::new(globals.expand(&rpc_url)), chain_id)
             .await
             .is_ok()
         {
@@ -296,6 +324,8 @@ impl UpdateArgs {
     fn has_direct_changes(&self) -> bool {
         self.name.is_some()
             || self.rpc_url.is_some()
+            || !self.headers.is_empty()
+            || self.clear_headers
             || self.key.is_some()
             || self.no_key
             || self.verification_url.is_some()
@@ -319,15 +349,32 @@ impl UpdateArgs {
             chain.name = name.to_string();
         }
         if let Some(rpc_url) = &self.rpc_url {
-            check_url(
-                &chainz.config.globals.expand_rpc_url(rpc_url),
-                chain.chain_id,
-            )
-            .await
-            .with_context(|| {
-                format!("RPC check failed for {}", crate::endpoint::redact(rpc_url))
-            })?;
-            chain.select_rpc(rpc_url.clone());
+            let headers = if self.clear_headers {
+                Some(std::collections::BTreeMap::new())
+            } else if !self.headers.is_empty() {
+                Some(parse_rpc_headers(&self.headers)?)
+            } else {
+                None // keep whatever headers the entry already has
+            };
+            let probe_endpoint = chainz
+                .config
+                .globals
+                .expand_endpoint(&RpcEndpoint::with_headers(
+                    rpc_url.clone(),
+                    headers
+                        .clone()
+                        .or_else(|| chain.endpoint(rpc_url).map(|e| e.headers.clone()))
+                        .unwrap_or_default(),
+                ));
+            check_url(&probe_endpoint, chain.chain_id)
+                .await
+                .with_context(|| {
+                    format!("RPC check failed for {}", crate::endpoint::redact(rpc_url))
+                })?;
+            match headers {
+                Some(headers) => chain.select_rpc_with_headers(rpc_url.clone(), headers),
+                None => chain.select_rpc(rpc_url.clone()),
+            }
         }
         if let Some(key) = &self.key {
             chainz.get_key(key)?;
@@ -376,19 +423,21 @@ impl UpdateArgs {
             match fuzzy_select(terminal, "What would you like to update?", &options, 0)? {
                 0 => {
                     println!("{}", ui::header("RPC Configuration"));
-                    let available_rpcs = fetch_chain_by_id(chain.chain_id, self.refresh)
-                        .await
-                        .map(|entry| entry.rpc)
-                        .unwrap_or_else(|_| chain.rpc_urls.clone());
+                    // Chainlist-fetch failure falls back to the chain's own
+                    // endpoints (with headers) rather than stripped URLs.
+                    let candidates = match fetch_chain_by_id(chain.chain_id, self.refresh).await {
+                        Ok(entry) => merge_refreshed_rpcs(chain, entry.rpc),
+                        Err(_) => chain.rpc_urls.clone(),
+                    };
                     let new_rpc = select_rpc(
                         terminal,
                         &chain.name,
                         chain.chain_id,
-                        available_rpcs.clone(),
+                        candidates.clone(),
                         &chainz.config.globals,
                     )
                     .await?;
-                    chain.rpc_urls = available_rpcs;
+                    chain.rpc_urls = candidates;
                     chain.select_rpc(new_rpc);
                 }
                 1 => {
@@ -462,6 +511,7 @@ impl AddArgs {
         let name = self.name.clone().unwrap();
         let chain_id = self.chain_id.unwrap();
         let rpc_url = self.rpc_url.clone().unwrap();
+        let headers = parse_rpc_headers(&self.headers)?;
         let key_name = match &self.key {
             Some(name) => {
                 chainz.get_key(name).map_err(|_| {
@@ -476,7 +526,11 @@ impl AddArgs {
         };
 
         // Test the RPC
-        check_url(&chainz.config.globals.expand_rpc_url(&rpc_url), chain_id)
+        let probe_endpoint = chainz
+            .config
+            .globals
+            .expand_endpoint(&RpcEndpoint::with_headers(rpc_url.clone(), headers.clone()));
+        check_url(&probe_endpoint, chain_id)
             .await
             .with_context(|| {
                 format!("RPC check failed for {}", crate::endpoint::redact(&rpc_url))
@@ -486,7 +540,7 @@ impl AddArgs {
             name: name.clone(),
             aliases: vec![],
             chain_id,
-            rpc_urls: vec![rpc_url.clone()],
+            rpc_urls: vec![RpcEndpoint::with_headers(rpc_url.clone(), headers)],
             selected_rpc: rpc_url,
             verification_api_key: self.read_verification_api_key()?,
             verification_url: self.verification_url.clone(),
@@ -551,17 +605,23 @@ impl AddArgs {
             (selected_chain.name.clone(), vec![])
         };
 
+        let mut rpc_headers = std::collections::BTreeMap::new();
         let selected_rpc = if let Some(rpc_url) = &self.rpc_url {
             // Use provided RPC URL directly
             println!("Testing RPC...");
-            check_url(
-                &chainz.config.globals.expand_rpc_url(rpc_url),
-                selected_chain.chain_id,
-            )
-            .await
-            .with_context(|| {
-                format!("RPC check failed for {}", crate::endpoint::redact(rpc_url))
-            })?;
+            rpc_headers = parse_rpc_headers(&self.headers)?;
+            let probe_endpoint = chainz
+                .config
+                .globals
+                .expand_endpoint(&RpcEndpoint::with_headers(
+                    rpc_url.clone(),
+                    rpc_headers.clone(),
+                ));
+            check_url(&probe_endpoint, selected_chain.chain_id)
+                .await
+                .with_context(|| {
+                    format!("RPC check failed for {}", crate::endpoint::redact(rpc_url))
+                })?;
             println!("{}", ui::success("RPC working"));
             rpc_url.clone()
         } else {
@@ -571,7 +631,12 @@ impl AddArgs {
                 terminal,
                 &selected_chain.name,
                 selected_chain.chain_id,
-                selected_chain.rpc.clone(),
+                selected_chain
+                    .rpc
+                    .iter()
+                    .cloned()
+                    .map(RpcEndpoint::new)
+                    .collect(),
                 &chainz.config.globals,
             )
             .await?
@@ -607,13 +672,21 @@ impl AddArgs {
             name,
             aliases,
             chain_id: selected_chain.chain_id,
-            rpc_urls: selected_chain.rpc,
+            rpc_urls: selected_chain
+                .rpc
+                .iter()
+                .map(|url| RpcEndpoint::new(url.clone()))
+                .collect(),
             selected_rpc: String::new(),
             verification_api_key,
             verification_url,
             key_name,
         };
-        chain_def.select_rpc(selected_rpc);
+        if rpc_headers.is_empty() {
+            chain_def.select_rpc(selected_rpc);
+        } else {
+            chain_def.select_rpc_with_headers(selected_rpc, rpc_headers);
+        }
 
         // Confirm before replacing an existing chain (matched by name or alias)
         if chainz.chain_exists(&chain_def.name) {
@@ -650,6 +723,36 @@ impl AddArgs {
             self.verification_api_key.clone(),
         )
     }
+}
+
+/// Parse repeatable `--header "name: value"` arguments. Splits on the first
+/// colon so values may themselves contain colons ("Bearer x:y").
+/// Error messages never echo the raw argument: it may contain a credential.
+pub(crate) fn parse_rpc_headers(
+    raw: &[String],
+) -> Result<std::collections::BTreeMap<String, String>> {
+    let mut headers = std::collections::BTreeMap::new();
+    for entry in raw {
+        let Some((name, value)) = entry.split_once(':') else {
+            anyhow::bail!("Invalid --header; expected \"name: value\"");
+        };
+        let (name, value) = (name.trim(), value.trim());
+        if name.is_empty() || value.is_empty() {
+            anyhow::bail!("Invalid --header; expected \"name: value\"");
+        }
+        if !value.contains("${") {
+            eprintln!(
+                "Warning: header values in argv may be visible in shell history; prefer a ${{VAR}} reference set via `chainz var set`"
+            );
+        }
+        if headers
+            .insert(name.to_string(), value.to_string())
+            .is_some()
+        {
+            anyhow::bail!("Duplicate --header '{}'", name);
+        }
+    }
+    Ok(headers)
 }
 
 fn read_verification_api_key(stdin: bool, value: Option<String>) -> Result<Option<String>> {

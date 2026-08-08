@@ -110,6 +110,7 @@ async fn initialize_with_wizard(prompt: &mut impl Prompt) -> Result<Chainz> {
             name: None,
             chain_id: None,
             rpc_url: None,
+            headers: vec![],
             key: None,
             verification_url: None,
             verification_api_key: None,

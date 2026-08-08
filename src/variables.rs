@@ -33,6 +33,19 @@ pub struct ChainVariables {
     expansions: HashMap<String, String>,
 }
 
+impl fmt::Debug for ChainVariables {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut env_keys: Vec<_> = self.env.keys().collect();
+        env_keys.sort();
+        let mut expansion_keys: Vec<_> = self.expansions.keys().collect();
+        expansion_keys.sort();
+        f.debug_struct("ChainVariables")
+            .field("env", &env_keys)
+            .field("expansions", &expansion_keys)
+            .finish()
+    }
+}
+
 impl ChainVariables {
     pub fn new(chain: &ChainInstance, command: &[String], expose_key: bool) -> Result<Self> {
         let needs_key_arg = command.iter().any(|arg| arg.contains("@key"));
@@ -73,6 +86,25 @@ impl ChainVariables {
         for (env_var, expansion, val) in &basic_vars {
             env.insert(env_var.to_string(), val.clone());
             expansions.insert(expansion.to_string(), val.clone());
+        }
+
+        // Export custom RPC headers in foundry's native ETH_RPC_HEADERS format
+        // ("name: value" pairs, comma-separated). Values were ${VAR}-expanded by
+        // get_chain; re-check exportability post-expansion since the config-time
+        // comma check exempts templates. Never echo the value: it is a credential.
+        if !chain.headers.is_empty() {
+            let mut pairs = Vec::with_capacity(chain.headers.len());
+            for (name, value) in &chain.headers {
+                if value.contains([',', '\r', '\n']) {
+                    anyhow::bail!(
+                        "RPC header '{}' expands to a value with a comma or line break, \
+                         which cannot be exported via ETH_RPC_HEADERS",
+                        name
+                    );
+                }
+                pairs.push(format!("{name}: {value}"));
+            }
+            env.insert("ETH_RPC_HEADERS".to_string(), pairs.join(","));
         }
 
         // Only resolve the private key when the command explicitly needs it.
@@ -166,8 +198,24 @@ impl ChainVariables {
 }
 
 impl GlobalVariables {
-    pub fn expand_rpc_url(&self, rpc_url: &str) -> String {
-        interpolate_variables(rpc_url, &self.rpc_expansions)
+    pub fn expand(&self, value: &str) -> String {
+        interpolate_variables(value, &self.rpc_expansions)
+    }
+
+    /// Expand a full endpoint: URL and every header value get the same
+    /// ${VAR} interpolation.
+    pub fn expand_endpoint(
+        &self,
+        endpoint: &crate::chain::RpcEndpoint,
+    ) -> crate::chain::RpcEndpoint {
+        crate::chain::RpcEndpoint {
+            url: self.expand(&endpoint.url),
+            headers: endpoint
+                .headers
+                .iter()
+                .map(|(name, value)| (name.clone(), self.expand(value)))
+                .collect(),
+        }
     }
 
     pub fn add_rpc_expansion(&mut self, key: &str, value: &str) {

@@ -1,5 +1,5 @@
 use super::*;
-use crate::chain::ChainDefinition;
+use crate::chain::{ChainDefinition, RpcEndpoint};
 use crate::key::{Key, KeyType};
 
 fn test_chain(name: &str, chain_id: u64) -> ChainDefinition {
@@ -7,7 +7,7 @@ fn test_chain(name: &str, chain_id: u64) -> ChainDefinition {
         name: name.to_string(),
         aliases: vec![],
         chain_id,
-        rpc_urls: vec!["https://rpc.example.com".to_string()],
+        rpc_urls: vec!["https://rpc.example.com".into()],
         selected_rpc: "https://rpc.example.com".to_string(),
         verification_api_key: None,
         verification_url: None,
@@ -345,7 +345,10 @@ fn legacy_normalization_restores_selected_rpc_and_canonical_default() {
     config.default_chain = Some("ethereum mainnet".into());
 
     config.normalize_legacy();
-    assert_eq!(config.chains[0].rpc_urls, vec!["https://rpc.example.com"]);
+    assert_eq!(
+        config.chains[0].rpc_urls,
+        vec![RpcEndpoint::from("https://rpc.example.com")]
+    );
     assert_eq!(config.default_chain.as_deref(), Some("ethereum"));
     assert!(config.validate().is_ok());
 }
@@ -358,7 +361,48 @@ fn selecting_a_new_rpc_adds_it_to_the_configured_list() -> Result<()> {
 
     let chain = &chainz.list_chains()[0];
     assert_eq!(chain.selected_rpc, "https://backup.example.com");
-    assert!(chain.rpc_urls.contains(&chain.selected_rpc));
+    assert!(chain.endpoint(&chain.selected_rpc).is_some());
     assert!(chainz.config.validate().is_ok());
+    Ok(())
+}
+
+#[test]
+fn validate_rejects_bad_rpc_headers() -> Result<()> {
+    let cases: &[(&str, &str, &str)] = &[
+        ("", "value", "empty name"),
+        ("x sec", "value", "space in name"),
+        ("x-ok", "line\nbreak", "newline in value"),
+        ("x-ok", "carriage\rreturn", "CR in value"),
+        ("x-ok", "a,b", "comma in literal value"),
+    ];
+    for (name, value, label) in cases {
+        let mut chainz = chainz_for_chains()?;
+        chainz.add_chain(test_chain("ethereum", 1))?;
+        let mut headers = std::collections::BTreeMap::new();
+        headers.insert(name.to_string(), value.to_string());
+        let selected_rpc = chainz.config.chains[0].selected_rpc.clone();
+        chainz.config.chains[0].select_rpc_with_headers(selected_rpc, headers);
+        assert!(
+            chainz.config.validate().is_err(),
+            "expected rejection: {label}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn validate_accepts_good_rpc_headers_and_template_commas() -> Result<()> {
+    for value in ["plain-secret", "${GW_SECRET}", "${A},${B}"] {
+        let mut chainz = chainz_for_chains()?;
+        chainz.add_chain(test_chain("ethereum", 1))?;
+        let mut headers = std::collections::BTreeMap::new();
+        headers.insert("x-internal-service-secret".to_string(), value.to_string());
+        let selected_rpc = chainz.config.chains[0].selected_rpc.clone();
+        chainz.config.chains[0].select_rpc_with_headers(selected_rpc, headers);
+        assert!(
+            chainz.config.validate().is_ok(),
+            "expected acceptance: {value}"
+        );
+    }
     Ok(())
 }

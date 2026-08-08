@@ -9,6 +9,8 @@ A CLI tool for managing EVM chain configurations
 - RPC health checking (`chainz doctor`, with `--fix` failover to healthy RPCs)
 - Safe-by-default private key management (OS keyring, encrypted, 1Password, explicit plaintext)
 - Multiple RPC support per chain and a configurable default chain
+- Per-RPC custom HTTP headers (`--header`) for gateways that authenticate
+  outside the URL
 - RPC-only chain configurations when signing is not needed
 - Environment variable interpolation
 - Command execution with chain-specific variable expansion
@@ -142,6 +144,27 @@ Update interactively, or target a chain and make a direct change:
 Chains may omit a key entirely. This is useful for read-only RPC commands;
 `@wallet`, `@key`, and `--expose-key` fail with a clear message until a key is
 attached.
+
+### Custom RPC headers
+
+Some RPC endpoints (internal gateways, private proxies) authenticate with a
+custom HTTP header instead of a URL-embedded key:
+
+```bash
+# Store the secret once
+chainz var set GW_SECRET --stdin
+
+# Attach the header to a specific RPC URL
+chainz update ethereum \
+  --rpc-url https://gateway.example.com/rpc/1 \
+  --header 'x-internal-service-secret: ${GW_SECRET}'
+```
+
+Headers are scoped to their URL — fallback RPCs on the same chain never
+receive them. `chainz doctor` sends them when probing, and `exec`/`shell`
+export them as `ETH_RPC_HEADERS`, which foundry's `cast` and `forge` pick up
+automatically. Header values are redacted in `list`/`show` output unless
+`--show-secrets` is passed.
 
 ### Executing Commands
 

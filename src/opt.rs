@@ -288,6 +288,15 @@ pub struct UpdateArgs {
     #[arg(long)]
     pub rpc_url: Option<String>,
 
+    /// Custom HTTP header for the RPC URL, as "name: value" (repeatable).
+    /// Values may reference variables: --header 'x-secret: ${MY_SECRET}'
+    #[arg(long = "header", value_name = "NAME: VALUE", requires = "rpc_url")]
+    pub headers: Vec<String>,
+
+    /// Remove all custom headers from the RPC URL given by --rpc-url
+    #[arg(long, requires = "rpc_url", conflicts_with = "headers")]
+    pub clear_headers: bool,
+
     /// Attach a stored key
     #[arg(long, conflicts_with = "no_key")]
     pub key: Option<String>,
@@ -333,6 +342,11 @@ pub struct AddArgs {
     /// RPC URL
     #[arg(long)]
     pub rpc_url: Option<String>,
+
+    /// Custom HTTP header for the RPC URL, as "name: value" (repeatable).
+    /// Values may reference variables: --header 'x-secret: ${MY_SECRET}'
+    #[arg(long = "header", value_name = "NAME: VALUE", requires = "rpc_url")]
+    pub headers: Vec<String>,
 
     /// Key name (omit for an RPC-only chain)
     #[arg(long)]

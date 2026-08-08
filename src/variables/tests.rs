@@ -22,11 +22,11 @@ fn test_config_variables() {
     globals.add_rpc_expansion("EMPTY", "");
 
     assert_eq!(
-        globals.expand_rpc_url("https://api.example.com/${API_KEY}/v1"),
+        globals.expand("https://api.example.com/${API_KEY}/v1"),
         "https://api.example.com/config_key/v1"
     );
 
-    assert_eq!(globals.expand_rpc_url("empty:${EMPTY}:end"), "empty::end");
+    assert_eq!(globals.expand("empty:${EMPTY}:end"), "empty::end");
 }
 
 #[test]
@@ -35,7 +35,7 @@ fn test_environment_variables() {
     let globals = GlobalVariables::default();
 
     assert_eq!(
-        globals.expand_rpc_url("https://api.example.com/${TEST_ENV_KEY}/v1"),
+        globals.expand("https://api.example.com/${TEST_ENV_KEY}/v1"),
         "https://api.example.com/env_key/v1"
     );
 }
@@ -47,7 +47,7 @@ fn test_multiple_replacements() {
     globals.add_rpc_expansion("API_KEY", "config_key");
 
     assert_eq!(
-        globals.expand_rpc_url("${API_KEY} and ${TEST_ENV_KEY}"),
+        globals.expand("${API_KEY} and ${TEST_ENV_KEY}"),
         "config_key and env_key"
     );
 }
@@ -57,7 +57,7 @@ fn test_missing_variables() {
     let globals = GlobalVariables::default();
 
     assert_eq!(
-        globals.expand_rpc_url("https://api.example.com/${MISSING_KEY}/v1"),
+        globals.expand("https://api.example.com/${MISSING_KEY}/v1"),
         "https://api.example.com/${MISSING_KEY}/v1"
     );
 }
@@ -67,9 +67,29 @@ fn test_no_variables() {
     let globals = GlobalVariables::default();
 
     assert_eq!(
-        globals.expand_rpc_url("https://api.example.com/v1"),
+        globals.expand("https://api.example.com/v1"),
         "https://api.example.com/v1"
     );
+}
+
+#[test]
+fn expand_endpoint_interpolates_url_and_header_values() {
+    let mut globals = GlobalVariables::default();
+    globals.add_rpc_expansion("GW_SECRET", "sekrit");
+    let mut headers = std::collections::BTreeMap::new();
+    headers.insert(
+        "x-internal-service-secret".to_string(),
+        "${GW_SECRET}".to_string(),
+    );
+    headers.insert("x-plain".to_string(), "as-is".to_string());
+    let endpoint =
+        crate::chain::RpcEndpoint::with_headers("https://gw.example.com/${GW_SECRET}", headers);
+
+    let expanded = globals.expand_endpoint(&endpoint);
+
+    assert_eq!(expanded.url, "https://gw.example.com/sekrit");
+    assert_eq!(expanded.headers["x-internal-service-secret"], "sekrit");
+    assert_eq!(expanded.headers["x-plain"], "as-is");
 }
 
 // ── GlobalVariables CRUD ─────────────────────────────────────────
@@ -184,27 +204,16 @@ fn test_expand_wallet_token() {
 
 #[test]
 fn cached_wallet_address_does_not_unlock_keyring() {
-    let chain = crate::chain::ChainInstance {
-        definition: crate::chain::ChainDefinition {
-            name: "mainnet".into(),
-            aliases: vec![],
-            chain_id: 1,
-            rpc_urls: vec!["http://localhost:8545".into()],
-            selected_rpc: "http://localhost:8545".into(),
-            verification_api_key: None,
-            verification_url: None,
-            key_name: Some("deployer".into()),
+    let mut chain = test_chain_instance();
+    chain.definition.key_name = Some("deployer".into());
+    chain.key = Some(crate::key::Key {
+        name: "deployer".into(),
+        address: Some("0xABCD".into()),
+        kind: crate::key::KeyType::Keyring {
+            service: "deliberately-unavailable".into(),
+            username: "missing".into(),
         },
-        rpc_url: "http://localhost:8545".into(),
-        key: Some(crate::key::Key {
-            name: "deployer".into(),
-            address: Some("0xABCD".into()),
-            kind: crate::key::KeyType::Keyring {
-                service: "deliberately-unavailable".into(),
-                username: "missing".into(),
-            },
-        }),
-    };
+    });
 
     let cv = ChainVariables::new(&chain, &["echo".into(), "@wallet".into()], false)
         .expect("cached address should avoid keyring access");
@@ -297,6 +306,32 @@ fn test_expand_no_tokens_passes_through() {
 }
 
 // ── ChainVariables::as_map() ─────────────────────────────────────
+
+#[test]
+fn chain_variables_debug_never_contains_values() {
+    const PRIVATE_KEY: &str = "0000000000000000000000000000000000000000000000000000000000000001";
+    let mut chain = test_chain_instance();
+    chain.headers.insert(
+        "x-internal-service-secret".to_string(),
+        "sekrit".to_string(),
+    );
+    chain.definition.key_name = Some("deployer".into());
+    chain.key = Some(crate::key::Key {
+        name: "deployer".into(),
+        address: None,
+        kind: crate::key::KeyType::PrivateKey {
+            value: PRIVATE_KEY.to_string(),
+        },
+    });
+
+    let variables = ChainVariables::new(&chain, &[], true).unwrap();
+    let output = format!("{variables:?}");
+    assert!(output.contains("ETH_RPC_HEADERS"));
+    assert!(output.contains("RAW_PRIVATE_KEY"));
+    for secret in ["sekrit", PRIVATE_KEY] {
+        assert!(!output.contains(secret), "{output}");
+    }
+}
 
 #[test]
 fn test_as_map_has_correct_keys() {
@@ -392,4 +427,61 @@ fn test_non_key_vars_still_expand_without_key() {
         result,
         vec!["--rpc-url", "http://localhost:8545", "--chain", "1"]
     );
+}
+
+// ── ETH_RPC_HEADERS export ─────────────────────────────────────
+
+fn test_chain_instance() -> crate::chain::ChainInstance {
+    crate::chain::ChainInstance {
+        definition: crate::chain::ChainDefinition {
+            name: "mainnet".into(),
+            aliases: vec![],
+            chain_id: 1,
+            rpc_urls: vec!["http://localhost:8545".into()],
+            selected_rpc: "http://localhost:8545".into(),
+            verification_api_key: None,
+            verification_url: None,
+            key_name: None,
+        },
+        rpc_url: "http://localhost:8545".into(),
+        headers: Default::default(),
+        key: None,
+    }
+}
+
+#[test]
+fn chain_variables_export_eth_rpc_headers() {
+    let mut chain = test_chain_instance();
+    chain
+        .headers
+        .insert("b-second".to_string(), "two".to_string());
+    chain
+        .headers
+        .insert("a-first".to_string(), "one".to_string());
+
+    let variables = ChainVariables::new(&chain, &[], false).unwrap();
+
+    assert_eq!(
+        variables.as_map()["ETH_RPC_HEADERS"],
+        "a-first: one,b-second: two"
+    );
+}
+
+#[test]
+fn chain_variables_omit_eth_rpc_headers_when_empty() {
+    let chain = test_chain_instance();
+    let variables = ChainVariables::new(&chain, &[], false).unwrap();
+    assert!(!variables.as_map().contains_key("ETH_RPC_HEADERS"));
+}
+
+#[test]
+fn chain_variables_reject_unexportable_expanded_header_values() {
+    for bad in ["has,comma", "has\nnewline", "has\rcarriage"] {
+        let mut chain = test_chain_instance();
+        chain.headers.insert("x-bad".to_string(), bad.to_string());
+        let error = ChainVariables::new(&chain, &[], false).unwrap_err();
+        let diagnostic = format!("{error:#}");
+        assert!(diagnostic.contains("x-bad"), "{diagnostic}");
+        assert!(!diagnostic.contains("has"), "{diagnostic}");
+    }
 }
