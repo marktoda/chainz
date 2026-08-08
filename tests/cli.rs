@@ -2,7 +2,7 @@
 //! `~/.chainz.json` is never touched and tests can run in parallel.
 
 use assert_cmd::Command;
-use chainz::model::{ChainDefinition, Config, Key, KeyType, LEGACY_CONFIG_FILE};
+use chainz::model::{ChainDefinition, Config, Key, KeyType, LEGACY_CONFIG_FILE, RpcEndpoint};
 use predicates::prelude::*;
 use std::fs;
 use std::io::{Read, Write};
@@ -73,7 +73,7 @@ fn seed_config(home: &Path, chains: &[(&str, u64)]) {
                 name: name.to_string(),
                 aliases: vec![],
                 chain_id: *id,
-                rpc_urls: vec!["http://localhost:1".to_string()],
+                rpc_urls: vec!["http://localhost:1".into()],
                 selected_rpc: "http://localhost:1".to_string(),
                 verification_api_key: None,
                 verification_url: None,
@@ -792,6 +792,67 @@ fn add_noninteractive_supports_rpc_only_chain() {
         .stdout(predicate::str::contains(r#""key_name": null"#));
 }
 
+/// Seals the whole `--header` path: flag parsing on `add`, the string-or-object
+/// config wire format, the probe consuming the header, and redaction on `show`.
+#[test]
+fn add_with_header_persists_object_form_and_show_redacts_value() {
+    let home = TempDir::new().unwrap();
+    let rpc = one_shot_rpc(424242);
+
+    chainz(home.path())
+        .args([
+            "add",
+            "--name",
+            "headerchain",
+            "--chain-id",
+            "424242",
+            "--rpc-url",
+            &rpc,
+            "--header",
+            "x-internal-service-secret: header-secret",
+        ])
+        .assert()
+        .success();
+
+    // Config stores the object form for the headered entry; a header-free
+    // chain added alongside it stays a plain string.
+    let plain_rpc = one_shot_rpc(424243);
+    chainz(home.path())
+        .args([
+            "add",
+            "--name",
+            "plainchain",
+            "--chain-id",
+            "424243",
+            "--rpc-url",
+            &plain_rpc,
+        ])
+        .assert()
+        .success();
+
+    let raw = fs::read_to_string(config_path(home.path())).unwrap();
+    assert!(
+        raw.contains(r#""x-internal-service-secret": "header-secret""#),
+        "{raw}"
+    );
+    assert!(raw.contains(&format!(r#""{plain_rpc}""#)), "{raw}");
+
+    // Redacted show: header name visible, value hidden.
+    chainz(home.path())
+        .args(["show", "headerchain", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("x-internal-service-secret"))
+        .stdout(predicate::str::contains("header-secret").not());
+
+    // --show-secrets reveals the stored value.
+    chainz(home.path())
+        .args(["show", "headerchain", "--json", "--show-secrets"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("header-secret"));
+}
+
 #[cfg(unix)]
 #[test]
 fn wallet_expansion_does_not_expose_private_key() {
@@ -856,7 +917,7 @@ fn chain_output_redacts_credentials_unless_explicitly_requested() {
     let mut config: Config = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
     let secret_url = "https://user:password@rpc.example.com/v2/rpc-secret?token=query-secret";
     config.chains[0].selected_rpc = secret_url.to_string();
-    config.chains[0].rpc_urls = vec![secret_url.to_string()];
+    config.chains[0].rpc_urls = vec![secret_url.into()];
     config.chains[0].verification_api_key = Some("verifier-secret".to_string());
     write_raw_config(home.path(), &serde_json::to_string_pretty(&config).unwrap());
 
@@ -972,6 +1033,87 @@ fn update_accepts_target_and_direct_changes() {
         .failure();
 }
 
+/// Seed a single-chain config whose sole RPC entry already carries headers.
+fn seed_headered_chain(
+    home: &Path,
+    chain_id: u64,
+    rpc_url: &str,
+    headers: std::collections::BTreeMap<String, String>,
+) {
+    let config = Config {
+        chains: vec![ChainDefinition {
+            name: "gw".to_string(),
+            aliases: vec![],
+            chain_id,
+            rpc_urls: vec![RpcEndpoint::with_headers(rpc_url, headers)],
+            selected_rpc: rpc_url.to_string(),
+            verification_api_key: None,
+            verification_url: None,
+            key_name: None,
+        }],
+        ..Default::default()
+    };
+    write_raw_config(home, &serde_json::to_string_pretty(&config).unwrap());
+}
+
+/// `update`'s header semantics are tri-state: omit `--header`/`--clear-headers`
+/// to keep the stored headers, pass `--header` to replace them wholesale, or
+/// pass `--clear-headers` to drop them back to a plain string. Each case gets
+/// its own one-shot RPC since a probe consumes the listener's single connection.
+#[test]
+fn update_without_header_flags_preserves_stored_headers() {
+    let home = TempDir::new().unwrap();
+    let rpc = one_shot_rpc(700_001);
+    let mut headers = std::collections::BTreeMap::new();
+    headers.insert("x-a".to_string(), "v1".to_string());
+    seed_headered_chain(home.path(), 700_001, &rpc, headers);
+
+    chainz(home.path())
+        .args(["update", "gw", "--rpc-url", &rpc])
+        .assert()
+        .success();
+
+    let raw = fs::read_to_string(config_path(home.path())).unwrap();
+    assert!(raw.contains(r#""x-a": "v1""#), "{raw}");
+}
+
+#[test]
+fn update_with_header_replaces_existing_headers_at_same_url() {
+    let home = TempDir::new().unwrap();
+    let rpc = one_shot_rpc(700_002);
+    let mut headers = std::collections::BTreeMap::new();
+    headers.insert("x-a".to_string(), "v1".to_string());
+    seed_headered_chain(home.path(), 700_002, &rpc, headers);
+
+    chainz(home.path())
+        .args(["update", "gw", "--rpc-url", &rpc, "--header", "x-b: v2"])
+        .assert()
+        .success();
+
+    let raw = fs::read_to_string(config_path(home.path())).unwrap();
+    assert!(raw.contains(r#""x-b": "v2""#), "{raw}");
+    assert!(!raw.contains("x-a"), "{raw}");
+}
+
+#[test]
+fn update_with_clear_headers_reverts_entry_to_plain_string() {
+    let home = TempDir::new().unwrap();
+    let rpc = one_shot_rpc(700_003);
+    let mut headers = std::collections::BTreeMap::new();
+    headers.insert("x-a".to_string(), "v1".to_string());
+    seed_headered_chain(home.path(), 700_003, &rpc, headers);
+
+    chainz(home.path())
+        .args(["update", "gw", "--rpc-url", &rpc, "--clear-headers"])
+        .assert()
+        .success();
+
+    let raw = fs::read_to_string(config_path(home.path())).unwrap();
+    assert!(raw.contains(&format!(r#""{rpc}""#)), "{raw}");
+    assert!(!raw.contains("x-a"), "{raw}");
+    assert!(!raw.contains("headers"), "{raw}");
+}
+
 #[test]
 fn update_flags_require_a_target() {
     let home = TempDir::new().unwrap();
@@ -1012,7 +1154,7 @@ fn rpc_only_chain_executes_until_key_material_is_requested() {
             name: "readonly".to_string(),
             aliases: vec![],
             chain_id: 31337,
-            rpc_urls: vec!["http://localhost:1".to_string()],
+            rpc_urls: vec!["http://localhost:1".into()],
             selected_rpc: "http://localhost:1".to_string(),
             verification_api_key: None,
             verification_url: None,
@@ -1062,7 +1204,7 @@ fn doctor_does_not_offer_rpc_fix_for_key_only_failure() {
             name: "local".to_string(),
             aliases: vec![],
             chain_id: 31337,
-            rpc_urls: vec![rpc.clone()],
+            rpc_urls: vec![rpc.clone().into()],
             selected_rpc: rpc,
             verification_api_key: None,
             verification_url: None,

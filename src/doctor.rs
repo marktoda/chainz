@@ -6,7 +6,7 @@
 //! network-free and fast.
 
 use crate::{
-    chain::rpc::check_urls,
+    chain::{RpcEndpoint, rpc::check_urls},
     config::Chainz,
     key::KeyType,
     prompt::{Prompt, SystemPrompt},
@@ -145,7 +145,11 @@ async fn check_rpc_health(chainz: &Chainz, report: &mut Report) -> Vec<String> {
     let checks: Vec<_> = chains
         .iter()
         .map(|c| {
-            let expanded = chainz.config.globals.expand_rpc_url(&c.selected_rpc);
+            let expanded = chainz.config.globals.expand_endpoint(
+                &c.selected_endpoint()
+                    .cloned()
+                    .unwrap_or_else(|| RpcEndpoint::new(c.selected_rpc.clone())),
+            );
             let raw = c.selected_rpc.clone();
             let chain_id = c.chain_id;
             let name = c.name.clone();
@@ -191,26 +195,26 @@ async fn fix_rpcs(chainz: &mut Chainz, failed: &[String], report: &mut Report) -
         // Probe all alternatives concurrently (chainlist chains can carry
         // dozens of RPCs; sequential 10s timeouts would stall for minutes),
         // then prefer the first healthy one in configured order.
-        let candidates: Vec<&String> = chain
+        let candidates: Vec<&RpcEndpoint> = chain
             .rpc_urls
             .iter()
-            .filter(|url| **url != chain.selected_rpc)
+            .filter(|endpoint| endpoint.url != chain.selected_rpc)
             .collect();
-        let expanded: Vec<String> = candidates
+        let expanded: Vec<RpcEndpoint> = candidates
             .iter()
-            .map(|url| chainz.config.globals.expand_rpc_url(url))
+            .map(|endpoint| chainz.config.globals.expand_endpoint(endpoint))
             .collect();
         let health = check_urls(&expanded, chain.chain_id).await;
 
         match health.iter().position(|h| *h) {
             Some(i) => {
-                chainz.set_selected_rpc(name, candidates[i].clone())?;
+                chainz.set_selected_rpc(name, candidates[i].url.clone())?;
                 println!(
                     "  {}",
                     ui::success(&format!(
                         "{}: switched to {}",
                         name,
-                        crate::endpoint::redact(candidates[i])
+                        crate::endpoint::redact(&candidates[i].url)
                     ))
                 );
                 report.failures = report.failures.saturating_sub(1);

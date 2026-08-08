@@ -22,7 +22,7 @@ pub use cli::run_cli;
 
 /// Serialized configuration records supported by the pre-1.0 crate interface.
 pub mod model {
-    pub use crate::chain::ChainDefinition;
+    pub use crate::chain::{ChainDefinition, RpcEndpoint};
     pub use crate::config::{Config, LEGACY_CONFIG_FILE};
     pub use crate::key::{Key, KeyType};
     pub use crate::variables::GlobalVariables;

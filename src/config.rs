@@ -1,5 +1,5 @@
 use crate::{
-    chain::{ChainDefinition, ChainInstance},
+    chain::{ChainDefinition, ChainInstance, RpcEndpoint},
     key::Key,
     variables::GlobalVariables,
 };
@@ -67,7 +67,11 @@ impl Chainz {
 
     pub fn get_chain(&self, name_or_id: &str) -> Result<ChainInstance> {
         let definition = self.config.get_chain(name_or_id)?.clone();
-        let rpc_url = self.config.globals.expand_rpc_url(&definition.selected_rpc);
+        let endpoint = definition
+            .selected_endpoint()
+            .cloned()
+            .unwrap_or_else(|| RpcEndpoint::new(definition.selected_rpc.clone()));
+        let expanded = self.config.globals.expand_endpoint(&endpoint);
         let key = definition
             .key_name
             .as_deref()
@@ -75,7 +79,8 @@ impl Chainz {
             .cloned();
         Ok(ChainInstance {
             definition,
-            rpc_url,
+            rpc_url: expanded.url,
+            headers: expanded.headers,
             key,
         })
     }
@@ -407,11 +412,41 @@ impl Config {
             if chain.rpc_urls.is_empty() {
                 anyhow::bail!("Chain '{}' has no RPC URLs", chain.name);
             }
-            if !chain.rpc_urls.contains(&chain.selected_rpc) {
+            if !chain.rpc_urls.iter().any(|e| e.url == chain.selected_rpc) {
                 anyhow::bail!(
                     "Chain '{}' selected RPC is not present in its RPC list",
                     chain.name
                 );
+            }
+            for endpoint in &chain.rpc_urls {
+                if endpoint.url.trim().is_empty() {
+                    anyhow::bail!("Chain '{}' has an RPC entry with an empty URL", chain.name);
+                }
+                for (name, value) in &endpoint.headers {
+                    if name.is_empty() || !name.bytes().all(is_header_name_byte) {
+                        anyhow::bail!(
+                            "Chain '{}' has an invalid RPC header name '{}'",
+                            chain.name,
+                            name
+                        );
+                    }
+                    // Never echo the value: it is a credential.
+                    if value.contains(['\r', '\n']) {
+                        anyhow::bail!(
+                            "Chain '{}' RPC header '{}' has a value containing line breaks",
+                            chain.name,
+                            name
+                        );
+                    }
+                    if value.contains(',') && !value.contains("${") {
+                        anyhow::bail!(
+                            "Chain '{}' RPC header '{}' has a value containing a comma, \
+                             which cannot be exported via ETH_RPC_HEADERS",
+                            chain.name,
+                            name
+                        );
+                    }
+                }
             }
             if let Some(key_name) = chain.key_name.as_deref()
                 && !self.keys.contains_key(key_name)
@@ -458,8 +493,10 @@ impl Config {
         // Older manual-chain flows could persist only `selected_rpc`. Keep
         // those configs usable while converging them to the current invariant.
         for chain in &mut self.chains {
-            if !chain.selected_rpc.is_empty() && !chain.rpc_urls.contains(&chain.selected_rpc) {
-                chain.rpc_urls.push(chain.selected_rpc.clone());
+            if !chain.selected_rpc.is_empty() && chain.endpoint(&chain.selected_rpc).is_none() {
+                chain
+                    .rpc_urls
+                    .push(RpcEndpoint::new(chain.selected_rpc.clone()));
             }
         }
         if let Some(default) = self.default_chain.clone()
@@ -471,6 +508,11 @@ impl Config {
             self.default_chain = Some(chain.name.clone());
         }
     }
+}
+
+/// RFC 9110 token characters, the legal alphabet for HTTP header names.
+fn is_header_name_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte)
 }
 
 #[cfg(test)]
