@@ -1,6 +1,6 @@
 use super::*;
 use crate::chain::{ChainDefinition, RpcEndpoint};
-use crate::key::{Key, KeyType};
+use crate::key::Key;
 
 fn test_chain(name: &str, chain_id: u64) -> ChainDefinition {
     ChainDefinition {
@@ -16,12 +16,7 @@ fn test_chain(name: &str, chain_id: u64) -> ChainDefinition {
 }
 
 fn test_key(name: &str) -> Key {
-    Key::new(
-        name.to_string(),
-        KeyType::PrivateKey {
-            value: "0000000000000000000000000000000000000000000000000000000000000001".to_string(),
-        },
-    )
+    crate::test_support::plaintext_key(name)
 }
 
 fn chainz_for_chains() -> Result<Chainz> {
@@ -230,9 +225,8 @@ fn list_keys_default_first() -> Result<()> {
     chainz.add_key("zebra", test_key("zebra"))?;
     chainz.add_key("default", test_key("default"))?;
 
-    let keys = chainz.list_keys();
-    assert_eq!(keys.len(), 3);
-    assert_eq!(keys[0].0, "default");
+    let names: Vec<&str> = chainz.list_keys().into_iter().map(|(n, _)| n).collect();
+    assert_eq!(names, ["default", "alpha", "zebra"]);
     Ok(())
 }
 

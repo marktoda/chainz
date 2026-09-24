@@ -1,3 +1,10 @@
+//! User variables and per-chain command environment.
+//!
+//! `GlobalVariables` are persisted `${NAME}` substitutions for RPC URLs and
+//! header values (falling back to the process environment).
+//! `ChainVariables` is the environment and `@token` expansion table built
+//! for one `exec`/`shell` invocation; it resolves key material lazily.
+
 use crate::{
     chain::ChainInstance,
     config::Chainz,
@@ -6,7 +13,7 @@ use crate::{
 };
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 
 #[derive(Default, Serialize, Deserialize)]
@@ -14,15 +21,13 @@ pub struct GlobalVariables {
     /// User variables (e.g. INFURA_API_KEY), referenced as `${NAME}` in RPC
     /// URLs and header values. Flattened so the config stays `{"NAME": "value"}`.
     #[serde(flatten)]
-    values: HashMap<String, String>,
+    values: BTreeMap<String, String>,
 }
 
 impl fmt::Debug for GlobalVariables {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut names: Vec<_> = self.values.keys().collect();
-        names.sort();
         f.debug_struct("GlobalVariables")
-            .field("names", &names)
+            .field("names", &self.values.keys().collect::<Vec<_>>())
             .finish()
     }
 }
@@ -238,7 +243,7 @@ impl GlobalVariables {
         self.values.get(key).map(String::as_str)
     }
 
-    pub fn entries(&self) -> &HashMap<String, String> {
+    pub fn entries(&self) -> &BTreeMap<String, String> {
         &self.values
     }
 }
@@ -281,9 +286,7 @@ impl VarCommand {
                     println!("No variables set");
                 } else {
                     println!("Variables:");
-                    let mut entries: Vec<_> = vars.iter().collect();
-                    entries.sort_by_key(|(name, _)| *name);
-                    for (name, value) in entries {
+                    for (name, value) in vars {
                         println!(
                             "  {} = {}",
                             name,
@@ -304,7 +307,7 @@ impl VarCommand {
     }
 }
 
-fn interpolate_variables(input: &str, variables: &HashMap<String, String>) -> String {
+fn interpolate_variables(input: &str, variables: &BTreeMap<String, String>) -> String {
     let mut result = input.to_string();
 
     // First replace from config variables

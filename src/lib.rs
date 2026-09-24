@@ -15,6 +15,8 @@ mod key;
 mod listing;
 mod opt;
 mod prompt;
+#[cfg(test)]
+mod test_support;
 mod ui;
 mod variables;
 

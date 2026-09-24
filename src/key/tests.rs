@@ -1,8 +1,7 @@
 use super::*;
 use std::{cell::RefCell, collections::HashMap};
 
-const TEST_PRIVATE_KEY: &str = "0000000000000000000000000000000000000000000000000000000000000001";
-const TEST_ADDRESS: &str = "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf";
+use crate::test_support::{TEST_ADDRESS, TEST_PRIVATE_KEY};
 
 struct MemoryBackend {
     interactive: bool,
@@ -226,7 +225,7 @@ fn plaintext_to_keyring_migration_is_hermetic() -> Result<()> {
     );
     let vault = KeyVault::new(MemoryBackend::new(false, true, &[]));
     let migrated = vault
-        .provision_migration(&source, Some(MigrationTargetArg::Keyring))?
+        .provision_migration(&source, Some(SafeStorage::Keyring))?
         .key()
         .clone();
     assert!(matches!(migrated.kind, KeyType::Keyring { .. }));
@@ -248,7 +247,7 @@ fn plaintext_to_encrypted_migration_round_trips() -> Result<()> {
         &["password", "password", "password"],
     ));
     let migrated = vault
-        .provision_migration(&source, Some(MigrationTargetArg::Encrypted))?
+        .provision_migration(&source, Some(SafeStorage::Encrypted))?
         .key()
         .clone();
     assert!(matches!(migrated.kind, KeyType::EncryptedKey { .. }));
@@ -347,4 +346,21 @@ fn legacy_encrypted_record_gets_default_kdf_parameters() -> Result<()> {
         TEST_PRIVATE_KEY
     );
     Ok(())
+}
+
+#[test]
+fn cli_storage_args_map_to_domain_storage() {
+    assert_eq!(
+        KeyStorage::try_from(KeyTypeArg::PrivateKey).unwrap(),
+        KeyStorage::Plaintext
+    );
+    assert_eq!(
+        KeyStorage::try_from(KeyTypeArg::Keyring).unwrap(),
+        KeyStorage::Safe(SafeStorage::Keyring)
+    );
+    assert!(KeyStorage::try_from(KeyTypeArg::OnePassword).is_err());
+    assert_eq!(
+        SafeStorage::from(MigrationTargetArg::Encrypted),
+        SafeStorage::Encrypted
+    );
 }

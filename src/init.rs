@@ -1,3 +1,9 @@
+//! `chainz init`: build a fresh config interactively.
+//!
+//! The whole config is staged in memory and keys are provisioned to safe
+//! storage only after every prompt succeeds, so cancelling leaves any
+//! existing config and its credentials untouched.
+
 use crate::{
     config::{Chainz, config_exists},
     key::{
@@ -106,20 +112,10 @@ async fn initialize_with_wizard(prompt: &mut impl Prompt) -> Result<Chainz> {
             break;
         }
 
-        let args = opt::AddArgs {
-            name: None,
-            chain_id: None,
-            rpc_url: None,
-            headers: vec![],
-            key: None,
-            verification_url: None,
-            verification_api_key: None,
-            verification_api_key_stdin: false,
-            force: false,
-            refresh: false,
-        };
-
-        match args.handle_staged(prompt, &mut chainz).await {
+        match opt::AddArgs::default()
+            .handle_staged(prompt, &mut chainz)
+            .await
+        {
             Ok(chain) => println!("Added chain: {}", chain.name),
             Err(e) => println!("Failed to add chain: {}", e),
         }
@@ -132,8 +128,7 @@ async fn initialize_with_wizard(prompt: &mut impl Prompt) -> Result<Chainz> {
 mod tests {
     use super::*;
     use crate::prompt::testing::{Answer, ScriptedPrompt};
-
-    const TEST_KEY: &str = "0000000000000000000000000000000000000000000000000000000000000001";
+    use crate::test_support::TEST_PRIVATE_KEY;
 
     #[tokio::test]
     async fn wizard_supports_rpc_only_initialization() -> Result<()> {
@@ -154,7 +149,7 @@ mod tests {
     #[tokio::test]
     async fn wizard_stages_a_valid_default_key_without_external_io() -> Result<()> {
         let mut prompt = ScriptedPrompt::new([
-            Answer::Secret(TEST_KEY.into()),
+            Answer::Secret(TEST_PRIVATE_KEY.into()),
             Answer::Text(String::new()),
             Answer::Confirm(false),
         ]);

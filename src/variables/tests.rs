@@ -305,11 +305,11 @@ fn test_expand_no_tokens_passes_through() {
     assert_eq!(result, vec!["echo", "hello", "world"]);
 }
 
-// ── ChainVariables::as_map() ─────────────────────────────────────
+// ── ChainVariables::env() ─────────────────────────────────────
 
 #[test]
 fn chain_variables_debug_never_contains_values() {
-    const PRIVATE_KEY: &str = "0000000000000000000000000000000000000000000000000000000000000001";
+    use crate::test_support::TEST_PRIVATE_KEY as PRIVATE_KEY;
     let mut chain = test_chain_instance();
     chain.headers.insert(
         "x-internal-service-secret".to_string(),

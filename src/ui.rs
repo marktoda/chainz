@@ -1,5 +1,6 @@
-//! The single output vocabulary for chainz. Every user-facing styled line
-//! goes through these helpers so glyphs and palette stay coherent.
+//! The single output vocabulary for chainz. Status and heading lines go
+//! through these helpers so glyphs and palette stay coherent; `listing`
+//! owns the tree layout of chain details.
 //! `console` styles only when stdout is detected as a TTY, and honors NO_COLOR.
 
 use console::style;

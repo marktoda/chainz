@@ -1,3 +1,11 @@
+//! The persisted config model and its transactional owner.
+//!
+//! `Config` is the serialized document; `Chainz` wraps it with the
+//! cross-process lock and the mutations that keep its invariants (unique
+//! chain ids and names, selected RPC present, key references resolvable).
+//! `Config::validate` is the single definition of those invariants and runs
+//! before every write. File I/O lives in `store`.
+
 use crate::{
     chain::{ChainDefinition, ChainInstance, RpcEndpoint},
     key::{DEFAULT_KEY_NAME, Key},
@@ -5,7 +13,7 @@ use crate::{
 };
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 mod store;
 pub(crate) use store::config_exists;
@@ -24,7 +32,8 @@ pub struct Config {
     pub chains: Vec<ChainDefinition>,
     #[serde(rename = "variables")]
     pub globals: GlobalVariables,
-    pub keys: HashMap<String, Key>,
+    /// BTreeMap keeps the written config and key listings in a stable order.
+    pub keys: BTreeMap<String, Key>,
     /// Chain used by `exec` when none is specified; set via `chainz use`
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_chain: Option<String>,
@@ -109,10 +118,8 @@ impl Chainz {
             .map(|(n, k)| (n.as_str(), k))
             .collect();
 
-        if let Some(default_pos) = keys.iter().position(|(name, _)| *name == DEFAULT_KEY_NAME) {
-            keys.swap(0, default_pos);
-        }
-
+        // Name order, except the init-created default key leads.
+        keys.sort_by_key(|(name, _)| *name != DEFAULT_KEY_NAME);
         keys
     }
 
@@ -246,12 +253,7 @@ impl Chainz {
     /// Destructive commands deliberately require an exact primary name or ID.
     pub fn remove_chain_exact(&mut self, name_or_id: &str) -> Result<ChainDefinition> {
         let pos = self.config.find_chain_exact_index(name_or_id)?;
-        self.remove_chain_at(pos)
-    }
-
-    fn remove_chain_at(&mut self, pos: usize) -> Result<ChainDefinition> {
         let removed = self.config.chains.remove(pos);
-        // Keep the default-chain invariant here so every caller gets it
         if self.config.default_chain.as_deref() == Some(removed.name.as_str()) {
             self.config.default_chain = None;
         }

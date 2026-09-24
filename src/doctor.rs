@@ -12,7 +12,6 @@ use crate::{
     ui,
 };
 use anyhow::Result;
-use console::style;
 
 pub struct Report {
     pub failures: usize,
@@ -48,22 +47,18 @@ async fn run_with(prompt: &mut impl Prompt, chainz: &mut Chainz, fix: bool) -> R
     println!();
     match (report.failures, report.warnings) {
         (0, 0) => println!("{}", ui::success("no issues found")),
-        (f, w) => {
-            println!(
-                "{} {} failure(s), {} warning(s){}",
-                if f > 0 {
-                    style("✗").red().to_string()
-                } else {
-                    style("⚠").yellow().to_string()
-                },
-                f,
-                w,
-                if !failed_chains.is_empty() && !fix {
-                    " — run with --fix to attempt RPC repairs"
-                } else {
-                    ""
-                }
-            );
+        (failures, warnings) => {
+            let hint = if !failed_chains.is_empty() && !fix {
+                " — run with --fix to attempt RPC repairs"
+            } else {
+                ""
+            };
+            let summary = format!("{failures} failure(s), {warnings} warning(s){hint}");
+            if failures > 0 {
+                println!("{}", ui::fail(&summary));
+            } else {
+                println!("{}", ui::warn(&summary));
+            }
         }
     }
     Ok(report)
@@ -235,23 +230,14 @@ async fn fix_rpcs(chainz: &mut Chainz, failed: &[String], report: &mut Report) -
 mod tests {
     use super::*;
     use crate::{
-        key::{Key, KeyType},
         prompt::testing::{Answer, ScriptedPrompt},
+        test_support::plaintext_key,
     };
 
     #[tokio::test]
     async fn scripted_prompt_drives_plaintext_migration_decision() -> Result<()> {
         let mut chainz = Chainz::new();
-        chainz.add_key(
-            "default",
-            Key::new(
-                "default".into(),
-                KeyType::PrivateKey {
-                    value: "0000000000000000000000000000000000000000000000000000000000000001"
-                        .into(),
-                },
-            ),
-        )?;
+        chainz.add_key("default", plaintext_key("default"))?;
         let mut prompt = ScriptedPrompt::new([Answer::Confirm(false)]);
 
         let report = run_with(&mut prompt, &mut chainz, true).await?;

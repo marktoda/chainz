@@ -1,3 +1,6 @@
+//! Chain records: the serialized `ChainDefinition` and `RpcEndpoint`, and
+//! the resolved, ready-to-use `ChainInstance`.
+
 pub(crate) mod rpc;
 pub(crate) mod wizard;
 

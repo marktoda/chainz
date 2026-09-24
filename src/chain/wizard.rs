@@ -1,3 +1,9 @@
+//! `chainz add` and `chainz update`: flag-driven and interactive flows.
+//!
+//! Interactive steps depend on `Prompt` so they are testable with
+//! `ScriptedPrompt`. Keys created mid-wizard are staged as plaintext in
+//! memory and moved to safe storage by `save_with_safe_new_keys` at commit.
+
 use super::{
     ChainDefinition, RpcEndpoint,
     rpc::{check_url, probe_urls, rank_by_health},
@@ -12,7 +18,6 @@ use crate::{
     variables::GlobalVariables,
 };
 use anyhow::{Context, Result};
-use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::collections::{BTreeMap, HashSet};
 
@@ -28,12 +33,12 @@ fn text_input<T: std::str::FromStr>(prompt: &mut impl Prompt, message: &str) -> 
         .map_err(|_| anyhow::anyhow!("Failed to parse input"))
 }
 
-async fn manual_chain_entry(
+fn manual_chain_entry(
     prompt: &mut impl Prompt,
     name: Option<String>,
     chain_id: Option<u64>,
 ) -> Result<ChainlistEntry> {
-    println!("\n{}", style("Manual Chain Entry").yellow().bold());
+    println!("{}", ui::section("Manual Chain Entry"));
     let name = if let Some(n) = name {
         n
     } else {
@@ -366,7 +371,7 @@ impl UpdateArgs {
         chainz.replace_chain(&original_name, chain.clone())?;
         let new_keys = keys_added_since(chainz, &existing_keys);
         save_with_safe_new_keys(chainz, new_keys).await?;
-        println!("\n{}", style("Chain updated successfully").green());
+        println!("\n{}", ui::success("Chain updated successfully"));
         Ok(chain)
     }
 
@@ -585,7 +590,7 @@ impl AddArgs {
 
         let selected_chain = if self.name.is_some() || self.chain_id.is_some() {
             // Pre-fill from CLI args when partially provided
-            manual_chain_entry(prompt, self.name.clone(), self.chain_id).await?
+            manual_chain_entry(prompt, self.name.clone(), self.chain_id)?
         } else {
             // Full interactive flow with chainlist
             let chains = fetch_all_chains(self.refresh).await?;

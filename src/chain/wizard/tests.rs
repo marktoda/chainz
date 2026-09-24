@@ -114,9 +114,7 @@ fn verifier_prompt_covers_set_partial_and_clear_states() {
 async fn scripted_prompt_drives_manual_entry_and_update_menu() {
     let mut entry_prompt =
         ScriptedPrompt::new([Answer::Text("local".into()), Answer::Text("31337".into())]);
-    let entry = manual_chain_entry(&mut entry_prompt, None, None)
-        .await
-        .unwrap();
+    let entry = manual_chain_entry(&mut entry_prompt, None, None).unwrap();
     assert_eq!(entry.name, "local");
     assert_eq!(entry.chain_id, 31_337);
 
@@ -187,7 +185,7 @@ fn parse_rpc_headers_rejects_malformed_without_echoing_values() {
 
 #[test]
 fn scripted_prompt_drives_staged_key_selection() {
-    const PRIVATE_KEY: &str = "0000000000000000000000000000000000000000000000000000000000000001";
+    use crate::test_support::TEST_PRIVATE_KEY as PRIVATE_KEY;
     let mut chainz = Chainz::new();
     let mut prompt = ScriptedPrompt::new([
         Answer::Select(1),
