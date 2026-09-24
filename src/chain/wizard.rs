@@ -14,6 +14,7 @@ use crate::{
 use anyhow::{Context, Result};
 use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use std::collections::{BTreeMap, HashSet};
 
 /// Helper function to handle text input with ESC cancellation
 fn text_input<T: std::str::FromStr>(
@@ -184,6 +185,83 @@ fn merge_refreshed_rpcs(chain: &ChainDefinition, refreshed: Vec<String>) -> Vec<
     candidates
 }
 
+/// Verify an RPC before it is persisted. The URL and header values are
+/// `${VAR}`-expanded only for the probe; a failure names the redacted raw
+/// URL, never the expanded one.
+async fn verify_rpc(
+    globals: &GlobalVariables,
+    endpoint: &RpcEndpoint,
+    chain_id: u64,
+) -> Result<()> {
+    check_url(&globals.expand_endpoint(endpoint), chain_id)
+        .await
+        .with_context(|| {
+            format!(
+                "RPC check failed for {}",
+                crate::endpoint::redact(&endpoint.url)
+            )
+        })
+}
+
+/// Resolve a `--key` argument that must name an already-stored key.
+fn require_existing_key(chainz: &Chainz, name: &str) -> Result<String> {
+    chainz.get_key(name).map_err(|_| {
+        anyhow::anyhow!(
+            "Key '{}' not found. Add it first with 'chainz key add'.",
+            name
+        )
+    })?;
+    Ok(name.to_string())
+}
+
+/// Rename a chain, dropping any alias the new name makes redundant.
+fn rename_chain(chainz: &Chainz, chain: &mut ChainDefinition, name: &str) -> Result<()> {
+    let name = name.trim();
+    if name.is_empty() {
+        anyhow::bail!("Chain name cannot be empty");
+    }
+    if !chain.matches_exact(name) && chainz.chain_exists(name) {
+        anyhow::bail!("Chain '{}' already exists", name);
+    }
+    chain
+        .aliases
+        .retain(|alias| !alias.eq_ignore_ascii_case(name));
+    chain.name = name.to_string();
+    Ok(())
+}
+
+/// Names of keys staged since `before` was captured (e.g. by `select_key`).
+fn keys_added_since(chainz: &Chainz, before: &HashSet<String>) -> Vec<String> {
+    chainz
+        .config
+        .keys
+        .keys()
+        .filter(|name| !before.contains(*name))
+        .cloned()
+        .collect()
+}
+
+fn key_names(chainz: &Chainz) -> HashSet<String> {
+    chainz.config.keys.keys().cloned().collect()
+}
+
+/// Interactive picker over configured chains.
+pub(crate) fn pick_chain<'a>(
+    prompt: &mut impl Prompt,
+    chainz: &'a Chainz,
+    message: &str,
+) -> Result<&'a ChainDefinition> {
+    let chains = chainz.list_chains();
+    if chains.is_empty() {
+        anyhow::bail!("No chains configured. Use 'chainz add' to add a chain first.");
+    }
+    let items: Vec<String> = chains
+        .iter()
+        .map(|chain| format!("{} ({})", chain.name, chain.chain_id))
+        .collect();
+    Ok(&chains[prompt.select(message, &items, 0)?])
+}
+
 fn probe_summary(results: &[super::rpc::ProbeResult]) -> String {
     let healthy = results.iter().filter(|result| result.healthy).count();
     format!("{} of {} RPCs healthy", healthy, results.len())
@@ -276,8 +354,7 @@ impl UpdateArgs {
         chainz: &mut Chainz,
     ) -> Result<ChainDefinition> {
         println!("{}", ui::header("Chain Update"));
-        let existing_keys: std::collections::HashSet<String> =
-            chainz.config.keys.keys().cloned().collect();
+        let existing_keys = key_names(chainz);
         let direct = self.has_direct_changes();
         if direct && self.name_or_id.is_none() {
             anyhow::bail!("Direct update flags require a chain argument");
@@ -285,18 +362,7 @@ impl UpdateArgs {
 
         let original = match &self.name_or_id {
             Some(name_or_id) => chainz.config.get_chain(name_or_id)?.clone(),
-            None => {
-                let chains: Vec<String> = chainz
-                    .list_chains()
-                    .iter()
-                    .map(|chain| format!("{} ({})", chain.name, chain.chain_id))
-                    .collect();
-                if chains.is_empty() {
-                    anyhow::bail!("No chains configured. Use 'chainz add' to add a chain first.");
-                }
-                let selection = fuzzy_select(terminal, "Select chain to update", &chains, 0)?;
-                chainz.list_chains()[selection].clone()
-            }
+            None => pick_chain(terminal, chainz, "Select chain to update")?.clone(),
         };
         let original_name = original.name.clone();
         let mut chain = original;
@@ -309,13 +375,7 @@ impl UpdateArgs {
         }
 
         chainz.replace_chain(&original_name, chain.clone())?;
-        let new_keys = chainz
-            .config
-            .keys
-            .keys()
-            .filter(|name| !existing_keys.contains(*name))
-            .cloned()
-            .collect::<Vec<_>>();
+        let new_keys = keys_added_since(chainz, &existing_keys);
         save_with_safe_new_keys(chainz, new_keys).await?;
         println!("\n{}", style("Chain updated successfully").green());
         Ok(chain)
@@ -336,49 +396,33 @@ impl UpdateArgs {
 
     async fn apply_direct(&self, chainz: &Chainz, chain: &mut ChainDefinition) -> Result<()> {
         if let Some(name) = &self.name {
-            let name = name.trim();
-            if name.is_empty() {
-                anyhow::bail!("Chain name cannot be empty");
-            }
-            if !chain.matches_exact(name) && chainz.chain_exists(name) {
-                anyhow::bail!("Chain '{}' already exists", name);
-            }
-            chain
-                .aliases
-                .retain(|alias| !alias.eq_ignore_ascii_case(name));
-            chain.name = name.to_string();
+            rename_chain(chainz, chain, name)?;
         }
         if let Some(rpc_url) = &self.rpc_url {
             let headers = if self.clear_headers {
-                Some(std::collections::BTreeMap::new())
+                Some(BTreeMap::new())
             } else if !self.headers.is_empty() {
                 Some(parse_rpc_headers(&self.headers)?)
             } else {
                 None // keep whatever headers the entry already has
             };
-            let probe_endpoint = chainz
-                .config
-                .globals
-                .expand_endpoint(&RpcEndpoint::with_headers(
-                    rpc_url.clone(),
-                    headers
-                        .clone()
-                        .or_else(|| chain.endpoint(rpc_url).map(|e| e.headers.clone()))
-                        .unwrap_or_default(),
-                ));
-            check_url(&probe_endpoint, chain.chain_id)
-                .await
-                .with_context(|| {
-                    format!("RPC check failed for {}", crate::endpoint::redact(rpc_url))
-                })?;
+            let probe_headers = headers
+                .clone()
+                .or_else(|| chain.endpoint(rpc_url).map(|e| e.headers.clone()))
+                .unwrap_or_default();
+            verify_rpc(
+                &chainz.config.globals,
+                &RpcEndpoint::with_headers(rpc_url.clone(), probe_headers),
+                chain.chain_id,
+            )
+            .await?;
             match headers {
                 Some(headers) => chain.select_rpc_with_headers(rpc_url.clone(), headers),
                 None => chain.select_rpc(rpc_url.clone()),
             }
         }
         if let Some(key) = &self.key {
-            chainz.get_key(key)?;
-            chain.key_name = Some(key.clone());
+            chain.key_name = Some(require_existing_key(chainz, key)?);
         } else if self.no_key {
             chain.key_name = None;
         }
@@ -452,13 +496,7 @@ impl UpdateArgs {
                 }
                 3 => {
                     let name = terminal.text("Chain name", Some(&chain.name), false)?;
-                    if !chain.matches_exact(&name) && chainz.chain_exists(&name) {
-                        anyhow::bail!("Chain '{}' already exists", name);
-                    }
-                    chain
-                        .aliases
-                        .retain(|alias| !alias.eq_ignore_ascii_case(&name));
-                    chain.name = name;
+                    rename_chain(chainz, chain, &name)?;
                 }
                 4 => break,
                 _ => unreachable!(),
@@ -511,36 +549,21 @@ impl AddArgs {
         let name = self.name.clone().unwrap();
         let chain_id = self.chain_id.unwrap();
         let rpc_url = self.rpc_url.clone().unwrap();
-        let headers = parse_rpc_headers(&self.headers)?;
-        let key_name = match &self.key {
-            Some(name) => {
-                chainz.get_key(name).map_err(|_| {
-                    anyhow::anyhow!(
-                        "Key '{}' not found. Add it first with 'chainz key add'.",
-                        name
-                    )
-                })?;
-                Some(name.clone())
-            }
-            None => None,
-        };
+        let endpoint =
+            RpcEndpoint::with_headers(rpc_url.clone(), parse_rpc_headers(&self.headers)?);
+        let key_name = self
+            .key
+            .as_deref()
+            .map(|key| require_existing_key(chainz, key))
+            .transpose()?;
 
-        // Test the RPC
-        let probe_endpoint = chainz
-            .config
-            .globals
-            .expand_endpoint(&RpcEndpoint::with_headers(rpc_url.clone(), headers.clone()));
-        check_url(&probe_endpoint, chain_id)
-            .await
-            .with_context(|| {
-                format!("RPC check failed for {}", crate::endpoint::redact(&rpc_url))
-            })?;
+        verify_rpc(&chainz.config.globals, &endpoint, chain_id).await?;
 
         let chain_def = ChainDefinition {
-            name: name.clone(),
+            name,
             aliases: vec![],
             chain_id,
-            rpc_urls: vec![RpcEndpoint::with_headers(rpc_url.clone(), headers)],
+            rpc_urls: vec![endpoint],
             selected_rpc: rpc_url,
             verification_api_key: self.read_verification_api_key()?,
             verification_url: self.verification_url.clone(),
@@ -568,8 +591,7 @@ impl AddArgs {
         chainz: &mut Chainz,
         persist: bool,
     ) -> Result<ChainDefinition> {
-        let existing_keys: std::collections::HashSet<String> =
-            chainz.config.keys.keys().cloned().collect();
+        let existing_keys = key_names(chainz);
         println!("{}", ui::header("Chain Selection"));
 
         let selected_chain = if self.name.is_some() || self.chain_id.is_some() {
@@ -605,23 +627,17 @@ impl AddArgs {
             (selected_chain.name.clone(), vec![])
         };
 
-        let mut rpc_headers = std::collections::BTreeMap::new();
+        let mut rpc_headers = BTreeMap::new();
         let selected_rpc = if let Some(rpc_url) = &self.rpc_url {
             // Use provided RPC URL directly
             println!("Testing RPC...");
             rpc_headers = parse_rpc_headers(&self.headers)?;
-            let probe_endpoint = chainz
-                .config
-                .globals
-                .expand_endpoint(&RpcEndpoint::with_headers(
-                    rpc_url.clone(),
-                    rpc_headers.clone(),
-                ));
-            check_url(&probe_endpoint, selected_chain.chain_id)
-                .await
-                .with_context(|| {
-                    format!("RPC check failed for {}", crate::endpoint::redact(rpc_url))
-                })?;
+            verify_rpc(
+                &chainz.config.globals,
+                &RpcEndpoint::with_headers(rpc_url.clone(), rpc_headers.clone()),
+                selected_chain.chain_id,
+            )
+            .await?;
             println!("{}", ui::success("RPC working"));
             rpc_url.clone()
         } else {
@@ -643,13 +659,7 @@ impl AddArgs {
         };
 
         let key_name = if let Some(key) = &self.key {
-            chainz.get_key(key).map_err(|_| {
-                anyhow::anyhow!(
-                    "Key '{}' not found. Add it first with 'chainz key add'.",
-                    key
-                )
-            })?;
-            Some(key.clone())
+            Some(require_existing_key(chainz, key)?)
         } else {
             println!("{}", ui::header("Key Configuration"));
             select_key(terminal, chainz)?
@@ -705,13 +715,7 @@ impl AddArgs {
 
         chainz.add_chain(chain_def.clone())?;
         if persist {
-            let new_keys = chainz
-                .config
-                .keys
-                .keys()
-                .filter(|name| !existing_keys.contains(*name))
-                .cloned()
-                .collect::<Vec<_>>();
+            let new_keys = keys_added_since(chainz, &existing_keys);
             save_with_safe_new_keys(chainz, new_keys).await?;
         }
         Ok(chain_def)
@@ -728,10 +732,8 @@ impl AddArgs {
 /// Parse repeatable `--header "name: value"` arguments. Splits on the first
 /// colon so values may themselves contain colons ("Bearer x:y").
 /// Error messages never echo the raw argument: it may contain a credential.
-pub(crate) fn parse_rpc_headers(
-    raw: &[String],
-) -> Result<std::collections::BTreeMap<String, String>> {
-    let mut headers = std::collections::BTreeMap::new();
+pub(crate) fn parse_rpc_headers(raw: &[String]) -> Result<BTreeMap<String, String>> {
+    let mut headers = BTreeMap::new();
     for entry in raw {
         let Some((name, value)) = entry.split_once(':') else {
             anyhow::bail!("Invalid --header; expected \"name: value\"");

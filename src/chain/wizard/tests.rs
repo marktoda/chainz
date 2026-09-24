@@ -1,6 +1,6 @@
 use super::{
-    manual_chain_entry, merge_refreshed_rpcs, probe_summary, select_key, select_verifier,
-    suggest_short_name,
+    manual_chain_entry, merge_refreshed_rpcs, pick_chain, probe_summary, rename_chain,
+    require_existing_key, select_key, select_verifier, suggest_short_name,
 };
 use crate::chain::{ChainDefinition, RpcEndpoint, rpc::ProbeResult};
 use crate::config::Chainz;
@@ -199,4 +199,46 @@ fn scripted_prompt_drives_staged_key_selection() {
 
     assert_eq!(selected.as_deref(), Some("deployer"));
     assert!(chainz.get_key("deployer").is_ok());
+}
+
+#[test]
+fn rename_trims_rejects_collisions_and_drops_redundant_alias() {
+    let mut chainz = Chainz::new();
+    let mut other = make_chain(vec!["https://eth.llamarpc.com".into()]);
+    other.name = "base".into();
+    other.chain_id = 8453;
+    chainz.add_chain(other).unwrap();
+
+    let mut chain = make_chain(vec!["https://eth.llamarpc.com".into()]);
+    chain.aliases = vec!["Ethereum Mainnet".into()];
+
+    assert!(rename_chain(&chainz, &mut chain, "   ").is_err());
+    assert!(rename_chain(&chainz, &mut chain, "BASE").is_err());
+    assert_eq!(chain.name, "ethereum");
+
+    rename_chain(&chainz, &mut chain, "  ethereum mainnet ").unwrap();
+    assert_eq!(chain.name, "ethereum mainnet");
+    assert!(chain.aliases.is_empty());
+}
+
+#[test]
+fn require_existing_key_points_at_key_add() {
+    let error = require_existing_key(&Chainz::new(), "missing").unwrap_err();
+    assert!(error.to_string().contains("chainz key add"), "{error}");
+}
+
+#[test]
+fn pick_chain_rejects_empty_config_and_returns_selection() {
+    let mut chainz = Chainz::new();
+    let mut prompt = ScriptedPrompt::new([]);
+    assert!(pick_chain(&mut prompt, &chainz, "pick").is_err());
+
+    chainz
+        .add_chain(make_chain(vec!["https://eth.llamarpc.com".into()]))
+        .unwrap();
+    let mut prompt = ScriptedPrompt::new([Answer::Select(0)]);
+    assert_eq!(
+        pick_chain(&mut prompt, &chainz, "pick").unwrap().name,
+        "ethereum"
+    );
 }

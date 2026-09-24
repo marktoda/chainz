@@ -4,14 +4,8 @@
 //! adapter and lets the command implementation modules remain private.
 
 use crate::{
-    config::Chainz,
-    doctor, init, listing,
-    listing::SecretVisibility,
-    opt,
-    opt::Opt,
-    prompt::{Prompt, SystemPrompt},
-    ui,
-    variables::ChainVariables,
+    chain::wizard::pick_chain, config::Chainz, doctor, init, listing, listing::SecretVisibility,
+    opt, opt::Opt, prompt::SystemPrompt, ui, variables::ChainVariables,
 };
 use anyhow::Result;
 use clap::{CommandFactory, Parser};
@@ -190,14 +184,7 @@ async fn dispatch() -> Result<()> {
 }
 
 fn select_chain(chainz: &Chainz) -> Result<String> {
-    let chains = chainz.list_chains();
-    if chains.is_empty() {
-        anyhow::bail!("No chains configured. Use 'chainz add' to add a chain first.");
-    }
-    let items: Vec<String> = chains
-        .iter()
-        .map(|chain| format!("{} ({})", chain.name, chain.chain_id))
-        .collect();
-    let selection = SystemPrompt.select("Select a chain", &items, 0)?;
-    Ok(chains[selection].name.clone())
+    Ok(pick_chain(&mut SystemPrompt, chainz, "Select a chain")?
+        .name
+        .clone())
 }
