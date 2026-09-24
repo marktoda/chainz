@@ -1,3 +1,6 @@
+//! Chain records: the serialized `ChainDefinition` and `RpcEndpoint`, and
+//! the resolved, ready-to-use `ChainInstance`.
+
 pub(crate) mod rpc;
 pub(crate) mod wizard;
 
@@ -5,8 +8,6 @@ use crate::key::Key;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
-
-pub const DEFAULT_KEY_NAME: &str = "default";
 
 /// One RPC endpoint: a URL plus optional custom HTTP headers (for gateways
 /// that authenticate via header rather than URL-embedded credential).
@@ -158,6 +159,14 @@ impl ChainDefinition {
     /// bypass validation (doctor's lenient load).
     pub(crate) fn selected_endpoint(&self) -> Option<&RpcEndpoint> {
         self.endpoint(&self.selected_rpc)
+    }
+
+    /// The endpoint to connect to: the record backing `selected_rpc`, or a
+    /// header-free endpoint for configs that bypass validation.
+    pub(crate) fn active_endpoint(&self) -> RpcEndpoint {
+        self.selected_endpoint()
+            .cloned()
+            .unwrap_or_else(|| RpcEndpoint::new(self.selected_rpc.clone()))
     }
 
     /// Select an RPC while preserving the config invariant that the selected

@@ -1,8 +1,14 @@
+//! `chainz init`: build a fresh config interactively.
+//!
+//! The whole config is staged in memory and keys are provisioned to safe
+//! storage only after every prompt succeeds, so cancelling leaves any
+//! existing config and its credentials untouched.
+
 use crate::{
-    chain::DEFAULT_KEY_NAME,
     config::{Chainz, config_exists},
     key::{
-        Key, KeyType, provision_safe_key, provision_safe_replacement_key, rollback_key_provision,
+        DEFAULT_KEY_NAME, Key, KeyType, provision_safe_key, provision_safe_replacement_key,
+        rollback_key_provision,
     },
     opt,
     prompt::{Prompt, SystemPrompt},
@@ -36,7 +42,7 @@ async fn handle_init_with(prompt: &mut impl Prompt) -> Result<()> {
     let pending: Vec<(String, zeroize::Zeroizing<String>)> = chainz
         .list_keys()
         .into_iter()
-        .filter(|(_, key)| matches!(key.kind, KeyType::PrivateKey { .. }))
+        .filter(|(_, key)| key.is_plaintext())
         .map(|(name, key)| Ok((name.to_string(), key.private_key()?)))
         .collect::<Result<_>>()?;
     let mut provisioned = Vec::new();
@@ -94,7 +100,7 @@ async fn initialize_with_wizard(prompt: &mut impl Prompt) -> Result<Chainz> {
         chainz
             .config
             .globals
-            .add_rpc_expansion(INFURA_API_KEY_ENV_VAR, &infura_api_key);
+            .set(INFURA_API_KEY_ENV_VAR, &infura_api_key);
     }
 
     // Add chains in a loop until user chooses to exit
@@ -106,20 +112,10 @@ async fn initialize_with_wizard(prompt: &mut impl Prompt) -> Result<Chainz> {
             break;
         }
 
-        let args = opt::AddArgs {
-            name: None,
-            chain_id: None,
-            rpc_url: None,
-            headers: vec![],
-            key: None,
-            verification_url: None,
-            verification_api_key: None,
-            verification_api_key_stdin: false,
-            force: false,
-            refresh: false,
-        };
-
-        match args.handle_staged(prompt, &mut chainz).await {
+        match opt::AddArgs::default()
+            .handle_staged(prompt, &mut chainz)
+            .await
+        {
             Ok(chain) => println!("Added chain: {}", chain.name),
             Err(e) => println!("Failed to add chain: {}", e),
         }
@@ -132,8 +128,7 @@ async fn initialize_with_wizard(prompt: &mut impl Prompt) -> Result<Chainz> {
 mod tests {
     use super::*;
     use crate::prompt::testing::{Answer, ScriptedPrompt};
-
-    const TEST_KEY: &str = "0000000000000000000000000000000000000000000000000000000000000001";
+    use crate::test_support::TEST_PRIVATE_KEY;
 
     #[tokio::test]
     async fn wizard_supports_rpc_only_initialization() -> Result<()> {
@@ -145,10 +140,7 @@ mod tests {
         let chainz = initialize_with_wizard(&mut prompt).await?;
         assert!(chainz.config.keys.is_empty());
         assert_eq!(
-            chainz
-                .config
-                .globals
-                .get_rpc_expansion(INFURA_API_KEY_ENV_VAR),
+            chainz.config.globals.get(INFURA_API_KEY_ENV_VAR),
             Some("infura-token")
         );
         Ok(())
@@ -157,7 +149,7 @@ mod tests {
     #[tokio::test]
     async fn wizard_stages_a_valid_default_key_without_external_io() -> Result<()> {
         let mut prompt = ScriptedPrompt::new([
-            Answer::Secret(TEST_KEY.into()),
+            Answer::Secret(TEST_PRIVATE_KEY.into()),
             Answer::Text(String::new()),
             Answer::Confirm(false),
         ]);

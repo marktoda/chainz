@@ -1,29 +1,33 @@
+//! User variables and per-chain command environment.
+//!
+//! `GlobalVariables` are persisted `${NAME}` substitutions for RPC URLs and
+//! header values (falling back to the process environment).
+//! `ChainVariables` is the environment and `@token` expansion table built
+//! for one `exec`/`shell` invocation; it resolves key material lazily.
+
 use crate::{
     chain::ChainInstance,
     config::Chainz,
     opt::VarCommand,
-    prompt::{Prompt, SystemPrompt},
+    prompt::{Prompt, StdinTrim, SystemPrompt, read_stdin_secret},
 };
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
-use std::io::Read;
-use zeroize::Zeroize;
 
 #[derive(Default, Serialize, Deserialize)]
 pub struct GlobalVariables {
-    /// INFURA_API_KEY etc
+    /// User variables (e.g. INFURA_API_KEY), referenced as `${NAME}` in RPC
+    /// URLs and header values. Flattened so the config stays `{"NAME": "value"}`.
     #[serde(flatten)]
-    rpc_expansions: HashMap<String, String>,
+    values: BTreeMap<String, String>,
 }
 
 impl fmt::Debug for GlobalVariables {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut names: Vec<_> = self.rpc_expansions.keys().collect();
-        names.sort();
         f.debug_struct("GlobalVariables")
-            .field("names", &names)
+            .field("names", &self.values.keys().collect::<Vec<_>>())
             .finish()
     }
 }
@@ -179,7 +183,7 @@ impl ChainVariables {
         Ok(Self { env, expansions })
     }
 
-    pub fn as_map(&self) -> &HashMap<String, String> {
+    pub fn env(&self) -> &HashMap<String, String> {
         &self.env
     }
 
@@ -199,7 +203,7 @@ impl ChainVariables {
 
 impl GlobalVariables {
     pub fn expand(&self, value: &str) -> String {
-        interpolate_variables(value, &self.rpc_expansions)
+        interpolate_variables(value, &self.values)
     }
 
     /// Expand a full endpoint: URL and every header value get the same
@@ -218,13 +222,12 @@ impl GlobalVariables {
         }
     }
 
-    pub fn add_rpc_expansion(&mut self, key: &str, value: &str) {
-        self.rpc_expansions
-            .insert(key.to_string(), value.to_string());
+    pub fn set(&mut self, key: &str, value: &str) {
+        self.values.insert(key.to_string(), value.to_string());
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
-        for key in self.rpc_expansions.keys() {
+        for key in self.values.keys() {
             if key.is_empty() || key.contains(['{', '}']) {
                 anyhow::bail!("Invalid variable name '{}'", key);
             }
@@ -232,16 +235,16 @@ impl GlobalVariables {
         Ok(())
     }
 
-    pub fn remove_rpc_expansion(&mut self, key: &str) -> Option<String> {
-        self.rpc_expansions.remove(key)
+    pub fn remove(&mut self, key: &str) -> Option<String> {
+        self.values.remove(key)
     }
 
-    pub fn get_rpc_expansion(&self, key: &str) -> Option<&str> {
-        self.rpc_expansions.get(key).map(String::as_str)
+    pub fn get(&self, key: &str) -> Option<&str> {
+        self.values.get(key).map(String::as_str)
     }
 
-    pub fn list_rpc_expansions(&self) -> &HashMap<String, String> {
-        &self.rpc_expansions
+    pub fn entries(&self) -> &BTreeMap<String, String> {
+        &self.values
     }
 }
 
@@ -253,7 +256,7 @@ impl VarCommand {
                     anyhow::bail!("Provide a value or --stdin, not both");
                 }
                 let value = if stdin {
-                    read_value_from_stdin()?
+                    read_stdin_secret("Value", StdinTrim::TrailingNewlines)?.to_string()
                 } else if let Some(value) = value {
                     eprintln!(
                         "Warning: variable values in argv may be visible in shell history; prefer --stdin"
@@ -266,28 +269,24 @@ impl VarCommand {
                     }
                     prompt.secret(&format!("Value for {}: ", name))?
                 };
-                chainz.config.globals.add_rpc_expansion(&name, &value);
+                chainz.config.globals.set(&name, &value);
                 chainz.save().await?;
                 println!("Set variable {}", name);
             }
-            VarCommand::Get { name, show } => {
-                match chainz.config.globals.get_rpc_expansion(&name) {
-                    Some(value) if show => println!("{} = {}", name, value),
-                    Some(_) => println!("{} = [REDACTED]", name),
-                    None => anyhow::bail!("Variable '{}' not found", name),
-                }
-            }
+            VarCommand::Get { name, show } => match chainz.config.globals.get(&name) {
+                Some(value) if show => println!("{} = {}", name, value),
+                Some(_) => println!("{} = [REDACTED]", name),
+                None => anyhow::bail!("Variable '{}' not found", name),
+            },
             VarCommand::List { show, json } => {
-                let vars = chainz.config.globals.list_rpc_expansions();
+                let vars = chainz.config.globals.entries();
                 if json {
                     println!("{}", serde_json::to_string_pretty(vars)?);
                 } else if vars.is_empty() {
                     println!("No variables set");
                 } else {
                     println!("Variables:");
-                    let mut entries: Vec<_> = vars.iter().collect();
-                    entries.sort_by_key(|(name, _)| *name);
-                    for (name, value) in entries {
+                    for (name, value) in vars {
                         println!(
                             "  {} = {}",
                             name,
@@ -297,7 +296,7 @@ impl VarCommand {
                 }
             }
             VarCommand::Remove { name } => {
-                if chainz.config.globals.remove_rpc_expansion(&name).is_none() {
+                if chainz.config.globals.remove(&name).is_none() {
                     anyhow::bail!("Variable '{}' not found", name);
                 }
                 chainz.save().await?;
@@ -308,18 +307,7 @@ impl VarCommand {
     }
 }
 
-fn read_value_from_stdin() -> Result<String> {
-    let mut value = String::new();
-    std::io::stdin().read_to_string(&mut value)?;
-    let normalized = value.trim_end_matches(['\r', '\n']).to_string();
-    value.zeroize();
-    if normalized.is_empty() {
-        anyhow::bail!("Value from stdin was empty");
-    }
-    Ok(normalized)
-}
-
-fn interpolate_variables(input: &str, variables: &HashMap<String, String>) -> String {
+fn interpolate_variables(input: &str, variables: &BTreeMap<String, String>) -> String {
     let mut result = input.to_string();
 
     // First replace from config variables

@@ -7,7 +7,7 @@
 use crate::{
     config::Chainz,
     opt::{KeyCommand, KeyTypeArg, MigrationTargetArg},
-    prompt::{Prompt, SystemPrompt},
+    prompt::{Prompt, StdinTrim, SystemPrompt, read_stdin_secret},
 };
 use aes_gcm::{
     Aes256Gcm, Nonce,
@@ -22,6 +22,8 @@ use serde::{Deserialize, Serialize};
 use std::{fmt, io::IsTerminal, process::Command, sync::OnceLock};
 use zeroize::{Zeroize, Zeroizing};
 
+/// Key created by `chainz init`; listed first by `Chainz::list_keys`.
+pub const DEFAULT_KEY_NAME: &str = "default";
 const KEYRING_SERVICE: &str = "chainz";
 const ENVELOPE_VERSION: u8 = 1;
 // These are Argon2 0.5's defaults. Persisting them makes encrypted records
@@ -77,6 +79,44 @@ const fn default_kdf_iterations() -> u32 {
 }
 const fn default_kdf_parallelism() -> u32 {
     KDF_PARALLELISM
+}
+
+/// A destination that keeps private-key material out of the config file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SafeStorage {
+    Keyring,
+    Encrypted,
+}
+
+/// Where a newly supplied private key is written.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KeyStorage {
+    Plaintext,
+    Safe(SafeStorage),
+}
+
+impl From<MigrationTargetArg> for SafeStorage {
+    fn from(arg: MigrationTargetArg) -> Self {
+        match arg {
+            MigrationTargetArg::Keyring => Self::Keyring,
+            MigrationTargetArg::Encrypted => Self::Encrypted,
+        }
+    }
+}
+
+impl TryFrom<KeyTypeArg> for KeyStorage {
+    type Error = anyhow::Error;
+
+    fn try_from(arg: KeyTypeArg) -> Result<Self> {
+        match arg {
+            KeyTypeArg::PrivateKey => Ok(Self::Plaintext),
+            KeyTypeArg::Encrypted => Ok(Self::Safe(SafeStorage::Encrypted)),
+            KeyTypeArg::Keyring => Ok(Self::Safe(SafeStorage::Keyring)),
+            KeyTypeArg::OnePassword => {
+                anyhow::bail!("1Password keys are references and cannot be populated from a value")
+            }
+        }
+    }
 }
 
 impl fmt::Debug for Key {
@@ -284,11 +324,11 @@ impl<B: KeyBackend> KeyVault<B> {
         Ok(value)
     }
 
-    fn safe_default(&self) -> MigrationTargetArg {
+    fn safe_default(&self) -> SafeStorage {
         if self.backend.keyring_available() {
-            MigrationTargetArg::Keyring
+            SafeStorage::Keyring
         } else {
-            MigrationTargetArg::Encrypted
+            SafeStorage::Encrypted
         }
     }
 
@@ -296,11 +336,11 @@ impl<B: KeyBackend> KeyVault<B> {
         &self,
         name: &str,
         private_key: &str,
-        requested: Option<KeyTypeArg>,
+        requested: Option<KeyStorage>,
     ) -> Result<KeyProvision> {
         Key::validate_private_key(private_key)?;
         let storage = match requested {
-            Some(KeyTypeArg::PrivateKey) => {
+            Some(KeyStorage::Plaintext) => {
                 eprintln!(
                     "Warning: storing '{}' as plaintext; migrate with `chainz key migrate {}`",
                     name, name
@@ -315,11 +355,7 @@ impl<B: KeyBackend> KeyVault<B> {
                     created_external: false,
                 });
             }
-            Some(KeyTypeArg::Encrypted) => MigrationTargetArg::Encrypted,
-            Some(KeyTypeArg::Keyring) => MigrationTargetArg::Keyring,
-            Some(KeyTypeArg::OnePassword) => {
-                anyhow::bail!("1Password keys are references and cannot be populated from a value")
-            }
+            Some(KeyStorage::Safe(storage)) => storage,
             None => self.safe_default(),
         };
         self.provision_target(name, private_key, storage)
@@ -329,16 +365,16 @@ impl<B: KeyBackend> KeyVault<B> {
         &self,
         name: &str,
         private_key: &str,
-        target: MigrationTargetArg,
+        target: SafeStorage,
     ) -> Result<KeyProvision> {
         match target {
-            MigrationTargetArg::Keyring => {
+            SafeStorage::Keyring => {
                 if !self.backend.keyring_available() {
                     anyhow::bail!("The OS keyring is unavailable; use --to encrypted instead");
                 }
                 self.store_keyring(name, name, private_key)
             }
-            MigrationTargetArg::Encrypted => {
+            SafeStorage::Encrypted => {
                 if !self.backend.is_interactive() {
                     anyhow::bail!(
                         "No OS keyring is available and encrypted storage needs an interactive password prompt; use `--type private-key --stdin` only if plaintext storage is intentional"
@@ -368,13 +404,13 @@ impl<B: KeyBackend> KeyVault<B> {
     ) -> Result<KeyProvision> {
         Key::validate_private_key(private_key)?;
         match self.safe_default() {
-            MigrationTargetArg::Keyring => {
+            SafeStorage::Keyring => {
                 let suffix: u64 = rand::rng().random();
                 let username = format!("{}-replacement-{suffix:016x}", name);
                 self.store_keyring(name, &username, private_key)
             }
-            MigrationTargetArg::Encrypted => {
-                self.provision_target(name, private_key, MigrationTargetArg::Encrypted)
+            SafeStorage::Encrypted => {
+                self.provision_target(name, private_key, SafeStorage::Encrypted)
             }
         }
     }
@@ -396,11 +432,7 @@ impl<B: KeyBackend> KeyVault<B> {
         })
     }
 
-    fn provision_migration(
-        &self,
-        key: &Key,
-        target: Option<MigrationTargetArg>,
-    ) -> Result<KeyProvision> {
+    fn provision_migration(&self, key: &Key, target: Option<SafeStorage>) -> Result<KeyProvision> {
         let private_key = self.resolve(key)?;
         self.provision_target(
             &key.name,
@@ -448,10 +480,6 @@ impl Key {
 
     pub(crate) fn private_key(&self) -> Result<Zeroizing<String>> {
         KeyVault::new(SystemKeyBackend).resolve(self)
-    }
-
-    pub(crate) fn address(&self) -> Result<Address> {
-        Ok(self.private_key()?.parse::<PrivateKeySigner>()?.address())
     }
 
     pub(crate) fn address_from_private_key(private_key: &str) -> Result<Address> {
@@ -517,6 +545,11 @@ impl Key {
         }
     }
 
+    /// Whether the key material is stored in the config file itself.
+    pub(crate) fn is_plaintext(&self) -> bool {
+        matches!(self.kind, KeyType::PrivateKey { .. })
+    }
+
     fn kind_name(&self) -> &'static str {
         match self.kind {
             KeyType::PrivateKey { .. } => "PrivateKey",
@@ -527,8 +560,10 @@ impl Key {
     }
 
     pub(crate) fn address_noninteractive(&self) -> Option<String> {
-        self.address.clone().or_else(|| match self.kind {
-            KeyType::PrivateKey { .. } => self.address().ok().map(|a| a.to_string()),
+        self.address.clone().or_else(|| match &self.kind {
+            KeyType::PrivateKey { value } => Self::address_from_private_key(value)
+                .ok()
+                .map(|address| address.to_string()),
             _ => None,
         })
     }
@@ -596,20 +631,6 @@ fn encrypt_with_password(name: String, private_key: &str, password: &str) -> Res
     .with_public_address(private_key))
 }
 
-fn read_stdin_secret(label: &str) -> Result<Zeroizing<String>> {
-    use std::io::Read;
-    let mut value = String::new();
-    std::io::stdin()
-        .read_to_string(&mut value)
-        .with_context(|| format!("Failed to read {} from stdin", label))?;
-    let trimmed = value.trim().to_string();
-    value.zeroize();
-    if trimmed.is_empty() {
-        anyhow::bail!("{} from stdin was empty", label);
-    }
-    Ok(Zeroizing::new(trimmed))
-}
-
 pub(crate) fn provision_safe_key(name: &str, private_key: &str) -> Result<KeyProvision> {
     KeyVault::new(SystemKeyBackend).provision_private_key(name, private_key, None)
 }
@@ -638,7 +659,7 @@ pub(crate) async fn save_with_safe_new_keys(
     let mut provisions = Vec::new();
     for name in names {
         let staged = chainz.get_key(&name)?;
-        if !matches!(staged.kind, KeyType::PrivateKey { .. }) {
+        if !staged.is_plaintext() {
             continue;
         }
         let private_key = staged.private_key()?;
@@ -678,20 +699,24 @@ fn rollback_provisions<B: KeyBackend>(
     }
 }
 
-pub(crate) async fn migrate_plaintext_keys(chainz: &mut Chainz) -> Result<usize> {
-    let names: Vec<String> = chainz
+fn plaintext_key_names(chainz: &Chainz) -> Vec<String> {
+    chainz
         .list_keys()
         .into_iter()
-        .filter(|(_, key)| matches!(key.kind, KeyType::PrivateKey { .. }))
+        .filter(|(_, key)| key.is_plaintext())
         .map(|(name, _)| name.to_string())
-        .collect();
+        .collect()
+}
+
+pub(crate) async fn migrate_plaintext_keys(chainz: &mut Chainz) -> Result<usize> {
+    let names = plaintext_key_names(chainz);
     migrate_names(chainz, names, None, true).await
 }
 
 async fn migrate_names(
     chainz: &mut Chainz,
     names: Vec<String>,
-    target: Option<MigrationTargetArg>,
+    target: Option<SafeStorage>,
     continue_on_error: bool,
 ) -> Result<usize> {
     let vault = KeyVault::new(SystemKeyBackend);
@@ -789,7 +814,7 @@ impl KeyCommand {
                 } else {
                     let private_key = match (key, stdin) {
                         (Some(value), false) => Zeroizing::new(value),
-                        (None, true) => read_stdin_secret("private key")?,
+                        (None, true) => read_stdin_secret("private key", StdinTrim::Whitespace)?,
                         (None, false) if vault.backend.is_interactive() => {
                             vault.backend.prompt_secret("Enter private key: ")?
                         }
@@ -798,7 +823,8 @@ impl KeyCommand {
                         ),
                         (Some(_), true) => unreachable!("clap rejects conflicting inputs"),
                     };
-                    vault.provision_private_key(&name, &private_key, key_type)?
+                    let storage = key_type.map(KeyStorage::try_from).transpose()?;
+                    vault.provision_private_key(&name, &private_key, storage)?
                 };
                 if let Err(error) = chainz.add_key(&name, provision.key().clone()) {
                     let _ = vault.rollback(&provision);
@@ -865,16 +891,11 @@ impl KeyCommand {
             }
             KeyCommand::Migrate { name, all, to } => {
                 let names = if all {
-                    chainz
-                        .list_keys()
-                        .into_iter()
-                        .filter(|(_, key)| matches!(key.kind, KeyType::PrivateKey { .. }))
-                        .map(|(name, _)| name.to_string())
-                        .collect()
+                    plaintext_key_names(chainz)
                 } else {
                     vec![name.ok_or_else(|| anyhow!("Provide a key name or use --all"))?]
                 };
-                let count = migrate_names(chainz, names, to, all).await?;
+                let count = migrate_names(chainz, names, to.map(SafeStorage::from), all).await?;
                 println!("Migrated {} key(s)", count);
             }
         }

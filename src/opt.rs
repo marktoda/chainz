@@ -1,3 +1,9 @@
+//! Command-line surface (clap definitions only).
+//!
+//! Handlers live beside the logic they drive: `KeyCommand` in `key`,
+//! `VarCommand` in `variables`, `AddArgs`/`UpdateArgs` in `chain::wizard`,
+//! and everything else in `cli`.
+
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
@@ -98,11 +104,13 @@ pub enum Command {
     /// Execute a command with chain-specific variables expanded
     ///
     /// Available expansions:
-    ///     @wallet : The wallet address
-    ///     @rpc    : RPC URL
-    ///     @chainid  : Chain ID
-    ///     @chainname  : Chain name
-    ///     @key    : Private key
+    ///     @wallet            : Wallet address
+    ///     @rpc               : RPC URL
+    ///     @chainid           : Chain ID
+    ///     @chainname         : Chain name
+    ///     @verification_url  : Block explorer API URL
+    ///     @verifier_api_key  : Block explorer API key
+    ///     @key               : Private key (deprecated; prefer --expose-key)
     ///
     /// Example: chainz exec ethereum -- cast balance @wallet
     #[command(verbatim_doc_comment)]
@@ -329,7 +337,7 @@ pub struct UpdateArgs {
     pub clear_verification: bool,
 }
 
-#[derive(Debug, Args)]
+#[derive(Debug, Default, Args)]
 pub struct AddArgs {
     /// Chain name
     #[arg(long)]

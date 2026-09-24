@@ -4,9 +4,10 @@
 //! I/O directly, so their branching and cancellation behavior can be tested.
 
 use crate::ui;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use dialoguer::{Confirm, FuzzySelect, Input};
 use std::io::IsTerminal;
+use zeroize::Zeroizing;
 
 pub(crate) trait Prompt {
     fn is_interactive(&self) -> bool;
@@ -54,6 +55,38 @@ impl Prompt for SystemPrompt {
         )?
         .ok_or_else(ui::cancelled)
     }
+}
+
+/// How a value piped on stdin is normalized before use.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum StdinTrim {
+    /// Trim surrounding whitespace (keys, API tokens).
+    Whitespace,
+    /// Strip only the trailing newline(s) `echo` adds, preserving any other
+    /// intentional whitespace (variable values).
+    TrailingNewlines,
+}
+
+/// Read a secret from stdin for non-interactive use. The raw buffer is
+/// zeroized; an empty result is an error naming `label`.
+pub(crate) fn read_stdin_secret(label: &str, trim: StdinTrim) -> Result<Zeroizing<String>> {
+    use std::io::Read;
+    let mut raw = Zeroizing::new(String::new());
+    std::io::stdin()
+        .read_to_string(&mut raw)
+        .with_context(|| format!("Failed to read {label} from stdin"))?;
+    normalize_stdin(&raw, label, trim)
+}
+
+fn normalize_stdin(raw: &str, label: &str, trim: StdinTrim) -> Result<Zeroizing<String>> {
+    let normalized = match trim {
+        StdinTrim::Whitespace => raw.trim(),
+        StdinTrim::TrailingNewlines => raw.trim_end_matches(['\r', '\n']),
+    };
+    if normalized.is_empty() {
+        anyhow::bail!("{label} from stdin was empty");
+    }
+    Ok(Zeroizing::new(normalized.to_string()))
 }
 
 fn terminal_prompt<T>(result: dialoguer::Result<T>) -> Result<T> {
@@ -141,6 +174,18 @@ pub(crate) mod testing {
                 answer => Err(anyhow!("expected select answer, got {answer:?}")),
             }
         }
+    }
+
+    #[test]
+    fn stdin_normalization_modes() {
+        use super::{StdinTrim, normalize_stdin};
+        let whitespace = normalize_stdin("  token \n", "API key", StdinTrim::Whitespace).unwrap();
+        assert_eq!(whitespace.as_str(), "token");
+        let newlines =
+            normalize_stdin("  value \r\n", "Value", StdinTrim::TrailingNewlines).unwrap();
+        assert_eq!(newlines.as_str(), "  value ");
+        let error = normalize_stdin(" \n", "Value", StdinTrim::Whitespace).unwrap_err();
+        assert_eq!(error.to_string(), "Value from stdin was empty");
     }
 
     #[test]

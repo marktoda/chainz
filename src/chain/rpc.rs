@@ -1,3 +1,5 @@
+//! RPC health checks: single-endpoint validation and concurrent probing.
+
 use super::RpcEndpoint;
 use alloy::providers::{DynProvider, Provider, ProviderBuilder};
 use anyhow::Result;

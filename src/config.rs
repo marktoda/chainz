@@ -1,11 +1,19 @@
+//! The persisted config model and its transactional owner.
+//!
+//! `Config` is the serialized document; `Chainz` wraps it with the
+//! cross-process lock and the mutations that keep its invariants (unique
+//! chain ids and names, selected RPC present, key references resolvable).
+//! `Config::validate` is the single definition of those invariants and runs
+//! before every write. File I/O lives in `store`.
+
 use crate::{
     chain::{ChainDefinition, ChainInstance, RpcEndpoint},
-    key::Key,
+    key::{DEFAULT_KEY_NAME, Key},
     variables::GlobalVariables,
 };
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 mod store;
 pub(crate) use store::config_exists;
@@ -24,7 +32,8 @@ pub struct Config {
     pub chains: Vec<ChainDefinition>,
     #[serde(rename = "variables")]
     pub globals: GlobalVariables,
-    pub keys: HashMap<String, Key>,
+    /// BTreeMap keeps the written config and key listings in a stable order.
+    pub keys: BTreeMap<String, Key>,
     /// Chain used by `exec` when none is specified; set via `chainz use`
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_chain: Option<String>,
@@ -35,7 +44,7 @@ pub struct Chainz {
     pub config: Config,
     // Commands hold this lock from load through save, making the complete
     // read-modify-write operation serial across chainz processes.
-    _config_lock: Option<ConfigLock>,
+    config_lock: Option<ConfigLock>,
 }
 
 impl Chainz {
@@ -50,7 +59,7 @@ impl Chainz {
         let config = Config::load_locked(true).await?.unwrap_or_default();
         Ok(Self {
             config,
-            _config_lock: Some(config_lock),
+            config_lock: Some(config_lock),
         })
     }
 
@@ -61,17 +70,16 @@ impl Chainz {
         let config = Config::load_locked(false).await?.unwrap_or_default();
         Ok(Self {
             config,
-            _config_lock: Some(config_lock),
+            config_lock: Some(config_lock),
         })
     }
 
     pub fn get_chain(&self, name_or_id: &str) -> Result<ChainInstance> {
         let definition = self.config.get_chain(name_or_id)?.clone();
-        let endpoint = definition
-            .selected_endpoint()
-            .cloned()
-            .unwrap_or_else(|| RpcEndpoint::new(definition.selected_rpc.clone()));
-        let expanded = self.config.globals.expand_endpoint(&endpoint);
+        let expanded = self
+            .config
+            .globals
+            .expand_endpoint(&definition.active_endpoint());
         let key = definition
             .key_name
             .as_deref()
@@ -110,11 +118,8 @@ impl Chainz {
             .map(|(n, k)| (n.as_str(), k))
             .collect();
 
-        // If "default" exists, move it to the front
-        if let Some(default_pos) = keys.iter().position(|(name, _)| *name == "default") {
-            keys.swap(0, default_pos);
-        }
-
+        // Name order, except the init-created default key leads.
+        keys.sort_by_key(|(name, _)| *name != DEFAULT_KEY_NAME);
         keys
     }
 
@@ -122,13 +127,7 @@ impl Chainz {
         if !self.config.keys.contains_key(name) {
             anyhow::bail!("Key '{}' not found", name);
         }
-        let referenced_by: Vec<&str> = self
-            .config
-            .chains
-            .iter()
-            .filter(|chain| chain.key_name.as_deref() == Some(name))
-            .map(|chain| chain.name.as_str())
-            .collect();
+        let referenced_by = self.chains_using_key(name);
         if !referenced_by.is_empty() {
             anyhow::bail!(
                 "Key '{}' is still used by chain(s): {}",
@@ -254,12 +253,7 @@ impl Chainz {
     /// Destructive commands deliberately require an exact primary name or ID.
     pub fn remove_chain_exact(&mut self, name_or_id: &str) -> Result<ChainDefinition> {
         let pos = self.config.find_chain_exact_index(name_or_id)?;
-        self.remove_chain_at(pos)
-    }
-
-    fn remove_chain_at(&mut self, pos: usize) -> Result<ChainDefinition> {
         let removed = self.config.chains.remove(pos);
-        // Keep the default-chain invariant here so every caller gets it
         if self.config.default_chain.as_deref() == Some(removed.name.as_str()) {
             self.config.default_chain = None;
         }
@@ -273,10 +267,10 @@ impl Chainz {
     }
 
     pub async fn save(&self) -> Result<()> {
-        if self._config_lock.is_some() {
+        if self.config_lock.is_some() {
             self.config.write_locked().await
         } else {
-            let _config_lock = ConfigLock::acquire().await?;
+            let _held = ConfigLock::acquire().await?;
             self.config.write_locked().await
         }
     }
@@ -284,7 +278,7 @@ impl Chainz {
     /// Release the process-wide config transaction before starting work that
     /// cannot mutate config (for example, a long-running child process).
     pub fn release_config_lock(&mut self) {
-        self._config_lock.take();
+        self.config_lock.take();
     }
 }
 

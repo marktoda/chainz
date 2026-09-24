@@ -195,6 +195,8 @@ Available expansions:
 - `@rpc` — RPC URL
 - `@chainid` — Chain ID
 - `@chainname` — Chain name
+- `@verification_url` — Block explorer API URL
+- `@verifier_api_key` — Block explorer API key
 - `@key` — Private key
 
 `@key` is deprecated and planned for removal at 1.0 because it exposes the

@@ -80,7 +80,7 @@ fn seed_config(home: &Path, chains: &[(&str, u64)]) {
                 key_name: Some("default".to_string()),
             })
             .collect(),
-        keys: std::collections::HashMap::from([(
+        keys: std::collections::BTreeMap::from([(
             "default".to_string(),
             Key::new(
                 "default".to_string(),

@@ -1,3 +1,6 @@
+//! Client for the public chainlist (chainid.network), with a daily
+//! on-disk cache and stale-cache fallback when offline.
+
 use anyhow::{Result, anyhow};
 use serde::Deserialize;
 use std::path::PathBuf;

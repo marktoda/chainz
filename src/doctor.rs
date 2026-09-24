@@ -8,12 +8,10 @@
 use crate::{
     chain::{RpcEndpoint, rpc::check_urls},
     config::Chainz,
-    key::KeyType,
     prompt::{Prompt, SystemPrompt},
     ui,
 };
 use anyhow::Result;
-use console::style;
 
 pub struct Report {
     pub failures: usize,
@@ -24,7 +22,7 @@ pub async fn run(chainz: &mut Chainz, fix: bool) -> Result<Report> {
     run_with(&mut SystemPrompt, chainz, fix).await
 }
 
-async fn run_with(terminal: &mut impl Prompt, chainz: &mut Chainz, fix: bool) -> Result<Report> {
+async fn run_with(prompt: &mut impl Prompt, chainz: &mut Chainz, fix: bool) -> Result<Report> {
     let mut report = Report {
         failures: 0,
         warnings: 0,
@@ -32,8 +30,8 @@ async fn run_with(terminal: &mut impl Prompt, chainz: &mut Chainz, fix: bool) ->
 
     check_config_invariants(chainz, &mut report);
     let plaintext_keys = check_keys(chainz, &mut report);
-    if fix && plaintext_keys > 0 && terminal.is_interactive() {
-        let migrate = terminal.confirm("Migrate plaintext keys to safe storage now?", true)?;
+    if fix && plaintext_keys > 0 && prompt.is_interactive() {
+        let migrate = prompt.confirm("Migrate plaintext keys to safe storage now?", true)?;
         if migrate {
             let migrated = crate::key::migrate_plaintext_keys(chainz).await?;
             report.warnings = report.warnings.saturating_sub(migrated);
@@ -49,22 +47,18 @@ async fn run_with(terminal: &mut impl Prompt, chainz: &mut Chainz, fix: bool) ->
     println!();
     match (report.failures, report.warnings) {
         (0, 0) => println!("{}", ui::success("no issues found")),
-        (f, w) => {
-            println!(
-                "{} {} failure(s), {} warning(s){}",
-                if f > 0 {
-                    style("✗").red().to_string()
-                } else {
-                    style("⚠").yellow().to_string()
-                },
-                f,
-                w,
-                if !failed_chains.is_empty() && !fix {
-                    " — run with --fix to attempt RPC repairs"
-                } else {
-                    ""
-                }
-            );
+        (failures, warnings) => {
+            let hint = if !failed_chains.is_empty() && !fix {
+                " — run with --fix to attempt RPC repairs"
+            } else {
+                ""
+            };
+            let summary = format!("{failures} failure(s), {warnings} warning(s){hint}");
+            if failures > 0 {
+                println!("{}", ui::fail(&summary));
+            } else {
+                println!("{}", ui::warn(&summary));
+            }
         }
     }
     Ok(report)
@@ -89,7 +83,7 @@ fn check_keys(chainz: &Chainz, report: &mut Report) -> usize {
     }
     let mut plaintext = 0;
     for (name, key) in keys {
-        if let KeyType::PrivateKey { .. } = key.kind {
+        if key.is_plaintext() {
             report.warnings += 1;
             plaintext += 1;
             println!(
@@ -145,11 +139,7 @@ async fn check_rpc_health(chainz: &Chainz, report: &mut Report) -> Vec<String> {
     let checks: Vec<_> = chains
         .iter()
         .map(|c| {
-            let expanded = chainz.config.globals.expand_endpoint(
-                &c.selected_endpoint()
-                    .cloned()
-                    .unwrap_or_else(|| RpcEndpoint::new(c.selected_rpc.clone())),
-            );
+            let expanded = chainz.config.globals.expand_endpoint(&c.active_endpoint());
             let raw = c.selected_rpc.clone();
             let chain_id = c.chain_id;
             let name = c.name.clone();
@@ -240,26 +230,17 @@ async fn fix_rpcs(chainz: &mut Chainz, failed: &[String], report: &mut Report) -
 mod tests {
     use super::*;
     use crate::{
-        key::{Key, KeyType},
         prompt::testing::{Answer, ScriptedPrompt},
+        test_support::plaintext_key,
     };
 
     #[tokio::test]
     async fn scripted_prompt_drives_plaintext_migration_decision() -> Result<()> {
         let mut chainz = Chainz::new();
-        chainz.add_key(
-            "default",
-            Key::new(
-                "default".into(),
-                KeyType::PrivateKey {
-                    value: "0000000000000000000000000000000000000000000000000000000000000001"
-                        .into(),
-                },
-            ),
-        )?;
-        let mut terminal = ScriptedPrompt::new([Answer::Confirm(false)]);
+        chainz.add_key("default", plaintext_key("default"))?;
+        let mut prompt = ScriptedPrompt::new([Answer::Confirm(false)]);
 
-        let report = run_with(&mut terminal, &mut chainz, true).await?;
+        let report = run_with(&mut prompt, &mut chainz, true).await?;
 
         assert_eq!(report.failures, 0);
         assert_eq!(report.warnings, 1);

@@ -18,8 +18,8 @@ fn setup() {
 #[test]
 fn test_config_variables() {
     let mut globals = GlobalVariables::default();
-    globals.add_rpc_expansion("API_KEY", "config_key");
-    globals.add_rpc_expansion("EMPTY", "");
+    globals.set("API_KEY", "config_key");
+    globals.set("EMPTY", "");
 
     assert_eq!(
         globals.expand("https://api.example.com/${API_KEY}/v1"),
@@ -44,7 +44,7 @@ fn test_environment_variables() {
 fn test_multiple_replacements() {
     setup();
     let mut globals = GlobalVariables::default();
-    globals.add_rpc_expansion("API_KEY", "config_key");
+    globals.set("API_KEY", "config_key");
 
     assert_eq!(
         globals.expand("${API_KEY} and ${TEST_ENV_KEY}"),
@@ -75,7 +75,7 @@ fn test_no_variables() {
 #[test]
 fn expand_endpoint_interpolates_url_and_header_values() {
     let mut globals = GlobalVariables::default();
-    globals.add_rpc_expansion("GW_SECRET", "sekrit");
+    globals.set("GW_SECRET", "sekrit");
     let mut headers = std::collections::BTreeMap::new();
     headers.insert(
         "x-internal-service-secret".to_string(),
@@ -95,42 +95,42 @@ fn expand_endpoint_interpolates_url_and_header_values() {
 // ── GlobalVariables CRUD ─────────────────────────────────────────
 
 #[test]
-fn test_add_then_get_rpc_expansion() {
+fn test_add_then_get() {
     let mut globals = GlobalVariables::default();
-    globals.add_rpc_expansion("MY_KEY", "my_value");
-    assert_eq!(globals.get_rpc_expansion("MY_KEY"), Some("my_value"));
+    globals.set("MY_KEY", "my_value");
+    assert_eq!(globals.get("MY_KEY"), Some("my_value"));
 }
 
 #[test]
-fn test_get_rpc_expansion_missing_key_returns_none() {
+fn test_get_missing_key_returns_none() {
     let globals = GlobalVariables::default();
-    assert_eq!(globals.get_rpc_expansion("DOES_NOT_EXIST"), None);
+    assert_eq!(globals.get("DOES_NOT_EXIST"), None);
 }
 
 #[test]
-fn test_remove_rpc_expansion_returns_old_value() {
+fn test_remove_returns_old_value() {
     let mut globals = GlobalVariables::default();
-    globals.add_rpc_expansion("TO_REMOVE", "old_val");
-    let removed = globals.remove_rpc_expansion("TO_REMOVE");
+    globals.set("TO_REMOVE", "old_val");
+    let removed = globals.remove("TO_REMOVE");
     assert_eq!(removed, Some("old_val".to_string()));
     // After removal, get returns None
-    assert_eq!(globals.get_rpc_expansion("TO_REMOVE"), None);
+    assert_eq!(globals.get("TO_REMOVE"), None);
 }
 
 #[test]
-fn test_remove_rpc_expansion_missing_key_returns_none() {
+fn test_remove_missing_key_returns_none() {
     let mut globals = GlobalVariables::default();
-    assert_eq!(globals.remove_rpc_expansion("NONEXISTENT"), None);
+    assert_eq!(globals.remove("NONEXISTENT"), None);
 }
 
 #[test]
-fn test_list_rpc_expansions_returns_all_entries() {
+fn test_list_returns_all_entries() {
     let mut globals = GlobalVariables::default();
-    globals.add_rpc_expansion("A", "1");
-    globals.add_rpc_expansion("B", "2");
-    globals.add_rpc_expansion("C", "3");
+    globals.set("A", "1");
+    globals.set("B", "2");
+    globals.set("C", "3");
 
-    let listing = globals.list_rpc_expansions();
+    let listing = globals.entries();
     assert_eq!(listing.len(), 3);
     assert_eq!(listing.get("A"), Some(&"1".to_string()));
     assert_eq!(listing.get("B"), Some(&"2".to_string()));
@@ -138,34 +138,34 @@ fn test_list_rpc_expansions_returns_all_entries() {
 }
 
 #[test]
-fn test_list_rpc_expansions_empty() {
+fn test_list_empty() {
     let globals = GlobalVariables::default();
-    assert!(globals.list_rpc_expansions().is_empty());
+    assert!(globals.entries().is_empty());
 }
 
 #[test]
-fn test_add_rpc_expansion_overwrites_existing() {
+fn test_add_overwrites_existing() {
     let mut globals = GlobalVariables::default();
-    globals.add_rpc_expansion("KEY", "first");
-    globals.add_rpc_expansion("KEY", "second");
-    assert_eq!(globals.get_rpc_expansion("KEY"), Some("second"));
-    assert_eq!(globals.list_rpc_expansions().len(), 1);
+    globals.set("KEY", "first");
+    globals.set("KEY", "second");
+    assert_eq!(globals.get("KEY"), Some("second"));
+    assert_eq!(globals.entries().len(), 1);
 }
 
 #[test]
 fn variable_validation_preserves_legacy_names_but_rejects_template_syntax() {
     let mut globals = GlobalVariables::default();
-    globals.add_rpc_expansion("legacy-name.with punctuation", "value");
+    globals.set("legacy-name.with punctuation", "value");
     assert!(globals.validate().is_ok());
 
-    globals.add_rpc_expansion("BAD}", "value");
+    globals.set("BAD}", "value");
     assert!(globals.validate().is_err());
 }
 
 #[test]
 fn global_variable_debug_never_contains_values() {
     let mut globals = GlobalVariables::default();
-    globals.add_rpc_expansion("TOKEN", "literal-secret");
+    globals.set("TOKEN", "literal-secret");
     let output = format!("{globals:?}");
     assert!(output.contains("TOKEN"));
     assert!(!output.contains("literal-secret"));
@@ -217,8 +217,8 @@ fn cached_wallet_address_does_not_unlock_keyring() {
 
     let cv = ChainVariables::new(&chain, &["echo".into(), "@wallet".into()], false)
         .expect("cached address should avoid keyring access");
-    assert_eq!(cv.as_map().get("WALLET_ADDRESS"), Some(&"0xABCD".into()));
-    assert!(!cv.as_map().contains_key("RAW_PRIVATE_KEY"));
+    assert_eq!(cv.env().get("WALLET_ADDRESS"), Some(&"0xABCD".into()));
+    assert!(!cv.env().contains_key("RAW_PRIVATE_KEY"));
 }
 
 #[test]
@@ -305,11 +305,11 @@ fn test_expand_no_tokens_passes_through() {
     assert_eq!(result, vec!["echo", "hello", "world"]);
 }
 
-// ── ChainVariables::as_map() ─────────────────────────────────────
+// ── ChainVariables::env() ─────────────────────────────────────
 
 #[test]
 fn chain_variables_debug_never_contains_values() {
-    const PRIVATE_KEY: &str = "0000000000000000000000000000000000000000000000000000000000000001";
+    use crate::test_support::TEST_PRIVATE_KEY as PRIVATE_KEY;
     let mut chain = test_chain_instance();
     chain.headers.insert(
         "x-internal-service-secret".to_string(),
@@ -334,9 +334,9 @@ fn chain_variables_debug_never_contains_values() {
 }
 
 #[test]
-fn test_as_map_has_correct_keys() {
+fn test_env_has_correct_keys() {
     let cv = make_chain_variables();
-    let map = cv.as_map();
+    let map = cv.env();
 
     let expected_keys = [
         "WALLET_ADDRESS",
@@ -355,9 +355,9 @@ fn test_as_map_has_correct_keys() {
 }
 
 #[test]
-fn test_as_map_has_correct_values() {
+fn test_env_has_correct_values() {
     let cv = make_chain_variables();
-    let map = cv.as_map();
+    let map = cv.env();
 
     assert_eq!(map.get("WALLET_ADDRESS").unwrap(), "0xABCD");
     assert_eq!(map.get("ETH_RPC_URL").unwrap(), "http://localhost:8545");
@@ -393,7 +393,7 @@ fn make_chain_variables_without_key() -> ChainVariables {
 #[test]
 fn test_no_key_vars_when_command_doesnt_need_key() {
     let cv = make_chain_variables_without_key();
-    let map = cv.as_map();
+    let map = cv.env();
 
     assert!(!map.contains_key("WALLET_ADDRESS"));
     assert!(!map.contains_key("RAW_PRIVATE_KEY"));
@@ -462,7 +462,7 @@ fn chain_variables_export_eth_rpc_headers() {
     let variables = ChainVariables::new(&chain, &[], false).unwrap();
 
     assert_eq!(
-        variables.as_map()["ETH_RPC_HEADERS"],
+        variables.env()["ETH_RPC_HEADERS"],
         "a-first: one,b-second: two"
     );
 }
@@ -471,7 +471,7 @@ fn chain_variables_export_eth_rpc_headers() {
 fn chain_variables_omit_eth_rpc_headers_when_empty() {
     let chain = test_chain_instance();
     let variables = ChainVariables::new(&chain, &[], false).unwrap();
-    assert!(!variables.as_map().contains_key("ETH_RPC_HEADERS"));
+    assert!(!variables.env().contains_key("ETH_RPC_HEADERS"));
 }
 
 #[test]

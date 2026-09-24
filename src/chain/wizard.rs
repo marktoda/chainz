@@ -1,3 +1,9 @@
+//! `chainz add` and `chainz update`: flag-driven and interactive flows.
+//!
+//! Interactive steps depend on `Prompt` so they are testable with
+//! `ScriptedPrompt`. Keys created mid-wizard are staged as plaintext in
+//! memory and moved to safe storage by `save_with_safe_new_keys` at commit.
+
 use super::{
     ChainDefinition, RpcEndpoint,
     rpc::{check_url, probe_urls, rank_by_health},
@@ -8,50 +14,40 @@ use crate::{
     config::Chainz,
     key::{Key, KeyType, save_with_safe_new_keys},
     opt::{AddArgs, UpdateArgs},
-    prompt::{Prompt, SystemPrompt},
+    prompt::{Prompt, StdinTrim, SystemPrompt, read_stdin_secret},
     variables::GlobalVariables,
 };
 use anyhow::{Context, Result};
-use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use std::collections::{BTreeMap, HashSet};
 
-/// Helper function to handle text input with ESC cancellation
-fn text_input<T: std::str::FromStr>(
-    terminal: &mut impl Prompt,
-    prompt: &str,
-    default: Option<String>,
-) -> Result<T>
-where
-    <T as std::str::FromStr>::Err: std::fmt::Debug,
-{
-    match terminal.text(
-        &format!("{} (Ctrl+C to exit)", prompt),
-        default.as_deref(),
-        true,
-    ) {
-        Ok(value) if !value.is_empty() => value
-            .parse()
-            .map_err(|_| anyhow::anyhow!("Failed to parse input")),
-        Ok(_) => Err(ui::cancelled()),
-        Err(error) => Err(error),
+/// Required text input parsed as `T`. Submitting an empty value cancels the
+/// wizard, like Ctrl+C.
+fn text_input<T: std::str::FromStr>(prompt: &mut impl Prompt, message: &str) -> Result<T> {
+    let value = prompt.text(&format!("{message} (Ctrl+C to exit)"), None, true)?;
+    if value.is_empty() {
+        return Err(ui::cancelled());
     }
+    value
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Failed to parse input"))
 }
 
-async fn manual_chain_entry(
-    terminal: &mut impl Prompt,
+fn manual_chain_entry(
+    prompt: &mut impl Prompt,
     name: Option<String>,
     chain_id: Option<u64>,
 ) -> Result<ChainlistEntry> {
-    println!("\n{}", style("Manual Chain Entry").yellow().bold());
+    println!("{}", ui::section("Manual Chain Entry"));
     let name = if let Some(n) = name {
         n
     } else {
-        text_input(terminal, "Chain name", None)?
+        text_input(prompt, "Chain name")?
     };
     let chain_id = if let Some(id) = chain_id {
         id
     } else {
-        text_input(terminal, "Chain ID", None)?
+        text_input(prompt, "Chain ID")?
     };
 
     Ok(ChainlistEntry {
@@ -66,7 +62,7 @@ async fn manual_chain_entry(
 /// Displays and returns the raw URL so secrets are never shown on screen or
 /// written to config.
 async fn select_rpc(
-    terminal: &mut impl Prompt,
+    prompt: &mut impl Prompt,
     chain_name: &str,
     chain_id: u64,
     endpoints: Vec<RpcEndpoint>,
@@ -147,14 +143,14 @@ async fn select_rpc(
     items.push("Enter RPC URL manually...".to_string());
 
     let selection = fuzzy_select(
-        terminal,
+        prompt,
         &format!("Select an RPC URL for {}", ui::emph(chain_name)),
         &items,
         0,
     )?;
 
     if selection == items.len() - 1 {
-        select_manual_rpc(terminal, chain_id, globals).await
+        select_manual_rpc(prompt, chain_id, globals).await
     } else {
         Ok(endpoints[order[selection]].url.clone())
     }
@@ -184,18 +180,95 @@ fn merge_refreshed_rpcs(chain: &ChainDefinition, refreshed: Vec<String>) -> Vec<
     candidates
 }
 
+/// Verify an RPC before it is persisted. The URL and header values are
+/// `${VAR}`-expanded only for the probe; a failure names the redacted raw
+/// URL, never the expanded one.
+async fn verify_rpc(
+    globals: &GlobalVariables,
+    endpoint: &RpcEndpoint,
+    chain_id: u64,
+) -> Result<()> {
+    check_url(&globals.expand_endpoint(endpoint), chain_id)
+        .await
+        .with_context(|| {
+            format!(
+                "RPC check failed for {}",
+                crate::endpoint::redact(&endpoint.url)
+            )
+        })
+}
+
+/// Resolve a `--key` argument that must name an already-stored key.
+fn require_existing_key(chainz: &Chainz, name: &str) -> Result<String> {
+    chainz.get_key(name).map_err(|_| {
+        anyhow::anyhow!(
+            "Key '{}' not found. Add it first with 'chainz key add'.",
+            name
+        )
+    })?;
+    Ok(name.to_string())
+}
+
+/// Rename a chain, dropping any alias the new name makes redundant.
+fn rename_chain(chainz: &Chainz, chain: &mut ChainDefinition, name: &str) -> Result<()> {
+    let name = name.trim();
+    if name.is_empty() {
+        anyhow::bail!("Chain name cannot be empty");
+    }
+    if !chain.matches_exact(name) && chainz.chain_exists(name) {
+        anyhow::bail!("Chain '{}' already exists", name);
+    }
+    chain
+        .aliases
+        .retain(|alias| !alias.eq_ignore_ascii_case(name));
+    chain.name = name.to_string();
+    Ok(())
+}
+
+/// Names of keys staged since `before` was captured (e.g. by `select_key`).
+fn keys_added_since(chainz: &Chainz, before: &HashSet<String>) -> Vec<String> {
+    chainz
+        .config
+        .keys
+        .keys()
+        .filter(|name| !before.contains(*name))
+        .cloned()
+        .collect()
+}
+
+fn key_names(chainz: &Chainz) -> HashSet<String> {
+    chainz.config.keys.keys().cloned().collect()
+}
+
+/// Interactive picker over configured chains.
+pub(crate) fn pick_chain<'a>(
+    prompt: &mut impl Prompt,
+    chainz: &'a Chainz,
+    message: &str,
+) -> Result<&'a ChainDefinition> {
+    let chains = chainz.list_chains();
+    if chains.is_empty() {
+        anyhow::bail!("No chains configured. Use 'chainz add' to add a chain first.");
+    }
+    let items: Vec<String> = chains
+        .iter()
+        .map(|chain| format!("{} ({})", chain.name, chain.chain_id))
+        .collect();
+    Ok(&chains[prompt.select(message, &items, 0)?])
+}
+
 fn probe_summary(results: &[super::rpc::ProbeResult]) -> String {
     let healthy = results.iter().filter(|result| result.healthy).count();
     format!("{} of {} RPCs healthy", healthy, results.len())
 }
 
 async fn select_manual_rpc(
-    terminal: &mut impl Prompt,
+    prompt: &mut impl Prompt,
     chain_id: u64,
     globals: &GlobalVariables,
 ) -> Result<String> {
     loop {
-        let rpc_url: String = text_input(terminal, "Enter RPC URL", None)?;
+        let rpc_url: String = text_input(prompt, "Enter RPC URL")?;
         println!("Testing RPC...");
 
         if check_url(&RpcEndpoint::new(globals.expand(&rpc_url)), chain_id)
@@ -211,7 +284,7 @@ async fn select_manual_rpc(
 }
 
 /// Helper function to select or create a key
-fn select_key(terminal: &mut impl Prompt, chainz: &mut Chainz) -> Result<Option<String>> {
+fn select_key(prompt: &mut impl Prompt, chainz: &mut Chainz) -> Result<Option<String>> {
     let keys = chainz.list_keys();
 
     // Create display strings with addresses
@@ -224,7 +297,7 @@ fn select_key(terminal: &mut impl Prompt, chainz: &mut Chainz) -> Result<Option<
     key_displays.push(("Add new key".to_string(), "Add new key".to_string()));
 
     let key_selection = fuzzy_select(
-        terminal,
+        prompt,
         "Select a key",
         &key_displays
             .iter()
@@ -234,11 +307,11 @@ fn select_key(terminal: &mut impl Prompt, chainz: &mut Chainz) -> Result<Option<
     )?;
 
     if key_selection == key_displays.len() - 1 {
-        let kname = terminal.text("Enter key name", None, false)?;
+        let kname = prompt.text("Enter key name", None, false)?;
         if chainz.get_key(&kname).is_ok() {
             anyhow::bail!("Key '{}' already exists", kname);
         }
-        let private_key = terminal.secret("Enter private key: ")?;
+        let private_key = prompt.secret("Enter private key: ")?;
         Key::validate_private_key(&private_key)?;
         // Stage plaintext only in memory. The outer command provisions safe
         // storage after all prompts and validation have succeeded.
@@ -272,12 +345,11 @@ impl UpdateArgs {
 
     async fn handle_with_prompt(
         &self,
-        terminal: &mut impl Prompt,
+        prompt: &mut impl Prompt,
         chainz: &mut Chainz,
     ) -> Result<ChainDefinition> {
         println!("{}", ui::header("Chain Update"));
-        let existing_keys: std::collections::HashSet<String> =
-            chainz.config.keys.keys().cloned().collect();
+        let existing_keys = key_names(chainz);
         let direct = self.has_direct_changes();
         if direct && self.name_or_id.is_none() {
             anyhow::bail!("Direct update flags require a chain argument");
@@ -285,18 +357,7 @@ impl UpdateArgs {
 
         let original = match &self.name_or_id {
             Some(name_or_id) => chainz.config.get_chain(name_or_id)?.clone(),
-            None => {
-                let chains: Vec<String> = chainz
-                    .list_chains()
-                    .iter()
-                    .map(|chain| format!("{} ({})", chain.name, chain.chain_id))
-                    .collect();
-                if chains.is_empty() {
-                    anyhow::bail!("No chains configured. Use 'chainz add' to add a chain first.");
-                }
-                let selection = fuzzy_select(terminal, "Select chain to update", &chains, 0)?;
-                chainz.list_chains()[selection].clone()
-            }
+            None => pick_chain(prompt, chainz, "Select chain to update")?.clone(),
         };
         let original_name = original.name.clone();
         let mut chain = original;
@@ -304,20 +365,13 @@ impl UpdateArgs {
         if direct {
             self.apply_direct(chainz, &mut chain).await?;
         } else {
-            self.edit_interactively(terminal, chainz, &mut chain)
-                .await?;
+            self.edit_interactively(prompt, chainz, &mut chain).await?;
         }
 
         chainz.replace_chain(&original_name, chain.clone())?;
-        let new_keys = chainz
-            .config
-            .keys
-            .keys()
-            .filter(|name| !existing_keys.contains(*name))
-            .cloned()
-            .collect::<Vec<_>>();
+        let new_keys = keys_added_since(chainz, &existing_keys);
         save_with_safe_new_keys(chainz, new_keys).await?;
-        println!("\n{}", style("Chain updated successfully").green());
+        println!("\n{}", ui::success("Chain updated successfully"));
         Ok(chain)
     }
 
@@ -336,49 +390,33 @@ impl UpdateArgs {
 
     async fn apply_direct(&self, chainz: &Chainz, chain: &mut ChainDefinition) -> Result<()> {
         if let Some(name) = &self.name {
-            let name = name.trim();
-            if name.is_empty() {
-                anyhow::bail!("Chain name cannot be empty");
-            }
-            if !chain.matches_exact(name) && chainz.chain_exists(name) {
-                anyhow::bail!("Chain '{}' already exists", name);
-            }
-            chain
-                .aliases
-                .retain(|alias| !alias.eq_ignore_ascii_case(name));
-            chain.name = name.to_string();
+            rename_chain(chainz, chain, name)?;
         }
         if let Some(rpc_url) = &self.rpc_url {
             let headers = if self.clear_headers {
-                Some(std::collections::BTreeMap::new())
+                Some(BTreeMap::new())
             } else if !self.headers.is_empty() {
                 Some(parse_rpc_headers(&self.headers)?)
             } else {
                 None // keep whatever headers the entry already has
             };
-            let probe_endpoint = chainz
-                .config
-                .globals
-                .expand_endpoint(&RpcEndpoint::with_headers(
-                    rpc_url.clone(),
-                    headers
-                        .clone()
-                        .or_else(|| chain.endpoint(rpc_url).map(|e| e.headers.clone()))
-                        .unwrap_or_default(),
-                ));
-            check_url(&probe_endpoint, chain.chain_id)
-                .await
-                .with_context(|| {
-                    format!("RPC check failed for {}", crate::endpoint::redact(rpc_url))
-                })?;
+            let probe_headers = headers
+                .clone()
+                .or_else(|| chain.endpoint(rpc_url).map(|e| e.headers.clone()))
+                .unwrap_or_default();
+            verify_rpc(
+                &chainz.config.globals,
+                &RpcEndpoint::with_headers(rpc_url.clone(), probe_headers),
+                chain.chain_id,
+            )
+            .await?;
             match headers {
                 Some(headers) => chain.select_rpc_with_headers(rpc_url.clone(), headers),
                 None => chain.select_rpc(rpc_url.clone()),
             }
         }
         if let Some(key) = &self.key {
-            chainz.get_key(key)?;
-            chain.key_name = Some(key.clone());
+            chain.key_name = Some(require_existing_key(chainz, key)?);
         } else if self.no_key {
             chain.key_name = None;
         }
@@ -398,7 +436,7 @@ impl UpdateArgs {
 
     async fn edit_interactively(
         &self,
-        terminal: &mut impl Prompt,
+        prompt: &mut impl Prompt,
         chainz: &mut Chainz,
         chain: &mut ChainDefinition,
     ) -> Result<()> {
@@ -420,7 +458,7 @@ impl UpdateArgs {
                 "Rename",
                 "Save and finish",
             ];
-            match fuzzy_select(terminal, "What would you like to update?", &options, 0)? {
+            match fuzzy_select(prompt, "What would you like to update?", &options, 0)? {
                 0 => {
                     println!("{}", ui::header("RPC Configuration"));
                     // Chainlist-fetch failure falls back to the chain's own
@@ -430,7 +468,7 @@ impl UpdateArgs {
                         Err(_) => chain.rpc_urls.clone(),
                     };
                     let new_rpc = select_rpc(
-                        terminal,
+                        prompt,
                         &chain.name,
                         chain.chain_id,
                         candidates.clone(),
@@ -442,23 +480,17 @@ impl UpdateArgs {
                 }
                 1 => {
                     println!("{}", ui::header("Key Configuration"));
-                    chain.key_name = select_key(terminal, chainz)?;
+                    chain.key_name = select_key(prompt, chainz)?;
                 }
                 2 => {
                     println!("{}", ui::header("Verification Configuration"));
-                    let (url, key) = select_verifier(terminal)?;
+                    let (url, key) = select_verifier(prompt)?;
                     chain.verification_url = url;
                     chain.verification_api_key = key;
                 }
                 3 => {
-                    let name = terminal.text("Chain name", Some(&chain.name), false)?;
-                    if !chain.matches_exact(&name) && chainz.chain_exists(&name) {
-                        anyhow::bail!("Chain '{}' already exists", name);
-                    }
-                    chain
-                        .aliases
-                        .retain(|alias| !alias.eq_ignore_ascii_case(&name));
-                    chain.name = name;
+                    let name = prompt.text("Chain name", Some(&chain.name), false)?;
+                    rename_chain(chainz, chain, &name)?;
                 }
                 4 => break,
                 _ => unreachable!(),
@@ -484,22 +516,22 @@ impl AddArgs {
     /// Build an addition in memory for a larger transaction such as `init`.
     pub(crate) async fn handle_staged(
         &self,
-        terminal: &mut impl Prompt,
+        prompt: &mut impl Prompt,
         chainz: &mut Chainz,
     ) -> Result<ChainDefinition> {
-        self.handle_with_persistence(terminal, chainz, false).await
+        self.handle_with_persistence(prompt, chainz, false).await
     }
 
     async fn handle_with_persistence(
         &self,
-        terminal: &mut impl Prompt,
+        prompt: &mut impl Prompt,
         chainz: &mut Chainz,
         persist: bool,
     ) -> Result<ChainDefinition> {
         if self.name.is_some() && self.chain_id.is_some() && self.rpc_url.is_some() {
             self.handle_non_interactive(chainz, persist).await
         } else {
-            self.handle_interactive(terminal, chainz, persist).await
+            self.handle_interactive(prompt, chainz, persist).await
         }
     }
 
@@ -511,36 +543,21 @@ impl AddArgs {
         let name = self.name.clone().unwrap();
         let chain_id = self.chain_id.unwrap();
         let rpc_url = self.rpc_url.clone().unwrap();
-        let headers = parse_rpc_headers(&self.headers)?;
-        let key_name = match &self.key {
-            Some(name) => {
-                chainz.get_key(name).map_err(|_| {
-                    anyhow::anyhow!(
-                        "Key '{}' not found. Add it first with 'chainz key add'.",
-                        name
-                    )
-                })?;
-                Some(name.clone())
-            }
-            None => None,
-        };
+        let endpoint =
+            RpcEndpoint::with_headers(rpc_url.clone(), parse_rpc_headers(&self.headers)?);
+        let key_name = self
+            .key
+            .as_deref()
+            .map(|key| require_existing_key(chainz, key))
+            .transpose()?;
 
-        // Test the RPC
-        let probe_endpoint = chainz
-            .config
-            .globals
-            .expand_endpoint(&RpcEndpoint::with_headers(rpc_url.clone(), headers.clone()));
-        check_url(&probe_endpoint, chain_id)
-            .await
-            .with_context(|| {
-                format!("RPC check failed for {}", crate::endpoint::redact(&rpc_url))
-            })?;
+        verify_rpc(&chainz.config.globals, &endpoint, chain_id).await?;
 
         let chain_def = ChainDefinition {
-            name: name.clone(),
+            name,
             aliases: vec![],
             chain_id,
-            rpc_urls: vec![RpcEndpoint::with_headers(rpc_url.clone(), headers)],
+            rpc_urls: vec![endpoint],
             selected_rpc: rpc_url,
             verification_api_key: self.read_verification_api_key()?,
             verification_url: self.verification_url.clone(),
@@ -564,17 +581,16 @@ impl AddArgs {
 
     async fn handle_interactive(
         &self,
-        terminal: &mut impl Prompt,
+        prompt: &mut impl Prompt,
         chainz: &mut Chainz,
         persist: bool,
     ) -> Result<ChainDefinition> {
-        let existing_keys: std::collections::HashSet<String> =
-            chainz.config.keys.keys().cloned().collect();
+        let existing_keys = key_names(chainz);
         println!("{}", ui::header("Chain Selection"));
 
         let selected_chain = if self.name.is_some() || self.chain_id.is_some() {
             // Pre-fill from CLI args when partially provided
-            manual_chain_entry(terminal, self.name.clone(), self.chain_id).await?
+            manual_chain_entry(prompt, self.name.clone(), self.chain_id)?
         } else {
             // Full interactive flow with chainlist
             let chains = fetch_all_chains(self.refresh).await?;
@@ -583,14 +599,14 @@ impl AddArgs {
                 .map(|c| format!("{} ({})", c.name, c.chain_id))
                 .collect();
 
-            let selection = fuzzy_select(terminal, "Type to search and select a chain", &items, 0)?;
+            let selection = fuzzy_select(prompt, "Type to search and select a chain", &items, 0)?;
             chains[selection].clone()
         };
 
         // Chainlist names are long ("Ethereum Mainnet"); offer a short name
         // for everyday use and keep the original as an alias.
         let (name, aliases) = if self.name.is_none() {
-            let chosen = terminal.text(
+            let chosen = prompt.text(
                 "Chain name",
                 Some(&suggest_short_name(&selected_chain.name)),
                 false,
@@ -605,30 +621,24 @@ impl AddArgs {
             (selected_chain.name.clone(), vec![])
         };
 
-        let mut rpc_headers = std::collections::BTreeMap::new();
+        let mut rpc_headers = BTreeMap::new();
         let selected_rpc = if let Some(rpc_url) = &self.rpc_url {
             // Use provided RPC URL directly
             println!("Testing RPC...");
             rpc_headers = parse_rpc_headers(&self.headers)?;
-            let probe_endpoint = chainz
-                .config
-                .globals
-                .expand_endpoint(&RpcEndpoint::with_headers(
-                    rpc_url.clone(),
-                    rpc_headers.clone(),
-                ));
-            check_url(&probe_endpoint, selected_chain.chain_id)
-                .await
-                .with_context(|| {
-                    format!("RPC check failed for {}", crate::endpoint::redact(rpc_url))
-                })?;
+            verify_rpc(
+                &chainz.config.globals,
+                &RpcEndpoint::with_headers(rpc_url.clone(), rpc_headers.clone()),
+                selected_chain.chain_id,
+            )
+            .await?;
             println!("{}", ui::success("RPC working"));
             rpc_url.clone()
         } else {
             println!("{}", ui::header("RPC Configuration"));
 
             select_rpc(
-                terminal,
+                prompt,
                 &selected_chain.name,
                 selected_chain.chain_id,
                 selected_chain
@@ -643,16 +653,10 @@ impl AddArgs {
         };
 
         let key_name = if let Some(key) = &self.key {
-            chainz.get_key(key).map_err(|_| {
-                anyhow::anyhow!(
-                    "Key '{}' not found. Add it first with 'chainz key add'.",
-                    key
-                )
-            })?;
-            Some(key.clone())
+            Some(require_existing_key(chainz, key)?)
         } else {
             println!("{}", ui::header("Key Configuration"));
-            select_key(terminal, chainz)?
+            select_key(prompt, chainz)?
         };
 
         let (verification_url, verification_api_key) = if self.verification_url.is_some()
@@ -664,7 +668,7 @@ impl AddArgs {
                 self.read_verification_api_key()?,
             )
         } else {
-            select_verifier(terminal)?
+            select_verifier(prompt)?
         };
 
         // Create and add the chain
@@ -693,7 +697,7 @@ impl AddArgs {
             if self.force {
                 // Skip prompt with --force
             } else {
-                let confirm = terminal.confirm(
+                let confirm = prompt.confirm(
                     &format!("Chain '{}' already exists. Replace it?", chain_def.name),
                     false,
                 )?;
@@ -705,13 +709,7 @@ impl AddArgs {
 
         chainz.add_chain(chain_def.clone())?;
         if persist {
-            let new_keys = chainz
-                .config
-                .keys
-                .keys()
-                .filter(|name| !existing_keys.contains(*name))
-                .cloned()
-                .collect::<Vec<_>>();
+            let new_keys = keys_added_since(chainz, &existing_keys);
             save_with_safe_new_keys(chainz, new_keys).await?;
         }
         Ok(chain_def)
@@ -728,10 +726,8 @@ impl AddArgs {
 /// Parse repeatable `--header "name: value"` arguments. Splits on the first
 /// colon so values may themselves contain colons ("Bearer x:y").
 /// Error messages never echo the raw argument: it may contain a credential.
-pub(crate) fn parse_rpc_headers(
-    raw: &[String],
-) -> Result<std::collections::BTreeMap<String, String>> {
-    let mut headers = std::collections::BTreeMap::new();
+pub(crate) fn parse_rpc_headers(raw: &[String]) -> Result<BTreeMap<String, String>> {
+    let mut headers = BTreeMap::new();
     for entry in raw {
         let Some((name, value)) = entry.split_once(':') else {
             anyhow::bail!("Invalid --header; expected \"name: value\"");
@@ -757,16 +753,8 @@ pub(crate) fn parse_rpc_headers(
 
 fn read_verification_api_key(stdin: bool, value: Option<String>) -> Result<Option<String>> {
     if stdin {
-        use std::io::Read;
-        use zeroize::Zeroize;
-        let mut input = String::new();
-        std::io::stdin().read_to_string(&mut input)?;
-        let normalized = input.trim().to_string();
-        input.zeroize();
-        if normalized.is_empty() {
-            anyhow::bail!("Verification API key from stdin was empty");
-        }
-        Ok(Some(normalized))
+        let value = read_stdin_secret("Verification API key", StdinTrim::Whitespace)?;
+        Ok(Some(value.to_string()))
     } else {
         if value.is_some() {
             eprintln!(
@@ -786,15 +774,15 @@ fn suggest_short_name(name: &str) -> String {
         .to_lowercase()
 }
 
-// Helper function to handle fuzzy select with ESC cancellation
+/// Select from any displayable items; ESC cancels (see `Prompt::select`).
 fn fuzzy_select<T: std::fmt::Display>(
-    terminal: &mut impl Prompt,
-    prompt: &str,
+    prompt: &mut impl Prompt,
+    message: &str,
     items: &[T],
     default: usize,
 ) -> Result<usize> {
-    terminal.select(
-        prompt,
+    prompt.select(
+        message,
         &items.iter().map(ToString::to_string).collect::<Vec<_>>(),
         default,
     )

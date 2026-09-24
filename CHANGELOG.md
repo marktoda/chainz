@@ -6,6 +6,10 @@
   sent in health probes and exported to tools as `ETH_RPC_HEADERS`. Configs
   that use `--header` require this version or newer — older chainz releases
   reject the whole config rather than silently dropping the headers.
+- The config file, `key list`, and `var list --json` now use a stable
+  name order (the `default` key still lists first).
+- `exec --help` and the README now document `@verification_url` and
+  `@verifier_api_key`.
 
 ## 0.4.0 - 2026-07-16
 

@@ -1,6 +1,6 @@
 use super::*;
 use crate::chain::{ChainDefinition, RpcEndpoint};
-use crate::key::{Key, KeyType};
+use crate::key::Key;
 
 fn test_chain(name: &str, chain_id: u64) -> ChainDefinition {
     ChainDefinition {
@@ -16,12 +16,7 @@ fn test_chain(name: &str, chain_id: u64) -> ChainDefinition {
 }
 
 fn test_key(name: &str) -> Key {
-    Key::new(
-        name.to_string(),
-        KeyType::PrivateKey {
-            value: "0000000000000000000000000000000000000000000000000000000000000001".to_string(),
-        },
-    )
+    crate::test_support::plaintext_key(name)
 }
 
 fn chainz_for_chains() -> Result<Chainz> {
@@ -35,7 +30,7 @@ fn config_json_round_trip() -> Result<()> {
     let mut config = Config::default();
     config.chains.push(test_chain("ethereum", 1));
     config.chains.push(test_chain("polygon", 137));
-    config.globals.add_rpc_expansion("INFURA_KEY", "abc123");
+    config.globals.set("INFURA_KEY", "abc123");
     config
         .keys
         .insert("default".to_string(), test_key("default"));
@@ -51,10 +46,7 @@ fn config_json_round_trip() -> Result<()> {
     assert_eq!(restored.chains[0].chain_id, 1);
     assert_eq!(restored.chains[1].name, "polygon");
     assert_eq!(restored.chains[1].chain_id, 137);
-    assert_eq!(
-        restored.globals.get_rpc_expansion("INFURA_KEY"),
-        Some("abc123")
-    );
+    assert_eq!(restored.globals.get("INFURA_KEY"), Some("abc123"));
     assert_eq!(restored.keys.len(), 2);
     assert!(restored.keys.contains_key("default"));
     assert!(restored.keys.contains_key("deployer"));
@@ -233,9 +225,8 @@ fn list_keys_default_first() -> Result<()> {
     chainz.add_key("zebra", test_key("zebra"))?;
     chainz.add_key("default", test_key("default"))?;
 
-    let keys = chainz.list_keys();
-    assert_eq!(keys.len(), 3);
-    assert_eq!(keys[0].0, "default");
+    let names: Vec<&str> = chainz.list_keys().into_iter().map(|(n, _)| n).collect();
+    assert_eq!(names, ["default", "alpha", "zebra"]);
     Ok(())
 }
 
