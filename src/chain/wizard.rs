@@ -8,7 +8,7 @@ use crate::{
     config::Chainz,
     key::{Key, KeyType, save_with_safe_new_keys},
     opt::{AddArgs, UpdateArgs},
-    prompt::{Prompt, SystemPrompt},
+    prompt::{Prompt, StdinTrim, SystemPrompt, read_stdin_secret},
     variables::GlobalVariables,
 };
 use anyhow::{Context, Result};
@@ -759,16 +759,8 @@ pub(crate) fn parse_rpc_headers(raw: &[String]) -> Result<BTreeMap<String, Strin
 
 fn read_verification_api_key(stdin: bool, value: Option<String>) -> Result<Option<String>> {
     if stdin {
-        use std::io::Read;
-        use zeroize::Zeroize;
-        let mut input = String::new();
-        std::io::stdin().read_to_string(&mut input)?;
-        let normalized = input.trim().to_string();
-        input.zeroize();
-        if normalized.is_empty() {
-            anyhow::bail!("Verification API key from stdin was empty");
-        }
-        Ok(Some(normalized))
+        let value = read_stdin_secret("Verification API key", StdinTrim::Whitespace)?;
+        Ok(Some(value.to_string()))
     } else {
         if value.is_some() {
             eprintln!(

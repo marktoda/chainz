@@ -36,7 +36,7 @@ async fn handle_init_with(prompt: &mut impl Prompt) -> Result<()> {
     let pending: Vec<(String, zeroize::Zeroizing<String>)> = chainz
         .list_keys()
         .into_iter()
-        .filter(|(_, key)| matches!(key.kind, KeyType::PrivateKey { .. }))
+        .filter(|(_, key)| key.is_plaintext())
         .map(|(name, key)| Ok((name.to_string(), key.private_key()?)))
         .collect::<Result<_>>()?;
     let mut provisioned = Vec::new();

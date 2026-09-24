@@ -2,14 +2,12 @@ use crate::{
     chain::ChainInstance,
     config::Chainz,
     opt::VarCommand,
-    prompt::{Prompt, SystemPrompt},
+    prompt::{Prompt, StdinTrim, SystemPrompt, read_stdin_secret},
 };
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
-use std::io::Read;
-use zeroize::Zeroize;
 
 #[derive(Default, Serialize, Deserialize)]
 pub struct GlobalVariables {
@@ -253,7 +251,7 @@ impl VarCommand {
                     anyhow::bail!("Provide a value or --stdin, not both");
                 }
                 let value = if stdin {
-                    read_value_from_stdin()?
+                    read_stdin_secret("Value", StdinTrim::TrailingNewlines)?.to_string()
                 } else if let Some(value) = value {
                     eprintln!(
                         "Warning: variable values in argv may be visible in shell history; prefer --stdin"
@@ -306,17 +304,6 @@ impl VarCommand {
         }
         Ok(())
     }
-}
-
-fn read_value_from_stdin() -> Result<String> {
-    let mut value = String::new();
-    std::io::stdin().read_to_string(&mut value)?;
-    let normalized = value.trim_end_matches(['\r', '\n']).to_string();
-    value.zeroize();
-    if normalized.is_empty() {
-        anyhow::bail!("Value from stdin was empty");
-    }
-    Ok(normalized)
 }
 
 fn interpolate_variables(input: &str, variables: &HashMap<String, String>) -> String {

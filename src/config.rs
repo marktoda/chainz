@@ -67,11 +67,10 @@ impl Chainz {
 
     pub fn get_chain(&self, name_or_id: &str) -> Result<ChainInstance> {
         let definition = self.config.get_chain(name_or_id)?.clone();
-        let endpoint = definition
-            .selected_endpoint()
-            .cloned()
-            .unwrap_or_else(|| RpcEndpoint::new(definition.selected_rpc.clone()));
-        let expanded = self.config.globals.expand_endpoint(&endpoint);
+        let expanded = self
+            .config
+            .globals
+            .expand_endpoint(&definition.active_endpoint());
         let key = definition
             .key_name
             .as_deref()
@@ -122,13 +121,7 @@ impl Chainz {
         if !self.config.keys.contains_key(name) {
             anyhow::bail!("Key '{}' not found", name);
         }
-        let referenced_by: Vec<&str> = self
-            .config
-            .chains
-            .iter()
-            .filter(|chain| chain.key_name.as_deref() == Some(name))
-            .map(|chain| chain.name.as_str())
-            .collect();
+        let referenced_by = self.chains_using_key(name);
         if !referenced_by.is_empty() {
             anyhow::bail!(
                 "Key '{}' is still used by chain(s): {}",

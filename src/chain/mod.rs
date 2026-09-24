@@ -160,6 +160,14 @@ impl ChainDefinition {
         self.endpoint(&self.selected_rpc)
     }
 
+    /// The endpoint to connect to: the record backing `selected_rpc`, or a
+    /// header-free endpoint for configs that bypass validation.
+    pub(crate) fn active_endpoint(&self) -> RpcEndpoint {
+        self.selected_endpoint()
+            .cloned()
+            .unwrap_or_else(|| RpcEndpoint::new(self.selected_rpc.clone()))
+    }
+
     /// Select an RPC while preserving the config invariant that the selected
     /// endpoint is present in the chain's configured endpoint list. An entry
     /// that already exists keeps its headers.

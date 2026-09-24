@@ -8,7 +8,6 @@
 use crate::{
     chain::{RpcEndpoint, rpc::check_urls},
     config::Chainz,
-    key::KeyType,
     prompt::{Prompt, SystemPrompt},
     ui,
 };
@@ -89,7 +88,7 @@ fn check_keys(chainz: &Chainz, report: &mut Report) -> usize {
     }
     let mut plaintext = 0;
     for (name, key) in keys {
-        if let KeyType::PrivateKey { .. } = key.kind {
+        if key.is_plaintext() {
             report.warnings += 1;
             plaintext += 1;
             println!(
@@ -145,11 +144,7 @@ async fn check_rpc_health(chainz: &Chainz, report: &mut Report) -> Vec<String> {
     let checks: Vec<_> = chains
         .iter()
         .map(|c| {
-            let expanded = chainz.config.globals.expand_endpoint(
-                &c.selected_endpoint()
-                    .cloned()
-                    .unwrap_or_else(|| RpcEndpoint::new(c.selected_rpc.clone())),
-            );
+            let expanded = chainz.config.globals.expand_endpoint(&c.active_endpoint());
             let raw = c.selected_rpc.clone();
             let chain_id = c.chain_id;
             let name = c.name.clone();

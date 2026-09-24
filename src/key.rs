@@ -7,7 +7,7 @@
 use crate::{
     config::Chainz,
     opt::{KeyCommand, KeyTypeArg, MigrationTargetArg},
-    prompt::{Prompt, SystemPrompt},
+    prompt::{Prompt, StdinTrim, SystemPrompt, read_stdin_secret},
 };
 use aes_gcm::{
     Aes256Gcm, Nonce,
@@ -517,6 +517,11 @@ impl Key {
         }
     }
 
+    /// Whether the key material is stored in the config file itself.
+    pub(crate) fn is_plaintext(&self) -> bool {
+        matches!(self.kind, KeyType::PrivateKey { .. })
+    }
+
     fn kind_name(&self) -> &'static str {
         match self.kind {
             KeyType::PrivateKey { .. } => "PrivateKey",
@@ -596,20 +601,6 @@ fn encrypt_with_password(name: String, private_key: &str, password: &str) -> Res
     .with_public_address(private_key))
 }
 
-fn read_stdin_secret(label: &str) -> Result<Zeroizing<String>> {
-    use std::io::Read;
-    let mut value = String::new();
-    std::io::stdin()
-        .read_to_string(&mut value)
-        .with_context(|| format!("Failed to read {} from stdin", label))?;
-    let trimmed = value.trim().to_string();
-    value.zeroize();
-    if trimmed.is_empty() {
-        anyhow::bail!("{} from stdin was empty", label);
-    }
-    Ok(Zeroizing::new(trimmed))
-}
-
 pub(crate) fn provision_safe_key(name: &str, private_key: &str) -> Result<KeyProvision> {
     KeyVault::new(SystemKeyBackend).provision_private_key(name, private_key, None)
 }
@@ -638,7 +629,7 @@ pub(crate) async fn save_with_safe_new_keys(
     let mut provisions = Vec::new();
     for name in names {
         let staged = chainz.get_key(&name)?;
-        if !matches!(staged.kind, KeyType::PrivateKey { .. }) {
+        if !staged.is_plaintext() {
             continue;
         }
         let private_key = staged.private_key()?;
@@ -678,13 +669,17 @@ fn rollback_provisions<B: KeyBackend>(
     }
 }
 
-pub(crate) async fn migrate_plaintext_keys(chainz: &mut Chainz) -> Result<usize> {
-    let names: Vec<String> = chainz
+fn plaintext_key_names(chainz: &Chainz) -> Vec<String> {
+    chainz
         .list_keys()
         .into_iter()
-        .filter(|(_, key)| matches!(key.kind, KeyType::PrivateKey { .. }))
+        .filter(|(_, key)| key.is_plaintext())
         .map(|(name, _)| name.to_string())
-        .collect();
+        .collect()
+}
+
+pub(crate) async fn migrate_plaintext_keys(chainz: &mut Chainz) -> Result<usize> {
+    let names = plaintext_key_names(chainz);
     migrate_names(chainz, names, None, true).await
 }
 
@@ -789,7 +784,7 @@ impl KeyCommand {
                 } else {
                     let private_key = match (key, stdin) {
                         (Some(value), false) => Zeroizing::new(value),
-                        (None, true) => read_stdin_secret("private key")?,
+                        (None, true) => read_stdin_secret("private key", StdinTrim::Whitespace)?,
                         (None, false) if vault.backend.is_interactive() => {
                             vault.backend.prompt_secret("Enter private key: ")?
                         }
@@ -865,12 +860,7 @@ impl KeyCommand {
             }
             KeyCommand::Migrate { name, all, to } => {
                 let names = if all {
-                    chainz
-                        .list_keys()
-                        .into_iter()
-                        .filter(|(_, key)| matches!(key.kind, KeyType::PrivateKey { .. }))
-                        .map(|(name, _)| name.to_string())
-                        .collect()
+                    plaintext_key_names(chainz)
                 } else {
                     vec![name.ok_or_else(|| anyhow!("Provide a key name or use --all"))?]
                 };
