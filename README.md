@@ -18,7 +18,7 @@ A CLI tool for managing EVM chain configurations
 
 ## Installation
 
-Requires Rust 1.88+.
+Requires Rust 1.90+.
 
 ```bash
 cargo install chainz --locked
