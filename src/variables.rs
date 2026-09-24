@@ -11,14 +11,15 @@ use std::fmt;
 
 #[derive(Default, Serialize, Deserialize)]
 pub struct GlobalVariables {
-    /// INFURA_API_KEY etc
+    /// User variables (e.g. INFURA_API_KEY), referenced as `${NAME}` in RPC
+    /// URLs and header values. Flattened so the config stays `{"NAME": "value"}`.
     #[serde(flatten)]
-    rpc_expansions: HashMap<String, String>,
+    values: HashMap<String, String>,
 }
 
 impl fmt::Debug for GlobalVariables {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut names: Vec<_> = self.rpc_expansions.keys().collect();
+        let mut names: Vec<_> = self.values.keys().collect();
         names.sort();
         f.debug_struct("GlobalVariables")
             .field("names", &names)
@@ -177,7 +178,7 @@ impl ChainVariables {
         Ok(Self { env, expansions })
     }
 
-    pub fn as_map(&self) -> &HashMap<String, String> {
+    pub fn env(&self) -> &HashMap<String, String> {
         &self.env
     }
 
@@ -197,7 +198,7 @@ impl ChainVariables {
 
 impl GlobalVariables {
     pub fn expand(&self, value: &str) -> String {
-        interpolate_variables(value, &self.rpc_expansions)
+        interpolate_variables(value, &self.values)
     }
 
     /// Expand a full endpoint: URL and every header value get the same
@@ -216,13 +217,12 @@ impl GlobalVariables {
         }
     }
 
-    pub fn add_rpc_expansion(&mut self, key: &str, value: &str) {
-        self.rpc_expansions
-            .insert(key.to_string(), value.to_string());
+    pub fn set(&mut self, key: &str, value: &str) {
+        self.values.insert(key.to_string(), value.to_string());
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
-        for key in self.rpc_expansions.keys() {
+        for key in self.values.keys() {
             if key.is_empty() || key.contains(['{', '}']) {
                 anyhow::bail!("Invalid variable name '{}'", key);
             }
@@ -230,16 +230,16 @@ impl GlobalVariables {
         Ok(())
     }
 
-    pub fn remove_rpc_expansion(&mut self, key: &str) -> Option<String> {
-        self.rpc_expansions.remove(key)
+    pub fn remove(&mut self, key: &str) -> Option<String> {
+        self.values.remove(key)
     }
 
-    pub fn get_rpc_expansion(&self, key: &str) -> Option<&str> {
-        self.rpc_expansions.get(key).map(String::as_str)
+    pub fn get(&self, key: &str) -> Option<&str> {
+        self.values.get(key).map(String::as_str)
     }
 
-    pub fn list_rpc_expansions(&self) -> &HashMap<String, String> {
-        &self.rpc_expansions
+    pub fn entries(&self) -> &HashMap<String, String> {
+        &self.values
     }
 }
 
@@ -264,19 +264,17 @@ impl VarCommand {
                     }
                     prompt.secret(&format!("Value for {}: ", name))?
                 };
-                chainz.config.globals.add_rpc_expansion(&name, &value);
+                chainz.config.globals.set(&name, &value);
                 chainz.save().await?;
                 println!("Set variable {}", name);
             }
-            VarCommand::Get { name, show } => {
-                match chainz.config.globals.get_rpc_expansion(&name) {
-                    Some(value) if show => println!("{} = {}", name, value),
-                    Some(_) => println!("{} = [REDACTED]", name),
-                    None => anyhow::bail!("Variable '{}' not found", name),
-                }
-            }
+            VarCommand::Get { name, show } => match chainz.config.globals.get(&name) {
+                Some(value) if show => println!("{} = {}", name, value),
+                Some(_) => println!("{} = [REDACTED]", name),
+                None => anyhow::bail!("Variable '{}' not found", name),
+            },
             VarCommand::List { show, json } => {
-                let vars = chainz.config.globals.list_rpc_expansions();
+                let vars = chainz.config.globals.entries();
                 if json {
                     println!("{}", serde_json::to_string_pretty(vars)?);
                 } else if vars.is_empty() {
@@ -295,7 +293,7 @@ impl VarCommand {
                 }
             }
             VarCommand::Remove { name } => {
-                if chainz.config.globals.remove_rpc_expansion(&name).is_none() {
+                if chainz.config.globals.remove(&name).is_none() {
                     anyhow::bail!("Variable '{}' not found", name);
                 }
                 chainz.save().await?;

@@ -6,8 +6,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
 
-pub const DEFAULT_KEY_NAME: &str = "default";
-
 /// One RPC endpoint: a URL plus optional custom HTTP headers (for gateways
 /// that authenticate via header rather than URL-embedded credential).
 ///

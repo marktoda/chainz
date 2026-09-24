@@ -23,7 +23,7 @@ pub async fn run(chainz: &mut Chainz, fix: bool) -> Result<Report> {
     run_with(&mut SystemPrompt, chainz, fix).await
 }
 
-async fn run_with(terminal: &mut impl Prompt, chainz: &mut Chainz, fix: bool) -> Result<Report> {
+async fn run_with(prompt: &mut impl Prompt, chainz: &mut Chainz, fix: bool) -> Result<Report> {
     let mut report = Report {
         failures: 0,
         warnings: 0,
@@ -31,8 +31,8 @@ async fn run_with(terminal: &mut impl Prompt, chainz: &mut Chainz, fix: bool) ->
 
     check_config_invariants(chainz, &mut report);
     let plaintext_keys = check_keys(chainz, &mut report);
-    if fix && plaintext_keys > 0 && terminal.is_interactive() {
-        let migrate = terminal.confirm("Migrate plaintext keys to safe storage now?", true)?;
+    if fix && plaintext_keys > 0 && prompt.is_interactive() {
+        let migrate = prompt.confirm("Migrate plaintext keys to safe storage now?", true)?;
         if migrate {
             let migrated = crate::key::migrate_plaintext_keys(chainz).await?;
             report.warnings = report.warnings.saturating_sub(migrated);
@@ -252,9 +252,9 @@ mod tests {
                 },
             ),
         )?;
-        let mut terminal = ScriptedPrompt::new([Answer::Confirm(false)]);
+        let mut prompt = ScriptedPrompt::new([Answer::Confirm(false)]);
 
-        let report = run_with(&mut terminal, &mut chainz, true).await?;
+        let report = run_with(&mut prompt, &mut chainz, true).await?;
 
         assert_eq!(report.failures, 0);
         assert_eq!(report.warnings, 1);

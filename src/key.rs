@@ -22,6 +22,8 @@ use serde::{Deserialize, Serialize};
 use std::{fmt, io::IsTerminal, process::Command, sync::OnceLock};
 use zeroize::{Zeroize, Zeroizing};
 
+/// Key created by `chainz init`; listed first by `Chainz::list_keys`.
+pub const DEFAULT_KEY_NAME: &str = "default";
 const KEYRING_SERVICE: &str = "chainz";
 const ENVELOPE_VERSION: u8 = 1;
 // These are Argon2 0.5's defaults. Persisting them makes encrypted records
@@ -450,10 +452,6 @@ impl Key {
         KeyVault::new(SystemKeyBackend).resolve(self)
     }
 
-    pub(crate) fn address(&self) -> Result<Address> {
-        Ok(self.private_key()?.parse::<PrivateKeySigner>()?.address())
-    }
-
     pub(crate) fn address_from_private_key(private_key: &str) -> Result<Address> {
         Ok(private_key.parse::<PrivateKeySigner>()?.address())
     }
@@ -532,8 +530,10 @@ impl Key {
     }
 
     pub(crate) fn address_noninteractive(&self) -> Option<String> {
-        self.address.clone().or_else(|| match self.kind {
-            KeyType::PrivateKey { .. } => self.address().ok().map(|a| a.to_string()),
+        self.address.clone().or_else(|| match &self.kind {
+            KeyType::PrivateKey { value } => Self::address_from_private_key(value)
+                .ok()
+                .map(|address| address.to_string()),
             _ => None,
         })
     }

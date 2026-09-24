@@ -142,7 +142,7 @@ async fn dispatch() -> Result<()> {
             );
             chainz.release_config_lock();
             let status = ProcessCommand::new(&shell)
-                .envs(variables.as_map())
+                .envs(variables.env())
                 .env("CHAINZ_CHAIN", &chain_name)
                 .env("PS1", ps1)
                 .status()?;
@@ -172,7 +172,7 @@ async fn dispatch() -> Result<()> {
             chainz.release_config_lock();
             let status = ProcessCommand::new(&expanded_command[0])
                 .args(&expanded_command[1..])
-                .envs(variables.as_map())
+                .envs(variables.env())
                 .status()?;
 
             if !status.success() {

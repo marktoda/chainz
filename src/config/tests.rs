@@ -35,7 +35,7 @@ fn config_json_round_trip() -> Result<()> {
     let mut config = Config::default();
     config.chains.push(test_chain("ethereum", 1));
     config.chains.push(test_chain("polygon", 137));
-    config.globals.add_rpc_expansion("INFURA_KEY", "abc123");
+    config.globals.set("INFURA_KEY", "abc123");
     config
         .keys
         .insert("default".to_string(), test_key("default"));
@@ -51,10 +51,7 @@ fn config_json_round_trip() -> Result<()> {
     assert_eq!(restored.chains[0].chain_id, 1);
     assert_eq!(restored.chains[1].name, "polygon");
     assert_eq!(restored.chains[1].chain_id, 137);
-    assert_eq!(
-        restored.globals.get_rpc_expansion("INFURA_KEY"),
-        Some("abc123")
-    );
+    assert_eq!(restored.globals.get("INFURA_KEY"), Some("abc123"));
     assert_eq!(restored.keys.len(), 2);
     assert!(restored.keys.contains_key("default"));
     assert!(restored.keys.contains_key("deployer"));

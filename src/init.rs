@@ -1,8 +1,8 @@
 use crate::{
-    chain::DEFAULT_KEY_NAME,
     config::{Chainz, config_exists},
     key::{
-        Key, KeyType, provision_safe_key, provision_safe_replacement_key, rollback_key_provision,
+        DEFAULT_KEY_NAME, Key, KeyType, provision_safe_key, provision_safe_replacement_key,
+        rollback_key_provision,
     },
     opt,
     prompt::{Prompt, SystemPrompt},
@@ -94,7 +94,7 @@ async fn initialize_with_wizard(prompt: &mut impl Prompt) -> Result<Chainz> {
         chainz
             .config
             .globals
-            .add_rpc_expansion(INFURA_API_KEY_ENV_VAR, &infura_api_key);
+            .set(INFURA_API_KEY_ENV_VAR, &infura_api_key);
     }
 
     // Add chains in a loop until user chooses to exit
@@ -145,10 +145,7 @@ mod tests {
         let chainz = initialize_with_wizard(&mut prompt).await?;
         assert!(chainz.config.keys.is_empty());
         assert_eq!(
-            chainz
-                .config
-                .globals
-                .get_rpc_expansion(INFURA_API_KEY_ENV_VAR),
+            chainz.config.globals.get(INFURA_API_KEY_ENV_VAR),
             Some("infura-token")
         );
         Ok(())

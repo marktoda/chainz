@@ -1,6 +1,6 @@
 use crate::{
     chain::{ChainDefinition, ChainInstance, RpcEndpoint},
-    key::Key,
+    key::{DEFAULT_KEY_NAME, Key},
     variables::GlobalVariables,
 };
 use anyhow::{Context, Result, anyhow};
@@ -35,7 +35,7 @@ pub struct Chainz {
     pub config: Config,
     // Commands hold this lock from load through save, making the complete
     // read-modify-write operation serial across chainz processes.
-    _config_lock: Option<ConfigLock>,
+    config_lock: Option<ConfigLock>,
 }
 
 impl Chainz {
@@ -50,7 +50,7 @@ impl Chainz {
         let config = Config::load_locked(true).await?.unwrap_or_default();
         Ok(Self {
             config,
-            _config_lock: Some(config_lock),
+            config_lock: Some(config_lock),
         })
     }
 
@@ -61,7 +61,7 @@ impl Chainz {
         let config = Config::load_locked(false).await?.unwrap_or_default();
         Ok(Self {
             config,
-            _config_lock: Some(config_lock),
+            config_lock: Some(config_lock),
         })
     }
 
@@ -109,8 +109,7 @@ impl Chainz {
             .map(|(n, k)| (n.as_str(), k))
             .collect();
 
-        // If "default" exists, move it to the front
-        if let Some(default_pos) = keys.iter().position(|(name, _)| *name == "default") {
+        if let Some(default_pos) = keys.iter().position(|(name, _)| *name == DEFAULT_KEY_NAME) {
             keys.swap(0, default_pos);
         }
 
@@ -266,10 +265,10 @@ impl Chainz {
     }
 
     pub async fn save(&self) -> Result<()> {
-        if self._config_lock.is_some() {
+        if self.config_lock.is_some() {
             self.config.write_locked().await
         } else {
-            let _config_lock = ConfigLock::acquire().await?;
+            let _held = ConfigLock::acquire().await?;
             self.config.write_locked().await
         }
     }
@@ -277,7 +276,7 @@ impl Chainz {
     /// Release the process-wide config transaction before starting work that
     /// cannot mutate config (for example, a long-running child process).
     pub fn release_config_lock(&mut self) {
-        self._config_lock.take();
+        self.config_lock.take();
     }
 }
 
