@@ -105,7 +105,7 @@ impl Drop for WriteLock {
 
 /// Parse config text into the typed view.
 pub fn parse_config(text: &str, path: &Path) -> Result<Config> {
-    toml_edit::de::from_str(text).map_err(|e| {
+    toml::from_str(text).map_err(|e| {
         anyhow!(
             "failed to parse {}: {} (fix it with `chainz config edit`)",
             path.display(),
@@ -129,7 +129,7 @@ fn read_secrets(path: &Path) -> Result<Secrets> {
 
 /// TOML parse errors quote the offending line, which may hold a secret
 /// (an inline credential, a variable value): keep only message and position.
-pub fn redact_toml_error(error: &toml_edit::de::Error) -> String {
+pub fn redact_toml_error(error: &toml::de::Error) -> String {
     let message = error.message();
     match error.span() {
         Some(span) => format!("{message} (at byte {})", span.start),

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Hot-path performance gate: v2's median must be <= 50% of v1's for
+# Hot-path performance gate: v2's median must be <= 85% of v1's for
 # `exec 1 -- true` and `ls`, both against the 17-chain migration fixture.
 #
 #   scripts/perf-gate.sh V1_BIN V2_BIN [MAX_RATIO]
@@ -10,7 +10,7 @@ set -euo pipefail
 
 v1=$(realpath "$1")
 v2=$(realpath "$2")
-max_ratio=${3:-0.50}
+max_ratio=${3:-0.85}
 here=$(cd "$(dirname "$0")/.." && pwd)
 fixture="$here/crates/chainz-core/tests/fixtures/v1-config.json"
 

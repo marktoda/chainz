@@ -53,7 +53,7 @@ pub fn builtin_tokens() -> &'static [BuiltinToken] {
     static TOKENS: OnceLock<Vec<BuiltinToken>> = OnceLock::new();
     TOKENS.get_or_init(|| {
         let parsed: HashMap<String, HashMap<String, TokenWire>> =
-            toml_edit::de::from_str(TOKENS_TOML).expect("tokens.toml is valid");
+            toml::from_str(TOKENS_TOML).expect("tokens.toml is valid");
         let mut out: Vec<BuiltinToken> = parsed
             .into_iter()
             .flat_map(|(chain, tokens)| {

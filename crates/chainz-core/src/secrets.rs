@@ -109,8 +109,8 @@ impl fmt::Debug for SignerSecret {
 
 impl Secrets {
     /// Parse `secrets.toml` text.
-    pub fn parse(text: &str) -> Result<Self, toml_edit::de::Error> {
-        toml_edit::de::from_str(text)
+    pub fn parse(text: &str) -> Result<Self, toml::de::Error> {
+        toml::from_str(text)
     }
 }
 
