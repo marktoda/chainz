@@ -1,7 +1,7 @@
 //! Stream-owned commands. Each stream replaces its stub with a real
 //! handler (keep the signature; the clap surface in `cli.rs` is frozen).
 
-use crate::cli::{AddrCommand, ForkArgs, ForkCommand, ServeArgs, ServeCommand};
+use crate::cli::{AddrCommand, ServeArgs, ServeCommand};
 use anyhow::{Result, bail};
 
 fn not_yet(command: &str, stream: &str) -> Result<i32> {
@@ -22,16 +22,6 @@ pub fn serve(cmd: Option<ServeCommand>, _args: ServeArgs) -> Result<i32> {
         Some(ServeCommand::Log { .. }) => "serve log",
     };
     not_yet(name, "Gateway")
-}
-
-/// `fork [ls|stop]` (Forks stream).
-pub fn fork(cmd: Option<ForkCommand>, _args: ForkArgs) -> Result<i32> {
-    let name = match cmd {
-        None => "fork",
-        Some(ForkCommand::Ls) => "fork ls",
-        Some(ForkCommand::Stop { .. }) => "fork stop",
-    };
-    not_yet(name, "Forks")
 }
 
 /// `addr …` (Address book stream).
