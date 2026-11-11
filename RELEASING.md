@@ -16,7 +16,8 @@ uploads them in dependency order.
 
 ## Release checklist
 
-1. Confirm CI is green on `main`.
+1. Confirm CI is green on `main`. The release job does not install anvil,
+   so CI is where the fork tests run.
 2. Replace `Unreleased` in `CHANGELOG.md` with the release date.
 3. Set the intended version in the root `Cargo.toml`, in both
    `[workspace.package]` and the four `[workspace.dependencies]` path

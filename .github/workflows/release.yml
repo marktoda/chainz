@@ -52,13 +52,10 @@ jobs:
       - name: Install strace (exec structural test)
         run: sudo apt-get update && sudo apt-get install -y strace
 
-      - name: Install Foundry (anvil, for fork tests)
-        uses: foundry-rs/foundry-toolchain@v1
-
       - name: Verify release candidate
+        # Fork tests skip here: this job holds the publish token, so it
+        # installs no extra third-party actions. CI on main runs them.
         run: cargo test --locked --workspace --all-targets
-        env:
-          CHAINZ_REQUIRE_TOOLS: "1"
 
       - name: Verify package contents
         run: cargo package --locked --workspace

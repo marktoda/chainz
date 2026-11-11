@@ -30,7 +30,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y strace
 
       - name: Install Foundry (anvil, for fork tests)
-        uses: foundry-rs/foundry-toolchain@v1
+        uses: foundry-rs/foundry-toolchain@dba66c27052e63476d886f22216e119ba7e615bf # v1
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
