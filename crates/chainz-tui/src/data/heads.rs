@@ -195,12 +195,18 @@ pub(super) struct Poller {
 
 impl Poller {
     /// A poller that learns the block time on its first poll (`--once`).
+    ///
+    /// What an earlier poller learned about the chain (its block clock, and
+    /// whether the look-back block was read) carries over: an engine
+    /// restart does not cost another look-back request.
     pub(super) fn new(shared: Arc<Shared>, chain: ChainPlan) -> Self {
+        let learned = shared.lock_learned().get(&chain.id).cloned();
+        let (clock, anchor_tries) = learned.unwrap_or((BlockClock::default(), 3));
         Poller {
             shared,
             chain,
-            clock: BlockClock::default(),
-            anchor_tries: 3,
+            clock,
+            anchor_tries,
             anchor_after: 0,
             failures: 0,
             retry_after: None,
@@ -268,6 +274,9 @@ impl Poller {
             Err(_) => self.failures.saturating_add(1),
         };
         self.retry_after = result.as_ref().err().and_then(|f| f.retry_after);
+        self.shared
+            .lock_learned()
+            .insert(self.chain.id, (self.clock.clone(), self.anchor_tries));
         Update::Head {
             chain: self.chain.name.clone(),
             at_ms: now_ms(),

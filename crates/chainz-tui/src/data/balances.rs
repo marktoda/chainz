@@ -3,50 +3,93 @@
 //! batch of `eth_getBalance` and `eth_call` where it is not (or fails).
 //! Only cached addresses are used; no key is ever unlocked.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use chainz_core::Address;
 use chainz_rpc::{BlockId, RpcError, Target};
 use serde_json::{Value, json};
+use tokio::sync::watch;
 use tokio::task::JoinSet;
+use tokio::time::Instant;
 
-use super::{Shared, Signals, abi};
+use super::{Shared, Signals, abi, provider_slots, same_source};
 use crate::model::{Fault, Holding, Sheet, Update, Via, now_ms};
 use crate::plan::{ChainPlan, Plan};
 
 /// Read every chain's balances every `balance_every`, and on a refresh.
 ///
-/// `slots` staggers chains that share a provider. The first round also
-/// waits for the head pollers' own staggered start to pass.
+/// Chains that share a provider are staggered. The first round also waits
+/// for the head pollers' own staggered start to pass. When the plan
+/// changes, only the chains it changed are read at once (all of them when
+/// the signers changed); the others keep their schedule.
 pub(super) async fn run(
     shared: Arc<Shared>,
-    plan: Arc<Plan>,
-    slots: Vec<u32>,
+    mut plan: watch::Receiver<Arc<Plan>>,
     signals: Arc<Signals>,
 ) {
+    let stagger = shared.tuning.stagger;
+    let mut current = plan.borrow_and_update().clone();
+    let slots = provider_slots(&current);
+    tokio::time::sleep(stagger * (slots.iter().max().copied().unwrap_or(0) + 1)).await;
+    // `None`: every chain, and the interval restarts.
+    let mut only: Option<HashSet<String>> = None;
+    let mut next_round = Instant::now();
+    loop {
+        if only.is_none() {
+            next_round = Instant::now() + shared.tuning.balance_every;
+        }
+        read_round(&shared, &current, only.as_ref()).await;
+        tokio::select! {
+            () = tokio::time::sleep_until(next_round) => only = None,
+            () = signals.balances.notified() => only = None,
+            changed = plan.changed() => {
+                if changed.is_err() {
+                    return;
+                }
+                let next = plan.borrow_and_update().clone();
+                only = changed_chains(&current, &next);
+                current = next;
+            }
+        }
+    }
+}
+
+/// The chains of `next` whose balances `previous` does not answer for;
+/// `None` when the signers changed, which affects every chain.
+fn changed_chains(previous: &Plan, next: &Plan) -> Option<HashSet<String>> {
+    if previous.holders() != next.holders() {
+        return None;
+    }
+    let changed = next
+        .chains
+        .iter()
+        .filter(|c| !previous.chain(&c.name).is_some_and(|p| same_source(p, c)))
+        .map(|c| c.name.clone())
+        .collect();
+    Some(changed)
+}
+
+/// One round over `plan`'s chains (only those in `only`, when given).
+async fn read_round(shared: &Arc<Shared>, plan: &Plan, only: Option<&HashSet<String>>) {
     let holders = Arc::new(plan.holders());
     if holders.is_empty() {
         return;
     }
-    let stagger = shared.tuning.stagger;
-    tokio::time::sleep(stagger * (slots.iter().max().copied().unwrap_or(0) + 1)).await;
-    loop {
-        let mut round = JoinSet::new();
-        for (chain, slot) in plan.chains.iter().zip(&slots) {
-            let shared = shared.clone();
-            let update = read_update(shared.clone(), chain.clone(), holders.clone());
-            let delay = stagger * *slot;
-            round.spawn(async move {
-                tokio::time::sleep(delay).await;
-                shared.send(update.await);
-            });
+    let mut round = JoinSet::new();
+    for (chain, slot) in plan.chains.iter().zip(provider_slots(plan)) {
+        if only.is_some_and(|only| !only.contains(&chain.name)) {
+            continue;
         }
-        while round.join_next().await.is_some() {}
-        tokio::select! {
-            () = tokio::time::sleep(shared.tuning.balance_every) => {}
-            () = signals.balances.notified() => {}
-        }
+        let shared = shared.clone();
+        let update = read_update(shared.clone(), chain.clone(), holders.clone());
+        let delay = shared.tuning.stagger * slot;
+        round.spawn(async move {
+            tokio::time::sleep(delay).await;
+            shared.send(update.await);
+        });
     }
+    while round.join_next().await.is_some() {}
 }
 
 /// One chain's balances, as an [`Update`].

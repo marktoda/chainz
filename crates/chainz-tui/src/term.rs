@@ -115,12 +115,17 @@ impl Dashboard {
         while self.updates.try_recv().is_ok() {}
     }
 
-    /// (Re)start the workers for the config as it is now.
+    /// Move the workers to the config as it is now: a running engine
+    /// restarts only what changed; a stopped one starts.
     fn start(&mut self) {
-        self.stop();
+        // What is queued may come from a chain's previous endpoint.
+        while self.updates.try_recv().is_ok() {}
         self.plan = Arc::new(Plan::build(&self.chainz, self.options.reveal));
         self.state = self.state.rebuilt(&self.plan, &self.shared.store());
-        self.engine = Some(Engine::start(self.rt.handle(), &self.shared, &self.plan));
+        match &mut self.engine {
+            Some(engine) => engine.replan(&self.plan),
+            None => self.engine = Some(Engine::start(self.rt.handle(), &self.shared, &self.plan)),
+        }
     }
 
     /// Re-read the config from disk and restart the workers on it.

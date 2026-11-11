@@ -95,6 +95,9 @@ pub struct Shared {
     gateway: RwLock<Option<ServeInfo>>,
     /// Chain ID → whether Multicall3 has code there (once known).
     multicall: Mutex<HashMap<u64, bool>>,
+    /// Chain ID → its block clock and look-back tries left, so a restarted
+    /// poller keeps what an earlier one measured.
+    learned: Mutex<HashMap<u64, (heads::BlockClock, u8)>>,
     /// No key for `idle_after`: head pollers slow to the ceiling.
     idle: std::sync::atomic::AtomicBool,
 }
@@ -123,6 +126,7 @@ impl Shared {
             tuning,
             updates,
             multicall: Mutex::new(HashMap::new()),
+            learned: Mutex::new(HashMap::new()),
             idle: std::sync::atomic::AtomicBool::new(false),
         };
         shared.detect_gateway();
@@ -181,6 +185,10 @@ impl Shared {
         changed
     }
 
+    fn lock_learned(&self) -> std::sync::MutexGuard<'_, HashMap<u64, (heads::BlockClock, u8)>> {
+        self.learned.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn send(&self, update: Update) {
         // The receiver is gone only while the UI is shutting down.
         let _ = self.updates.send(update);
@@ -227,10 +235,16 @@ pub enum Refresh {
     Traffic,
 }
 
-/// The running workers for one [`Plan`]. Dropping it stops them.
+/// The running workers. Dropping it stops them.
 #[derive(Debug)]
 pub struct Engine {
+    handle: Handle,
+    shared: Arc<Shared>,
+    /// Each chain's head poller, by name, with the plan it polls.
+    pollers: HashMap<String, (ChainPlan, JoinHandle<()>)>,
+    /// The probe, balance and watch workers.
     tasks: Vec<JoinHandle<()>>,
+    plan: watch::Sender<Arc<Plan>>,
     focus: watch::Sender<Option<String>>,
     signals: Arc<Signals>,
 }
@@ -240,30 +254,59 @@ impl Engine {
     pub fn start(handle: &Handle, shared: &Arc<Shared>, plan: &Arc<Plan>) -> Self {
         let signals = Arc::new(Signals::default());
         let (focus, focus_rx) = watch::channel(None);
-        let mut tasks = Vec::with_capacity(plan.chains.len() + 3);
-        let slots = provider_slots(plan);
-        for (chain, slot) in plan.chains.iter().zip(&slots) {
-            let poller = heads::Poller::patient(shared.clone(), chain.clone());
-            let delay = shared.tuning.stagger * *slot;
-            tasks.push(handle.spawn(poller.run(delay, signals.clone())));
-        }
-        tasks.push(handle.spawn(probe_loop(
-            shared.clone(),
-            plan.clone(),
-            focus_rx,
-            signals.clone(),
-        )));
-        tasks.push(handle.spawn(balances::run(
-            shared.clone(),
-            plan.clone(),
-            slots,
-            signals.clone(),
-        )));
-        tasks.push(handle.spawn(watch_loop(shared.clone(), signals.clone())));
-        Engine {
+        let (plan_tx, plan_rx) = watch::channel(plan.clone());
+        let tasks = vec![
+            handle.spawn(probe_loop(
+                shared.clone(),
+                plan_rx.clone(),
+                focus_rx,
+                signals.clone(),
+            )),
+            handle.spawn(balances::run(shared.clone(), plan_rx, signals.clone())),
+            handle.spawn(watch_loop(shared.clone(), signals.clone())),
+        ];
+        let mut engine = Engine {
+            handle: handle.clone(),
+            shared: shared.clone(),
+            pollers: HashMap::new(),
             tasks,
+            plan: plan_tx,
             focus,
             signals,
+        };
+        engine.start_pollers(plan);
+        engine
+    }
+
+    /// Move the workers to a new plan (a config change, `s`). Only what
+    /// changed restarts: a chain whose active endpoint is the same keeps
+    /// its poller and its schedule, and balances are read again only for
+    /// chains that are new or read from somewhere else.
+    pub fn replan(&mut self, plan: &Arc<Plan>) {
+        self.start_pollers(plan);
+        self.plan.send_replace(plan.clone());
+    }
+
+    /// Keep the pollers whose chain reads from the same place, stop the
+    /// rest, and start what is missing (staggered per provider).
+    fn start_pollers(&mut self, plan: &Arc<Plan>) {
+        let mut running = std::mem::take(&mut self.pollers);
+        for (chain, slot) in plan.chains.iter().zip(provider_slots(plan)) {
+            if let Some((old, task)) = running.remove(&chain.name) {
+                if same_source(&old, chain) {
+                    self.pollers.insert(chain.name.clone(), (old, task));
+                    continue;
+                }
+                task.abort();
+            }
+            let poller = heads::Poller::patient(self.shared.clone(), chain.clone());
+            let offset = self.shared.tuning.stagger * slot;
+            let task = self.handle.spawn(poller.run(offset, self.signals.clone()));
+            self.pollers
+                .insert(chain.name.clone(), (chain.clone(), task));
+        }
+        for (_, task) in running.into_values() {
+            task.abort();
         }
     }
 
@@ -289,10 +332,30 @@ impl Engine {
 
 impl Drop for Engine {
     fn drop(&mut self) {
-        for task in &self.tasks {
+        let pollers = self.pollers.values().map(|(_, task)| task);
+        for task in self.tasks.iter().chain(pollers) {
             task.abort();
         }
     }
+}
+
+/// Whether two plans of a chain read it the same way: same name, ID and
+/// active endpoint (URL and headers as resolved). A poller or a balance
+/// read for one is good for the other.
+fn same_source(a: &ChainPlan, b: &ChainPlan) -> bool {
+    let same_target = match (a.active_endpoint(), b.active_endpoint()) {
+        (None, None) => true,
+        (Some(a), Some(b)) => {
+            a.websocket == b.websocket
+                && match (&a.target, &b.target) {
+                    (Ok(a), Ok(b)) => a.url() == b.url() && a.headers() == b.headers(),
+                    (Err(a), Err(b)) => a == b,
+                    _ => false,
+                }
+        }
+        _ => false,
+    };
+    a.name == b.name && a.id == b.id && same_target
 }
 
 /// For each chain, how many earlier chains use the same provider (the
@@ -438,16 +501,18 @@ async fn traffic_snapshot(shared: &Shared) -> Result<crate::model::TrafficSnapsh
 /// While the dashboard is idle, rounds are skipped.
 async fn probe_loop(
     shared: Arc<Shared>,
-    plan: Arc<Plan>,
+    mut plan: watch::Receiver<Arc<Plan>>,
     mut focus: watch::Receiver<Option<String>>,
     signals: Arc<Signals>,
 ) {
     let mut last: HashMap<String, Instant> = HashMap::new();
     loop {
+        let current = plan.borrow_and_update().clone();
         let focused = focus.borrow_and_update().clone();
-        let Some(chain) = focused.as_deref().and_then(|name| plan.chain(name)) else {
-            if focus.changed().await.is_err() {
-                return;
+        let Some(chain) = focused.as_deref().and_then(|name| current.chain(name)) else {
+            tokio::select! {
+                changed = focus.changed() => if changed.is_err() { return },
+                changed = plan.changed() => if changed.is_err() { return },
             }
             continue;
         };
@@ -464,6 +529,11 @@ async fn probe_loop(
                 last.insert(chain.name.clone(), Instant::now());
             }
             changed = focus.changed() => {
+                if changed.is_err() {
+                    return;
+                }
+            }
+            changed = plan.changed() => {
                 if changed.is_err() {
                     return;
                 }

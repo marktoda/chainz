@@ -1102,3 +1102,76 @@ async fn an_idle_dashboard_does_not_probe() {
     .await;
     assert!(!spare.hits().is_empty());
 }
+
+/// A chain with 12 s blocks that also answers Multicall3 balance reads.
+async fn full_rpc() -> MockRpc {
+    MockRpc::calls(|method, params| match method {
+        "eth_getBlockByNumber" => Ok(block(5_000, NOW, 12.0, &params[0])),
+        "eth_call" => Ok(json!(aggregate3_result(&[Some(1); 6]))),
+        _ => Err(-32601),
+    })
+    .await
+}
+
+fn look_backs(rpc: &MockRpc) -> usize {
+    rpc.hits()
+        .iter()
+        .filter(|h| h.methods() == ["eth_getBlockByNumber"] && h.body["params"][0] != "latest")
+        .count()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_new_plan_restarts_only_the_chains_it_changed() {
+    let dir = short_tempdir();
+    let (eth, base, base_spare) = (full_rpc().await, full_rpc().await, full_rpc().await);
+    let first = plan(vec![
+        chain("eth", 1, &[("a", &eth.url)]),
+        chain(
+            "base",
+            8453,
+            &[("a", &base.url), ("spare", &base_spare.url)],
+        ),
+    ]);
+    let mut tuning = fast();
+    // Block time measured: the next tick is 12 s away, the next balance
+    // round 60 s. Anything sent after that is the new plan's doing.
+    tuning.max_pace = Duration::from_secs(60);
+    tuning.balance_every = Duration::from_secs(60);
+    let (shared, _updates) = shared(dir.path(), tuning);
+    let mut engine = Engine::start(&Handle::current(), &shared, &first);
+    let settled = |rpc: &MockRpc| {
+        latest_polls(rpc) >= 2 && look_backs(rpc) == 1 && rpc.methods().contains(&"eth_call".into())
+    };
+    wait_until("both chains measured and read", || {
+        settled(&eth) && settled(&base)
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let (eth_before, base_before) = (eth.hits().len(), base.hits().len());
+
+    // `s` on base: its active endpoint becomes `spare`; eth is untouched.
+    let mut moved = first.chains[1].clone();
+    moved.active = "spare".into();
+    let second = plan(vec![first.chains[0].clone(), moved]);
+    engine.replan(&second);
+    wait_until("base read from spare", || {
+        latest_polls(&base_spare) == 1 && base_spare.methods().contains(&"eth_call".into())
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // The new endpoint: one head poll and one balance read, and no
+    // look-back (base's block time is already known).
+    let mut methods = base_spare.methods();
+    methods.sort();
+    assert_eq!(methods, ["eth_call", "eth_getBlockByNumber"]);
+    // Nothing more to eth or to base's old endpoint.
+    assert_eq!(eth.hits().len(), eth_before, "{:?}", eth.methods());
+    assert_eq!(base.hits().len(), base_before);
+
+    // The same plan again restarts nothing.
+    engine.replan(&second);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(base_spare.hits().len(), 2);
+    assert_eq!(eth.hits().len(), eth_before);
+}
