@@ -320,7 +320,7 @@ impl Drop for Supervisor<'_> {
 /// A fork that is up and registered.
 struct Running {
     /// Keeps the proxy serving for the fork's whole life.
-    _proxy: Option<proxy::Proxy>,
+    _proxy: proxy::Proxy,
     log_path: std::path::PathBuf,
 }
 
@@ -370,19 +370,24 @@ async fn start_fork(supervisor: &mut Supervisor<'_>, job: &Job<'_>) -> Result<Ru
     let client = RpcClient::new();
     let (endpoint, target) = choose_endpoint(job, &client).await?;
 
-    // One upstream for the fork's whole life: the gateway pinned to the
-    // endpoint when one is running, else our own proxy to it.
-    let (proxy, fork_url, route) = match gateway(runtime) {
-        Some(info) => (None, info.chain_url(parent, Some(&endpoint)), "gateway"),
-        None => {
-            let upstream = Arc::new(HttpUpstream::new(client.clone()));
-            let proxy = proxy::start(upstream, target)
-                .await
-                .context("unable to start the fork proxy")?;
-            let url = proxy.url();
-            (Some(proxy), url, "proxy")
+    // One upstream for the fork's whole life, always behind our own
+    // proxy: the real endpoint, or a running gateway pinned to it. Anvil's
+    // argv (world-readable in /proc) then only ever holds the proxy's
+    // per-fork token, never the gateway's token or an endpoint secret.
+    let (target, route) = match gateway(runtime) {
+        Some(info) => {
+            let url = info.chain_url(parent, Some(&endpoint));
+            let target = Target::new(chain.id, endpoint.as_str(), &url, &[])
+                .map_err(|e| anyhow!("gateway URL: {e}"))?;
+            (target, "gateway")
         }
+        None => (target, "proxy"),
     };
+    let upstream = Arc::new(HttpUpstream::new(client.clone()));
+    let proxy = proxy::start(upstream, target)
+        .await
+        .context("unable to start the fork proxy")?;
+    let fork_url = proxy.url();
 
     let log_path = process::log_path(name)?;
     let log = process::open_log(&log_path, !job.detached)?;

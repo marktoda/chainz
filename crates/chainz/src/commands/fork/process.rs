@@ -368,7 +368,7 @@ pub fn log_tail(path: &std::path::Path, from: u64, lines: usize) -> String {
 
 /// How to start anvil.
 pub struct AnvilSpec<'a> {
-    /// `--fork-url`: the proxy, or the gateway's pinned-endpoint URL.
+    /// `--fork-url`: the supervisor's proxy (never a URL holding a secret).
     pub fork_url: &'a str,
     /// `--port`.
     pub port: u16,

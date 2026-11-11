@@ -738,8 +738,9 @@ fn block_needs_an_archive_endpoint() {
     assert_eq!(fork.wait_exit(), Some(0));
 }
 
-/// With a gateway running, anvil forks from the gateway's URL pinned to
-/// the chosen endpoint, and no proxy is started.
+/// With a gateway running, the fork's proxy forwards to the gateway's URL
+/// pinned to the chosen endpoint, and the gateway token stays in the
+/// supervisor's memory.
 #[test]
 fn a_running_gateway_is_used_pinned_to_the_endpoint() {
     if !anvil_available() {
@@ -787,13 +788,25 @@ fn a_running_gateway_is_used_pinned_to_the_endpoint() {
         out.contains("upstream local/up (pinned, via gateway)"),
         "{out}"
     );
-    let args = process_args(sb.anvil_pid("local-fork"));
-    assert!(
-        args.contains(&format!(
-            "--fork-url http://127.0.0.1:{gateway_port}/gwtoken/local/up"
-        )),
-        "{args}"
-    );
+    // Anvil still forks from the supervisor's proxy: the gateway token
+    // (which grants every chain) must never reach argv, readable by any
+    // local user. Only the proxy talks to the gateway.
+    let anvil = sb.anvil_pid("local-fork");
+    let args = process_args(anvil);
+    assert!(args.contains("--fork-url http://127.0.0.1:"), "{args}");
+    assert!(!args.contains("gwtoken"), "gateway token in argv: {args}");
+    assert!(!args.contains(&gateway_port.to_string()), "{args}");
+    #[cfg(target_os = "linux")]
+    {
+        let cmdline = fs::read(format!("/proc/{anvil}/cmdline")).unwrap();
+        let environ = fs::read(format!("/proc/{anvil}/environ")).unwrap();
+        for bytes in [cmdline, environ] {
+            assert!(!String::from_utf8_lossy(&bytes).contains("gwtoken"));
+        }
+    }
+    assert!(!out.contains("gwtoken"), "{out}");
+    let log = fs::read_to_string(sb.root.path().join("state/chainz/forks/local-fork.log"));
+    assert!(!log.unwrap().contains("gwtoken"));
     assert_eq!(balance(port, TEST_ADDRESS), "0x3635c9adc5dea00000");
     let paths = paths.lock().unwrap().clone();
     assert!(!paths.is_empty());

@@ -1,8 +1,9 @@
 //! `chainz fork`: disposable anvil forks, usable as chain names.
 //!
 //! `chainz fork CHAIN` is a **supervisor**: it pins one upstream endpoint,
-//! serves it to anvil through an in-process loopback proxy
-//! ([`proxy`]; or through a running gateway's pinned-endpoint URL), starts
+//! serves it to anvil through an in-process loopback proxy ([`proxy`],
+//! whose upstream is the endpoint itself, or a running gateway pinned to
+//! that endpoint: the gateway token never reaches anvil's argv), starts
 //! anvil as a child in its own process group, funds the chain's signer
 //! ([`fund`]), and registers `forks/<name>.json` once anvil answers. It
 //! then waits; Ctrl-C, SIGTERM, `chainz fork stop` or anvil exiting ends
