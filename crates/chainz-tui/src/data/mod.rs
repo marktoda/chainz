@@ -5,7 +5,8 @@
 //!
 //! Traffic budget, per the design: one head request per chain per tick
 //! (paced by block time), one balance request per chain every 30 s, and
-//! probes only for the chain whose endpoints are on screen.
+//! probes only for the chain whose endpoints are on screen, and only while
+//! someone is pressing keys.
 
 pub mod abi;
 mod balances;
@@ -30,8 +31,6 @@ use tokio::task::{JoinHandle, JoinSet};
 use crate::gateway::GatewayLink;
 use crate::model::{Fault, GatewayInfo, Probe, Update, now_ms};
 use crate::plan::{ChainPlan, Plan};
-
-pub use heads::{BlockClock, pace};
 
 /// Every interval and deadline the workers use; tests shrink them.
 #[derive(Debug, Clone)]
@@ -96,6 +95,9 @@ pub struct Shared {
     gateway: RwLock<Option<ServeInfo>>,
     /// Chain ID → whether Multicall3 has code there (once known).
     multicall: Mutex<HashMap<u64, bool>>,
+    /// Chain ID → its block clock and look-back tries left, so a restarted
+    /// poller keeps what an earlier one measured.
+    learned: Mutex<HashMap<u64, (heads::BlockClock, u8)>>,
     /// No key for `idle_after`: head pollers slow to the ceiling.
     idle: std::sync::atomic::AtomicBool,
 }
@@ -124,6 +126,7 @@ impl Shared {
             tuning,
             updates,
             multicall: Mutex::new(HashMap::new()),
+            learned: Mutex::new(HashMap::new()),
             idle: std::sync::atomic::AtomicBool::new(false),
         };
         shared.detect_gateway();
@@ -182,6 +185,10 @@ impl Shared {
         changed
     }
 
+    fn lock_learned(&self) -> std::sync::MutexGuard<'_, HashMap<u64, (heads::BlockClock, u8)>> {
+        self.learned.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn send(&self, update: Update) {
         // The receiver is gone only while the UI is shutting down.
         let _ = self.updates.send(update);
@@ -191,10 +198,7 @@ impl Shared {
     /// dashboard's polling shows in its inspector), else the chain's active
     /// endpoint. The flag says which.
     fn route(&self, chain: &ChainPlan) -> (Result<Target, Fault>, bool) {
-        let invalid = |message: String| Fault {
-            class: ErrorClass::Invalid,
-            message,
-        };
+        let invalid = |message: String| Fault::new(ErrorClass::Invalid, message);
         let Some(active) = chain.active_endpoint() else {
             return (Err(invalid("no active endpoint".into())), false);
         };
@@ -231,10 +235,16 @@ pub enum Refresh {
     Traffic,
 }
 
-/// The running workers for one [`Plan`]. Dropping it stops them.
+/// The running workers. Dropping it stops them.
 #[derive(Debug)]
 pub struct Engine {
+    handle: Handle,
+    shared: Arc<Shared>,
+    /// Each chain's head poller, by name, with the plan it polls.
+    pollers: HashMap<String, (ChainPlan, JoinHandle<()>)>,
+    /// The probe, balance and watch workers.
     tasks: Vec<JoinHandle<()>>,
+    plan: watch::Sender<Arc<Plan>>,
     focus: watch::Sender<Option<String>>,
     signals: Arc<Signals>,
 }
@@ -244,30 +254,59 @@ impl Engine {
     pub fn start(handle: &Handle, shared: &Arc<Shared>, plan: &Arc<Plan>) -> Self {
         let signals = Arc::new(Signals::default());
         let (focus, focus_rx) = watch::channel(None);
-        let mut tasks = Vec::with_capacity(plan.chains.len() + 3);
-        let slots = provider_slots(plan);
-        for (chain, slot) in plan.chains.iter().zip(&slots) {
-            let poller = heads::Poller::patient(shared.clone(), chain.clone());
-            let delay = shared.tuning.stagger * *slot;
-            tasks.push(handle.spawn(poller.run(delay, signals.clone())));
-        }
-        tasks.push(handle.spawn(probe_loop(
-            shared.clone(),
-            plan.clone(),
-            focus_rx,
-            signals.clone(),
-        )));
-        tasks.push(handle.spawn(balances::run(
-            shared.clone(),
-            plan.clone(),
-            slots,
-            signals.clone(),
-        )));
-        tasks.push(handle.spawn(watch_loop(shared.clone(), signals.clone())));
-        Engine {
+        let (plan_tx, plan_rx) = watch::channel(plan.clone());
+        let tasks = vec![
+            handle.spawn(probe_loop(
+                shared.clone(),
+                plan_rx.clone(),
+                focus_rx,
+                signals.clone(),
+            )),
+            handle.spawn(balances::run(shared.clone(), plan_rx, signals.clone())),
+            handle.spawn(watch_loop(shared.clone(), signals.clone())),
+        ];
+        let mut engine = Engine {
+            handle: handle.clone(),
+            shared: shared.clone(),
+            pollers: HashMap::new(),
             tasks,
+            plan: plan_tx,
             focus,
             signals,
+        };
+        engine.start_pollers(plan);
+        engine
+    }
+
+    /// Move the workers to a new plan (a config change, `s`). Only what
+    /// changed restarts: a chain whose active endpoint is the same keeps
+    /// its poller and its schedule, and balances are read again only for
+    /// chains that are new or read from somewhere else.
+    pub fn replan(&mut self, plan: &Arc<Plan>) {
+        self.start_pollers(plan);
+        self.plan.send_replace(plan.clone());
+    }
+
+    /// Keep the pollers whose chain reads from the same place, stop the
+    /// rest, and start what is missing (staggered per provider).
+    fn start_pollers(&mut self, plan: &Arc<Plan>) {
+        let mut running = std::mem::take(&mut self.pollers);
+        for (chain, slot) in plan.chains.iter().zip(provider_slots(plan)) {
+            if let Some((old, task)) = running.remove(&chain.name) {
+                if same_source(&old, chain) {
+                    self.pollers.insert(chain.name.clone(), (old, task));
+                    continue;
+                }
+                task.abort();
+            }
+            let poller = heads::Poller::patient(self.shared.clone(), chain.clone());
+            let offset = self.shared.tuning.stagger * slot;
+            let task = self.handle.spawn(poller.run(offset, self.signals.clone()));
+            self.pollers
+                .insert(chain.name.clone(), (chain.clone(), task));
+        }
+        for (_, task) in running.into_values() {
+            task.abort();
         }
     }
 
@@ -293,10 +332,30 @@ impl Engine {
 
 impl Drop for Engine {
     fn drop(&mut self) {
-        for task in &self.tasks {
+        let pollers = self.pollers.values().map(|(_, task)| task);
+        for task in self.tasks.iter().chain(pollers) {
             task.abort();
         }
     }
+}
+
+/// Whether two plans of a chain read it the same way: same name, ID and
+/// active endpoint (URL and headers as resolved). A poller or a balance
+/// read for one is good for the other.
+fn same_source(a: &ChainPlan, b: &ChainPlan) -> bool {
+    let same_target = match (a.active_endpoint(), b.active_endpoint()) {
+        (None, None) => true,
+        (Some(a), Some(b)) => {
+            a.websocket == b.websocket
+                && match (&a.target, &b.target) {
+                    (Ok(a), Ok(b)) => a.url() == b.url() && a.headers() == b.headers(),
+                    (Err(a), Err(b)) => a == b,
+                    _ => false,
+                }
+        }
+        _ => false,
+    };
+    a.name == b.name && a.id == b.id && same_target
 }
 
 /// For each chain, how many earlier chains use the same provider (the
@@ -331,13 +390,12 @@ fn provider_slots(plan: &Plan) -> Vec<u32> {
 /// How often `--once` retries a rate-limited request.
 const ONCE_RETRIES: u32 = 2;
 
-/// A 429, or the JSON-RPC "limit exceeded" some providers send instead.
+/// A 429, or the JSON-RPC "limit exceeded" (-32005) some providers send
+/// instead.
 fn rate_limited(fault: &Fault) -> bool {
     fault.class == ErrorClass::RateLimited
         || (fault.class == ErrorClass::Rpc
-            && fault
-                .message
-                .contains(&chainz_rpc::upstream::LIMIT_EXCEEDED.to_string()))
+            && fault.code == Some(chainz_rpc::upstream::LIMIT_EXCEEDED))
 }
 
 /// One round of everything `--once` reports: every chain's head and
@@ -346,17 +404,17 @@ pub async fn collect_once(shared: &Arc<Shared>, plan: &Plan) -> Vec<Update> {
     let mut updates = Vec::new();
     if let Some(info) = shared.gateway() {
         updates.push(Update::Gateway(Some(info)));
-        updates.push(Update::Traffic(
-            shared.link().snapshot().await.map_err(|e| e.to_string()),
-        ));
+        updates.push(Update::Traffic(traffic_snapshot(shared).await));
     }
     let holders = Arc::new(plan.holders());
     let mut set = JoinSet::new();
+    let mut names = HashMap::new();
     for (chain, slot) in plan.chains.iter().zip(provider_slots(plan)) {
         let (shared, chain, holders) = (shared.clone(), chain.clone(), holders.clone());
+        let name = chain.name.clone();
         // Per chain the requests go one after another, and chains on one
         // provider start a beat apart.
-        set.spawn(async move {
+        let task = set.spawn(async move {
             tokio::time::sleep(shared.tuning.stagger * slot).await;
             let mut poller = heads::Poller::new(shared.clone(), chain.clone());
             let mut head = poller.step().await;
@@ -395,27 +453,66 @@ pub async fn collect_once(shared: &Arc<Shared>, plan: &Plan) -> Vec<Update> {
             }
             updates
         });
+        names.insert(task.id(), name);
     }
-    while let Some(Ok(chain_updates)) = set.join_next().await {
-        updates.extend(chain_updates);
+    updates.extend(gather(set, &names).await);
+    updates
+}
+
+/// Every chain's updates from `set`. A chain whose task died is reported
+/// as a failed head, and the other chains' results are kept.
+async fn gather(
+    mut set: JoinSet<Vec<Update>>,
+    names: &HashMap<tokio::task::Id, String>,
+) -> Vec<Update> {
+    let mut updates = Vec::new();
+    while let Some(joined) = set.join_next().await {
+        match joined {
+            Ok(chain_updates) => updates.extend(chain_updates),
+            Err(error) => {
+                let Some(chain) = names.get(&error.id()) else {
+                    continue;
+                };
+                let fault = Fault::new(ErrorClass::Invalid, format!("internal error: {error}"));
+                updates.push(Update::Head {
+                    chain: chain.clone(),
+                    at_ms: now_ms(),
+                    via_gateway: false,
+                    result: Err(fault),
+                    block_time: None,
+                });
+            }
+        }
     }
     updates
 }
 
+/// The gateway's status and metrics, within `request_timeout`: a wedged
+/// control socket is an error, not a hang.
+async fn traffic_snapshot(shared: &Shared) -> Result<crate::model::TrafficSnapshot, String> {
+    tokio::time::timeout(shared.tuning.request_timeout, shared.link().snapshot())
+        .await
+        .unwrap_or_else(|_| Err(std::io::ErrorKind::TimedOut.into()))
+        .map_err(|e| e.to_string())
+}
+
 /// Probe the focused chain's endpoints every `probe_every`, and at once
 /// when the focus moves to a chain whose last probe is older than that.
+/// While the dashboard is idle, rounds are skipped.
 async fn probe_loop(
     shared: Arc<Shared>,
-    plan: Arc<Plan>,
+    mut plan: watch::Receiver<Arc<Plan>>,
     mut focus: watch::Receiver<Option<String>>,
     signals: Arc<Signals>,
 ) {
     let mut last: HashMap<String, Instant> = HashMap::new();
     loop {
+        let current = plan.borrow_and_update().clone();
         let focused = focus.borrow_and_update().clone();
-        let Some(chain) = focused.as_deref().and_then(|name| plan.chain(name)) else {
-            if focus.changed().await.is_err() {
-                return;
+        let Some(chain) = focused.as_deref().and_then(|name| current.chain(name)) else {
+            tokio::select! {
+                changed = focus.changed() => if changed.is_err() { return },
+                changed = plan.changed() => if changed.is_err() { return },
             }
             continue;
         };
@@ -424,10 +521,19 @@ async fn probe_loop(
         });
         tokio::select! {
             () = tokio::time::sleep(wait) => {
-                probe_chain(&shared, chain).await;
+                // Nobody is watching: skip the round, and look again an
+                // interval later. A key press makes the next one count.
+                if !shared.idle() {
+                    probe_chain(&shared, chain).await;
+                }
                 last.insert(chain.name.clone(), Instant::now());
             }
             changed = focus.changed() => {
+                if changed.is_err() {
+                    return;
+                }
+            }
+            changed = plan.changed() => {
                 if changed.is_err() {
                     return;
                 }
@@ -504,10 +610,7 @@ async fn watch_loop(shared: Arc<Shared>, signals: Arc<Signals>) {
         let running = shared.gateway().is_some();
         if running {
             let link = shared.link();
-            let snapshot = tokio::time::timeout(shared.tuning.request_timeout, link.snapshot())
-                .await
-                .unwrap_or_else(|_| Err(std::io::ErrorKind::TimedOut.into()));
-            shared.send(Update::Traffic(snapshot.map_err(|e| e.to_string())));
+            shared.send(Update::Traffic(traffic_snapshot(&shared).await));
             // Reap a closed stream, then (re)subscribe.
             while feed.try_join_next().is_some() {}
             if feed.is_empty() {

@@ -133,10 +133,6 @@ fn mock_rpc() -> (String, Seen) {
     let url = format!("http://{}", listener.local_addr().unwrap());
     let seen: Seen = Arc::default();
     let log = seen.clone();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
@@ -161,6 +157,11 @@ fn mock_rpc() -> (String, Seen) {
             let path = request_line.split_whitespace().nth(1).unwrap().to_string();
             let result = match method.as_str() {
                 "eth_getBlockByNumber" => {
+                    // The head is always fresh: its time is the request's.
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs();
                     let tag = request["params"][0].as_str().unwrap();
                     let number = match tag {
                         "latest" => 1_000,
@@ -259,7 +260,7 @@ fn once_json_prints_one_snapshot() {
     assert_eq!(on_live["via"], "multicall3");
     assert_eq!(
         on_live["native"],
-        json!({"symbol": "ETH", "decimals": 18, "raw": "1500000000000000000", "formatted": "1.5"})
+        json!({"symbol": "ETH", "decimals": 18, "raw": "1500000000000000000", "formatted": "1.5", "saturated": false})
     );
     let token = |name: &str| {
         let tokens = on_live["tokens"].as_array().unwrap();
@@ -339,10 +340,17 @@ fn once_without_json_prints_the_tables() {
             "CHAIN", "ID", "HEAD", "AGE", "BLOCK", "BASE", "FEE", "RPC", "P50", "HEALTH", "STATUS"
         ]
     );
-    assert_eq!(
-        cells(lines[2])[..8],
-        ["live", "1", "1,000", "0s", "12.0s", "1.00", "gwei", "main"]
+    let live = cells(lines[2]);
+    // The age is a second or two at most, depending on where the second
+    // boundaries fall; its shape is what matters.
+    let age = &live[3];
+    assert!(
+        age.strip_suffix('s')
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())),
+        "AGE {age}"
     );
+    assert_eq!(live[..3], ["live", "1", "1,000"]);
+    assert_eq!(live[4..8], ["12.0s", "1.00", "gwei", "main"]);
     assert!(
         lines[2].ends_with("ok") && lines[3].ends_with("down connect"),
         "{stdout}"

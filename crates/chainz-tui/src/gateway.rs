@@ -1,20 +1,7 @@
-//! The only module that touches the gateway's control protocol
-//! (`chainz_rpc::control`), which is provisional and owned by the Gateway
-//! stream. Everything else in this crate sees the plain types in
-//! [`crate::model`], so a protocol change lands here and nowhere else.
-//!
-//! What the dashboard depends on:
-//!
-//! - `ControlClient::new(socket)`, `status()`, `metrics()`,
-//!   `events_with(EventsOptions { backlog, follow })`, `reload()`;
-//! - `Status { version, port, uptime_secs, chains }` and
-//!   `ChainStatus { chain, active, head }`;
-//! - `MetricsSnapshot { windows }`, `MetricsWindow { window_secs, rows }`,
-//!   `MetricsRow { chain, endpoint, method, requests, errors, p50_ms,
-//!   p95_ms, rate_limited, failovers, bytes }`;
-//! - `RequestRecord { id, at_ms, chain, method, params_summary, upstream,
-//!   attempts, latency_ms, status, response_bytes }` and
-//!   `RecordStatus::{Ok, Error { class, code }}`.
+//! The only module that touches the control protocol
+//! (`chainz_rpc::control`). Everything else in this crate sees the plain
+//! types in [`crate::model`], so a protocol change lands here and nowhere
+//! else.
 
 use std::collections::BTreeMap;
 use std::io;
@@ -93,7 +80,6 @@ fn feed_item(record: RequestRecord) -> FeedItem {
             RecordStatus::Ok => None,
             RecordStatus::Error { class, code } => Some((class, code)),
         },
-        bytes: record.response_bytes,
     }
 }
 
@@ -340,7 +326,7 @@ mod tests {
 
     #[tokio::test]
     async fn reads_status_metrics_events_and_reloads_over_the_socket() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::data::testing::short_tempdir();
         let socket = dir.path().join("serve.sock");
         let server = MockControlServer::start(&socket, status(), metrics())
             .await
@@ -358,7 +344,9 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!((replayed.id, replayed.method.as_str()), (6, "eth_gasPrice"));
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while server.event_subscribers() == 0 {
+            assert!(std::time::Instant::now() < deadline, "no events subscriber");
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         server.push_event(record(7, 1_000, "eth_call", "@usdc.balanceOf(@wallet)"));
@@ -372,7 +360,10 @@ mod tests {
             (7, "@usdc.balanceOf(@wallet)")
         );
         assert_eq!(first.error, None);
-        let second = events.next().await.unwrap();
+        let second = tokio::time::timeout(Duration::from_secs(5), events.next())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(
             second.error,
             Some((chainz_rpc::ErrorClass::RateLimited, None))

@@ -2,14 +2,14 @@
 //!
 //! Layers, each ignorant of the ones after it:
 //!
-//! - [`plan`]: the config resolved into owned, thread-safe targets;
-//! - [`data`]: background workers that poll, probe and read balances;
-//! - [`gateway`]: the one adapter over the provisional control protocol;
-//! - [`model`]: the state the workers' updates fold into, and its
+//! - `plan`: the config resolved into owned, thread-safe targets;
+//! - `data`: background workers that poll, probe and read balances;
+//! - `gateway`: the one adapter over the control protocol;
+//! - `model`: the state the workers' updates fold into, and its
 //!   classification rules;
-//! - [`app`]: selection, tabs and key bindings;
-//! - [`ui`]: pure rendering of (app, state, clock) into a buffer;
-//! - [`snapshot`]: the `--once --json` document;
+//! - `app`: selection, tabs and key bindings;
+//! - `ui`: pure rendering of (app, state, clock) into a buffer;
+//! - `snapshot`: the `--once --json` document;
 //! - `term`: the terminal and the event loop.
 //!
 //! The UI thread never touches the network: it reads keys, folds updates
@@ -17,15 +17,15 @@
 
 #![warn(missing_docs)]
 
-pub mod app;
-pub mod data;
-pub mod fmt;
-pub mod gateway;
-pub mod model;
-pub mod plan;
-pub mod snapshot;
+pub(crate) mod app;
+pub(crate) mod data;
+pub(crate) mod fmt;
+pub(crate) mod gateway;
+pub(crate) mod model;
+pub(crate) mod plan;
+pub(crate) mod snapshot;
 mod term;
-pub mod ui;
+pub(crate) mod ui;
 
 use std::io::IsTerminal;
 use std::sync::Arc;
@@ -41,7 +41,9 @@ use crate::model::{State, now_ms};
 use crate::plan::Plan;
 use crate::ui::theme::Theme;
 
-/// Runs `chainz shell <chain>` for the `e` key and returns when it exits.
+/// Runs `chainz shell <chain>` for the `e` key and returns when it exits:
+/// an error, including a shell that did not exit cleanly, is shown in the
+/// dashboard's footer.
 pub type ShellFn = Box<dyn FnMut(&str) -> std::io::Result<()>>;
 
 /// How `chainz top` was invoked.

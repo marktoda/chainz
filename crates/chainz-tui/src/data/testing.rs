@@ -23,6 +23,8 @@ pub(crate) enum Reply {
     Json(Value),
     /// A bare HTTP status.
     Status(u16),
+    /// HTTP 429 with `Retry-After` in seconds.
+    RateLimited(u64),
 }
 
 /// One request the mock received.
@@ -119,6 +121,9 @@ impl MockRpc {
                         }
                         Reply::Status(code) => format!(
                             "HTTP/1.1 {code} Mock\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                        ),
+                        Reply::RateLimited(secs) => format!(
+                            "HTTP/1.1 429 Mock\r\nretry-after: {secs}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
                         ),
                     };
                     let _ = stream.write_all(response.as_bytes()).await;
@@ -317,6 +322,30 @@ pub(crate) fn shared(dir: &Path, tuning: Tuning) -> (Arc<Shared>, Receiver<Updat
         sender,
     );
     (shared, receiver)
+}
+
+/// A temp dir directly under `/tmp`. A unix socket path must fit in
+/// `sun_path` (108 bytes on Linux, 104 on macOS), and `$TMPDIR` can be
+/// long enough on its own (nix shells, macOS) to push one past it.
+pub(crate) fn short_tempdir() -> tempfile::TempDir {
+    let dir = tempfile::tempdir_in("/tmp").unwrap();
+    let longest = dir.path().join("runtime/serve.sock");
+    let len = longest.as_os_str().len();
+    assert!(
+        len < 100,
+        "socket path {} is {len} bytes, past the unix socket limit",
+        longest.display()
+    );
+    dir
+}
+
+/// Wait (up to ten seconds) until `done` holds.
+pub(crate) async fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !done() {
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 
 /// Wait (up to five seconds) for an update that `pick` accepts.

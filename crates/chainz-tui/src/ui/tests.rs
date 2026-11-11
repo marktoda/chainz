@@ -70,10 +70,7 @@ fn probe(ms: u32, head: Option<u64>, error: Option<(ErrorClass, &str)>) -> Probe
     Probe {
         latency_ms: ms,
         head,
-        error: error.map(|(class, message)| Fault {
-            class,
-            message: message.into(),
-        }),
+        error: error.map(|(class, message)| Fault::new(class, message)),
     }
 }
 
@@ -136,10 +133,7 @@ fn fixture() -> State {
             chain: "arb".into(),
             at_ms: NOW,
             via_gateway: false,
-            result: Err(Fault {
-                class: ErrorClass::Timeout,
-                message: "request timed out".into(),
-            }),
+            result: Err(Fault::new(ErrorClass::Timeout, "request timed out")),
             block_time: None,
         },
         // polygon: not polled yet.
@@ -181,10 +175,7 @@ fn fixture() -> State {
         Update::Balances {
             chain: "arb".into(),
             at_ms: NOW - 2_000,
-            result: Err(Fault {
-                class: ErrorClass::Timeout,
-                message: "request timed out".into(),
-            }),
+            result: Err(Fault::new(ErrorClass::Timeout, "request timed out")),
         },
     ];
     for update in updates {
