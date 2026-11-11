@@ -120,6 +120,11 @@ jobs:
       - name: Run perf gate
         run: scripts/perf-gate.sh v1/target/release/chainz target/release/chainz
 
+      # Exits 1 when the gateway adds 1 ms or more to the p50 round trip
+      # (measured: under 0.1 ms).
+      - name: Gateway latency budget
+        run: cargo run --release --locked -p chainz-serve --example latency
+
   package:
     name: Package
     runs-on: ubuntu-latest

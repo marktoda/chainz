@@ -1,12 +1,8 @@
-# Chainz v2: frozen interfaces (Phase 0)
+# Chainz v2: crate contracts
 
-The four streams (Gateway, Dashboard, Address book, Forks) build on these.
-Don't change a frozen signature without agreeing it across streams first.
-The rustdoc on each item is the reference. This page is the map.
-
-Status: **frozen** means streams depend on it as written. **Provisional**
-means the Gateway stream owns it and may change it, as long as it updates
-the mock and the Dashboard stream at the same time.
+The seams between the crates: what each one offers the others. The rustdoc
+on each item is the reference; this page is the map. Changing one of these
+means changing every caller in the same commit.
 
 ## Crate layout
 
@@ -15,14 +11,14 @@ the mock and the Dashboard stream at the same time.
 | `chainz-core` | config, secrets, migration, resolver, tokenizer, context, labels, runtime registry | none (sync; no tokio, reqwest or hyper) |
 | `chainz-rpc` | JSON-RPC client, probes, ranking, health history, `Upstream`, control protocol, chainlist | tokio + reqwest (rustls) |
 | `chainz-serve` | gateway: `run(Options)`, embeddable `Gateway::start(GatewayConfig)` | hyper 1 + tokio (multi-thread) |
-| `chainz-tui` | dashboard (stub) | Dashboard stream adds ratatui |
+| `chainz-tui` | the `top` dashboard | ratatui + tokio |
 | `chainz` (bin) | clap surface, handlers, pickers, output | builds a current-thread runtime only for network commands (`net::block_on`) |
 
 `chainz-rpc` does not depend on `chainz-core`. The bin bridges the two with
 `net::target(chainz, chain_name, chain, endpoint_name, endpoint) -> Result<Target>`,
 which expands `${VAR}`s.
 
-## Runtime registry (`chainz_core::runtime`), frozen
+## Runtime registry (`chainz_core::runtime`)
 
 The directory is `$XDG_RUNTIME_DIR/chainz`. Without `XDG_RUNTIME_DIR` (macOS)
 it falls back to the state dir, `$XDG_STATE_HOME/chainz`. The directory is
@@ -63,17 +59,16 @@ impl ForkRecord { pub fn rpc_url(&self) -> String } // http://127.0.0.1:<port>
 **Exec seam.** `context::build` calls `runtime.gateway_url(chain, endpoint)`
 unless `--direct` is set, the chain is a fork, or the endpoint is a websocket.
 The seam returns `Some` only while `serve.lock` is held and `serve.json` is
-present. The Gateway stream needs no exec changes: hold the lock, write
-`serve.json`, and serve `/<token>/<chain>[/<endpoint>]`. `ServeInfo`'s `Debug`
-redacts `token`.
+present. The gateway holds the lock, writes `serve.json`, and serves
+`/<token>/<chain>[/<endpoint>]`. `ServeInfo`'s `Debug` redacts `token`.
 
 **Forks.** The resolver checks configured chains first, then
 `forks/<name>.json`. Live forks resolve as `ChainRef::Fork(ForkRecord)`, and
 their context points at anvil with no explorer and no `ETH_KEYSTORE`. A fork
-can't be named `ls` or `stop` (`names::RESERVED_FORK_NAMES`). The Forks stream
-writes and removes records, and must remove stale ones (dead pid).
+can't be named `ls` or `stop` (`names::RESERVED_FORK_NAMES`). `fork` writes
+and removes records, and removes stale ones (dead pid).
 
-## Labels (`chainz_core::labels`), frozen
+## Labels (`chainz_core::labels`)
 
 ```rust
 pub const TOKENS_TOML: &str;                 // include_str!("tokens.toml")
@@ -104,9 +99,9 @@ Precedence is: user label for the chain, then user `"*"`, then signer, then
 built-in token. In config, `[addresses]` is `label -> chain name | "*" ->
 address`. For example, `[addresses.myrouter]` with `base = "0x…"`. Label
 names follow `names::is_valid_label_name` and can't use a `CONTEXT_TOKENS`
-name. The Address book stream owns `addr …`, `label`, and `doctor --tokens`.
+name.
 
-Added by the Address book stream (additive; `LabelIndex` is unchanged):
+The address book (`addr …`, `label`, `doctor --tokens`) is built on:
 
 ```rust
 // chainz_core::edit, inside `transact`
@@ -132,7 +127,7 @@ impl Labeler {
 `Labeler::name` skips a built-in token that a user label shadows on that
 chain, so a name it returns always resolves back to the same address.
 
-## Upstream (`chainz_rpc::upstream`), frozen
+## Upstream (`chainz_rpc::upstream`)
 
 ```rust
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -156,8 +151,45 @@ pub const LIMIT_EXCEEDED: i64 = -32005;
 the gateway's job. `Target::new(chain_id, name, url, &[(String, String)])`
 holds the expanded URL and headers, and its `Debug` redacts them.
 `Retry-After` is clamped to `chainz_rpc::client::MAX_RETRY_AFTER` (60 s).
+`RpcClient` never follows a redirect: a 3xx is `RpcError::Http(status)`, so
+a target's headers never reach another host.
 
-## Control protocol (`chainz_rpc::control`, unix only), provisional
+## Loopback auth (`chainz_serve::auth`)
+
+For any local server that hands a child process a tokenised
+`http://127.0.0.1:<port>/<token>…` URL (the gateway; the fork proxy).
+
+```rust
+pub const TOKEN_BYTES: usize = 32;                         // 256 bits
+pub fn new_token() -> String;                              // 64 lowercase hex digits
+pub fn token_matches(given: &str, expected: &str) -> bool; // constant-time
+pub fn host_allowed(host: Option<&str>, port: u16) -> bool;
+```
+
+`host_allowed` accepts `127.0.0.1` or `localhost` (any case), with `port` or
+no port, and nothing else: not `[::1]` (the servers listen on IPv4 only), and
+not a missing `Host`.
+
+`chainz_serve::PinnedProxy` is a single-endpoint server built on these
+checks, for a fork's `--fork-url`: every body goes to one `Target` through an
+`Upstream` under the given `RetryPolicy`, never anywhere else.
+
+```rust
+impl PinnedProxy {
+    pub async fn start(upstream: Arc<dyn Upstream>, target: Target, policy: RetryPolicy)
+        -> io::Result<PinnedProxy>;      // binds 127.0.0.1:0
+    pub fn url(&self) -> String;         // http://127.0.0.1:<port>/<token>
+    pub fn port(&self) -> u16;
+    pub async fn shutdown(self);         // drains up to 5 s; dropping stops at once
+}
+```
+
+It accepts only `POST` with `application/json` to `/<token>` (a trailing `/`
+is allowed) from a loopback `Host`, and answers 403/405/415 otherwise. An
+upstream failure is an HTTP error (429 with `Retry-After`, 504, or 502) with a
+JSON-RPC error body that never names the URL.
+
+## Control protocol (`chainz_rpc::control`, unix only)
 
 The control protocol is HTTP/1.1 over `serve.sock`, mode 0600:
 
@@ -170,31 +202,43 @@ The control protocol is HTTP/1.1 over `serve.sock`, mode 0600:
 
 The client is `ControlClient::new(socket)` with async `status()`,
 `metrics()`, `events() -> mpsc::Receiver<RequestRecord>`,
-`events_with(EventsOptions { backlog, follow })`, and `reload()`.
+`events_with(EventsOptions { backlog, follow })`, and `reload()`. Each call
+gives up after `CONTROL_TIMEOUT` (5 s; `.with_timeout(d)` changes it), so a
+wedged gateway can't hang `serve status` or the dashboard; only the body of
+an events stream is open-ended. `RequestRecord` never holds params, URLs, or
+bodies. `params_summary` is already redacted.
+
+`EventRing` is the buffer behind `/_chainz/events`: the last
+`EVENTS_BUFFER` records plus a live broadcast, with `push` (as given),
+`push_numbered` (assigns IDs 1, 2, …) and `subscribe(EventsOptions)`. The
+gateway's inspector and the mock share it.
+
+With the `mock` cargo feature (enable it in `[dev-dependencies]`),
 `MockControlServer::start(path, status, metrics).await` provides
 `push_event`, `set_status`, `set_metrics`, `reload_count`, and
-`event_subscribers`. The Dashboard stream builds against the mock.
-`RequestRecord` never holds params, URLs, or bodies. `params_summary` is
-already redacted. The mock keeps pushed events for `backlog`, like the
-gateway.
+`event_subscribers`, and keeps pushed events for `backlog` like the gateway.
+The dashboard's tests run against it.
 
 What the real gateway puts in these types:
 
 - `MetricsRow` counts upstream **attempts** per (chain, endpoint, method), so
   a request that failed over shows on both endpoints. `failovers` counts
-  requests that moved on *from* that endpoint. A batch is one attempt under
-  the method `batch(n)`. Windows are 60 s and 900 s.
+  requests that moved on *from* that endpoint. `rate_limited` counts 429s
+  plus requests the endpoint's own bucket turned away unsent (those are not
+  in `requests`). A batch is one attempt under the method `batch(n)`.
+  Windows are 60 s and 900 s.
 - `RequestRecord` is one per client request. `upstream` is the endpoint that
   answered (or failed last), `attempts` spans endpoints, and a JSON-RPC
   error in a single response is `Error { class: Rpc, code }`.
-- `ChainStatus.head` is the head high-water mark. It is `None` for a chain
-  with no `failover` list: only failover pools are probed.
+- `ChainStatus.head` is the head high-water mark: the best head over the
+  last three probe rounds. It is `None` for a chain with no `failover`
+  list: only failover pools are probed.
 
 `SocketPath::new(path)` gives a bindable/connectable path for sockets deeper
 than `sockaddr_un` allows (Linux: via `/proc/self/fd`). The client, the mock
 and the gateway all use it.
 
-## Other stable seams
+## Other seams
 
 - Config: `Chainz::open()` gives lock-free reads and auto-migrates v1 under
   the lock. `chainz.transact(|tx| { … })` holds the lock while it parses both
@@ -214,12 +258,12 @@ and the gateway all use it.
 
 ## Bin crate: adding a command handler
 
-1. The clap surface in `crates/chainz/src/cli.rs` is complete, including the
-   stream commands. Keep its flags and add new ones only for your own command.
-2. (Done: every stub is replaced and `commands/stubs.rs` is gone.) Replace your stub in `commands/stubs.rs` with a module, for example
-   `commands/serve.rs` with `pub fn run(...) -> anyhow::Result<i32>`. Then
-   change the route in `commands::dispatch`. The return value is the exit
-   code. An `Err` prints `Error: …` and exits 1. `ui::cancelled()` exits 130.
+1. The clap surface lives in `crates/chainz/src/cli.rs`. Add flags only for
+   your own command.
+2. Put the handler in a module, for example `commands/serve.rs` with
+   `pub fn run(...) -> anyhow::Result<i32>`, and route it in
+   `commands::dispatch`. The return value is the exit code. An `Err` prints
+   `Error: …` and exits 1. `ui::cancelled()` exits 130.
 3. Network work goes through `net::block_on(async { … })`, which creates a
    current-thread tokio runtime. A long-running server (`serve`, `top`) can
    build a multi-threaded runtime in its own crate. `exec`, `env`, `ls`, and
