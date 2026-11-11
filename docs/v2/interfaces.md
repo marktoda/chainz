@@ -14,7 +14,7 @@ the mock and the Dashboard stream at the same time.
 |---|---|---|
 | `chainz-core` | config, secrets, migration, resolver, tokenizer, context, labels, runtime registry | none (sync; no tokio, reqwest or hyper) |
 | `chainz-rpc` | JSON-RPC client, probes, ranking, health history, `Upstream`, control protocol, chainlist | tokio + reqwest (rustls) |
-| `chainz-serve` | gateway (stub: `run()` bails) | Gateway stream adds hyper |
+| `chainz-serve` | gateway: `run(Options)`, embeddable `Gateway::start(GatewayConfig)` | hyper 1 + tokio (multi-thread) |
 | `chainz-tui` | dashboard (stub) | Dashboard stream adds ratatui |
 | `chainz` (bin) | clap surface, handlers, pickers, output | builds a current-thread runtime only for network commands (`net::block_on`) |
 
@@ -165,16 +165,34 @@ The control protocol is HTTP/1.1 over `serve.sock`, mode 0600:
 |---|---|---|
 | `/_chainz/status` | GET | `Status { version, pid, port, uptime_secs, chains: Vec<ChainStatus { chain, chain_id, active, failover, head }> }` |
 | `/_chainz/metrics` | GET | `MetricsSnapshot { at_ms, windows: Vec<MetricsWindow { window_secs, rows: Vec<MetricsRow { chain, endpoint, method, requests, errors: BTreeMap<ErrorClass,u64>, p50_ms, p95_ms, rate_limited, failovers, bytes }> }> }` |
-| `/_chainz/events` | GET | NDJSON stream of `RequestRecord { id, at_ms, chain, method, params_summary, upstream, attempts, latency_ms, status: RecordStatus::{Ok, Error{class, code}}, response_bytes }` |
-| `/_chainz/reload` | POST | empty → 204 |
+| `/_chainz/events[?backlog=N][&follow=false]` | GET | NDJSON stream of `RequestRecord { id, at_ms, chain, method, params_summary, upstream, attempts, latency_ms, status: RecordStatus::{Ok, Error{class, code}}, response_bytes }`. First the last `N` buffered records (default 0; the gateway keeps `EVENTS_BUFFER` = 10,000), oldest first, then live records. `follow=false` ends the stream after the backlog. |
+| `/_chainz/reload` | POST | empty → 204; 500 when the new config is invalid (the old one stays in force) |
 
 The client is `ControlClient::new(socket)` with async `status()`,
-`metrics()`, `events() -> mpsc::Receiver<RequestRecord>`, and `reload()`.
+`metrics()`, `events() -> mpsc::Receiver<RequestRecord>`,
+`events_with(EventsOptions { backlog, follow })`, and `reload()`.
 `MockControlServer::start(path, status, metrics).await` provides
 `push_event`, `set_status`, `set_metrics`, `reload_count`, and
 `event_subscribers`. The Dashboard stream builds against the mock.
 `RequestRecord` never holds params, URLs, or bodies. `params_summary` is
-already redacted.
+already redacted. The mock keeps pushed events for `backlog`, like the
+gateway.
+
+What the real gateway puts in these types:
+
+- `MetricsRow` counts upstream **attempts** per (chain, endpoint, method), so
+  a request that failed over shows on both endpoints. `failovers` counts
+  requests that moved on *from* that endpoint. A batch is one attempt under
+  the method `batch(n)`. Windows are 60 s and 900 s.
+- `RequestRecord` is one per client request. `upstream` is the endpoint that
+  answered (or failed last), `attempts` spans endpoints, and a JSON-RPC
+  error in a single response is `Error { class: Rpc, code }`.
+- `ChainStatus.head` is the head high-water mark. It is `None` for a chain
+  with no `failover` list: only failover pools are probed.
+
+`SocketPath::new(path)` gives a bindable/connectable path for sockets deeper
+than `sockaddr_un` allows (Linux: via `/proc/self/fd`). The client, the mock
+and the gateway all use it.
 
 ## Other stable seams
 

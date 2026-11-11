@@ -12,6 +12,7 @@ mod doctor;
 mod exec;
 mod fork;
 mod rpc;
+mod serve;
 mod signer;
 mod stubs;
 mod tokens;
@@ -47,7 +48,7 @@ pub fn dispatch(opt: Opt) -> Result<i32> {
         Command::Use { chain, clear } => chain::use_default(chain, clear),
         Command::Ls(args) => chain::ls(&args),
         Command::Top { once, json, reveal } => stubs::top(once, json, reveal),
-        Command::Serve { cmd, args } => stubs::serve(cmd, args),
+        Command::Serve { cmd, args } => serve::run(cmd, args),
         Command::Fork { cmd, args } => fork::run(cmd, args),
         Command::Chain { cmd } => chain::run(cmd),
         Command::Rpc { cmd } => rpc::run(cmd),

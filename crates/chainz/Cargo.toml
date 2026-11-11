@@ -37,6 +37,7 @@ rand = "0.9"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+rustix = { version = "1", features = ["process"] }
 
 [dev-dependencies]
 assert_cmd = "2"

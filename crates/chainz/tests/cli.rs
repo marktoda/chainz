@@ -223,13 +223,11 @@ fn completions_generate_for_zsh_and_bash() {
 fn stream_commands_are_stubs() {
     let sb = Sandbox::new();
     sb.seed(&[("eth", 1)]);
-    for args in [vec!["serve"], vec!["serve", "status"], vec!["top"]] {
-        sb.cmd()
-            .args(&args)
-            .assert()
-            .failure()
-            .stderr(predicate::str::contains("not yet implemented"));
-    }
+    sb.cmd()
+        .arg("top")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not yet implemented"));
 }
 
 // ---------------------------------------------------------------- config files

@@ -9,7 +9,7 @@
 //! | --- | --- |
 //! | `GET /_chainz/status` | [`Status`] JSON |
 //! | `GET /_chainz/metrics` | [`MetricsSnapshot`] JSON |
-//! | `GET /_chainz/events` | `application/x-ndjson` stream of [`RequestRecord`], one per line, until either side closes |
+//! | `GET /_chainz/events[?backlog=N][&follow=false]` | `application/x-ndjson` stream of [`RequestRecord`], one per line: first the last `N` buffered records (default 0, oldest first), then live records until either side closes. With `follow=false` the stream ends after the backlog. |
 //! | `POST /_chainz/reload` | `204 No Content` |
 //! | anything else | `404 Not Found` |
 //!
@@ -38,6 +38,99 @@ pub const METRICS_PATH: &str = "/_chainz/metrics";
 pub const EVENTS_PATH: &str = "/_chainz/events";
 /// Path of the reload endpoint.
 pub const RELOAD_PATH: &str = "/_chainz/reload";
+
+/// Records the gateway (and the mock) keep for `backlog`.
+pub const EVENTS_BUFFER: usize = 10_000;
+
+/// What an events stream delivers. The default is live records only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EventsOptions {
+    /// Replay up to this many buffered records first, oldest first.
+    pub backlog: usize,
+    /// Keep streaming live records after the backlog.
+    pub follow: bool,
+}
+
+impl Default for EventsOptions {
+    fn default() -> Self {
+        EventsOptions {
+            backlog: 0,
+            follow: true,
+        }
+    }
+}
+
+impl EventsOptions {
+    /// The request path with its query string.
+    pub fn path(&self) -> String {
+        let mut path = EVENTS_PATH.to_string();
+        let mut sep = '?';
+        if self.backlog > 0 {
+            path.push_str(&format!("{sep}backlog={}", self.backlog));
+            sep = '&';
+        }
+        if !self.follow {
+            path.push_str(&format!("{sep}follow=false"));
+        }
+        path
+    }
+
+    /// Parse the query string of an events request (unknown keys ignored).
+    pub fn from_query(query: &str) -> Self {
+        let mut opts = EventsOptions::default();
+        for pair in query.split('&') {
+            match pair.split_once('=') {
+                Some(("backlog", v)) => opts.backlog = v.parse().unwrap_or(0),
+                Some(("follow", v)) => opts.follow = !matches!(v, "false" | "0"),
+                _ => {}
+            }
+        }
+        opts
+    }
+}
+
+/// A unix socket path short enough for `sockaddr_un` (about 107 bytes).
+///
+/// A path that fits is used as it is. A longer one (a deep
+/// `XDG_RUNTIME_DIR`, a sandboxed test directory) is reached on Linux
+/// through `/proc/self/fd/<dir>/<name>`, with the directory held open for
+/// as long as this value lives. Elsewhere the long path is passed through
+/// and the bind or connect reports the error.
+#[derive(Debug)]
+pub struct SocketPath {
+    path: PathBuf,
+    _dir: Option<std::fs::File>,
+}
+
+impl SocketPath {
+    /// Longest path used directly.
+    const MAX_DIRECT: usize = 100;
+
+    /// Resolve `path` for binding or connecting.
+    pub fn new(path: &Path) -> io::Result<Self> {
+        let direct = SocketPath {
+            path: path.to_path_buf(),
+            _dir: None,
+        };
+        if path.as_os_str().len() <= Self::MAX_DIRECT || !cfg!(target_os = "linux") {
+            return Ok(direct);
+        }
+        let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+            return Ok(direct);
+        };
+        use std::os::fd::AsRawFd;
+        let dir = std::fs::File::open(parent)?;
+        Ok(SocketPath {
+            path: PathBuf::from(format!("/proc/self/fd/{}", dir.as_raw_fd())).join(name),
+            _dir: Some(dir),
+        })
+    }
+
+    /// The path to hand to `bind` or `connect`.
+    pub fn as_path(&self) -> &Path {
+        &self.path
+    }
+}
 
 /// Largest non-streaming response body the client accepts.
 const MAX_BODY: usize = 64 * 1024 * 1024;
@@ -186,7 +279,17 @@ impl ControlClient {
     /// the server closes the stream; dropping it closes the connection.
     /// Malformed lines are skipped.
     pub async fn events(&self) -> io::Result<mpsc::Receiver<RequestRecord>> {
-        let mut body = self.send("GET", EVENTS_PATH).await?;
+        self.events_with(EventsOptions::default()).await
+    }
+
+    /// `GET /_chainz/events` with a backlog and/or without following; see
+    /// [`EventsOptions`]. With `follow: false` the receiver closes after the
+    /// backlog.
+    pub async fn events_with(
+        &self,
+        options: EventsOptions,
+    ) -> io::Result<mpsc::Receiver<RequestRecord>> {
+        let mut body = self.send("GET", &options.path()).await?;
         let (tx, rx) = mpsc::channel(1024);
         tokio::spawn(async move {
             let mut buf: Vec<u8> = Vec::new();
@@ -232,7 +335,9 @@ impl ControlClient {
 
     /// Send a request and read the response head; errors on non-2xx.
     async fn send(&self, method: &str, path: &str) -> io::Result<Body<UnixStream>> {
-        let mut stream = UnixStream::connect(&self.socket).await?;
+        let socket = SocketPath::new(&self.socket)?;
+        let mut stream = UnixStream::connect(socket.as_path()).await?;
+        drop(socket);
         let req = format!(
             "{method} {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
         );
@@ -414,6 +519,7 @@ struct MockState {
     metrics: Mutex<MetricsSnapshot>,
     reloads: AtomicU64,
     events: broadcast::Sender<RequestRecord>,
+    history: Mutex<std::collections::VecDeque<RequestRecord>>,
 }
 
 /// An in-process mock of the control socket, for tests of control clients
@@ -448,7 +554,7 @@ impl MockControlServer {
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
             Err(e) => return Err(e),
         }
-        let listener = UnixListener::bind(socket)?;
+        let listener = UnixListener::bind(SocketPath::new(socket)?.as_path())?;
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
@@ -459,6 +565,7 @@ impl MockControlServer {
             metrics: Mutex::new(metrics),
             reloads: AtomicU64::new(0),
             events,
+            history: Mutex::new(std::collections::VecDeque::new()),
         });
         let accept_state = state.clone();
         let accept = tokio::spawn(async move {
@@ -481,8 +588,16 @@ impl MockControlServer {
         })
     }
 
-    /// Broadcast a record to every connected events client.
+    /// Broadcast a record to every connected events client, and keep it for
+    /// `backlog` requests (the last [`EVENTS_BUFFER`] are kept).
     pub fn push_event(&self, record: RequestRecord) {
+        // Under the history lock, so a connecting stream sees each record
+        // exactly once (in its backlog or live).
+        let mut history = self.state.history.lock().unwrap_or_else(|e| e.into_inner());
+        if history.len() == EVENTS_BUFFER {
+            history.pop_front();
+        }
+        history.push_back(record.clone());
         let _ = self.state.events.send(record);
     }
 
@@ -539,7 +654,8 @@ async fn serve_conn(stream: UnixStream, state: Arc<MockState>) {
     }
     let mut parts = head.first_line.split_whitespace();
     let method = parts.next().unwrap_or("");
-    let path = parts.next().unwrap_or("");
+    let target = parts.next().unwrap_or("");
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
 
     let json_response = |body: Vec<u8>| {
         let mut r = format!(
@@ -577,7 +693,14 @@ async fn serve_conn(stream: UnixStream, state: Arc<MockState>) {
             simple("204 No Content")
         }
         ("GET", EVENTS_PATH) => {
-            stream_events(reader, write, state.events.subscribe()).await;
+            let options = EventsOptions::from_query(query);
+            let (backlog, rx) = {
+                let history = state.history.lock().unwrap_or_else(|e| e.into_inner());
+                let skip = history.len().saturating_sub(options.backlog);
+                let backlog: Vec<RequestRecord> = history.iter().skip(skip).cloned().collect();
+                (backlog, options.follow.then(|| state.events.subscribe()))
+            };
+            stream_events(reader, write, backlog, rx).await;
             return;
         }
         _ if known => simple("405 Method Not Allowed"),
@@ -590,23 +713,37 @@ async fn serve_conn(stream: UnixStream, state: Arc<MockState>) {
 async fn stream_events(
     mut reader: BufReader<tokio::net::unix::OwnedReadHalf>,
     mut write: tokio::net::unix::OwnedWriteHalf,
-    mut rx: broadcast::Receiver<RequestRecord>,
+    backlog: Vec<RequestRecord>,
+    rx: Option<broadcast::Receiver<RequestRecord>>,
 ) {
+    fn chunk(record: &RequestRecord) -> Vec<u8> {
+        let mut line = serde_json::to_vec(record).unwrap_or_default();
+        line.push(b'\n');
+        let mut chunk = format!("{:x}\r\n", line.len()).into_bytes();
+        chunk.extend_from_slice(&line);
+        chunk.extend_from_slice(b"\r\n");
+        chunk
+    }
+
     let head = "HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
     if write.write_all(head.as_bytes()).await.is_err() {
         return;
     }
+    for record in &backlog {
+        if write.write_all(&chunk(record)).await.is_err() {
+            return;
+        }
+    }
+    let Some(mut rx) = rx else {
+        let _ = write.write_all(b"0\r\n\r\n").await;
+        return;
+    };
     let mut scratch = [0u8; 256];
     loop {
         tokio::select! {
             record = rx.recv() => match record {
                 Ok(record) => {
-                    let mut line = serde_json::to_vec(&record).unwrap_or_default();
-                    line.push(b'\n');
-                    let mut chunk = format!("{:x}\r\n", line.len()).into_bytes();
-                    chunk.extend_from_slice(&line);
-                    chunk.extend_from_slice(b"\r\n");
-                    if write.write_all(&chunk).await.is_err() {
+                    if write.write_all(&chunk(&record)).await.is_err() {
                         return;
                     }
                 }
