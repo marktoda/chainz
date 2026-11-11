@@ -314,10 +314,6 @@ fn field(block: &Value, name: &str) -> Option<u128> {
 }
 
 /// The head, from one `eth_getBlockByNumber("latest")`.
-///
-/// The design pairs it with `eth_blockNumber` in a batch, but the block
-/// already carries its number, and on metered providers the second call
-/// doubles the cost of every tick for nothing.
 async fn poll_head(client: &RpcClient, target: &Target) -> Result<Head, RpcError> {
     let start = Instant::now();
     let block = client.get_block(target, BlockId::Latest, false).await?;

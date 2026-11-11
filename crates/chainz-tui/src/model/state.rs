@@ -350,10 +350,15 @@ impl State {
                 self.traffic_error = None;
             }
             Update::Traffic(Err(message)) => self.traffic_error = Some(message),
-            // A resubscription replays the backlog: skip what is already shown.
+            // A resubscription replays the backlog: keep only what is newer
+            // than the newest record shown, so nothing doubles and nothing
+            // lands out of order.
             Update::Feed(item) => {
-                let shown = |f: &FeedItem| f.id == item.id && f.at_ms == item.at_ms;
-                if !self.feed.iter().any(shown) {
+                let newer = self
+                    .feed
+                    .back()
+                    .is_none_or(|last| (item.at_ms, item.id) > (last.at_ms, last.id));
+                if newer {
                     push_capped(&mut self.feed, item, FEED_CAP);
                 }
             }

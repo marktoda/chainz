@@ -109,11 +109,10 @@ async fn a_hostile_endpoint_does_not_stop_the_poller() {
     // Rendering and the snapshot survive it too.
     let _ = chain.status(state.slow_threshold());
     let _ = chain.block_age(crate::model::now_ms());
-    serde_json::to_string(&crate::snapshot::Snapshot::new(
-        &state,
-        crate::model::now_ms(),
-    ))
-    .unwrap();
+    let snapshot = crate::snapshot::Snapshot::new(&state, crate::model::now_ms());
+    let json = serde_json::to_value(&snapshot).unwrap();
+    // A saturated base fee is not printed as if it were exact.
+    assert_eq!(json["chains"][0]["base_fee_wei"], Value::Null);
 }
 
 fn pacing() -> Pacing {

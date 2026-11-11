@@ -2,6 +2,9 @@
 //! show, in a shape meant for `jq`.
 //!
 //! Amounts that can exceed 2^53 (wei, raw token units) are decimal strings.
+//! A value too large to read exactly (2^128 - 1 or more, which only a
+//! broken or hostile endpoint reports) is `null`, and amounts say so with
+//! `saturated`.
 //! URLs are redacted unless `--reveal` (they come from the plan, which
 //! applied that choice already).
 
@@ -66,7 +69,7 @@ pub struct Chain {
     pub block_age_secs: Option<u64>,
     /// Average block time, seconds.
     pub block_time_secs: Option<f64>,
-    /// Base fee in wei.
+    /// Base fee in wei; `null` when unknown or saturated.
     pub base_fee_wei: Option<String>,
     /// Base fee in gwei.
     pub base_fee_gwei: Option<f64>,
@@ -147,10 +150,17 @@ pub struct Amount {
     pub symbol: Option<String>,
     /// Decimals.
     pub decimals: u8,
-    /// Raw units, as a decimal string.
-    pub raw: String,
-    /// `raw / 10^decimals`, exact.
-    pub formatted: String,
+    /// Raw units, as a decimal string; `null` when saturated.
+    pub raw: Option<String>,
+    /// `raw / 10^decimals`, exact; `null` when saturated.
+    pub formatted: Option<String>,
+    /// The endpoint reported 2^128 - 1 or more: not an amount to trust.
+    pub saturated: bool,
+}
+
+/// `value`, unless it is the `u128::MAX` a saturating decode stands for.
+fn exact(value: u128) -> Option<u128> {
+    (value != u128::MAX).then_some(value)
 }
 
 /// One token balance.
@@ -165,11 +175,13 @@ pub struct TokenBalance {
 }
 
 fn amount(raw: u128, decimals: u8, symbol: Option<&str>) -> Amount {
+    let raw = exact(raw);
     Amount {
         symbol: symbol.map(str::to_string),
         decimals,
-        raw: raw.to_string(),
-        formatted: fmt::units_exact(raw, decimals),
+        raw: raw.map(|r| r.to_string()),
+        formatted: raw.map(|r| fmt::units_exact(r, decimals)),
+        saturated: raw.is_none(),
     }
 }
 
@@ -187,8 +199,14 @@ fn chain(c: &ChainState, slow_ms: u32, now_ms: u64) -> Chain {
         block_timestamp: head.and_then(|h| h.timestamp),
         block_age_secs: c.block_age(now_ms),
         block_time_secs: c.block_time,
-        base_fee_wei: head.and_then(|h| h.base_fee).map(|f| f.to_string()),
-        base_fee_gwei: head.and_then(|h| h.base_fee).map(|f| f as f64 / 1e9),
+        base_fee_wei: head
+            .and_then(|h| h.base_fee)
+            .and_then(exact)
+            .map(|f| f.to_string()),
+        base_fee_gwei: head
+            .and_then(|h| h.base_fee)
+            .and_then(exact)
+            .map(|f| f as f64 / 1e9),
         latency_ms: head.map(|h| h.latency_ms),
         p50_ms: c.p50(),
         lag_blocks: c.lag,
@@ -285,5 +303,27 @@ impl Snapshot {
             balances,
             traffic: state.traffic.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_saturated_amount_is_not_printed_as_a_number() {
+        let fine = serde_json::to_value(amount(1_500_000, 6, Some("USDC"))).unwrap();
+        assert_eq!(
+            fine,
+            serde_json::json!({
+                "symbol": "USDC", "decimals": 6, "raw": "1500000",
+                "formatted": "1.5", "saturated": false,
+            })
+        );
+        let huge = serde_json::to_value(amount(u128::MAX, 18, Some("ETH"))).unwrap();
+        assert_eq!(huge["raw"], serde_json::Value::Null);
+        assert_eq!(huge["formatted"], serde_json::Value::Null);
+        assert_eq!(huge["saturated"], true);
+        assert_eq!(exact(u128::MAX - 1), Some(u128::MAX - 1));
     }
 }

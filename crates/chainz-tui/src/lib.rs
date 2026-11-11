@@ -4,7 +4,7 @@
 //!
 //! - `plan`: the config resolved into owned, thread-safe targets;
 //! - `data`: background workers that poll, probe and read balances;
-//! - `gateway`: the one adapter over the gateway's control protocol;
+//! - `gateway`: the one adapter over the control protocol;
 //! - `model`: the state the workers' updates fold into, and its
 //!   classification rules;
 //! - `app`: selection, tabs and key bindings;
@@ -41,7 +41,9 @@ use crate::model::{State, now_ms};
 use crate::plan::Plan;
 use crate::ui::theme::Theme;
 
-/// Runs `chainz shell <chain>` for the `e` key and returns when it exits.
+/// Runs `chainz shell <chain>` for the `e` key and returns when it exits:
+/// an error, including a shell that did not exit cleanly, is shown in the
+/// dashboard's footer.
 pub type ShellFn = Box<dyn FnMut(&str) -> std::io::Result<()>>;
 
 /// How `chainz top` was invoked.

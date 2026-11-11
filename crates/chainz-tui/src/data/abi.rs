@@ -118,7 +118,8 @@ pub fn hex(data: &[u8]) -> String {
 /// Decode `0x`-prefixed (or bare) hex.
 pub fn unhex(s: &str) -> Option<Vec<u8>> {
     let s = s.strip_prefix("0x").unwrap_or(s);
-    if !s.len().is_multiple_of(2) || !s.is_ascii() {
+    // `from_str_radix` takes a sign: "+f" would decode as 0x0f.
+    if !s.len().is_multiple_of(2) || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
     (0..s.len())
@@ -194,5 +195,8 @@ mod tests {
         assert_eq!(quantity(&format!("0x1{}", "0".repeat(40))), Some(u128::MAX));
         assert_eq!(unhex("0x0a0B"), Some(vec![10, 11]));
         assert_eq!(unhex("0xabc"), None);
+        assert_eq!(unhex("0x+f"), None);
+        assert_eq!(unhex("+f-1"), None);
+        assert_eq!(unhex("0x"), Some(vec![]));
     }
 }

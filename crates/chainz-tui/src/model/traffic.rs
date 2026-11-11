@@ -72,7 +72,7 @@ pub struct TrafficSnapshot {
 }
 
 /// One proxied request in the live feed.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FeedItem {
     /// Record ID.
     pub id: u64,
@@ -92,6 +92,4 @@ pub struct FeedItem {
     pub latency_ms: u32,
     /// Error class and JSON-RPC code, when it failed.
     pub error: Option<(ErrorClass, Option<i64>)>,
-    /// Response size.
-    pub bytes: u64,
 }

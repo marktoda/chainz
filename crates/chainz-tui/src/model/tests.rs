@@ -335,7 +335,6 @@ fn feed_is_capped_and_its_rate_counts_the_recent_window() {
             attempts: 1,
             latency_ms: 10,
             error: None,
-            bytes: 0,
         }));
     }
     assert_eq!(state.feed.len(), FEED_CAP);
@@ -345,6 +344,23 @@ fn feed_is_capped_and_its_rate_counts_the_recent_window() {
     state.apply(Update::Feed(again));
     assert_eq!(state.feed.len(), FEED_CAP);
     assert_eq!(state.feed.front().unwrap().id, 50);
+    // An older one, replayed after newer ones, does not land at the end,
+    // even when it fell off the front long ago.
+    for old in [state.feed[100].clone(), state.feed[0].clone()] {
+        state.apply(Update::Feed(old));
+    }
+    let mut early = state.feed.front().unwrap().clone();
+    early.id = 7;
+    early.at_ms -= 10_000;
+    state.apply(Update::Feed(early));
+    assert_eq!(state.feed.len(), FEED_CAP);
+    assert_eq!(state.feed.back().unwrap().id, FEED_CAP as u64 + 49);
+    // Same millisecond, a later ID: newer.
+    let mut next = state.feed.back().unwrap().clone();
+    next.id += 1;
+    state.apply(Update::Feed(next));
+    assert_eq!(state.feed.back().unwrap().id, FEED_CAP as u64 + 50);
+    state.feed.pop_back();
     // 25 requests a second, over the last 10 s.
     let newest = state.feed.back().unwrap().at_ms;
     assert_eq!(state.feed_rate(newest, 10), 25.1);
