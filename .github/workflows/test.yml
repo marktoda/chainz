@@ -29,11 +29,16 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y strace
 
+      - name: Install Foundry (anvil, for fork tests)
+        uses: foundry-rs/foundry-toolchain@v1
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
       - name: Run cargo test
         run: cargo test --locked --workspace --all-targets
+        env:
+          CHAINZ_REQUIRE_ANVIL: "1"
 
   lints:
     name: Lints
@@ -80,7 +85,7 @@ jobs:
         run: cargo check --locked --workspace --all-targets
 
   perf:
-    name: Hot-path perf gate (v2 <= 50% of v1)
+    name: Hot-path perf gate (v2 <= 85% of v1)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout sources

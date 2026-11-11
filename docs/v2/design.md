@@ -238,7 +238,7 @@ The token registry is compiled into the binary, so it needs no cache entry.
 
 **Process model.** On Unix, exec calls `execvp`: same PID, signals go straight to the command, and its exit status is the shell's exit status. Windows spawns and waits, and forwards the exit code. Before the exec, chainz holds no lock and no open sockets.
 
-**Overhead budget.** The target is a median under 5 ms from start to `execvp` on a warm cache (v1 measured 13–41 ms wall time across runs on this machine). CI does not enforce an absolute number, which would flake. It enforces two things: the median must be at most half of v1's in the same CI job, and a structural test runs exec under `strace` and asserts no sockets, no threads, and no reads outside the config, secrets and runtime files.
+**Overhead budget.** The target is a median under 5 ms from start to `execvp` on a warm cache (v1 measures about 3.8 ms; process startup alone is about 1.3 ms, so the headroom is small). CI does not enforce an absolute number, which would flake. It enforces two things: the median must be at most 85% of v1's in the same CI job, and a structural test runs exec under `strace` and asserts no sockets, no threads, and no reads outside the config, secrets and runtime files.
 
 `--expose-key` is outside the budget: reaching the keyring over D-Bus takes as long as it takes. Checking for a running gateway is one non-blocking `flock` attempt.
 
@@ -356,7 +356,7 @@ funded 0x0123…4567 (default): 1000 ETH, 10000 USDC, 5 WETH
 $ chainz exec base-fork -- cast send @usdc 'transfer(address,uint256)' @myrouter 1e6 --unlocked
 ```
 
-**Supervisor.** The `chainz fork` process supervises anvil as a child. Anvil gets `--fork-url http://127.0.0.1:<port>/<token>`, which points at a single-chain proxy inside the supervisor. The proxy URL holds no secrets, so anvil's argv is safe to show in `ps`.
+**Supervisor.** The `chainz fork` process supervises anvil as a child. Anvil gets `--fork-url http://127.0.0.1:<port>/<token>`, which points at a single-chain proxy inside the supervisor. The proxy always sits in front of anvil: it forwards to the pinned endpoint directly, or, when a gateway is running, through the gateway pinned to that same endpoint so fork traffic shows up in the inspector and metrics. The `<token>` is a per-fork token, never the gateway's token or an endpoint secret, so anvil's argv is safe to show in `ps`.
 
 - **Upstream:** the proxy pins one endpoint for the fork's whole life, because anvil's lazily fetched state must come from one consistent source. With `--block N`, that endpoint must be archive-capable: it is chosen from capability tags, and the fork refuses to start if none qualifies. The proxy retries transient errors on that same endpoint but never fails over, since mixing nodes mid-fork corrupts state.
 - **Unsupported chains:** chains anvil can't fork (zkSync Era, 324) are rejected up front with a clear message.
@@ -427,11 +427,11 @@ Top, serve and fork share one RPC layer, and top reads serve through its control
 
 | Metric | v1 today | v2 target | CI gate |
 | --- | --- | --- | --- |
-| `exec eth -- true`, chainz overhead | 13–41 ms wall time | < 5 ms median | ≤ 50% of v1 in the same job; no sockets or threads (strace) |
-| `ls` with 17 chains | 15 ms | < 5 ms median | ≤ 50% of v1 in the same job |
+| `exec eth -- true`, chainz overhead | 3.8 ms | < 5 ms median (measured 3.1 ms) | ≤ 85% of v1 in the same job; no sockets or threads (strace) |
+| `ls` with 17 chains | 3.1 ms | < 5 ms median (measured 2.0 ms) | ≤ 85% of v1 in the same job |
 | `doctor`, 17 chains (active endpoints) | 157 ms | ≤ v1, network-bound | none |
 | `top`, first paint | n/a | < 100 ms; data streams in | none |
-| Gateway added latency, p50 | n/a | < 1 ms | benchmark against a local mock upstream |
+| Gateway added latency, p50 | n/a | < 1 ms (measured 84 µs) | benchmark against a local mock upstream |
 | Release binary | 14 MB | < 8 MB | size check |
 | Clean release build | about 3 min | < 90 s | none |
 
@@ -495,3 +495,9 @@ An independent Fable 5.2 reviewer read the first draft against the v1 source, th
 | 13 | Should-fix | The CLI tree is missing flags; `--fund` shape; `fork CHAIN` collides with `fork ls` | Fixed in CLI surface |
 | 14 | Should-fix | Phase 0 freeze point: streams collide on the forwarder, the clap tree and tokens; control types frozen too early | Fixed in Delivery plan: an `Upstream` trait, clap stubs, a minimal token registry, provisional control types, perf gate in phase 0 |
 | 15 | Nit | Over-engineered for a personal tool (capability probing, two metric windows, Windows); two template syntaxes | Mostly accepted: one `${…}` syntax with the environment first; Windows is now an open question. Capability probing stays because fork pinning and gateway routing depend on it |
+
+
+## Implementation notes
+
+- **Perf baseline corrected.** The draft quoted v1 exec at 13–41 ms. That figure was inflated by the measurement harness; hyperfine on a warm cache gives about 3.8 ms for v1 and 3.1 ms for v2, against a 1.3 ms process-startup floor. The CI gate is therefore a ratio of 0.85, not 0.50, plus the strace structural test.
+- **Forks always go through the proxy,** and through the gateway when one is running (see Forks). An earlier build passed the gateway URL, token included, to anvil's argv; that was fixed before merge.
