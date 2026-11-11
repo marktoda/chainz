@@ -126,7 +126,14 @@ async fn fetch_all_from(
     match download(url).await {
         Ok(bytes) => match parse(&bytes) {
             Ok(entries) => {
-                write_cache(cache_dir, &bytes)?;
+                // The download succeeded: a cache that can't be written
+                // costs only the next fetch.
+                if let Err(e) = write_cache(cache_dir, &bytes) {
+                    eprintln!(
+                        "warning: could not cache the chainlist registry in {}: {e}",
+                        cache_dir.display()
+                    );
+                }
                 Ok(entries)
             }
             Err(e) => read_cache(cache_dir).ok_or(e),
@@ -265,8 +272,8 @@ mod tests {
         assert!(read_cache(dir.path()).is_none());
     }
 
-    #[tokio::test]
-    async fn download_writes_cache() {
+    /// Serve `SAMPLE` once; returns the URL.
+    async fn serve_sample_once() -> String {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -281,13 +288,31 @@ mod tests {
             );
             s.write_all(resp.as_bytes()).await.unwrap();
         });
+        format!("http://{addr}/chains.json")
+    }
+
+    #[tokio::test]
+    async fn download_writes_cache() {
+        let url = serve_sample_once().await;
         let dir = tempfile::tempdir().unwrap();
         let cache = dir.path().join("nested");
-        let url = format!("http://{addr}/chains.json");
         let entries = fetch_all_from(&url, &cache, false, CACHE_TTL)
             .await
             .unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(read_cache(&cache).unwrap()[0].chain_id, 1);
+    }
+
+    #[tokio::test]
+    async fn a_failed_cache_write_keeps_the_download() {
+        let url = serve_sample_once().await;
+        let dir = tempfile::tempdir().unwrap();
+        // The cache dir is a file: the cache can't be written.
+        let cache = dir.path().join("not-a-dir");
+        std::fs::write(&cache, "").unwrap();
+        let entries = fetch_all_from(&url, &cache, true, CACHE_TTL)
+            .await
+            .unwrap();
+        assert_eq!(entries.len(), 2);
     }
 }
