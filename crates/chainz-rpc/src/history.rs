@@ -265,7 +265,8 @@ fn write_atomic(dir: &Path, path: &Path, data: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
-fn now_ms() -> u64 {
+/// Unix time in milliseconds.
+pub(crate) fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))

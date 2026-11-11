@@ -67,3 +67,25 @@ async fn pruned_node_and_websocket() {
     );
     assert_eq!(caps.tags(), vec!["ws"]);
 }
+
+#[tokio::test]
+async fn a_transient_logs_failure_leaves_the_range_unknown() {
+    // A 503 (or a 429, or a timeout) on the largest range says nothing
+    // about the limit: no smaller range may be cached as the answer.
+    for status in [429, 503] {
+        let server = MockHttp::start(move |_, req| match req.method().as_str() {
+            "eth_blockNumber" => Resp::result(req, json!("0x100000")),
+            "eth_getLogs" => Resp::status(status),
+            _ => Resp::rpc_error(req, -32601, "method not found"),
+        })
+        .await;
+        let caps = probe_capabilities(&RpcClient::new(), &server.target(1)).await;
+        assert_eq!(caps.max_logs_range, None, "HTTP {status}");
+        let logs = server
+            .requests()
+            .iter()
+            .filter(|r| r.method() == "eth_getLogs")
+            .count();
+        assert_eq!(logs, 1, "HTTP {status}: stepped down");
+    }
+}
