@@ -2,7 +2,10 @@
 //!
 //! Two rings per series: twelve 5-second buckets for the 1-minute window and
 //! fifteen 1-minute buckets for the 15-minute window. A row counts upstream
-//! attempts, so a request that failed over appears on both endpoints.
+//! attempts, so a request that failed over appears on both endpoints. A
+//! request the endpoint's own rate limiter turned away was never sent: it
+//! counts as rate-limited (and as a failover when it moved on), not as an
+//! attempt.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Mutex;
@@ -19,7 +22,8 @@ const SHORT_BUCKET: u64 = 5;
 const LONG_BUCKET: u64 = 60;
 /// Latency samples kept per bucket (overwritten round-robin beyond this).
 const SAMPLES: usize = 256;
-/// Series kept; attempts beyond this are counted under method `other`.
+/// Series kept; attempts beyond this are counted under method `other`
+/// until series with no traffic left in either window are dropped.
 const MAX_SERIES: usize = 4096;
 
 /// One upstream attempt.
@@ -64,6 +68,11 @@ impl Bucket {
         self.bytes += s.bytes;
     }
 
+    fn refuse(&mut self, failover: bool) {
+        self.rate_limited += 1;
+        self.failovers += u64::from(failover);
+    }
+
     fn merge(&mut self, other: &Bucket) {
         self.requests += other.requests;
         for (class, n) in &other.errors {
@@ -103,17 +112,20 @@ impl Ring {
         }
     }
 
-    fn add(&mut self, now: u64, sample: &Sample) {
+    /// The bucket for `now`.
+    fn current(&mut self, now: u64) -> &mut Bucket {
         self.trim(now);
         let epoch = now / self.width;
-        match self.buckets.back_mut() {
-            Some((e, bucket)) if *e == epoch => bucket.add(sample),
-            _ => {
-                let mut bucket = Bucket::default();
-                bucket.add(sample);
-                self.buckets.push_back((epoch, bucket));
-            }
+        if self.buckets.back().is_none_or(|(e, _)| *e != epoch) {
+            self.buckets.push_back((epoch, Bucket::default()));
         }
+        &mut self.buckets.back_mut().expect("just pushed").1
+    }
+
+    /// Whether nothing is left in the window at `now`.
+    fn is_empty(&mut self, now: u64) -> bool {
+        self.trim(now);
+        self.buckets.is_empty()
     }
 
     fn total(&mut self, now: u64) -> Option<Bucket> {
@@ -153,29 +165,78 @@ pub struct Summary {
 /// The gateway's metrics store.
 #[derive(Debug, Default)]
 pub struct Metrics {
-    series: Mutex<HashMap<Key, Series>>,
+    store: Mutex<Store>,
+}
+
+#[derive(Debug, Default)]
+struct Store {
+    series: HashMap<Key, Series>,
+    /// When dead series were last dropped to make room (unix seconds).
+    pruned_at: Option<u64>,
+}
+
+impl Store {
+    /// The series for `key`, or for `other` when the store is full of
+    /// live series.
+    fn series(&mut self, now: u64, chain: &str, endpoint: &str, method: &str) -> &mut Series {
+        let mut key = (chain.to_string(), endpoint.to_string(), method.to_string());
+        if !self.series.contains_key(&key) && self.series.len() >= MAX_SERIES {
+            // Full: drop dead series first (at most once a second, so a
+            // store full of live ones doesn't rescan on every attempt).
+            if self.pruned_at != Some(now) {
+                self.pruned_at = Some(now);
+                self.prune(now);
+            }
+            if self.series.len() >= MAX_SERIES {
+                key.2 = "other".to_string();
+            }
+        }
+        self.series.entry(key).or_insert_with(|| Series {
+            short: Ring::new(SHORT_BUCKET, SHORT_WINDOW),
+            long: Ring::new(LONG_BUCKET, LONG_WINDOW),
+        })
+    }
+
+    /// Drop series with no traffic left in the long window.
+    fn prune(&mut self, now: u64) {
+        self.series.retain(|_, s| !s.long.is_empty(now));
+    }
 }
 
 impl Metrics {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Store> {
+        self.store.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Record one upstream attempt at unix time `now` (seconds).
     pub fn record(&self, now: u64, chain: &str, endpoint: &str, method: &str, sample: &Sample) {
-        let mut series = self.series.lock().unwrap_or_else(|e| e.into_inner());
-        let mut key = (chain.to_string(), endpoint.to_string(), method.to_string());
-        if !series.contains_key(&key) && series.len() >= MAX_SERIES {
-            key.2 = "other".to_string();
-        }
-        let entry = series.entry(key).or_insert_with(|| Series {
-            short: Ring::new(SHORT_BUCKET, SHORT_WINDOW),
-            long: Ring::new(LONG_BUCKET, LONG_WINDOW),
-        });
-        entry.short.add(now, sample);
-        entry.long.add(now, sample);
+        let mut store = self.lock();
+        let series = store.series(now, chain, endpoint, method);
+        series.short.current(now).add(sample);
+        series.long.current(now).add(sample);
+    }
+
+    /// Record a request the endpoint's rate limiter turned away before it
+    /// was sent; `failover` when it moved on to the next endpoint.
+    pub fn record_refusal(
+        &self,
+        now: u64,
+        chain: &str,
+        endpoint: &str,
+        method: &str,
+        failover: bool,
+    ) {
+        let mut store = self.lock();
+        let series = store.series(now, chain, endpoint, method);
+        series.short.current(now).refuse(failover);
+        series.long.current(now).refuse(failover);
     }
 
     /// Both windows at unix time `now` (seconds). Rows are sorted by chain,
     /// endpoint and method; series with no traffic left are dropped.
     pub fn snapshot(&self, now: u64) -> MetricsSnapshot {
-        let mut series = self.series.lock().unwrap_or_else(|e| e.into_inner());
+        let mut store = self.lock();
+        let series = &mut store.series;
         let mut short = Vec::new();
         let mut long = Vec::new();
         series.retain(|key, s| {
@@ -212,11 +273,14 @@ impl Metrics {
         }
     }
 
-    /// Totals over the short window.
+    /// Totals over the short window. Series with no traffic left are
+    /// dropped here too, so they don't pile up while nobody asks for a
+    /// snapshot.
     pub fn summary(&self, now: u64) -> Summary {
-        let mut series = self.series.lock().unwrap_or_else(|e| e.into_inner());
+        let mut store = self.lock();
+        store.prune(now);
         let mut all = Bucket::default();
-        for s in series.values_mut() {
+        for s in store.series.values_mut() {
             if let Some(total) = s.short.total(now) {
                 all.merge(&total);
             }
@@ -307,7 +371,7 @@ mod tests {
         // Past both windows the series is dropped.
         let snap = m.snapshot(t0 + 2000);
         assert!(snap.windows.iter().all(|w| w.rows.is_empty()));
-        assert!(m.series.lock().unwrap().is_empty());
+        assert!(m.lock().series.is_empty());
     }
 
     #[test]
@@ -343,6 +407,42 @@ mod tests {
         assert_eq!(rows.len(), MAX_SERIES + 1);
         let other = rows.iter().find(|r| r.method == "other").unwrap();
         assert_eq!(other.requests, 50);
+    }
+
+    #[test]
+    fn dead_series_make_room_without_a_snapshot() {
+        let m = Metrics::default();
+        for i in 0..MAX_SERIES {
+            m.record(10, "eth", "a", &format!("m{i}"), &ok(1));
+        }
+        // Past the long window every series is dead: a new method gets its
+        // own row rather than `other`, with nobody calling `snapshot`.
+        let later = 10 + LONG_WINDOW + LONG_BUCKET;
+        m.record(later, "eth", "a", "eth_call", &ok(1));
+        let store = m.lock();
+        assert_eq!(store.series.len(), 1);
+        assert!(store.series.keys().all(|k| k.2 == "eth_call"));
+        drop(store);
+
+        // `summary` (the live status line) prunes too.
+        m.record(later, "eth", "a", "eth_getLogs", &ok(1));
+        m.summary(later + LONG_WINDOW + LONG_BUCKET);
+        assert!(m.lock().series.is_empty());
+    }
+
+    #[test]
+    fn refusals_are_not_attempts() {
+        let m = Metrics::default();
+        m.record(10, "eth", "a", "eth_call", &ok(40));
+        m.record_refusal(10, "eth", "a", "eth_call", true);
+        m.record_refusal(10, "eth", "a", "eth_call", false);
+        let row = &m.snapshot(10).windows[0].rows[0];
+        assert_eq!(row.requests, 1, "a refusal is not an upstream attempt");
+        assert_eq!((row.rate_limited, row.failovers), (2, 1));
+        assert_eq!((row.p50_ms, row.p95_ms), (40, 40), "no zero latencies");
+        assert!(row.errors.is_empty());
+        let s = m.summary(10);
+        assert_eq!((s.requests, s.rate_limited, s.p50_ms), (1, 2, 40));
     }
 
     #[test]
