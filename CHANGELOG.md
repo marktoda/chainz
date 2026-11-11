@@ -55,6 +55,45 @@ A ground-up rewrite as a local multichain workbench. The design is in
   `chainz-tui` and the `chainz` binary. The exec path cannot reach the
   network, and CI checks that with `strace`.
 
+### Fixed
+
+- `chain add NAME` and `rpc discover` paired probe results with the wrong
+  URLs when chainlist listed an invalid one, so they could activate or add a
+  dead endpoint.
+- `exec`: a missing command exits 127 and an unexecutable one 126 (was 1);
+  `--expose-key --explain` no longer unlocks the key.
+- A foreground `fork` reports how it was stopped: 130 after Ctrl-C, 143
+  after SIGTERM or `fork stop`, 129 after SIGHUP (was 0). `fork stop` waits
+  up to 10 s for the supervisor, and `fork ls` asks every fork for its
+  height at once, with a 5 s timeout.
+- `addr rm --chain` accepts a chain alias as well as the exact name or ID.
+- `signer add`/`signer migrate` roll back a keyring entry they created if
+  the config write fails, and report a rollback failure.
+- `serve stop` and `fork stop` never signal a PID that isn't a single
+  process; serve and fork logs are created `0600`.
+
+### Changed
+
+- `chain add --rpc` and `rpc add` move known URL keys and credential headers
+  into `secrets.toml` as they write, and print what they moved.
+- `signer rm` asks before deleting key material; off a terminal it needs
+  `--yes`. `signer migrate --all` tries every signer and reports each
+  failure.
+- `rpc bench --fix --yes` writes the proposed failover lists without asking;
+  `rpc discover --yes` adds every endpoint that answered. Off a terminal,
+  both report instead of prompting.
+- `doctor` (not `doctor --tokens`) notes labels that shadow a built-in token;
+  `doctor --tokens --fix` is rejected as a usage error.
+- Secrets passed as arguments (`signer add --key`, `var set NAME VALUE`)
+  warn that they are visible in shell history and `ps`.
+- `--json` for `addr ls`, `addr find` (exit 1 when nothing is found),
+  `fork ls` and `serve status`. `rpc ls` shows header values (redacted
+  unless `--reveal`).
+- Uptimes read `42s`, `12m05s`, `2h03m`, `3d04h` everywhere.
+- v1 spellings are accepted: `list`/`remove` aliases on every `ls`/`rm`,
+  `--type private-key`/`one-password`, `var get --show`. A fork can't be
+  named `list`.
+
 ## 0.4.0 - 2026-07-16
 
 ### Security

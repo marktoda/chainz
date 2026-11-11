@@ -87,7 +87,12 @@ run the command directly. Chainz overhead is about 3 ms.
 
 An unknown token is an error with a suggestion (`@udsc` → did you mean
 `@usdc`?), never passed through. `--explain` prints the context, exported
-names and rewritten argv without running anything.
+names and rewritten argv without running anything (with `--expose-key` it
+shows `RAW_PRIVATE_KEY` redacted and never unlocks the key).
+
+Exit codes follow the shell: the command's own status, 127 when the command
+does not exist, 126 when it can't be executed, and 130 when you interrupt a
+chainz prompt.
 
 ```bash
 chainz exec base -- cast call @usdc 'balanceOf(address)(uint256)' @wallet
@@ -155,6 +160,9 @@ $ chainz fork stop base-fork        # or Ctrl-C, or --all
   forks: sign with `--unlocked`. Use `--chain-id N` if you need real
   signatures.
 - Anvil dies with its supervisor, even on SIGKILL (Linux).
+- `fork ls --json` lists forks with their URL and block height. A
+  foreground fork stopped by Ctrl-C exits 130; by `fork stop` or SIGTERM,
+  143.
 
 ## Address book
 
@@ -163,13 +171,15 @@ chainz addr add myrouter 0x… --chain base
 chainz addr add my-safe 0x… --all-chains
 chainz addr ls --chain base --builtin   # include built-in tokens
 chainz addr find 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
+chainz addr ls --json                    # also `addr find --json`
 cast logs … | chainz label --chain base  # 0x… → usdc(0x…)
 ```
 
 Built-in labels cover major tokens
 (`weth`, `usdc`, `usdce`, `usdt`, `wbtc`, `dai`) where they exist. Your own
-labels take precedence.
-`chainz doctor --tokens` verifies the built-in registry on chain.
+labels take precedence; `chainz doctor` notes each label that shadows a
+built-in token. `chainz doctor --tokens` verifies the built-in registry on
+chain.
 
 ## Signers
 
@@ -184,7 +194,12 @@ Chainz needs a signer's address often and its key almost never. Only
 | `keystore` | a Foundry keystore file, unlocked by cast or forge |
 | `plaintext` | `secrets.toml`, explicit opt-in |
 
-`chainz signer migrate` moves plaintext keys into safe storage.
+`chainz signer migrate` moves plaintext keys into safe storage
+(`--all` for every plaintext signer; a failure doesn't stop the rest).
+`chainz signer rm` deletes the key material too, so it asks first; off a
+terminal pass `--yes`. Pass keys and variable values on stdin (`--stdin`):
+a secret given as an argument works but warns, since it lands in shell
+history and `ps`.
 
 ## Configuration
 
@@ -229,7 +244,16 @@ base = "0x…"
 (`${CHAIN_ID}`, `${CHAIN}`). An unresolved reference is an error.
 `chainz config edit` and `chainz chain edit eth` validate on save.
 `chainz doctor` flags literal credentials in URLs, and `doctor --fix` moves
-them into variables.
+them into variables. `chain add --rpc` and `rpc add` do the same as they
+write a URL with a known key (Infura, Alchemy) or a credential header, and
+say what they moved.
+
+Commands that change several things at once take `--yes` to skip the
+question (`rpc bench --fix --yes` also writes the proposed failover lists;
+`rpc discover --yes` adds every endpoint that answered). Off a terminal
+they never prompt: they report and tell you which flag to pass. Listing
+commands take `--json` (`ls`, `rpc ls`, `signer ls`, `var ls`, `addr ls`,
+`addr find`, `fork ls`, `serve status`).
 
 ## Migrating from v1
 
@@ -248,6 +272,9 @@ migrates once, under a lock:
 Preview first with `chainz config migrate --dry-run`. The v1 names
 `CHAIN_NAME`, `@chainname`, `@verification_url` and `@verifier_api_key` keep
 working for one release, with a warning. `@key` is gone; use `--expose-key`.
+The v1 command spellings still work: `list` and `remove` (for `ls` and
+`rm`), `key …` (for `signer …`), `--type private-key`/`one-password`, and
+`var get --show`.
 
 ## Development
 
