@@ -287,17 +287,28 @@ pub(crate) fn check_status(raw: &RawResponse) -> Result<(), RpcError> {
     }
 }
 
-/// Parse `Retry-After` in its delta-seconds form.
+/// Upper bound on a parsed `Retry-After`: callers wait on it, and the
+/// value comes from an untrusted endpoint.
+pub const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
+
+/// Parse `Retry-After` in its delta-seconds form, clamped to
+/// [`MAX_RETRY_AFTER`]. Never panics on hostile values (`1e300`, `inf`).
 pub(crate) fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
     let v = headers.get(reqwest::header::RETRY_AFTER)?.to_str().ok()?;
+    parse_retry_after_value(v)
+}
+
+fn parse_retry_after_value(v: &str) -> Option<Duration> {
     let v = v.trim();
-    if let Ok(secs) = v.parse::<u64>() {
-        return Some(Duration::from_secs(secs));
-    }
-    v.parse::<f64>()
-        .ok()
-        .filter(|s| s.is_finite() && *s >= 0.0)
-        .map(Duration::from_secs_f64)
+    let parsed = match v.parse::<u64>() {
+        Ok(secs) => Duration::from_secs(secs),
+        Err(_) => {
+            let secs = v.parse::<f64>().ok().filter(|s| *s >= 0.0)?; // NaN, negative: ignore
+            // Overflow (`1e300`, `inf`, huge integers) clamps instead of panicking.
+            Duration::try_from_secs_f64(secs).unwrap_or(MAX_RETRY_AFTER)
+        }
+    };
+    Some(parsed.min(MAX_RETRY_AFTER))
 }
 
 /// Take `result` out of a JSON-RPC response object, or turn `error` into
@@ -327,5 +338,35 @@ fn extract_result(mut resp: Value) -> Result<Value, RpcError> {
         None => Err(RpcError::InvalidResponse(
             "response has neither result nor error".into(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod retry_after_tests {
+    use super::*;
+
+    #[test]
+    fn hostile_retry_after_values_are_clamped_not_panics() {
+        assert_eq!(parse_retry_after_value("2"), Some(Duration::from_secs(2)));
+        assert_eq!(
+            parse_retry_after_value("0.5"),
+            Some(Duration::from_millis(500))
+        );
+        for huge in [
+            "1e300",
+            "18446744073709551615",
+            "99999999999999999999",
+            "inf",
+            "3600",
+        ] {
+            assert_eq!(
+                parse_retry_after_value(huge),
+                Some(MAX_RETRY_AFTER),
+                "{huge}"
+            );
+        }
+        for garbage in ["-1", "NaN", "soon", ""] {
+            assert_eq!(parse_retry_after_value(garbage), None, "{garbage}");
+        }
     }
 }

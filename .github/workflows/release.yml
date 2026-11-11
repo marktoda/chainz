@@ -50,13 +50,13 @@ jobs:
           }
 
       - name: Verify release candidate
-        run: cargo test --locked --all-targets
+        run: cargo test --locked --workspace --all-targets
 
       - name: Verify package contents
-        run: cargo package --locked
+        run: cargo package --locked --workspace
 
       - name: Publish to crates.io
-        run: cargo publish --locked
+        run: cargo publish --locked --workspace
 
   github-release:
     name: Create GitHub release

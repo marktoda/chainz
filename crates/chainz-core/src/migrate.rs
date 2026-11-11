@@ -208,7 +208,7 @@ impl VarTable {
 
 /// Find a literal Infura or Alchemy key in `url`: returns the text before
 /// and after the key, the base variable name, and the key.
-fn extract_known_key(url: &str) -> Option<(&str, &str, &'static str, &str)> {
+pub fn extract_known_key(url: &str) -> Option<(&str, &str, &'static str, &str)> {
     let parsed = url::Url::parse(url).ok()?;
     let host = parsed.host_str()?.to_ascii_lowercase();
     let labels: Vec<&str> = host.split('.').collect();

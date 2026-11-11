@@ -12,6 +12,7 @@ pkgs.mkShell {
       clippy # Linter
       foundry-bin
       hyperfine # performance gate (scripts/perf-gate.sh)
+      jq # performance gate
     ]
     ++ lib.optional stdenv.isLinux strace; # exec structural test
 }

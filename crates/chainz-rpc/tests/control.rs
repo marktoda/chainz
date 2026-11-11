@@ -65,6 +65,19 @@ fn record(id: u64, ok: bool) -> RequestRecord {
     }
 }
 
+/// A temp dir short enough for a unix socket path (SUN_LEN is ~104-108
+/// bytes; a deep `$TMPDIR` would overflow it).
+fn socket_dir() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    if dir.path().join("serve.sock").as_os_str().len() < 100 {
+        return dir;
+    }
+    tempfile::Builder::new()
+        .prefix("cz")
+        .tempdir_in("/tmp")
+        .unwrap()
+}
+
 async fn server(dir: &tempfile::TempDir) -> MockControlServer {
     MockControlServer::start(&dir.path().join("serve.sock"), status(), metrics(5))
         .await
@@ -73,7 +86,7 @@ async fn server(dir: &tempfile::TempDir) -> MockControlServer {
 
 #[tokio::test]
 async fn status_and_metrics() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = socket_dir();
     let server = server(&dir).await;
     let client = ControlClient::new(server.path());
     assert_eq!(client.status().await.unwrap(), status());
@@ -85,7 +98,7 @@ async fn status_and_metrics() {
 #[tokio::test]
 async fn socket_mode_and_cleanup() {
     use std::os::unix::fs::PermissionsExt;
-    let dir = tempfile::tempdir().unwrap();
+    let dir = socket_dir();
     let server = server(&dir).await;
     let path = server.path().to_path_buf();
     let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
@@ -97,7 +110,7 @@ async fn socket_mode_and_cleanup() {
 
 #[tokio::test]
 async fn reload_counter() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = socket_dir();
     let server = server(&dir).await;
     let client = ControlClient::new(server.path());
     assert_eq!(server.reload_count(), 0);
@@ -108,7 +121,7 @@ async fn reload_counter() {
 
 #[tokio::test]
 async fn events_stream_to_every_client() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = socket_dir();
     let server = server(&dir).await;
     let client = ControlClient::new(server.path());
     let mut a = client.events().await.unwrap();
@@ -146,7 +159,7 @@ async fn events_stream_to_every_client() {
 #[tokio::test]
 async fn unknown_path_is_404() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let dir = tempfile::tempdir().unwrap();
+    let dir = socket_dir();
     let server = server(&dir).await;
     let mut s = tokio::net::UnixStream::connect(server.path())
         .await
