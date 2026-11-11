@@ -219,17 +219,6 @@ fn completions_generate_for_zsh_and_bash() {
     }
 }
 
-#[test]
-fn stream_commands_are_stubs() {
-    let sb = Sandbox::new();
-    sb.seed(&[("eth", 1)]);
-    sb.cmd()
-        .arg("top")
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("not yet implemented"));
-}
-
 // ---------------------------------------------------------------- config files
 
 #[test]

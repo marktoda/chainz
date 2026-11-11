@@ -1,5 +1,4 @@
-//! Command handlers. One module per noun; `stubs` holds the stream-owned
-//! commands until their streams replace them.
+//! Command handlers. One module per noun.
 //!
 //! To add or fill in a handler: write `pub fn run(...) -> Result<i32>` in
 //! the noun's module and route it from [`dispatch`]. Return the process
@@ -14,8 +13,8 @@ mod fork;
 mod rpc;
 mod serve;
 mod signer;
-mod stubs;
 mod tokens;
+mod top;
 mod var;
 
 use crate::cli::{Command, Opt};
@@ -47,7 +46,7 @@ pub fn dispatch(opt: Opt) -> Result<i32> {
         } => exec::env(chain, shell, signer, rpc, direct),
         Command::Use { chain, clear } => chain::use_default(chain, clear),
         Command::Ls(args) => chain::ls(&args),
-        Command::Top { once, json, reveal } => stubs::top(once, json, reveal),
+        Command::Top { once, json, reveal } => top::run(once, json, reveal),
         Command::Serve { cmd, args } => serve::run(cmd, args),
         Command::Fork { cmd, args } => fork::run(cmd, args),
         Command::Chain { cmd } => chain::run(cmd),
