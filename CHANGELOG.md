@@ -42,6 +42,9 @@ A ground-up rewrite as a local multichain workbench. The design is in
 - `rpc bench` and `rpc discover` probe, rank and tag endpoints.
   `doctor --tokens` verifies the built-in token registry on chain.
 - Foundry keystore signers (`--backend keystore`), exported as `ETH_KEYSTORE`.
+- Per-endpoint HTTP headers (`rpc add --header "name: value"`), applied by
+  probes and the gateway, and exported as `ETH_RPC_HEADERS` on direct
+  connections. (This was unreleased in 0.x; v1 configs that use it migrate.)
 
 ### Changed
 
@@ -51,17 +54,6 @@ A ground-up rewrite as a local multichain workbench. The design is in
 - The workspace is split into `chainz-core`, `chainz-rpc`, `chainz-serve`,
   `chainz-tui` and the `chainz` binary. The exec path cannot reach the
   network, and CI checks that with `strace`.
-
-## 0.5.0 - Unreleased (superseded by 2.0.0)
-
-- Added per-RPC custom HTTP headers: `--header "name: value"` on `add`/`update`,
-  sent in health probes and exported to tools as `ETH_RPC_HEADERS`. Configs
-  that use `--header` require this version or newer — older chainz releases
-  reject the whole config rather than silently dropping the headers.
-- The config file, `key list`, and `var list --json` now use a stable
-  name order (the `default` key still lists first).
-- `exec --help` and the README now document `@verification_url` and
-  `@verifier_api_key`.
 
 ## 0.4.0 - 2026-07-16
 

@@ -5,7 +5,6 @@ pkgs.mkShell {
   # Additional tooling
   buildInputs = with pkgs;
     [
-      openssl
       pkg-config
       rust-analyzer # LSP Server
       rustfmt # Formatter

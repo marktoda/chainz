@@ -3,7 +3,7 @@
 //! The upstream is a real `anvil` with no `--fork-url`; `chainz fork`
 //! pins it, proxies it, and a second anvil forks from it through the
 //! proxy. Tests that need anvil are skipped when it is not on `PATH`,
-//! unless `CHAINZ_REQUIRE_ANVIL` is set (CI sets it).
+//! unless `CHAINZ_REQUIRE_TOOLS` is set (CI sets it).
 //!
 //! Every invocation runs in a [`Sandbox`] (scratch `HOME`, XDG dirs and
 //! `CHAINZ_DISABLE_KEYRING`), as in `cli.rs`.
@@ -170,8 +170,8 @@ fn anvil_available() -> bool {
         .is_ok_and(|s| s.success());
     if !found {
         assert!(
-            std::env::var_os("CHAINZ_REQUIRE_ANVIL").is_none(),
-            "CHAINZ_REQUIRE_ANVIL is set but anvil is not on PATH"
+            std::env::var_os("CHAINZ_REQUIRE_TOOLS").is_none(),
+            "CHAINZ_REQUIRE_TOOLS is set but anvil is not on PATH"
         );
         eprintln!("skipped: anvil is not on PATH");
     }

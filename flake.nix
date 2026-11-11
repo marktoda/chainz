@@ -1,5 +1,5 @@
 {
-  description = "Chainz";
+  description = "chainz: a local multichain workbench for EVM development";
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     foundry.url = "github:shazow/foundry.nix";

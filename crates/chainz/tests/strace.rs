@@ -1,6 +1,7 @@
 //! Structural hot-path test (Linux): `exec … -- true` and `ls` open no
 //! sockets, start no threads, and open only config, secrets and runtime
-//! files under the chainz directories. Skipped when `strace` is missing.
+//! files under the chainz directories. Skipped when `strace` is missing,
+//! unless `CHAINZ_REQUIRE_TOOLS` is set (CI sets it).
 #![cfg(target_os = "linux")]
 
 use std::fs;
@@ -11,10 +12,15 @@ use tempfile::TempDir;
 const TEST_ADDRESS: &str = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
 
 fn strace_available() -> bool {
-    Command::new("strace")
+    let found = Command::new("strace")
         .arg("-V")
         .output()
-        .is_ok_and(|o| o.status.success())
+        .is_ok_and(|o| o.status.success());
+    assert!(
+        found || std::env::var_os("CHAINZ_REQUIRE_TOOLS").is_none(),
+        "CHAINZ_REQUIRE_TOOLS is set but strace is not on PATH"
+    );
+    found
 }
 
 fn sandbox() -> TempDir {

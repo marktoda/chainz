@@ -38,7 +38,7 @@ jobs:
       - name: Run cargo test
         run: cargo test --locked --workspace --all-targets
         env:
-          CHAINZ_REQUIRE_ANVIL: "1"
+          CHAINZ_REQUIRE_TOOLS: "1"
 
   lints:
     name: Lints
