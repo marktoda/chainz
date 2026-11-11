@@ -8,21 +8,26 @@
 //! [`chainz_rpc::control`].
 //!
 //! [`run`] is the process entry point; [`Gateway`] is the embeddable server
-//! (tests start it in-process against mock upstreams).
+//! (tests start it in-process against mock upstreams). [`PinnedProxy`] is
+//! the single-endpoint variant (for forks), and [`auth`] holds the loopback
+//! token and `Host` checks both use.
 
 #![warn(missing_docs)]
 
-pub mod classify;
-pub mod gateway;
-pub mod inspector;
-pub mod metrics;
-pub mod router;
-pub mod state;
-pub mod summary;
+pub mod auth;
+mod classify;
+mod gateway;
+mod http;
+mod inspector;
+mod metrics;
+pub mod pinned;
+mod router;
+mod state;
+mod summary;
 
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use chainz_core::runtime::Runtime;
@@ -30,6 +35,15 @@ use chainz_core::{StorePaths, paths};
 use tokio::signal::unix::{SignalKind, signal};
 
 pub use gateway::{DEFAULT_PORT, Gateway, GatewayConfig};
+pub use metrics::Summary;
+pub use pinned::PinnedProxy;
+
+/// Unix time in milliseconds.
+pub(crate) fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
 
 /// Options for [`run`].
 #[derive(Debug, Clone)]
@@ -98,7 +112,7 @@ async fn foreground(config: GatewayConfig) -> Result<()> {
             _ = interrupt.recv() => break,
             _ = hangup.recv() => {
                 // The outcome arrives as a notice.
-                let _ = gateway.reload();
+                let _ = gateway.reload().await;
             }
             notice = notices.recv() => {
                 if let Ok(notice) = notice {

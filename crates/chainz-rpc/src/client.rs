@@ -87,6 +87,10 @@ impl RpcClient {
         let http = reqwest::Client::builder()
             .timeout(timeout)
             .connect_timeout(CONNECT_TIMEOUT.min(timeout))
+            // A redirect would carry the target's headers (API keys
+            // included) to whatever host it names: answer it as an HTTP
+            // status instead.
+            .redirect(reqwest::redirect::Policy::none())
             .user_agent(concat!("chainz/", env!("CARGO_PKG_VERSION")))
             .build()
             .expect("reqwest client with rustls builds");

@@ -1,12 +1,11 @@
 //! Endpoint capability probing (archive, debug, trace, log range, websocket).
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use serde_json::{Value, json};
 
 use crate::client::{BlockId, RpcClient};
 use crate::error::RpcError;
 use crate::hex;
+use crate::history::now_ms;
 use crate::target::Target;
 
 /// The `eth_getLogs` block ranges tried, largest first.
@@ -72,7 +71,7 @@ impl Capabilities {
 pub async fn probe_capabilities(client: &RpcClient, target: &Target) -> Capabilities {
     let mut caps = Capabilities {
         websocket: target.is_websocket(),
-        probed_at: Some(now_secs()),
+        probed_at: Some(now_ms() / 1000),
         ..Capabilities::default()
     };
     if caps.websocket {
@@ -156,18 +155,20 @@ async fn max_logs_range(client: &RpcClient, target: &Target) -> Option<u64> {
             .await
         {
             Ok(_) => return Some(range),
-            Err(RpcError::Connect) => return None,
-            Err(_) => continue,
+            // Only a refusal of the range says to try a smaller one. A
+            // timeout, a 429 or a 5xx says nothing about the limit, and
+            // a smaller range taken from one would be cached as the truth.
+            Err(e) if refuses_range(&e) => continue,
+            Err(_) => return None,
         }
     }
     None
 }
 
-fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+/// Whether an `eth_getLogs` failure is the server refusing the range: an
+/// RPC error or a 4xx status (429 is [`RpcError::RateLimited`], not this).
+fn refuses_range(e: &RpcError) -> bool {
+    matches!(e, RpcError::Rpc { .. } | RpcError::Http(400..=499))
 }
 
 #[cfg(test)]
@@ -197,5 +198,26 @@ mod tests {
         ));
         assert!(!is_method_missing(-32000, "transaction not found"));
         assert!(!is_method_missing(-32602, "invalid argument 0"));
+    }
+
+    #[test]
+    fn only_a_refusal_steps_the_log_range_down() {
+        let rpc = RpcError::Rpc {
+            code: -32005,
+            message: "range too large".into(),
+        };
+        assert!(refuses_range(&rpc));
+        assert!(refuses_range(&RpcError::Http(400)));
+        assert!(refuses_range(&RpcError::Http(413)));
+        for e in [
+            RpcError::Timeout,
+            RpcError::Connect,
+            RpcError::RateLimited { retry_after: None },
+            RpcError::Http(500),
+            RpcError::Http(503),
+            RpcError::InvalidResponse("x".into()),
+        ] {
+            assert!(!refuses_range(&e), "{e:?}");
+        }
     }
 }

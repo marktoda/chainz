@@ -1,10 +1,13 @@
 //! The running gateway: listeners, background tasks and lifecycle.
 
+use std::collections::HashMap;
 use std::convert::Infallible;
+use std::future::Future;
 use std::net::{Ipv4Addr, SocketAddr};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::task::Poll;
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, bail};
@@ -12,11 +15,11 @@ use bytes::Bytes;
 use chainz_core::StorePaths;
 use chainz_core::runtime::{Runtime, ServeInfo, ServeLock};
 use chainz_rpc::control::{
-    ChainStatus, EVENTS_PATH, EventsOptions, METRICS_PATH, RELOAD_PATH, STATUS_PATH, SocketPath,
-    Status,
+    ChainStatus, EVENTS_PATH, EventsOptions, METRICS_PATH, RELOAD_PATH, RequestRecord, STATUS_PATH,
+    SocketPath, Status,
 };
 use chainz_rpc::{HttpUpstream, RpcClient, Upstream};
-use http_body_util::{BodyExt, Full, Limited};
+use http_body_util::{BodyExt, Limited};
 use hyper::body::{Body, Frame, Incoming};
 use hyper::header::{ALLOW, CONTENT_TYPE, HOST, HeaderValue, RETRY_AFTER};
 use hyper::server::conn::http1;
@@ -26,13 +29,15 @@ use hyper_util::rt::{TokioIo, TokioTimer};
 use hyper_util::server::graceful::GracefulShutdown;
 use serde_json::Value;
 use tokio::net::{TcpListener, UnixListener};
-use tokio::sync::{broadcast, mpsc, watch};
-use tokio::task::JoinHandle;
+use tokio::sync::{broadcast, watch};
+use tokio::task::{JoinHandle, JoinSet};
 
+use crate::http::{self, BoxBody, is_json, json, plain, retry_after_secs};
 use crate::inspector::Inspector;
 use crate::metrics::Summary;
-use crate::router::{Reply, Router, now_ms};
+use crate::router::{Reply, Router};
 use crate::state::Snapshot;
+use crate::{auth, now_ms};
 
 /// The default gateway port (8545 stays free for anvil).
 pub const DEFAULT_PORT: u16 = 18545;
@@ -108,9 +113,11 @@ struct Shared {
     token: String,
     port: u16,
     started: Instant,
-    reloads: AtomicU64,
     /// Human-readable notices (reloads, warnings) for the foreground UI.
     notices: broadcast::Sender<String>,
+    /// Reloads (SIGHUP, the control API, the file watch) run one at a
+    /// time, so an older read of the config can't replace a newer one.
+    reloading: tokio::sync::Mutex<()>,
 }
 
 impl Shared {
@@ -118,9 +125,18 @@ impl Shared {
         let _ = self.notices.send(text);
     }
 
-    fn reload(&self) -> Result<()> {
+    async fn reload(&self) -> Result<()> {
+        let _one_at_a_time = self.reloading.lock().await;
         let previous = self.router.snapshot();
-        match Snapshot::load(&self.paths, self.state_dir.as_deref(), Some(&previous)) {
+        let (paths, state_dir, base) =
+            (self.paths.clone(), self.state_dir.clone(), previous.clone());
+        // Reading and parsing the files blocks.
+        let loaded = tokio::task::spawn_blocking(move || {
+            Snapshot::load(&paths, state_dir.as_deref(), Some(&base))
+        })
+        .await
+        .unwrap_or_else(|e| Err(anyhow::anyhow!("the reload task failed: {e}")));
+        match loaded {
             Ok(snapshot) => {
                 let chains = snapshot.chains.len();
                 // Only what this reload newly broke.
@@ -130,7 +146,6 @@ impl Shared {
                     }
                 }
                 self.router.set_snapshot(snapshot);
-                self.reloads.fetch_add(1, Ordering::Relaxed);
                 self.notice(format!("config reloaded ({chains} chains)"));
                 Ok(())
             }
@@ -170,8 +185,8 @@ pub struct Gateway {
     shared: Arc<Shared>,
     runtime: Runtime,
     stop: watch::Sender<bool>,
-    servers: Vec<JoinHandle<()>>,
-    background: Vec<JoinHandle<()>>,
+    /// The servers and the background loops; each stops on `stop`.
+    tasks: Vec<JoinHandle<()>>,
     log_writer: Option<JoinHandle<()>>,
     drain: Duration,
     _lock: ServeLock,
@@ -187,7 +202,7 @@ impl std::fmt::Debug for Gateway {
 
 impl Gateway {
     /// Take `serve.lock`, load the config, bind the loopback port and the
-    /// control socket, start the background tasks and publish `serve.json`.
+    /// control socket, publish `serve.json`, and start serving.
     pub async fn start(config: GatewayConfig) -> Result<Gateway> {
         let Some(lock) = config.runtime.acquire_serve_lock()? else {
             let port = config
@@ -202,6 +217,9 @@ impl Gateway {
         // Anything left by a gateway that died is stale now, and `serve stop`
         // must never read a dead gateway's PID while we hold the lock.
         let _ = config.runtime.remove_serve_info();
+        // Stamped before the load, so the watcher sees a change made while
+        // it runs.
+        let stamps = Stamps::take(&config.paths, config.state_dir.as_deref());
         let snapshot = Snapshot::load(&config.paths, config.state_dir.as_deref(), None)?;
         let warnings = snapshot.warnings.clone();
 
@@ -228,50 +246,29 @@ impl Gateway {
             std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600))?;
         }
 
-        let (inspector, log_writer) = match Inspector::new(config.log.as_deref()).await {
-            Ok(pair) => pair,
-            Err(error) => {
-                let _ = std::fs::remove_file(&sock);
-                return Err(error).context("can't open the --log file");
-            }
-        };
         let (notices, _) = broadcast::channel(64);
+        let (inspector, log_writer) =
+            match Inspector::new(config.log.as_deref(), notices.clone()).await {
+                Ok(pair) => pair,
+                Err(error) => {
+                    let _ = std::fs::remove_file(&sock);
+                    return Err(error).context("can't open the --log file");
+                }
+            };
         let shared = Arc::new(Shared {
             router: Router::new(snapshot, config.upstream, inspector, config.timeout),
             paths: config.paths,
             state_dir: config.state_dir,
-            token: new_token(),
+            token: auth::new_token(),
             port,
             started: Instant::now(),
-            reloads: AtomicU64::new(0),
             notices,
+            reloading: tokio::sync::Mutex::new(()),
         });
-        let (stop, stopped) = watch::channel(false);
 
-        let servers = vec![
-            tokio::spawn(serve_tcp(
-                tcp,
-                shared.clone(),
-                stopped.clone(),
-                config.drain,
-            )),
-            tokio::spawn(serve_control(
-                unix,
-                shared.clone(),
-                stopped.clone(),
-                config.drain,
-            )),
-        ];
-        let background = vec![
-            tokio::spawn(probe_loop(
-                shared.clone(),
-                config.client,
-                config.probe_interval,
-            )),
-            tokio::spawn(watch_loop(shared.clone(), config.watch_interval)),
-        ];
-
-        // Published last: `exec` never sees a URL that isn't accepting yet.
+        // Published before anything is spawned. Both listeners are bound,
+        // so a client that reads it early waits in the accept backlog; and
+        // a failed write leaves nothing running that holds them.
         let info = ServeInfo {
             pid: std::process::id(),
             port,
@@ -281,14 +278,51 @@ impl Gateway {
         };
         if let Err(error) = config.runtime.write_serve_info(&info) {
             let _ = std::fs::remove_file(&sock);
+            shared.router.inspector.close_log();
+            if let Some(writer) = log_writer {
+                let _ = writer.await;
+            }
             return Err(error).context("can't write serve.json");
         }
+
+        let (stop, stopped) = watch::channel(false);
+        let tasks = vec![
+            tokio::spawn(http::serve_tcp(
+                tcp,
+                {
+                    let shared = shared.clone();
+                    move |request| {
+                        let shared = shared.clone();
+                        async move { proxy(&shared, request).await }
+                    }
+                },
+                stopped.clone(),
+                config.drain,
+            )),
+            tokio::spawn(serve_control(
+                unix,
+                shared.clone(),
+                stopped.clone(),
+                config.drain,
+            )),
+            tokio::spawn(probe_loop(
+                shared.clone(),
+                config.client,
+                config.probe_interval,
+                stopped.clone(),
+            )),
+            tokio::spawn(watch_loop(
+                shared.clone(),
+                config.watch_interval,
+                stamps,
+                stopped,
+            )),
+        ];
         let gateway = Gateway {
             shared,
             runtime: config.runtime,
             stop,
-            servers,
-            background,
+            tasks,
             log_writer,
             drain: config.drain,
             _lock: lock,
@@ -338,132 +372,57 @@ impl Gateway {
     }
 
     /// Re-read the config now. On error the previous config stays.
-    pub fn reload(&self) -> Result<()> {
-        self.shared.reload()
+    pub async fn reload(&self) -> Result<()> {
+        self.shared.reload().await
     }
 
     /// Stop: withdraw `serve.json`, stop accepting, let in-flight requests
     /// finish (up to the drain time), then remove the socket and release
-    /// the lock.
-    pub async fn shutdown(self) {
+    /// the lock. Every task the gateway started has ended when this
+    /// returns.
+    pub async fn shutdown(mut self) {
         let _ = self.runtime.remove_serve_info();
         let _ = self.stop.send(true);
-        for task in &self.background {
-            task.abort();
-        }
-        let deadline = tokio::time::sleep(self.drain + Duration::from_millis(250));
-        tokio::pin!(deadline);
-        for mut server in self.servers {
+        // Each task stops on the signal (the servers after draining);
+        // whatever is still running at the deadline is aborted.
+        let deadline = tokio::time::Instant::now() + self.drain + Duration::from_millis(250);
+        for mut task in std::mem::take(&mut self.tasks) {
             tokio::select! {
-                _ = &mut server => {}
-                _ = &mut deadline => server.abort(),
+                _ = &mut task => {}
+                _ = tokio::time::sleep_until(deadline) => {
+                    task.abort();
+                    let _ = task.await;
+                }
             }
         }
         self.shared.router.inspector.close_log();
-        if let Some(writer) = self.log_writer {
-            let _ = tokio::time::timeout(Duration::from_secs(2), writer).await;
+        if let Some(mut writer) = self.log_writer.take()
+            && tokio::time::timeout(Duration::from_secs(2), &mut writer)
+                .await
+                .is_err()
+        {
+            writer.abort();
+            let _ = writer.await;
         }
         let _ = std::fs::remove_file(self.runtime.serve_sock_path());
     }
 }
 
-/// 32 random bytes, hex.
-fn new_token() -> String {
-    hex::encode(rand::random::<[u8; 32]>())
-}
-
-type BoxBody = http_body_util::combinators::BoxBody<Bytes, Infallible>;
-
-fn full(body: impl Into<Bytes>) -> BoxBody {
-    Full::new(body.into()).boxed()
-}
-
-fn plain(status: StatusCode, text: &'static str) -> Response<BoxBody> {
-    let mut response = Response::new(full(text));
-    *response.status_mut() = status;
-    response
-}
-
-fn json(status: StatusCode, body: impl Into<Bytes>) -> Response<BoxBody> {
-    let mut response = Response::new(full(body));
-    *response.status_mut() = status;
-    response
-        .headers_mut()
-        .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    response
-}
-
-/// Accept connections until stopped, then drain.
-async fn serve_tcp(
-    listener: TcpListener,
-    shared: Arc<Shared>,
-    mut stopped: watch::Receiver<bool>,
-    drain: Duration,
-) {
-    let graceful = GracefulShutdown::new();
-    let mut builder = http1::Builder::new();
-    builder.timer(TokioTimer::new());
-    loop {
-        tokio::select! {
-            accepted = listener.accept() => {
-                let Ok((stream, _)) = accepted else {
-                    // Out of descriptors, most likely: don't spin.
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                    continue;
-                };
-                let _ = stream.set_nodelay(true);
-                let shared = shared.clone();
-                let service = service_fn(move |request| {
-                    let shared = shared.clone();
-                    async move { Ok::<_, Infallible>(proxy(&shared, request).await) }
-                });
-                let connection = builder.serve_connection(TokioIo::new(stream), service);
-                let connection = graceful.watch(connection);
-                tokio::spawn(async move {
-                    let _ = connection.await;
-                });
-            }
-            _ = stopped.changed() => break,
+/// A gateway dropped without [`Gateway::shutdown`] stops at once: no
+/// drain, and its tasks are aborted rather than awaited.
+impl Drop for Gateway {
+    fn drop(&mut self) {
+        let _ = self.stop.send(true);
+        for task in self.tasks.iter().chain(&self.log_writer) {
+            task.abort();
         }
     }
-    drop(listener);
-    let _ = tokio::time::timeout(drain, graceful.shutdown()).await;
-}
-
-/// Whether `Host` names this gateway: `127.0.0.1` or `localhost`, with our
-/// port if any. Anything else may be a DNS-rebinding page.
-fn host_allowed(host: Option<&HeaderValue>, port: u16) -> bool {
-    let Some(host) = host.and_then(|h| h.to_str().ok()) else {
-        return false;
-    };
-    let (name, host_port) = match host.rsplit_once(':') {
-        Some((name, port)) => (name, Some(port)),
-        None => (host, None),
-    };
-    (name == "127.0.0.1" || name.eq_ignore_ascii_case("localhost"))
-        && host_port.is_none_or(|p| p.parse() == Ok(port))
-}
-
-fn is_json(content_type: Option<&HeaderValue>) -> bool {
-    content_type
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.split(';').next())
-        .is_some_and(|media| media.trim().eq_ignore_ascii_case("application/json"))
-}
-
-/// Compare without an early exit on the first differing byte.
-fn token_matches(given: &str, expected: &str) -> bool {
-    given.len() == expected.len()
-        && given
-            .bytes()
-            .zip(expected.bytes())
-            .fold(0, |acc, (a, b)| acc | (a ^ b))
-            == 0
 }
 
 /// One proxied request: auth, then routing. No CORS headers are ever sent.
 async fn proxy(shared: &Shared, request: Request<Incoming>) -> Response<BoxBody> {
-    if !host_allowed(request.headers().get(HOST), shared.port) {
+    let host = request.headers().get(HOST).and_then(|h| h.to_str().ok());
+    if !auth::host_allowed(host, shared.port) {
         return plain(StatusCode::FORBIDDEN, "forbidden\n");
     }
     if request.method() != Method::POST {
@@ -489,7 +448,7 @@ async fn proxy(shared: &Shared, request: Request<Incoming>) -> Response<BoxBody>
     ) else {
         return plain(StatusCode::FORBIDDEN, "forbidden\n");
     };
-    if !token_matches(token, &shared.token) {
+    if !auth::token_matches(token, &shared.token) {
         return plain(StatusCode::FORBIDDEN, "forbidden\n");
     }
     let snapshot = shared.router.snapshot();
@@ -510,7 +469,7 @@ async fn proxy(shared: &Shared, request: Request<Incoming>) -> Response<BoxBody>
     if let Some(wait) = reply.retry_after {
         response
             .headers_mut()
-            .insert(RETRY_AFTER, HeaderValue::from(wait.as_secs().max(1)));
+            .insert(RETRY_AFTER, HeaderValue::from(retry_after_secs(wait)));
     }
     response
 }
@@ -525,6 +484,7 @@ async fn serve_control(
     let graceful = GracefulShutdown::new();
     let mut builder = http1::Builder::new();
     builder.timer(TokioTimer::new());
+    let mut connections = JoinSet::new();
     loop {
         tokio::select! {
             accepted = listener.accept() => {
@@ -537,22 +497,23 @@ async fn serve_control(
                 let service = service_fn(move |request| {
                     let shared = shared.clone();
                     let stopped = stopped.clone();
-                    async move { Ok::<_, Infallible>(control(&shared, request, stopped)) }
+                    async move { Ok::<_, Infallible>(control(&shared, request, stopped).await) }
                 });
                 let connection = builder.serve_connection(TokioIo::new(stream), service);
                 let connection = graceful.watch(connection);
-                tokio::spawn(async move {
+                connections.spawn(async move {
                     let _ = connection.await;
                 });
             }
+            Some(_) = connections.join_next(), if !connections.is_empty() => {}
             _ = stopped.changed() => break,
         }
     }
     drop(listener);
-    let _ = tokio::time::timeout(drain, graceful.shutdown()).await;
+    http::drain_connections(graceful, connections, drain).await;
 }
 
-fn control(
+async fn control(
     shared: &Arc<Shared>,
     request: Request<Incoming>,
     stopped: watch::Receiver<bool>,
@@ -571,13 +532,15 @@ fn control(
                 serde_json::to_vec(&snapshot).unwrap_or_default(),
             )
         }
-        (&Method::POST, RELOAD_PATH) => match shared.reload() {
+        (&Method::POST, RELOAD_PATH) => match shared.reload().await {
             Ok(()) => plain(StatusCode::NO_CONTENT, ""),
             Err(_) => plain(StatusCode::INTERNAL_SERVER_ERROR, "reload failed\n"),
         },
         (&Method::GET, EVENTS_PATH) => {
             let options = EventsOptions::from_query(request.uri().query().unwrap_or(""));
-            let mut response = Response::new(events_body(shared, options, stopped));
+            let (backlog, live) = shared.router.inspector.subscribe(options);
+            let mut response =
+                Response::new(EventsBody::new(backlog, live, stopped).boxed_unsync());
             response.headers_mut().insert(
                 CONTENT_TYPE,
                 HeaderValue::from_static("application/x-ndjson"),
@@ -589,79 +552,109 @@ fn control(
     }
 }
 
-/// A response body fed from a channel; ends when the sender is dropped.
-struct ChannelBody(mpsc::Receiver<Bytes>);
+/// The NDJSON events stream: the backlog in one chunk, then live records
+/// until the client goes away or the gateway stops. The body drives
+/// itself, so it ends with its connection and leaves no task behind.
+struct EventsBody {
+    backlog: Option<Bytes>,
+    next: Option<NextLine>,
+}
 
-impl Body for ChannelBody {
+type NextLine = Pin<Box<dyn Future<Output = Option<(Bytes, Live)>> + Send>>;
+
+/// What a following events stream waits on.
+struct Live {
+    records: broadcast::Receiver<RequestRecord>,
+    stopped: watch::Receiver<bool>,
+}
+
+impl EventsBody {
+    fn new(
+        backlog: Vec<RequestRecord>,
+        live: Option<broadcast::Receiver<RequestRecord>>,
+        stopped: watch::Receiver<bool>,
+    ) -> Self {
+        let chunk: Vec<u8> = backlog.iter().flat_map(ndjson).collect();
+        EventsBody {
+            backlog: (!chunk.is_empty()).then(|| Bytes::from(chunk)),
+            next: live.map(|records| Box::pin(next_line(Live { records, stopped })) as NextLine),
+        }
+    }
+}
+
+fn ndjson(record: &RequestRecord) -> Vec<u8> {
+    let mut line = serde_json::to_vec(record).unwrap_or_default();
+    line.push(b'\n');
+    line
+}
+
+/// The next live record as a line, or `None` when the stream is over.
+async fn next_line(mut live: Live) -> Option<(Bytes, Live)> {
+    loop {
+        let record = tokio::select! {
+            record = live.records.recv() => record,
+            _ = live.stopped.changed() => return None,
+        };
+        match record {
+            Ok(record) => return Some((Bytes::from(ndjson(&record)), live)),
+            Err(broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(broadcast::error::RecvError::Closed) => return None,
+        }
+    }
+}
+
+impl Body for EventsBody {
     type Data = Bytes;
     type Error = Infallible;
 
     fn poll_frame(
-        mut self: std::pin::Pin<&mut Self>,
+        mut self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Result<Frame<Bytes>, Infallible>>> {
-        self.0
-            .poll_recv(cx)
-            .map(|chunk| chunk.map(|bytes| Ok(Frame::data(bytes))))
-    }
-}
-
-/// The NDJSON events stream: the backlog, then live records until the
-/// client goes away or the gateway stops.
-fn events_body(
-    shared: &Arc<Shared>,
-    options: EventsOptions,
-    mut stopped: watch::Receiver<bool>,
-) -> BoxBody {
-    let (backlog, live) = shared.router.inspector.subscribe(options);
-    let (tx, rx) = mpsc::channel::<Bytes>(64);
-    tokio::spawn(async move {
-        let line = |record| {
-            let mut line = serde_json::to_vec(&record).unwrap_or_default();
-            line.push(b'\n');
-            Bytes::from(line)
+    ) -> Poll<Option<Result<Frame<Bytes>, Infallible>>> {
+        if let Some(chunk) = self.backlog.take() {
+            return Poll::Ready(Some(Ok(Frame::data(chunk))));
+        }
+        let Some(next) = self.next.as_mut() else {
+            return Poll::Ready(None);
         };
-        // One chunk for the whole backlog.
-        if !backlog.is_empty() {
-            let chunk: Vec<u8> = backlog.into_iter().flat_map(|r| line(r).to_vec()).collect();
-            if tx.send(Bytes::from(chunk)).await.is_err() {
-                return;
+        match next.as_mut().poll(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Some((line, live))) => {
+                self.next = Some(Box::pin(next_line(live)));
+                Poll::Ready(Some(Ok(Frame::data(line))))
+            }
+            Poll::Ready(None) => {
+                self.next = None;
+                Poll::Ready(None)
             }
         }
-        let Some(mut live) = live else { return };
-        loop {
-            tokio::select! {
-                record = live.recv() => match record {
-                    Ok(record) => {
-                        if tx.send(line(record)).await.is_err() {
-                            return;
-                        }
-                    }
-                    Err(broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(broadcast::error::RecvError::Closed) => return,
-                },
-                _ = tx.closed() => return,
-                _ = stopped.changed() => return,
-            }
-        }
-    });
-    ChannelBody(rx).boxed()
+    }
 }
 
 /// Probe every failover pool's heads and keep the per-chain high-water
 /// mark. Single-endpoint pools need no mark and are never probed. Pools
 /// without recent traffic are probed less often, so an idle gateway spends
 /// little against provider quotas.
-async fn probe_loop(shared: Arc<Shared>, client: RpcClient, interval: Duration) {
+async fn probe_loop(
+    shared: Arc<Shared>,
+    client: RpcClient,
+    interval: Duration,
+    mut stopped: watch::Receiver<bool>,
+) {
     let idle_interval = interval * IDLE_PROBE_FACTOR;
     let mut ticker = tokio::time::interval(interval);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
-        ticker.tick().await;
+        tokio::select! {
+            _ = ticker.tick() => {}
+            _ = stopped.changed() => return,
+        }
         let now = now_ms() / 1000;
         let snapshot = shared.router.snapshot();
-        let mut probes = Vec::new();
-        for chain in &snapshot.chains {
+        let mut round = JoinSet::new();
+        // Each probed chain's best head this round.
+        let mut best: HashMap<usize, Option<u64>> = HashMap::new();
+        for (index, chain) in snapshot.chains.iter().enumerate() {
             if chain.failover.is_empty() || chain.active.is_err() {
                 continue;
             }
@@ -672,53 +665,135 @@ async fn probe_loop(shared: Arc<Shared>, client: RpcClient, interval: Duration) 
                 continue;
             }
             chain.mark_probed();
+            best.insert(index, None);
             for endpoint in chain.pool() {
-                let chain = chain.clone();
                 let client = client.clone();
-                probes.push(tokio::spawn(async move {
-                    let result = chainz_rpc::probe(&client, &endpoint.target, chain.id).await;
+                let chain_id = chain.id;
+                round.spawn(async move {
+                    let result = chainz_rpc::probe(&client, &endpoint.target, chain_id).await;
                     endpoint.set_head(result.head);
-                    if let Some(head) = result.head {
-                        chain.observe_head(head);
-                    }
-                }));
+                    (index, result.head)
+                });
             }
         }
-        for probe in probes {
-            let _ = probe.await;
+        // Every probe has its own deadline. A stop cuts the round short
+        // and waits for the aborted probes.
+        loop {
+            let done = tokio::select! {
+                done = round.join_next() => done,
+                _ = stopped.changed() => {
+                    round.shutdown().await;
+                    return;
+                }
+            };
+            match done {
+                Some(Ok((index, Some(head)))) => {
+                    let slot = best.entry(index).or_default();
+                    *slot = (*slot).max(Some(head));
+                }
+                Some(_) => {}
+                None => break,
+            }
+        }
+        for (index, head) in best {
+            snapshot.chains[index].record_round(head);
+        }
+    }
+}
+
+/// Enough of a file's metadata to see that it changed. Config writes are
+/// atomic renames, so the inode changes even when the size and the
+/// (coarse-grained) modification time come out the same.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Stamp {
+    modified: Option<SystemTime>,
+    len: u64,
+    dev: u64,
+    ino: u64,
+    ctime: (i64, i64),
+}
+
+impl Stamp {
+    fn of(path: &Path) -> Option<Stamp> {
+        use std::os::unix::fs::MetadataExt;
+        let meta = std::fs::metadata(path).ok()?;
+        Some(Stamp {
+            modified: meta.modified().ok(),
+            len: meta.len(),
+            dev: meta.dev(),
+            ino: meta.ino(),
+            ctime: (meta.ctime(), meta.ctime_nsec()),
+        })
+    }
+}
+
+/// The files the watcher follows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Stamps {
+    config: Option<Stamp>,
+    secrets: Option<Stamp>,
+    health: Option<Stamp>,
+}
+
+impl Stamps {
+    fn take(paths: &StorePaths, state_dir: Option<&Path>) -> Stamps {
+        Stamps {
+            config: Stamp::of(&paths.config),
+            secrets: Stamp::of(&paths.secrets),
+            health: state_dir.and_then(|dir| Stamp::of(&dir.join("health.json"))),
         }
     }
 }
 
 /// Reload when `config.toml` or `secrets.toml` changes, and refresh
-/// capability tags when the health store changes.
-async fn watch_loop(shared: Arc<Shared>, interval: Duration) {
-    type Stamp = Option<(SystemTime, u64)>;
-    fn stamp(path: &std::path::Path) -> Stamp {
-        let meta = std::fs::metadata(path).ok()?;
-        Some((meta.modified().ok()?, meta.len()))
-    }
-    let health = shared.state_dir.as_ref().map(|dir| dir.join("health.json"));
-    let stamps = |shared: &Shared| -> (Stamp, Stamp, Stamp) {
-        (
-            stamp(&shared.paths.config),
-            stamp(&shared.paths.secrets),
-            health.as_deref().and_then(stamp),
-        )
-    };
-    let mut seen = stamps(&shared);
+/// capability tags when the health store changes. `seen` is what the files
+/// looked like when the running config was loaded.
+async fn watch_loop(
+    shared: Arc<Shared>,
+    interval: Duration,
+    mut seen: Stamps,
+    mut stopped: watch::Receiver<bool>,
+) {
     let mut ticker = tokio::time::interval(interval);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
-        ticker.tick().await;
-        let now = stamps(&shared);
-        if (now.0, now.1) != (seen.0, seen.1) {
-            let _ = shared.reload();
-        } else if now.2 != seen.2
-            && let Some(dir) = &shared.state_dir
+        tokio::select! {
+            _ = ticker.tick() => {}
+            _ = stopped.changed() => return,
+        }
+        let now = Stamps::take(&shared.paths, shared.state_dir.as_deref());
+        if (now.config, now.secrets) != (seen.config, seen.secrets) {
+            let _ = shared.reload().await;
+        } else if now.health != seen.health
+            && let Some(dir) = shared.state_dir.clone()
         {
-            shared.router.snapshot().refresh_capabilities(dir);
+            let snapshot = shared.router.snapshot();
+            let _ = tokio::task::spawn_blocking(move || snapshot.refresh_capabilities(&dir)).await;
         }
         seen = now;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_same_size_atomic_rewrite_changes_the_stamp() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "a = 1\n").unwrap();
+        let before = Stamp::of(&path).unwrap();
+        // Same length, same modification time: only the inode (and ctime)
+        // tell the files apart.
+        let tmp = dir.path().join("config.toml.tmp");
+        std::fs::write(&tmp, "a = 2\n").unwrap();
+        let file = std::fs::File::options().write(true).open(&tmp).unwrap();
+        file.set_modified(before.modified.unwrap()).unwrap();
+        drop(file);
+        std::fs::rename(&tmp, &path).unwrap();
+        let after = Stamp::of(&path).unwrap();
+        assert_eq!((after.len, after.modified), (before.len, before.modified));
+        assert_ne!(after, before);
     }
 }

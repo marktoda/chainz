@@ -1,6 +1,8 @@
-//! The gateway's control API: types, a client and an in-process mock server.
+//! The gateway's control API: types, a client, the shared event buffer
+//! and (with the `mock` feature) an in-process mock server.
 //!
-//! **Provisional**: the gateway owns these types and may change them.
+//! The protocol is stable: the gateway, `chainz serve status|log` and the
+//! dashboard are all built on it.
 //!
 //! Protocol: HTTP/1.1 over the unix socket `serve.sock` (mode 0600), one
 //! request per connection (`Connection: close`).
@@ -16,19 +18,22 @@
 //! Response bodies may be framed by `Content-Length`, chunked transfer
 //! encoding, or connection close; the client accepts all three.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
+use std::future::Future;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
+use std::time::Duration;
 
 use serde::de::DeserializeOwned;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::net::{UnixListener, UnixStream};
+use tokio::net::UnixStream;
 use tokio::sync::{broadcast, mpsc};
-use tokio::task::{JoinHandle, JoinSet};
 
 use crate::error::ErrorClass;
+
+#[cfg(feature = "mock")]
+pub use mock::MockControlServer;
 
 /// Path of the status endpoint.
 pub const STATUS_PATH: &str = "/_chainz/status";
@@ -41,6 +46,11 @@ pub const RELOAD_PATH: &str = "/_chainz/reload";
 
 /// Records the gateway (and the mock) keep for `backlog`.
 pub const EVENTS_BUFFER: usize = 10_000;
+/// How long [`ControlClient`] waits to connect and read a response head
+/// (and, except for the events stream, the whole body).
+pub const CONTROL_TIMEOUT: Duration = Duration::from_secs(5);
+/// Live records an events stream may fall behind by before it skips.
+const LIVE_BUFFER: usize = 4096;
 
 /// What an events stream delivers. The default is live records only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,7 +204,7 @@ pub struct MetricsRow {
     pub endpoint: String,
     /// JSON-RPC method.
     pub method: String,
-    /// Requests sent.
+    /// Upstream attempts sent.
     pub requests: u64,
     /// Errors by class.
     pub errors: BTreeMap<ErrorClass, u64>,
@@ -202,7 +212,8 @@ pub struct MetricsRow {
     pub p50_ms: u32,
     /// 95th percentile latency in milliseconds.
     pub p95_ms: u32,
-    /// HTTP 429 responses.
+    /// HTTP 429 responses, plus requests the gateway's own rate limiter
+    /// turned away without sending (those are not counted in `requests`).
     pub rate_limited: u64,
     /// Requests that failed over to another endpoint.
     pub failovers: u64,
@@ -250,10 +261,107 @@ pub enum RecordStatus {
     },
 }
 
+/// The last [`EVENTS_BUFFER`] request records plus a live broadcast: what
+/// `/_chainz/events` serves, in the gateway and in the mock alike.
+///
+/// A subscriber sees each record exactly once, in its backlog or live:
+/// records are broadcast under the same lock the backlog is read under.
+pub struct EventRing {
+    inner: Mutex<RingInner>,
+    live: broadcast::Sender<RequestRecord>,
+}
+
+struct RingInner {
+    next_id: u64,
+    records: VecDeque<RequestRecord>,
+}
+
+impl std::fmt::Debug for EventRing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EventRing").finish_non_exhaustive()
+    }
+}
+
+impl Default for EventRing {
+    fn default() -> Self {
+        EventRing::new()
+    }
+}
+
+impl EventRing {
+    /// An empty ring.
+    pub fn new() -> Self {
+        EventRing {
+            inner: Mutex::new(RingInner {
+                next_id: 1,
+                records: VecDeque::new(),
+            }),
+            live: broadcast::channel(LIVE_BUFFER).0,
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, RingInner> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Keep `record` as it is and broadcast it.
+    pub fn push(&self, record: RequestRecord) {
+        let mut inner = self.lock();
+        inner.keep(record.clone());
+        let _ = self.live.send(record);
+    }
+
+    /// Give `record` the next ID (1, 2, …), keep it and broadcast it.
+    /// `also` sees the numbered record under the ring's lock, so whatever
+    /// it does happens in ID order.
+    pub fn push_numbered(&self, mut record: RequestRecord, also: impl FnOnce(&RequestRecord)) {
+        let mut inner = self.lock();
+        record.id = inner.next_id;
+        inner.next_id += 1;
+        inner.keep(record.clone());
+        also(&record);
+        let _ = self.live.send(record);
+    }
+
+    /// The backlog asked for (oldest first) and, when following, a receiver
+    /// for everything after it.
+    pub fn subscribe(
+        &self,
+        options: EventsOptions,
+    ) -> (
+        Vec<RequestRecord>,
+        Option<broadcast::Receiver<RequestRecord>>,
+    ) {
+        let inner = self.lock();
+        let skip = inner.records.len().saturating_sub(options.backlog);
+        let backlog = inner.records.iter().skip(skip).cloned().collect();
+        (backlog, options.follow.then(|| self.live.subscribe()))
+    }
+
+    /// Live subscribers right now.
+    pub fn subscribers(&self) -> usize {
+        self.live.receiver_count()
+    }
+}
+
+impl RingInner {
+    fn keep(&mut self, record: RequestRecord) {
+        if self.records.len() == EVENTS_BUFFER {
+            self.records.pop_front();
+        }
+        self.records.push_back(record);
+    }
+}
+
 /// A client for the control socket.
+///
+/// Every call gives up after [`CONTROL_TIMEOUT`] (see
+/// [`with_timeout`](Self::with_timeout)), so a wedged gateway can't hang
+/// the caller; only the body of an events stream is open-ended.
 #[derive(Debug, Clone)]
 pub struct ControlClient {
     socket: PathBuf,
+    timeout: Duration,
 }
 
 impl ControlClient {
@@ -261,7 +369,26 @@ impl ControlClient {
     pub fn new(socket: impl Into<PathBuf>) -> Self {
         ControlClient {
             socket: socket.into(),
+            timeout: CONTROL_TIMEOUT,
         }
+    }
+
+    /// Replace the [`CONTROL_TIMEOUT`].
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    /// Run `call` under the timeout.
+    async fn timed<T>(&self, call: impl Future<Output = io::Result<T>>) -> io::Result<T> {
+        tokio::time::timeout(self.timeout, call)
+            .await
+            .unwrap_or_else(|_| {
+                Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "the gateway's control socket did not answer in time",
+                ))
+            })
     }
 
     /// `GET /_chainz/status`.
@@ -289,7 +416,9 @@ impl ControlClient {
         &self,
         options: EventsOptions,
     ) -> io::Result<mpsc::Receiver<RequestRecord>> {
-        let mut body = self.send("GET", &options.path()).await?;
+        // Only the head is timed: the stream itself runs until either side
+        // closes it.
+        let mut body = self.timed(self.send("GET", &options.path())).await?;
         let (tx, rx) = mpsc::channel(1024);
         tokio::spawn(async move {
             let mut buf: Vec<u8> = Vec::new();
@@ -322,14 +451,18 @@ impl ControlClient {
 
     /// `POST /_chainz/reload`.
     pub async fn reload(&self) -> io::Result<()> {
-        let mut body = self.send("POST", RELOAD_PATH).await?;
-        body.read_all().await?;
-        Ok(())
+        self.timed(async {
+            let mut body = self.send("POST", RELOAD_PATH).await?;
+            body.read_all().await?;
+            Ok(())
+        })
+        .await
     }
 
     async fn get_json<T: DeserializeOwned>(&self, path: &str) -> io::Result<T> {
-        let mut body = self.send("GET", path).await?;
-        let bytes = body.read_all().await?;
+        let bytes = self
+            .timed(async { self.send("GET", path).await?.read_all().await })
+            .await?;
         serde_json::from_slice(&bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
@@ -514,248 +647,249 @@ impl<R: AsyncRead + Unpin> Body<R> {
     }
 }
 
-struct MockState {
-    status: Mutex<Status>,
-    metrics: Mutex<MetricsSnapshot>,
-    reloads: AtomicU64,
-    events: broadcast::Sender<RequestRecord>,
-    history: Mutex<std::collections::VecDeque<RequestRecord>>,
-}
+/// The mock control server (feature `mock`).
+#[cfg(feature = "mock")]
+mod mock {
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex};
 
-/// An in-process mock of the control socket, for tests of control clients
-/// (the dashboard builds against this). Events are streamed with chunked
-/// transfer encoding, as a hyper-based server would.
-///
-/// Dropping it stops the server, closes every connection and removes the
-/// socket file.
-pub struct MockControlServer {
-    path: PathBuf,
-    state: Arc<MockState>,
-    accept: JoinHandle<()>,
-}
+    use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::{UnixListener, UnixStream};
+    use tokio::sync::broadcast;
+    use tokio::task::{JoinHandle, JoinSet};
 
-impl std::fmt::Debug for MockControlServer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MockControlServer")
-            .field("path", &self.path)
-            .finish_non_exhaustive()
+    use super::*;
+
+    struct MockState {
+        status: Mutex<Status>,
+        metrics: Mutex<MetricsSnapshot>,
+        reloads: AtomicU64,
+        events: EventRing,
     }
-}
 
-impl MockControlServer {
-    /// Bind `socket` (mode 0600; a stale file there is replaced) and serve.
-    pub async fn start(
-        socket: &Path,
-        status: Status,
-        metrics: MetricsSnapshot,
-    ) -> io::Result<Self> {
-        match std::fs::remove_file(socket) {
-            Ok(()) => {}
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e),
+    /// An in-process mock of the control socket, for tests of control clients
+    /// (the dashboard's tests run against it). Events are streamed with chunked
+    /// transfer encoding, as a hyper-based server would.
+    ///
+    /// Dropping it stops the server, closes every connection and removes the
+    /// socket file.
+    pub struct MockControlServer {
+        path: PathBuf,
+        state: Arc<MockState>,
+        accept: JoinHandle<()>,
+    }
+
+    impl std::fmt::Debug for MockControlServer {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("MockControlServer")
+                .field("path", &self.path)
+                .finish_non_exhaustive()
         }
-        let listener = UnixListener::bind(SocketPath::new(socket)?.as_path())?;
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
-        }
-        let (events, _) = broadcast::channel(1024);
-        let state = Arc::new(MockState {
-            status: Mutex::new(status),
-            metrics: Mutex::new(metrics),
-            reloads: AtomicU64::new(0),
-            events,
-            history: Mutex::new(std::collections::VecDeque::new()),
-        });
-        let accept_state = state.clone();
-        let accept = tokio::spawn(async move {
-            // Owned by this task: aborting it aborts every connection.
-            let mut conns = JoinSet::new();
-            loop {
-                tokio::select! {
-                    accepted = listener.accept() => {
-                        let Ok((stream, _)) = accepted else { continue };
-                        conns.spawn(serve_conn(stream, accept_state.clone()));
-                    }
-                    Some(_) = conns.join_next(), if !conns.is_empty() => {}
-                }
+    }
+
+    impl MockControlServer {
+        /// Bind `socket` (mode 0600; a stale file there is replaced) and serve.
+        pub async fn start(
+            socket: &Path,
+            status: Status,
+            metrics: MetricsSnapshot,
+        ) -> io::Result<Self> {
+            match std::fs::remove_file(socket) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
             }
-        });
-        Ok(MockControlServer {
-            path: socket.to_path_buf(),
-            state,
-            accept,
-        })
-    }
-
-    /// Broadcast a record to every connected events client, and keep it for
-    /// `backlog` requests (the last [`EVENTS_BUFFER`] are kept).
-    pub fn push_event(&self, record: RequestRecord) {
-        // Under the history lock, so a connecting stream sees each record
-        // exactly once (in its backlog or live).
-        let mut history = self.state.history.lock().unwrap_or_else(|e| e.into_inner());
-        if history.len() == EVENTS_BUFFER {
-            history.pop_front();
+            let listener = UnixListener::bind(SocketPath::new(socket)?.as_path())?;
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
+            }
+            let state = Arc::new(MockState {
+                status: Mutex::new(status),
+                metrics: Mutex::new(metrics),
+                reloads: AtomicU64::new(0),
+                events: EventRing::new(),
+            });
+            let accept_state = state.clone();
+            let accept = tokio::spawn(async move {
+                // Owned by this task: aborting it aborts every connection.
+                let mut conns = JoinSet::new();
+                loop {
+                    tokio::select! {
+                        accepted = listener.accept() => {
+                            let Ok((stream, _)) = accepted else { continue };
+                            conns.spawn(serve_conn(stream, accept_state.clone()));
+                        }
+                        Some(_) = conns.join_next(), if !conns.is_empty() => {}
+                    }
+                }
+            });
+            Ok(MockControlServer {
+                path: socket.to_path_buf(),
+                state,
+                accept,
+            })
         }
-        history.push_back(record.clone());
-        let _ = self.state.events.send(record);
+
+        /// Broadcast a record to every connected events client, and keep it for
+        /// `backlog` requests (the last [`EVENTS_BUFFER`] are kept).
+        pub fn push_event(&self, record: RequestRecord) {
+            self.state.events.push(record);
+        }
+
+        /// Replace the snapshot served by `/_chainz/metrics`.
+        pub fn set_metrics(&self, metrics: MetricsSnapshot) {
+            *self.state.metrics.lock().unwrap_or_else(|e| e.into_inner()) = metrics;
+        }
+
+        /// Replace the status served by `/_chainz/status`.
+        pub fn set_status(&self, status: Status) {
+            *self.state.status.lock().unwrap_or_else(|e| e.into_inner()) = status;
+        }
+
+        /// How many `POST /_chainz/reload` requests were served.
+        pub fn reload_count(&self) -> u64 {
+            self.state.reloads.load(Ordering::SeqCst)
+        }
+
+        /// How many events streams are currently connected.
+        pub fn event_subscribers(&self) -> usize {
+            self.state.events.subscribers()
+        }
+
+        /// The socket path.
+        pub fn path(&self) -> &Path {
+            &self.path
+        }
     }
 
-    /// Replace the snapshot served by `/_chainz/metrics`.
-    pub fn set_metrics(&self, metrics: MetricsSnapshot) {
-        *self.state.metrics.lock().unwrap_or_else(|e| e.into_inner()) = metrics;
+    impl Drop for MockControlServer {
+        fn drop(&mut self) {
+            self.accept.abort();
+            let _ = std::fs::remove_file(&self.path);
+        }
     }
 
-    /// Replace the status served by `/_chainz/status`.
-    pub fn set_status(&self, status: Status) {
-        *self.state.status.lock().unwrap_or_else(|e| e.into_inner()) = status;
-    }
-
-    /// How many `POST /_chainz/reload` requests were served.
-    pub fn reload_count(&self) -> u64 {
-        self.state.reloads.load(Ordering::SeqCst)
-    }
-
-    /// How many events streams are currently connected.
-    pub fn event_subscribers(&self) -> usize {
-        self.state.events.receiver_count()
-    }
-
-    /// The socket path.
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for MockControlServer {
-    fn drop(&mut self) {
-        self.accept.abort();
-        let _ = std::fs::remove_file(&self.path);
-    }
-}
-
-async fn serve_conn(stream: UnixStream, state: Arc<MockState>) {
-    let (read, mut write) = stream.into_split();
-    let mut reader = BufReader::new(read);
-    let Ok(head) = read_head(&mut reader).await else {
-        return;
-    };
-    if let Some(len) = head
-        .header("content-length")
-        .and_then(|v| v.trim().parse::<u64>().ok())
-    {
-        let mut discard = (&mut reader).take(len);
-        if tokio::io::copy(&mut discard, &mut tokio::io::sink())
-            .await
-            .is_err()
+    async fn serve_conn(stream: UnixStream, state: Arc<MockState>) {
+        let (read, mut write) = stream.into_split();
+        let mut reader = BufReader::new(read);
+        let Ok(head) = read_head(&mut reader).await else {
+            return;
+        };
+        if let Some(len) = head
+            .header("content-length")
+            .and_then(|v| v.trim().parse::<u64>().ok())
         {
+            let mut discard = (&mut reader).take(len);
+            if tokio::io::copy(&mut discard, &mut tokio::io::sink())
+                .await
+                .is_err()
+            {
+                return;
+            }
+        }
+        let mut parts = head.first_line.split_whitespace();
+        let method = parts.next().unwrap_or("");
+        let target = parts.next().unwrap_or("");
+        let (path, query) = target.split_once('?').unwrap_or((target, ""));
+
+        let json_response = |body: Vec<u8>| {
+            let mut r = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .into_bytes();
+            r.extend_from_slice(&body);
+            r
+        };
+        let simple = |status: &str| {
+            format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .into_bytes()
+        };
+
+        let known = [STATUS_PATH, METRICS_PATH, EVENTS_PATH, RELOAD_PATH].contains(&path);
+        let response = match (method, path) {
+            ("GET", STATUS_PATH) => {
+                let status = state
+                    .status
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
+                json_response(serde_json::to_vec(&status).unwrap_or_default())
+            }
+            ("GET", METRICS_PATH) => {
+                let metrics = state
+                    .metrics
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
+                json_response(serde_json::to_vec(&metrics).unwrap_or_default())
+            }
+            ("POST", RELOAD_PATH) => {
+                state.reloads.fetch_add(1, Ordering::SeqCst);
+                simple("204 No Content")
+            }
+            ("GET", EVENTS_PATH) => {
+                let options = EventsOptions::from_query(query);
+                let (backlog, rx) = state.events.subscribe(options);
+                stream_events(reader, write, backlog, rx).await;
+                return;
+            }
+            _ if known => simple("405 Method Not Allowed"),
+            _ => simple("404 Not Found"),
+        };
+        let _ = write.write_all(&response).await;
+        let _ = write.shutdown().await;
+    }
+
+    async fn stream_events(
+        mut reader: BufReader<tokio::net::unix::OwnedReadHalf>,
+        mut write: tokio::net::unix::OwnedWriteHalf,
+        backlog: Vec<RequestRecord>,
+        rx: Option<broadcast::Receiver<RequestRecord>>,
+    ) {
+        fn chunk(record: &RequestRecord) -> Vec<u8> {
+            let mut line = serde_json::to_vec(record).unwrap_or_default();
+            line.push(b'\n');
+            let mut chunk = format!("{:x}\r\n", line.len()).into_bytes();
+            chunk.extend_from_slice(&line);
+            chunk.extend_from_slice(b"\r\n");
+            chunk
+        }
+
+        let head = "HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
+        if write.write_all(head.as_bytes()).await.is_err() {
             return;
         }
-    }
-    let mut parts = head.first_line.split_whitespace();
-    let method = parts.next().unwrap_or("");
-    let target = parts.next().unwrap_or("");
-    let (path, query) = target.split_once('?').unwrap_or((target, ""));
-
-    let json_response = |body: Vec<u8>| {
-        let mut r = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-            body.len()
-        )
-        .into_bytes();
-        r.extend_from_slice(&body);
-        r
-    };
-    let simple = |status: &str| {
-        format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").into_bytes()
-    };
-
-    let known = [STATUS_PATH, METRICS_PATH, EVENTS_PATH, RELOAD_PATH].contains(&path);
-    let response = match (method, path) {
-        ("GET", STATUS_PATH) => {
-            let status = state
-                .status
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone();
-            json_response(serde_json::to_vec(&status).unwrap_or_default())
+        for record in &backlog {
+            if write.write_all(&chunk(record)).await.is_err() {
+                return;
+            }
         }
-        ("GET", METRICS_PATH) => {
-            let metrics = state
-                .metrics
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone();
-            json_response(serde_json::to_vec(&metrics).unwrap_or_default())
-        }
-        ("POST", RELOAD_PATH) => {
-            state.reloads.fetch_add(1, Ordering::SeqCst);
-            simple("204 No Content")
-        }
-        ("GET", EVENTS_PATH) => {
-            let options = EventsOptions::from_query(query);
-            let (backlog, rx) = {
-                let history = state.history.lock().unwrap_or_else(|e| e.into_inner());
-                let skip = history.len().saturating_sub(options.backlog);
-                let backlog: Vec<RequestRecord> = history.iter().skip(skip).cloned().collect();
-                (backlog, options.follow.then(|| state.events.subscribe()))
-            };
-            stream_events(reader, write, backlog, rx).await;
+        let Some(mut rx) = rx else {
+            let _ = write.write_all(b"0\r\n\r\n").await;
             return;
-        }
-        _ if known => simple("405 Method Not Allowed"),
-        _ => simple("404 Not Found"),
-    };
-    let _ = write.write_all(&response).await;
-    let _ = write.shutdown().await;
-}
-
-async fn stream_events(
-    mut reader: BufReader<tokio::net::unix::OwnedReadHalf>,
-    mut write: tokio::net::unix::OwnedWriteHalf,
-    backlog: Vec<RequestRecord>,
-    rx: Option<broadcast::Receiver<RequestRecord>>,
-) {
-    fn chunk(record: &RequestRecord) -> Vec<u8> {
-        let mut line = serde_json::to_vec(record).unwrap_or_default();
-        line.push(b'\n');
-        let mut chunk = format!("{:x}\r\n", line.len()).into_bytes();
-        chunk.extend_from_slice(&line);
-        chunk.extend_from_slice(b"\r\n");
-        chunk
-    }
-
-    let head = "HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
-    if write.write_all(head.as_bytes()).await.is_err() {
-        return;
-    }
-    for record in &backlog {
-        if write.write_all(&chunk(record)).await.is_err() {
-            return;
-        }
-    }
-    let Some(mut rx) = rx else {
-        let _ = write.write_all(b"0\r\n\r\n").await;
-        return;
-    };
-    let mut scratch = [0u8; 256];
-    loop {
-        tokio::select! {
-            record = rx.recv() => match record {
-                Ok(record) => {
-                    if write.write_all(&chunk(&record)).await.is_err() {
+        };
+        let mut scratch = [0u8; 256];
+        loop {
+            tokio::select! {
+                record = rx.recv() => match record {
+                    Ok(record) => {
+                        if write.write_all(&chunk(&record)).await.is_err() {
+                            return;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => {
+                        let _ = write.write_all(b"0\r\n\r\n").await;
                         return;
                     }
-                }
-                Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(broadcast::error::RecvError::Closed) => {
-                    let _ = write.write_all(b"0\r\n\r\n").await;
-                    return;
-                }
-            },
-            n = reader.read(&mut scratch) => {
-                if !matches!(n, Ok(n) if n > 0) {
-                    return; // client closed
+                },
+                n = reader.read(&mut scratch) => {
+                    if !matches!(n, Ok(n) if n > 0) {
+                        return; // client closed
+                    }
                 }
             }
         }

@@ -67,6 +67,25 @@ async fn classifies_timeout_and_connect() {
 }
 
 #[tokio::test]
+async fn redirects_are_not_followed() {
+    // Following a redirect would hand the target's API-key header to
+    // whichever host the redirect names.
+    let elsewhere = MockHttp::start(|_, req| Resp::result(req, json!("0x1"))).await;
+    for status in [301, 302, 307, 308] {
+        let location = format!("http://localhost:{}/stolen", elsewhere.port);
+        let server =
+            MockHttp::start(move |_, _| Resp::status(status).header("Location", &location)).await;
+        let err = RpcClient::new()
+            .chain_id(&server.target(1))
+            .await
+            .unwrap_err();
+        assert_eq!(err, RpcError::Http(status));
+        assert_eq!(server.hits(), 1);
+    }
+    assert_eq!(elsewhere.hits(), 0, "a redirect was followed");
+}
+
+#[tokio::test]
 async fn websocket_targets_are_unsupported() {
     let t = Target::new(1, "ws", &format!("wss://example.invalid/{URL_SECRET}"), &[]).unwrap();
     let err = RpcClient::new().block_number(&t).await.unwrap_err();

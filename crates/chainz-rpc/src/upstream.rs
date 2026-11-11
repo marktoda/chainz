@@ -1,8 +1,8 @@
 //! Raw JSON-RPC forwarding to one chosen endpoint, with same-endpoint retries.
 //!
-//! **Frozen interface**: the gateway and the fork proxy are built on
-//! [`Upstream`]. It never fails over to another endpoint; that decision
-//! belongs to the caller, made from the returned error's class.
+//! The gateway and the fork proxy are built on [`Upstream`]. It never fails
+//! over to another endpoint; that decision belongs to the caller, made from
+//! the returned error's class.
 
 use std::future::Future;
 use std::pin::Pin;

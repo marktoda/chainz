@@ -6,6 +6,11 @@
 //! until it passes [`AimdLimiter::MAX_RATE`], where the bucket becomes
 //! unlimited again.
 //!
+//! Concurrent requests that hit the same limit come back as a burst of
+//! 429s: they are one signal, not many. At most one decrease is applied per
+//! [`AimdLimiter::DECREASE_INTERVAL`]; later 429s in that interval only
+//! drain the burst.
+//!
 //! Time is passed in explicitly so the limiter is deterministic under test.
 
 use std::sync::Mutex;
@@ -29,6 +34,8 @@ struct State {
     window_count: u32,
     /// Count of the previous complete window.
     prev_count: u32,
+    /// When the rate was last decreased.
+    decreased: Option<Instant>,
 }
 
 impl AimdLimiter {
@@ -43,6 +50,10 @@ impl AimdLimiter {
     pub const MAX_RATE: f64 = 500.0;
     /// Requests per second added per second of successful traffic.
     pub const INCREASE: f64 = 1.0;
+    /// At most one decrease per this interval. It is never shorter than
+    /// one request at the current rate, because the rate never drops below
+    /// [`MIN_RATE`](Self::MIN_RATE) (1 request per second).
+    pub const DECREASE_INTERVAL: Duration = Duration::from_secs(1);
 
     /// An unlimited bucket.
     pub fn new(now: Instant) -> Self {
@@ -54,6 +65,7 @@ impl AimdLimiter {
                 window_start: now,
                 window_count: 0,
                 prev_count: 0,
+                decreased: None,
             }),
         }
     }
@@ -97,11 +109,21 @@ impl AimdLimiter {
         }
     }
 
-    /// The endpoint answered 429: multiplicative decrease. An unlimited
+    /// The endpoint answered 429: multiplicative decrease, at most once
+    /// per [`DECREASE_INTERVAL`](Self::DECREASE_INTERVAL). An unlimited
     /// bucket first adopts the rate it was observed sending at.
     pub fn on_rate_limited(&self, now: Instant) {
         let mut s = self.lock();
         s.observe(now);
+        // No burst left after a 429.
+        s.tokens = s.tokens.min(0.0);
+        if s.rate.is_some()
+            && s.decreased
+                .is_some_and(|at| now.saturating_duration_since(at) < Self::DECREASE_INTERVAL)
+        {
+            return;
+        }
+        s.decreased = Some(now);
         let observed = f64::from(s.window_count.max(s.prev_count)).max(1.0);
         let base = match s.rate {
             Some(rate) => rate.min(observed.max(Self::MIN_RATE)),
@@ -112,8 +134,6 @@ impl AimdLimiter {
             s.refilled = now;
         }
         s.rate = Some(rate);
-        // No burst left after a 429.
-        s.tokens = s.tokens.min(0.0);
     }
 
     /// The current rate in requests per second; `None` when unlimited.
@@ -176,8 +196,8 @@ mod tests {
         assert_eq!(wait, Duration::from_millis(100));
         let wait = l.try_acquire(t, TWO_S).unwrap();
         assert_eq!(wait, Duration::from_millis(200));
-        // A second 429 halves again.
-        l.on_rate_limited(t);
+        // A second 429 a second later halves again.
+        l.on_rate_limited(t + Duration::from_secs(1));
         assert_eq!(l.rate(), Some(5.0));
     }
 
@@ -224,9 +244,28 @@ mod tests {
     fn rate_never_drops_below_the_floor() {
         let t = Instant::now();
         let l = AimdLimiter::new(t);
-        for _ in 0..10 {
-            l.on_rate_limited(t);
+        for i in 0..10 {
+            l.on_rate_limited(t + AimdLimiter::DECREASE_INTERVAL * i);
         }
         assert_eq!(l.rate(), Some(AimdLimiter::MIN_RATE));
+    }
+
+    #[test]
+    fn a_burst_of_429s_decreases_once() {
+        let t = Instant::now();
+        let l = AimdLimiter::new(t);
+        for _ in 0..32 {
+            l.try_acquire(t, NO_WAIT).unwrap();
+        }
+        // 32 concurrent requests all come back 429.
+        for i in 0..32 {
+            l.on_rate_limited(t + Duration::from_millis(i));
+        }
+        assert_eq!(l.rate(), Some(16.0), "one halving, not 32");
+        // The burst is still drained by the later 429s.
+        assert!(l.try_acquire(t + Duration::from_millis(40), TWO_S).unwrap() > NO_WAIT);
+        // Once the interval has passed, a 429 is a new signal.
+        l.on_rate_limited(t + AimdLimiter::DECREASE_INTERVAL);
+        assert_eq!(l.rate(), Some(8.0));
     }
 }

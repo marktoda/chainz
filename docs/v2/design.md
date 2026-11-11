@@ -261,7 +261,7 @@ One `rpc` module gives every feature the same client, the same idea of endpoint 
 - **URLs:** `http://127.0.0.1:18545/<token>/base` (name, alias or ID). `/<token>/base/llama` pins one endpoint, which is what `exec --rpc llama` uses while the gateway runs.
 - **Auth, always on:** a random token is generated at each start and stored in `serve.json` (mode `0600`), so `exec` picks it up and other local users cannot. The server also rejects any `Host` other than `127.0.0.1` or `localhost`, accepts only `POST` with `application/json`, and sends no CORS headers, so a web page cannot reach it through DNS rebinding or a simple cross-origin request.
 - **Failover pool, opt-in per chain:** the active endpoint is always tried first. Only the endpoints in the chain's `failover = ["llama", "publicnode"]` list are ever tried after it. A request meant for a private or header-authenticated endpoint therefore never leaks to an arbitrary public RPC. Migration leaves the list empty, and `chainz rpc bench` suggests one.
-- **Consistent heads:** while serving, the gateway probes each pool every 5 s and keeps a per-chain head high-water mark. A failover target must be within 2 blocks of that mark, so `latest` does not visibly go backwards.
+- **Consistent heads:** while serving, the gateway probes each pool every 5 s and keeps a per-chain head high-water mark: the best head over the last three probe rounds, so one failed probe doesn't lower it and one bogus head ages out. A failover target must be within 2 blocks of that mark, so `latest` does not visibly go backwards.
 - **Capability-aware:** `debug_*` and `trace_*` calls, and reads pinned to blocks older than 128, go only to endpoints tagged with that capability, or to the active endpoint when tags are unknown.
 - **Secrets stay upstream:** headers and `${VAR}` values are applied by the gateway. Child processes see only the tokenised loopback URL.
 - **HTTP only:** `ws://` and `wss://` endpoints (24 of the 149 in the current config) remain usable with `exec --direct` but are not routed. Websocket support is an open question.
@@ -275,13 +275,13 @@ One `rpc` module gives every feature the same client, the same idea of endpoint 
 | Filters and subscriptions (`eth_newFilter`, `eth_getFilterChanges`) | never; sticky to the endpoint that created the filter | filter IDs are local to each node |
 | JSON-RPC batches | the whole batch, under the strictest rule among its methods | keeps batch semantics simple |
 
-**Rate-limit smoothing.** Each endpoint has an adaptive token bucket (additive increase, multiplicative decrease). On a 429 the gateway halves that endpoint's rate and waits out `Retry-After` on the **same** endpoint when the wait is 2 s or less. Staying put keeps read-your-writes intact for nonce reads and receipt polling. Only a longer wait moves a read to the failover pool. The client sees fewer 429s and no thundering-herd retries.
+**Rate-limit smoothing.** Each endpoint has an adaptive token bucket (additive increase, multiplicative decrease). On a 429 the gateway halves that endpoint's rate (once per second at most: a burst of 429s from concurrent requests is one signal) and waits out `Retry-After` on the **same** endpoint when the wait is 2 s or less. Staying put keeps read-your-writes intact for nonce reads and receipt polling. Only a longer wait moves a read to the failover pool. Every send, retries included, takes a slot from the bucket, so requests that waited out the same 429 come back spaced out. A request with no other endpoint to go to queues in the bucket for up to 10 s; past that it gets a 429 at once, with the bucket's wait (rounded up) as `Retry-After`. The client sees fewer 429s and no thundering-herd retries.
 
 **Metrics** per chain, endpoint and method over 1-minute and 15-minute windows: requests, errors by class, p50 and p95 latency, 429s, failovers and bytes.
 
 **Inspector.** Every request becomes a record: time, chain, method, a short params summary (with addresses shown as labels, such as `eth_call → @usdc.balanceOf`), upstream endpoint, attempts, latency, status and response size. The last 10,000 records are kept in memory. `--log FILE` appends JSONL. `chainz serve log -f --chain base --method eth_call` tails it in the terminal.
 
-**Control API** on a unix socket, `serve.sock` in the runtime dir (mode `0600`), never on the TCP port: `status` (version, uptime, chains), `metrics` (JSON snapshot), `events` (a stream of request records) and `reload`. This API is the contract the dashboard is built against. Its types are provisional until the inspector exists.
+**Control API** on a unix socket, `serve.sock` in the runtime dir (mode `0600`), never on the TCP port: `status` (version, uptime, chains), `metrics` (JSON snapshot), `events` (a stream of request records) and `reload`. This API is the contract `serve status`, `serve log` and the dashboard are built against; its types live in `chainz_rpc::control`, with a mock server for client tests. Clients give up after 5 s, so a wedged gateway can't hang them.
 
 **Lifecycle.** It runs in the foreground with a live one-line summary, or with `--detach` as a background process.
 
@@ -433,7 +433,7 @@ Top, serve and fork share one RPC layer, and top reads serve through its control
 | `ls` with 17 chains | 3.1 ms | < 5 ms median (measured 2.0 ms) | ≤ 85% of v1 in the same job |
 | `doctor`, 17 chains (active endpoints) | 157 ms | ≤ v1, network-bound | none |
 | `top`, first paint | n/a | < 100 ms; data streams in | none |
-| Gateway added latency, p50 | n/a | < 1 ms (measured 84 µs) | benchmark against a local mock upstream |
+| Gateway added latency, p50 | n/a | < 1 ms (measured 84 µs) | `chainz-serve`'s `latency` example against a local mock upstream, in the perf job; fails over 1 ms |
 | Release binary | 14 MB | < 8 MB | size check |
 | Clean release build | about 3 min | < 90 s | none |
 

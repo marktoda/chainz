@@ -1,25 +1,32 @@
-//! The request inspector: a ring buffer of records, a live broadcast, and
-//! an optional JSONL log file.
+//! The request inspector: the [`EventRing`] behind `/_chainz/events`, and an
+//! optional JSONL log file.
+//!
+//! The log never slows a request down: records go to the writer task
+//! through a bounded queue, and when the writer falls behind they are
+//! dropped and counted. Drops and a failed write are reported as notices.
 
-use std::collections::VecDeque;
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
-use chainz_rpc::control::{EVENTS_BUFFER, EventsOptions, RequestRecord};
-use tokio::io::AsyncWriteExt;
+use chainz_rpc::control::{EventRing, EventsOptions, RequestRecord};
+use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 
-struct Ring {
-    next_id: u64,
-    records: VecDeque<RequestRecord>,
-}
+/// Records queued for the log writer before new ones are dropped.
+const LOG_QUEUE: usize = 8192;
+/// How often buffered log lines are flushed (and drops reported).
+const LOG_FLUSH: Duration = Duration::from_secs(1);
 
-/// Keeps the last [`EVENTS_BUFFER`] records and fans new ones out.
+/// Keeps the last records, fans new ones out, and feeds the `--log` file.
 pub struct Inspector {
-    ring: Mutex<Ring>,
-    live: broadcast::Sender<RequestRecord>,
-    log: Mutex<Option<mpsc::UnboundedSender<RequestRecord>>>,
+    ring: EventRing,
+    log: Mutex<Option<mpsc::Sender<RequestRecord>>>,
+    /// Records the log writer had no room for.
+    dropped: Arc<AtomicU64>,
 }
 
 impl std::fmt::Debug for Inspector {
@@ -31,9 +38,21 @@ impl std::fmt::Debug for Inspector {
 impl Inspector {
     /// An inspector, plus the log writer task when `log` is given. The file
     /// is opened for append (created 0600) before this returns, so a bad
-    /// path fails the start.
-    pub async fn new(log: Option<&Path>) -> std::io::Result<(Self, Option<JoinHandle<()>>)> {
-        let (live, _) = broadcast::channel(4096);
+    /// path fails the start. Log trouble (dropped records, a failed write)
+    /// is reported on `notices`.
+    pub async fn new(
+        log: Option<&Path>,
+        notices: broadcast::Sender<String>,
+    ) -> std::io::Result<(Self, Option<JoinHandle<()>>)> {
+        Self::with_queue(log, notices, LOG_QUEUE).await
+    }
+
+    async fn with_queue(
+        log: Option<&Path>,
+        notices: broadcast::Sender<String>,
+        queue: usize,
+    ) -> std::io::Result<(Self, Option<JoinHandle<()>>)> {
+        let dropped = Arc::new(AtomicU64::new(0));
         let mut writer = None;
         let mut sender = None;
         if let Some(path) = log {
@@ -41,48 +60,29 @@ impl Inspector {
             options.append(true).create(true);
             #[cfg(unix)]
             options.mode(0o600);
-            let mut file = options.open(path).await?;
-            let (tx, mut rx) = mpsc::unbounded_channel::<RequestRecord>();
+            let file = options.open(path).await?;
+            let (tx, rx) = mpsc::channel(queue);
             sender = Some(tx);
-            writer = Some(tokio::spawn(async move {
-                while let Some(record) = rx.recv().await {
-                    let Ok(mut line) = serde_json::to_vec(&record) else {
-                        continue;
-                    };
-                    line.push(b'\n');
-                    if file.write_all(&line).await.is_err() {
-                        return;
-                    }
-                }
-                let _ = file.flush().await;
-            }));
+            writer = Some(tokio::spawn(write_log(file, rx, dropped.clone(), notices)));
         }
         let inspector = Inspector {
-            ring: Mutex::new(Ring {
-                next_id: 1,
-                records: VecDeque::new(),
-            }),
-            live,
+            ring: EventRing::new(),
             log: Mutex::new(sender),
+            dropped,
         };
         Ok((inspector, writer))
     }
 
     /// Store a record (its `id` is assigned here) and publish it.
-    pub fn push(&self, mut record: RequestRecord) {
-        // Broadcast under the lock, so a subscriber sees each record exactly
-        // once: in its backlog or live.
-        let mut ring = self.ring.lock().unwrap_or_else(|e| e.into_inner());
-        record.id = ring.next_id;
-        ring.next_id += 1;
-        if ring.records.len() == EVENTS_BUFFER {
-            ring.records.pop_front();
-        }
-        ring.records.push_back(record.clone());
-        if let Some(log) = &*self.log.lock().unwrap_or_else(|e| e.into_inner()) {
-            let _ = log.send(record.clone());
-        }
-        let _ = self.live.send(record);
+    pub fn push(&self, record: RequestRecord) {
+        let log = self.log.lock().unwrap_or_else(|e| e.into_inner());
+        self.ring.push_numbered(record, |record| {
+            if let Some(log) = &*log
+                && let Err(mpsc::error::TrySendError::Full(_)) = log.try_send(record.clone())
+            {
+                self.dropped.fetch_add(1, Ordering::Relaxed);
+            }
+        });
     }
 
     /// The backlog asked for (oldest first) and, when following, a receiver
@@ -94,10 +94,7 @@ impl Inspector {
         Vec<RequestRecord>,
         Option<broadcast::Receiver<RequestRecord>>,
     ) {
-        let ring = self.ring.lock().unwrap_or_else(|e| e.into_inner());
-        let skip = ring.records.len().saturating_sub(options.backlog);
-        let backlog = ring.records.iter().skip(skip).cloned().collect();
-        (backlog, options.follow.then(|| self.live.subscribe()))
+        self.ring.subscribe(options)
     }
 
     /// Stop logging: the writer task drains what was queued and exits.
@@ -106,10 +103,60 @@ impl Inspector {
     }
 }
 
+/// The log writer: one JSON line per record, buffered, flushed every
+/// [`LOG_FLUSH`] and at the end.
+async fn write_log(
+    file: tokio::fs::File,
+    mut records: mpsc::Receiver<RequestRecord>,
+    dropped: Arc<AtomicU64>,
+    notices: broadcast::Sender<String>,
+) {
+    let mut out = BufWriter::new(file);
+    let mut tick = tokio::time::interval(LOG_FLUSH);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut reported = 0;
+    let mut report_drops = |notices: &broadcast::Sender<String>| {
+        let now = dropped.load(Ordering::Relaxed);
+        if now > reported {
+            let _ = notices.send(format!(
+                "request log: {} records dropped (the log file can't keep up)",
+                now - reported
+            ));
+            reported = now;
+        }
+    };
+    let written: std::io::Result<()> = async {
+        loop {
+            tokio::select! {
+                record = records.recv() => {
+                    let Some(record) = record else { break };
+                    let Ok(mut line) = serde_json::to_vec(&record) else {
+                        continue;
+                    };
+                    line.push(b'\n');
+                    out.write_all(&line).await?;
+                }
+                _ = tick.tick() => {
+                    out.flush().await?;
+                    report_drops(&notices);
+                }
+            }
+        }
+        out.flush().await
+    }
+    .await;
+    report_drops(&notices);
+    if let Err(error) = written {
+        let _ = notices.send(format!(
+            "request log: write failed, logging stopped: {error}"
+        ));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chainz_rpc::control::RecordStatus;
+    use chainz_rpc::control::{EVENTS_BUFFER, RecordStatus};
 
     fn record(n: u64) -> RequestRecord {
         RequestRecord {
@@ -126,9 +173,13 @@ mod tests {
         }
     }
 
+    fn notices() -> broadcast::Sender<String> {
+        broadcast::channel(16).0
+    }
+
     #[tokio::test]
     async fn ring_is_bounded_and_ids_are_monotonic() {
-        let (inspector, writer) = Inspector::new(None).await.unwrap();
+        let (inspector, writer) = Inspector::new(None, notices()).await.unwrap();
         assert!(writer.is_none());
         for n in 0..(EVENTS_BUFFER as u64 + 5) {
             inspector.push(record(n));
@@ -156,7 +207,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("requests.jsonl");
         std::fs::write(&path, "existing\n").unwrap();
-        let (inspector, writer) = Inspector::new(Some(&path)).await.unwrap();
+        let (inspector, writer) = Inspector::new(Some(&path), notices()).await.unwrap();
         inspector.push(record(1));
         inspector.push(record(2));
         inspector.close_log();
@@ -166,5 +217,49 @@ mod tests {
         assert_eq!(lines.len(), 3, "appended, not truncated");
         let parsed: RequestRecord = serde_json::from_str(lines[2]).unwrap();
         assert_eq!((parsed.id, parsed.at_ms), (2, 2));
+    }
+
+    #[tokio::test]
+    async fn a_full_log_queue_drops_and_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("requests.jsonl");
+        let notices = notices();
+        let mut heard = notices.subscribe();
+        let (inspector, writer) = Inspector::with_queue(Some(&path), notices, 4)
+            .await
+            .unwrap();
+        // The current-thread test runtime doesn't run the writer until we
+        // yield: everything past the queue's 4 slots is dropped.
+        for n in 0..10 {
+            inspector.push(record(n));
+        }
+        assert_eq!(inspector.dropped.load(Ordering::Relaxed), 6);
+        // The ring keeps them all regardless.
+        let (all, _) = inspector.subscribe(EventsOptions {
+            backlog: 100,
+            follow: false,
+        });
+        assert_eq!(all.len(), 10);
+        inspector.close_log();
+        writer.unwrap().await.unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 4);
+        let notice = heard.recv().await.unwrap();
+        assert!(notice.contains("6 records dropped"), "{notice}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_failed_write_is_reported() {
+        // Every write to /dev/full fails with ENOSPC.
+        let notices = notices();
+        let mut heard = notices.subscribe();
+        let (inspector, writer) = Inspector::new(Some(Path::new("/dev/full")), notices)
+            .await
+            .unwrap();
+        inspector.push(record(1));
+        inspector.close_log();
+        writer.unwrap().await.unwrap();
+        let notice = heard.recv().await.unwrap();
+        assert!(notice.contains("write failed"), "{notice}");
     }
 }
