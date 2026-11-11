@@ -17,5 +17,9 @@ bytes.workspace = true
 url.workspace = true
 tempfile.workspace = true
 
+[features]
+# `control::MockControlServer`, for tests of control clients.
+mock = []
+
 [dev-dependencies]
-tokio = { workspace = true, features = ["test-util"] }
+chainz-rpc = { path = ".", features = ["mock"] }

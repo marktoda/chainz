@@ -262,3 +262,32 @@ async fn long_socket_paths_work() {
     drop(server);
     assert!(!socket.exists());
 }
+
+#[tokio::test]
+async fn a_wedged_gateway_times_out() {
+    // Accepts connections, reads the request, never answers.
+    let dir = socket_dir();
+    let socket = dir.path().join("serve.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let hold = tokio::spawn(async move {
+        let mut open = Vec::new();
+        while let Ok((stream, _)) = listener.accept().await {
+            open.push(stream);
+        }
+    });
+    let client = ControlClient::new(&socket).with_timeout(Duration::from_millis(200));
+    let started = std::time::Instant::now();
+    let error = client.status().await.unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::TimedOut, "{error}");
+    assert_eq!(
+        client.reload().await.unwrap_err().kind(),
+        std::io::ErrorKind::TimedOut
+    );
+    assert_eq!(
+        client.events().await.unwrap_err().kind(),
+        std::io::ErrorKind::TimedOut
+    );
+    assert!(started.elapsed() < Duration::from_secs(5));
+    hold.abort();
+    let _ = hold.await;
+}
