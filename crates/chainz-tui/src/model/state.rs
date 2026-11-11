@@ -244,11 +244,6 @@ impl State {
         next
     }
 
-    /// The chain named `name`.
-    pub fn chain(&self, name: &str) -> Option<&ChainState> {
-        self.chains.iter().find(|c| c.plan.name == name)
-    }
-
     /// The median latency above which a chain is `slow`: three times the
     /// median across chains, and never under [`SLOW_FLOOR_MS`].
     pub fn slow_threshold(&self) -> u32 {

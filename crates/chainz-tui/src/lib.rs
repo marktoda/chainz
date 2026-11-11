@@ -2,14 +2,14 @@
 //!
 //! Layers, each ignorant of the ones after it:
 //!
-//! - [`plan`]: the config resolved into owned, thread-safe targets;
-//! - [`data`]: background workers that poll, probe and read balances;
-//! - [`gateway`]: the one adapter over the provisional control protocol;
-//! - [`model`]: the state the workers' updates fold into, and its
+//! - `plan`: the config resolved into owned, thread-safe targets;
+//! - `data`: background workers that poll, probe and read balances;
+//! - `gateway`: the one adapter over the gateway's control protocol;
+//! - `model`: the state the workers' updates fold into, and its
 //!   classification rules;
-//! - [`app`]: selection, tabs and key bindings;
-//! - [`ui`]: pure rendering of (app, state, clock) into a buffer;
-//! - [`snapshot`]: the `--once --json` document;
+//! - `app`: selection, tabs and key bindings;
+//! - `ui`: pure rendering of (app, state, clock) into a buffer;
+//! - `snapshot`: the `--once --json` document;
 //! - `term`: the terminal and the event loop.
 //!
 //! The UI thread never touches the network: it reads keys, folds updates
@@ -17,15 +17,15 @@
 
 #![warn(missing_docs)]
 
-pub mod app;
-pub mod data;
-pub mod fmt;
-pub mod gateway;
-pub mod model;
-pub mod plan;
-pub mod snapshot;
+pub(crate) mod app;
+pub(crate) mod data;
+pub(crate) mod fmt;
+pub(crate) mod gateway;
+pub(crate) mod model;
+pub(crate) mod plan;
+pub(crate) mod snapshot;
 mod term;
-pub mod ui;
+pub(crate) mod ui;
 
 use std::io::IsTerminal;
 use std::sync::Arc;

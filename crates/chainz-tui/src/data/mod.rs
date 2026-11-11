@@ -31,8 +31,6 @@ use crate::gateway::GatewayLink;
 use crate::model::{Fault, GatewayInfo, Probe, Update, now_ms};
 use crate::plan::{ChainPlan, Plan};
 
-pub use heads::{BlockClock, pace};
-
 /// Every interval and deadline the workers use; tests shrink them.
 #[derive(Debug, Clone)]
 pub struct Tuning {

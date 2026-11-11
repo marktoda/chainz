@@ -9,6 +9,7 @@ use chainz_rpc::ErrorClass;
 use serde_json::{Value, json};
 use tokio::runtime::Handle;
 
+use super::heads::{BlockClock, pace};
 use super::testing::*;
 use super::*;
 use crate::gateway::testing as gw;

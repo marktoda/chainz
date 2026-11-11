@@ -13,8 +13,8 @@ mod update;
 
 use std::collections::VecDeque;
 
-pub use state::{ChainState, EndpointState, P50_WINDOW, SAMPLE_CAP, State};
-pub use status::{CHAIN_LAG_MIN, EndpointStatus, SLOW_FACTOR, SLOW_FLOOR_MS, Status, lag_blocks};
+pub use state::{ChainState, State};
+pub use status::{EndpointStatus, Status};
 pub use traffic::{FEED_CAP, FeedItem, GatewayChain, TrafficRow, TrafficSnapshot, TrafficWindow};
 pub use update::{Fault, GatewayInfo, Head, Holding, Probe, Sheet, Update, Via};
 

@@ -1,5 +1,6 @@
 //! Classification and folding, without a network or a terminal.
 
+use super::status::{SLOW_FLOOR_MS, lag_blocks};
 use super::*;
 use crate::data::testing::{chain, plan};
 use chainz_rpc::{ErrorClass, HealthStore};
