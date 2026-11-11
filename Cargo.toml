@@ -1,66 +1,39 @@
-[package]
-name = "chainz"
-version = "0.4.0"
+[workspace]
+resolver = "3"
+members = [
+    "crates/chainz-core",
+    "crates/chainz-rpc",
+    "crates/chainz-serve",
+    "crates/chainz-tui",
+    "crates/chainz",
+]
+default-members = ["crates/chainz"]
+
+[workspace.package]
+version = "2.0.0-alpha.0"
 edition = "2024"
 rust-version = "1.90"
-description = "CLI for managing EVM chain configurations, RPC endpoints, and private keys"
 repository = "https://github.com/marktoda/chainz"
 license = "MIT"
-readme = "README.md"
-include = [
-    "src/**",
-    "tests/**",
-    "Cargo.toml",
-    "Cargo.lock",
-    "README.md",
-    "RELEASING.md",
-    "CHANGELOG.md",
-    "LICENSE",
-]
-keywords = ["ethereum", "evm", "cli", "web3", "blockchain"]
-categories = ["command-line-utilities", "cryptography::cryptocurrencies", "development-tools"]
-publish = ["crates-io"]
 
-[dependencies]
-alloy = { version = "1", default-features = false, features = [
-    "std",
-    "reqwest",
-    "reqwest-rustls-tls",
-    "provider-http",
-    "provider-ws",
-    "signer-local",
-] }
+[workspace.dependencies]
+chainz-core = { path = "crates/chainz-core", version = "2.0.0-alpha.0" }
+chainz-rpc = { path = "crates/chainz-rpc", version = "2.0.0-alpha.0" }
+chainz-serve = { path = "crates/chainz-serve", version = "2.0.0-alpha.0" }
+chainz-tui = { path = "crates/chainz-tui", version = "2.0.0-alpha.0" }
 anyhow = "1"
-console = "0.16"
-dialoguer = { version = "0.12", features = ["fuzzy-select"] }
-dirs = "6"
-fs2 = "0.4"
-reqwest = { version = "0.12", default-features = false, features = [
-    "rustls-tls",
-    "json",
-] }
-rpassword = "7"
+thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-clap = { version = "4", features = ["derive"] }
-clap_complete = "4"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs", "time"] }
-indicatif = "0.18"
-aes-gcm = "0.10"
-base64 = "0.22"
-keyring = { version = "3", features = [
-    "apple-native",
-    "windows-native",
-    "sync-secret-service",
-    # Build libdbus from source on Linux so `cargo install chainz` works
-    # without system dbus dev headers (and CI needs no apt packages)
-    "vendored",
-] }
-rand = "0.9"
-argon2 = "0.5"
-zeroize = "1"
+indexmap = { version = "2", features = ["serde"] }
+toml_edit = { version = "0.25", features = ["serde"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "time", "sync", "fs"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2"] }
+bytes = "1"
+url = "2"
 tempfile = "3"
 
-[dev-dependencies]
-assert_cmd = "2"
-predicates = "3"
+[profile.release]
+lto = "thin"
+codegen-units = 4
+strip = true

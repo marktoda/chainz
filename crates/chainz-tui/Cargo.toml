@@ -1,0 +1,13 @@
+[package]
+name = "chainz-tui"
+description = "chainz top: the live dashboard (filled in by the Dashboard stream)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chainz-core.workspace = true
+chainz-rpc.workspace = true

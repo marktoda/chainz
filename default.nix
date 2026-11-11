@@ -1,8 +1,8 @@
 {pkgs ? import <nixpkgs> {}}: let
-  manifest = (pkgs.lib.importTOML ./Cargo.toml).package;
+  manifest = (pkgs.lib.importTOML ./Cargo.toml).workspace.package;
 in
   pkgs.rustPlatform.buildRustPackage {
-    pname = manifest.name;
+    pname = "chainz";
     version = manifest.version;
     cargoLock.lockFile = ./Cargo.lock;
     # Some crates look for pkg-config to locate openssl.

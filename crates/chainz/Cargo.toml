@@ -1,0 +1,38 @@
+[package]
+name = "chainz"
+description = "A local multichain workbench: chain configs, endpoints, signers, and exec with context"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+readme = "../../README.md"
+keywords = ["ethereum", "evm", "cli", "web3", "blockchain"]
+categories = ["command-line-utilities", "cryptography::cryptocurrencies", "development-tools"]
+
+[[bin]]
+name = "chainz"
+path = "src/main.rs"
+
+[dependencies]
+chainz-core.workspace = true
+chainz-rpc.workspace = true
+chainz-serve.workspace = true
+chainz-tui.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+indexmap.workspace = true
+tokio.workspace = true
+clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
+console = "0.16"
+dialoguer = { version = "0.12", features = ["fuzzy-select"] }
+rpassword = "7"
+zeroize = "1"
+tempfile.workspace = true
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+tempfile.workspace = true
