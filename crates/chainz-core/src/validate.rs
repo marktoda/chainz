@@ -159,34 +159,29 @@ pub fn issues(config: &Config, secrets: Option<&Secrets>) -> Vec<String> {
     }
 
     for (name, signer) in &config.signers {
-        if !names::is_valid_label_name(name) || name.bytes().any(|b| b.is_ascii_uppercase()) {
-            err(format!("signer name '{name}' must match [a-z0-9_-]+"));
+        if let Err(e) = names::check_signer_name(name) {
+            err(e.to_string());
         }
-        if names::CONTEXT_TOKENS.contains(&name.as_str()) || name == "key" {
-            err(format!(
-                "signer name '{name}' is reserved for a context token"
-            ));
+        let backend = signer.backend;
+        let allowed = backend_fields(backend);
+        for (field, value) in signer_fields(signer) {
+            if value.is_some() && !allowed.contains(&field) {
+                err(format!(
+                    "signer '{name}' field '{field}' does not apply to backend '{backend}'"
+                ));
+            }
         }
-        let has = |f: &Option<String>| f.as_deref().is_some_and(|v| !v.trim().is_empty());
-        let fields_ok = match signer.backend {
-            Backend::Keyring => {
-                signer.path.is_none() && signer.vault.is_none() && signer.item.is_none()
-            }
-            Backend::Keystore => {
-                has(&signer.path) && signer.vault.is_none() && signer.service.is_none()
-            }
-            Backend::OnePassword => {
-                has(&signer.vault) && has(&signer.item) && signer.path.is_none()
-            }
-            Backend::Encrypted | Backend::Plaintext => {
-                signer.path.is_none() && signer.vault.is_none() && signer.service.is_none()
-            }
+        let required: &[(&str, &Option<String>)] = match backend {
+            Backend::Keystore => &[("path", &signer.path)],
+            Backend::OnePassword => &[("vault", &signer.vault), ("item", &signer.item)],
+            Backend::Keyring | Backend::Encrypted | Backend::Plaintext => &[],
         };
-        if !fields_ok {
-            err(format!(
-                "signer '{name}' has fields that do not fit backend '{}'",
-                signer.backend
-            ));
+        for (field, value) in required {
+            if !value.as_deref().is_some_and(|v| !v.trim().is_empty()) {
+                err(format!(
+                    "signer '{name}' (backend '{backend}') needs a non-empty '{field}'"
+                ));
+            }
         }
         if let Some(secrets) = secrets {
             let secret = secrets.signers.get(name);
@@ -217,19 +212,10 @@ pub fn issues(config: &Config, secrets: Option<&Secrets>) -> Vec<String> {
     }
 
     for (label, entries) in &config.addresses {
-        if !names::is_valid_label_name(label) || label.bytes().any(|b| b.is_ascii_uppercase()) {
-            err(format!("label name '{label}' must match [a-z0-9_-]+"));
-        }
-        if names::CONTEXT_TOKENS.contains(&label.as_str())
-            || names::DEPRECATED_TOKENS.iter().any(|(n, _)| n == label)
-            || label == "key"
+        if let Err(e) =
+            crate::edit::check_label_name(label, config.signers.keys().map(String::as_str))
         {
-            err(format!(
-                "label '{label}' uses a reserved context-token name"
-            ));
-        }
-        if config.signers.contains_key(label) {
-            err(format!("label '{label}' collides with a signer name"));
+            err(e.to_string());
         }
         for (scope, address) in entries {
             if scope != "*" && !config.chains.contains_key(scope) {
@@ -254,12 +240,6 @@ pub fn issues(config: &Config, secrets: Option<&Secrets>) -> Vec<String> {
                 err(format!("variable name '{name}' is reserved for a built-in"));
             }
         }
-        for name in secrets.signers.keys() {
-            match config.signers.get(name) {
-                Some(s) if matches!(s.backend, Backend::Plaintext | Backend::Encrypted) => {}
-                _ => {} // orphaned key material is reported by doctor, not fatal
-            }
-        }
     }
     out
 }
@@ -272,8 +252,30 @@ pub fn validate(config: &Config, secrets: Option<&Secrets>) -> anyhow::Result<()
     }
 }
 
+/// The optional `[signers.NAME]` fields each backend accepts (`backend`
+/// and `address` apply to all).
+fn backend_fields(backend: Backend) -> &'static [&'static str] {
+    match backend {
+        Backend::Keyring => &["service", "username"],
+        Backend::Keystore => &["path"],
+        Backend::OnePassword => &["vault", "item"],
+        Backend::Encrypted | Backend::Plaintext => &[],
+    }
+}
+
+/// Every optional field of a signer record, by its config name.
+fn signer_fields(signer: &crate::model::Signer) -> [(&'static str, &Option<String>); 5] {
+    [
+        ("service", &signer.service),
+        ("username", &signer.username),
+        ("path", &signer.path),
+        ("vault", &signer.vault),
+        ("item", &signer.item),
+    ]
+}
+
 /// RFC 9110 token characters, the legal alphabet for HTTP header names.
-pub fn is_header_name_byte(byte: u8) -> bool {
+pub(crate) fn is_header_name_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte)
 }
 
@@ -336,13 +338,81 @@ rpcs = { a = "https://a.example", b = "https://b.example", c = "wss://c.example"
     }
 
     #[test]
+    fn signer_names_cannot_shadow_tokens() {
+        for name in [
+            "wallet",
+            "key",
+            "chainname",
+            "verification_url",
+            "verifier_api_key",
+        ] {
+            let bad = parse(&format!("{OK}\n[signers.{name}]\nbackend = \"keyring\"\n"));
+            let all = issues(&bad, None).join("\n");
+            assert!(
+                all.contains(&format!("signer name '{name}' is reserved")),
+                "{all}"
+            );
+        }
+        let bad = parse(&format!("{OK}\n[signers.Hot]\nbackend = \"keyring\"\n"));
+        assert!(
+            issues(&bad, None)
+                .join("\n")
+                .contains("[a-z0-9][a-z0-9_-]*")
+        );
+    }
+
+    #[test]
+    fn signer_fields_must_fit_the_backend() {
+        let cases = [
+            (
+                "plaintext",
+                "item = \"i\"",
+                "field 'item' does not apply to backend 'plaintext'",
+            ),
+            (
+                "encrypted",
+                "username = \"u\"",
+                "field 'username' does not apply",
+            ),
+            ("keyring", "vault = \"v\"", "field 'vault' does not apply"),
+            (
+                "keystore",
+                "path = \"/k\"\nusername = \"u\"",
+                "field 'username' does not apply",
+            ),
+            (
+                "1password",
+                "vault = \"v\"\nitem = \"i\"\nservice = \"s\"",
+                "field 'service' does not apply",
+            ),
+            ("keystore", "", "needs a non-empty 'path'"),
+            (
+                "1password",
+                "vault = \"v\"\nitem = \" \"",
+                "needs a non-empty 'item'",
+            ),
+        ];
+        for (backend, fields, expected) in cases {
+            let bad = parse(&format!(
+                "{OK}\n[signers.s]\nbackend = \"{backend}\"\n{fields}\n"
+            ));
+            let all = issues(&bad, None).join("\n");
+            assert!(all.contains(expected), "{backend} {fields}: {all}");
+        }
+        let ok = parse(&format!(
+            "{OK}\n[signers.k]\nbackend = \"keyring\"\nservice = \"s\"\nusername = \"u\"\n[signers.op]\nbackend = \"1password\"\nvault = \"v\"\nitem = \"i\"\n"
+        ));
+        assert!(issues(&ok, None).is_empty(), "{:?}", issues(&ok, None));
+    }
+
+    #[test]
     fn labels_cannot_shadow_context_tokens_or_signers() {
         let bad = parse(&format!(
             "{OK}\n[signers.funder]\nbackend = \"keyring\"\n[addresses.rpc]\neth = \"0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf\"\n[addresses.funder]\n\"*\" = \"0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf\"\n[addresses.x]\nnowhere = \"0x1\"\n"
         ));
         let all = issues(&bad, None).join("\n");
-        assert!(all.contains("label 'rpc' uses a reserved"), "{all}");
-        assert!(all.contains("collides with a signer"), "{all}");
+        assert!(all.contains("'rpc' is a context token"), "{all}");
+        assert!(all.contains("'funder' is a signer"), "{all}");
         assert!(all.contains("unknown chain 'nowhere'"), "{all}");
         assert!(all.contains("invalid address"), "{all}");
     }

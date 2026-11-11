@@ -5,8 +5,8 @@
 //! key between backends). Everything else uses the cached address.
 //!
 //! [`KeyBackend`] is the seam to external storage. Production uses
-//! [`SystemKeyBackend`] (OS keyring, `op`, terminal prompts); tests use
-//! [`MemoryKeyBackend`] and never touch the developer's keyring.
+//! [`SystemKeyBackend`] (OS keyring, `op`, terminal prompts); this crate's
+//! tests use an in-memory backend and never touch the developer's keyring.
 
 use crate::address::Address;
 use crate::model::{Backend, KEYRING_SERVICE, Signer};
@@ -16,9 +16,7 @@ use aes_gcm::{Aes256Gcm, Nonce};
 use anyhow::{Context, Result, anyhow, bail};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use rand::Rng;
-use std::cell::RefCell;
-use std::collections::HashMap;
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
 
 const ENVELOPE_VERSION: u8 = 1;
 // Argon2 0.5 defaults, persisted per record so library default changes
@@ -84,8 +82,8 @@ impl KeyBackend for SystemKeyBackend {
     fn keyring_set(&self, service: &str, username: &str, value: &str) -> Result<bool> {
         self.guard()?;
         let entry = keyring::Entry::new(service, username)?;
-        match entry.get_password() {
-            Ok(existing) if existing == value => Ok(false),
+        match entry.get_password().map(Zeroizing::new) {
+            Ok(existing) if existing.as_str() == value => Ok(false),
             Ok(_) => bail!(
                 "a different credential already exists in the OS keyring for '{service}/{username}'; refusing to overwrite it"
             ),
@@ -116,10 +114,10 @@ impl KeyBackend for SystemKeyBackend {
                 String::from_utf8_lossy(&output.stderr).trim()
             );
         }
-        let mut value = String::from_utf8(output.stdout)?;
-        let trimmed = Zeroizing::new(value.trim().to_string());
-        value.zeroize();
-        Ok(trimmed)
+        let stdout = Zeroizing::new(output.stdout);
+        let value = std::str::from_utf8(&stdout)
+            .map_err(|_| anyhow!("1Password returned a value that is not UTF-8"))?;
+        Ok(Zeroizing::new(value.trim().to_string()))
     }
 }
 
@@ -137,12 +135,13 @@ fn rpassword_prompt(prompt: &str) -> Result<String> {
 }
 
 /// In-memory backend for tests: never touches the OS keyring or `op`.
+#[cfg(test)]
 #[derive(Default)]
 pub struct MemoryKeyBackend {
     /// Keyring entries by (service, username).
-    pub entries: RefCell<HashMap<(String, String), String>>,
+    pub entries: std::cell::RefCell<std::collections::HashMap<(String, String), String>>,
     /// Scripted answers for `prompt_secret`, consumed front to back.
-    pub prompts: RefCell<Vec<String>>,
+    pub prompts: std::cell::RefCell<Vec<String>>,
     /// Whether the fake keyring is available.
     pub keyring: bool,
     /// Whether prompts are allowed.
@@ -151,6 +150,7 @@ pub struct MemoryKeyBackend {
     pub fail_set: bool,
 }
 
+#[cfg(test)]
 impl KeyBackend for MemoryKeyBackend {
     fn is_interactive(&self) -> bool {
         self.interactive

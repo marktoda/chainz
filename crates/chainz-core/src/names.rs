@@ -78,9 +78,37 @@ pub fn is_valid_endpoint_name(name: &str) -> bool {
     is_name(name)
 }
 
-/// Whether `name` fits the token alphabet `[a-z0-9_-]` (labels, signers).
+/// Whether `name` is a valid label name: `[a-z0-9_-]+`, lowercase only
+/// (the token grammar matches names case-insensitively, so stored names
+/// are lowercase).
 pub fn is_valid_label_name(name: &str) -> bool {
-    !name.is_empty() && name.bytes().all(is_token_byte)
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
+}
+
+/// Whether `name` is taken by the token grammar itself: a context token,
+/// a deprecated v1 token, or the removed `@key`. Labels and signers may
+/// not use these names, since they would be shadowed by (or shadow) the
+/// token.
+pub fn is_reserved_token(name: &str) -> bool {
+    CONTEXT_TOKENS.contains(&name)
+        || DEPRECATED_TOKENS.iter().any(|(n, _)| *n == name)
+        || name == "key"
+}
+
+/// Why `name` cannot be a signer name, if it cannot: signer names match
+/// `[a-z0-9][a-z0-9_-]*` and are not [reserved token names](is_reserved_token),
+/// because every signer is also the label `@<name>`.
+pub fn check_signer_name(name: &str) -> anyhow::Result<()> {
+    if !is_name(name) {
+        anyhow::bail!("signer name '{name}' must match [a-z0-9][a-z0-9_-]*");
+    }
+    if is_reserved_token(name) {
+        anyhow::bail!("signer name '{name}' is reserved for the token @{name}; pick another name");
+    }
+    Ok(())
 }
 
 /// The token-name alphabet, matched case-insensitively.
@@ -220,6 +248,31 @@ mod tests {
             "infura-3"
         );
         assert_eq!(short_name(42161), Some("arb"));
+    }
+
+    #[test]
+    fn label_and_signer_names() {
+        assert!(is_valid_label_name("my-safe_2"));
+        assert!(is_valid_label_name("_x"));
+        assert!(!is_valid_label_name("MySafe"));
+        assert!(!is_valid_label_name(""));
+        check_signer_name("deployer").unwrap();
+        check_signer_name("2nd-key").unwrap();
+        for bad in ["", "-x", "_x", "Deployer", "a b"] {
+            let err = check_signer_name(bad).unwrap_err().to_string();
+            assert!(err.contains("[a-z0-9][a-z0-9_-]*"), "{bad:?}: {err}");
+        }
+        for reserved in [
+            "wallet",
+            "rpc",
+            "chainname",
+            "verification_url",
+            "verifier_api_key",
+            "key",
+        ] {
+            let err = check_signer_name(reserved).unwrap_err().to_string();
+            assert!(err.contains("reserved"), "{reserved}: {err}");
+        }
     }
 
     #[test]
