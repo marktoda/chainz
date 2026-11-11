@@ -16,25 +16,35 @@
 //! a response cut off mid-body), a timeout, HTTP 502/503/504, JSON-RPC
 //! `-32005`, or a 429 whose wait would take the request past
 //! [`MAX_WAIT`] on that endpoint.
+//!
+//! Every send to an endpoint, retries included, first takes a slot from
+//! that endpoint's adaptive bucket, so requests that hit the same limit
+//! come back spaced out rather than all at once. A request with no other
+//! endpoint to go to queues in the bucket for up to [`MAX_QUEUE`]; past
+//! that it is answered 429 at once, with the bucket's wait as
+//! `Retry-After`.
 
 use std::sync::{Arc, RwLock};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use chainz_rpc::control::{RecordStatus, RequestRecord};
 use chainz_rpc::upstream::{LIMIT_EXCEEDED, rpc_error_code};
-use chainz_rpc::{ErrorClass, RetryOn, RetryPolicy, RpcError, Upstream};
+use chainz_rpc::{ErrorClass, RetryPolicy, RpcError, Upstream};
 use serde_json::{Value, json};
 
 use crate::classify::{self, Kind, Needs, Parsed};
 use crate::inspector::Inspector;
 use crate::metrics::{Metrics, Sample};
 use crate::state::{ChainState, EndpointState, Snapshot};
-use crate::summary;
+use crate::{now_ms, summary};
 
 /// The longest a request waits out rate limits on one endpoint before a
 /// read shifts to the next.
 pub const MAX_WAIT: Duration = Duration::from_secs(2);
+/// The longest a request with nowhere else to go waits for a slot in the
+/// endpoint's bucket.
+pub const MAX_QUEUE: Duration = Duration::from_secs(10);
 /// First wait after a 429 without `Retry-After`; doubles each time.
 const BACKOFF_429: Duration = Duration::from_millis(250);
 /// Wait before the one same-endpoint retry of a read with nowhere to go.
@@ -97,13 +107,6 @@ impl std::fmt::Debug for Router {
     }
 }
 
-/// Unix time in milliseconds.
-pub fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64)
-}
-
 impl Router {
     /// A router over `snapshot`, forwarding through `upstream` with
     /// `timeout` per attempt.
@@ -120,12 +123,8 @@ impl Router {
             inspector,
             // One attempt per call: the router owns every retry decision.
             policy: RetryPolicy {
-                max_attempts: 1,
-                backoff: Duration::ZERO,
-                max_backoff: Duration::ZERO,
-                max_retry_after: Duration::ZERO,
                 timeout,
-                retry_on: RetryOn::NONE,
+                ..RetryPolicy::none()
             },
         }
     }
@@ -192,10 +191,7 @@ impl Router {
             .attempt(chain, &candidates, idempotent, &method, body)
             .await;
         let (reply, status) = match outcome.result {
-            Ok(body) => {
-                let code = (body.len() <= MAX_INSPECTED_BODY)
-                    .then(|| rpc_error_code(&body))
-                    .flatten();
+            Ok(Answer { body, code }) => {
                 if code.is_none() {
                     self.after_success(
                         chain,
@@ -340,7 +336,8 @@ impl Router {
         })
     }
 
-    /// Send to one endpoint, waiting out rate limits up to [`MAX_WAIT`].
+    /// Send to one endpoint, waiting out rate limits up to [`MAX_WAIT`]
+    /// (up to [`MAX_QUEUE`] in the bucket when there is no next endpoint).
     /// Returns the answer and whether the request should move on to the
     /// next endpoint (only ever true when `has_next`).
     #[allow(clippy::too_many_arguments)]
@@ -353,7 +350,7 @@ impl Router {
         method: &str,
         body: &Bytes,
         attempts: &mut u32,
-    ) -> (Result<Bytes, RpcError>, bool) {
+    ) -> (Result<Answer, RpcError>, bool) {
         let record = |sample: Sample| {
             self.metrics.record(
                 now_ms() / 1000,
@@ -363,40 +360,37 @@ impl Router {
                 &sample,
             );
         };
+        // How long this request may wait for a bucket slot in all.
+        let allowance = if has_next { MAX_WAIT } else { MAX_QUEUE };
         let mut waited = Duration::ZERO;
         let mut backoff = BACKOFF_429;
-        let mut skip_limiter = false;
         let mut retried = false;
         loop {
-            if !std::mem::take(&mut skip_limiter) {
-                let budget = MAX_WAIT.saturating_sub(waited);
-                match endpoint.limiter.try_acquire(Instant::now(), budget) {
-                    Ok(wait) => {
-                        if !wait.is_zero() {
-                            tokio::time::sleep(wait).await;
-                            waited += wait;
-                        }
+            // Every send takes a slot, retries included: requests that
+            // waited out the same 429 don't all retry at once.
+            let budget = allowance.saturating_sub(waited);
+            match endpoint.limiter.try_acquire(Instant::now(), budget) {
+                Ok(wait) => {
+                    if !wait.is_zero() {
+                        tokio::time::sleep(wait).await;
+                        waited += wait;
                     }
-                    Err(wait) if has_next => {
-                        // The bucket alone says the wait is too long.
-                        record(Sample {
-                            error: Some(ErrorClass::RateLimited),
-                            failover: true,
-                            ..Sample::default()
-                        });
-                        return (
-                            Err(RpcError::RateLimited {
-                                retry_after: Some(wait),
-                            }),
-                            true,
-                        );
-                    }
-                    Err(_) => {
-                        // Nowhere else to go: use up the wait budget, then
-                        // let the endpoint decide.
-                        tokio::time::sleep(budget).await;
-                        waited = MAX_WAIT;
-                    }
+                }
+                Err(wait) => {
+                    // The bucket alone says the wait is too long: move on,
+                    // or tell the client how long to wait. Nothing was sent,
+                    // so this is no upstream attempt.
+                    self.metrics.record_refusal(
+                        now_ms() / 1000,
+                        &chain.name,
+                        &endpoint.name,
+                        method,
+                        has_next,
+                    );
+                    let error = RpcError::RateLimited {
+                        retry_after: Some(wait),
+                    };
+                    return (Err(error), has_next);
                 }
             }
             *attempts += 1;
@@ -408,8 +402,11 @@ impl Router {
             let latency_ms = millis(sent.elapsed());
             match result {
                 Ok(response) => {
-                    let limit_exceeded = response.body.len() <= MAX_INSPECTED_BODY
-                        && rpc_error_code(&response.body) == Some(LIMIT_EXCEEDED);
+                    // The one parse of the body: the error code, if any.
+                    let code = (response.body.len() <= MAX_INSPECTED_BODY)
+                        .then(|| rpc_error_code(&response.body))
+                        .flatten();
+                    let limit_exceeded = code == Some(LIMIT_EXCEEDED);
                     let shift = limit_exceeded && has_next;
                     record(Sample {
                         latency_ms,
@@ -421,7 +418,11 @@ impl Router {
                     if !limit_exceeded {
                         endpoint.limiter.on_success();
                     }
-                    return (Ok(response.body), shift);
+                    let answer = Answer {
+                        body: response.body,
+                        code,
+                    };
+                    return (Ok(answer), shift);
                 }
                 Err(RpcError::RateLimited { retry_after }) => {
                     endpoint.limiter.on_rate_limited(Instant::now());
@@ -442,7 +443,6 @@ impl Router {
                     tokio::time::sleep(wait).await;
                     waited += wait;
                     backoff *= 2;
-                    skip_limiter = true;
                 }
                 Err(error) => {
                     let transient = is_transient(&error);
@@ -479,7 +479,7 @@ impl Router {
         let interesting = calls.iter().any(|c| {
             matches!(classify::kind(&c.method), Kind::FilterCreate)
                 || c.method == "eth_uninstallFilter"
-                || c.method.starts_with("eth_sendRawTransaction")
+                || c.method == "eth_sendRawTransaction"
         });
         if !interesting || body.len() > MAX_INSPECTED_BODY {
             return;
@@ -516,24 +516,38 @@ impl Router {
             // differently from their network encoding).
             if matches!(parsed, Parsed::Single(_))
                 && call.method == "eth_sendRawTransaction"
-                && let Some(hash) = result.as_str()
-                && hash.len() == 66
-                && hash[2..].bytes().all(|b| b.is_ascii_hexdigit())
+                && let Some(hash) = result.as_str().and_then(tx_hash)
             {
-                *params_summary = format!("tx {}", hash.to_ascii_lowercase());
+                *params_summary = format!("tx {hash}");
             }
         }
     }
 }
 
+/// An upstream's 2xx answer.
+struct Answer {
+    body: Bytes,
+    /// The JSON-RPC error code of a single response (bodies over
+    /// [`MAX_INSPECTED_BODY`] are not inspected).
+    code: Option<i64>,
+}
+
 /// What [`Router::attempt`] ended with.
 struct Outcome {
-    /// The upstream's 2xx body, or the last error.
-    result: Result<Bytes, RpcError>,
+    /// The upstream's answer, or the last error.
+    result: Result<Answer, RpcError>,
     /// The endpoint that answered or failed last.
     endpoint: String,
     /// Upstream attempts across endpoints.
     attempts: u32,
+}
+
+/// A transaction hash as a node returns it (`0x` and 64 hex digits),
+/// lowercased; `None` for anything else.
+fn tx_hash(result: &str) -> Option<String> {
+    let digits = result.strip_prefix("0x")?;
+    (digits.len() == 64 && digits.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then(|| result.to_ascii_lowercase())
 }
 
 fn millis(duration: Duration) -> u32 {
@@ -603,5 +617,32 @@ fn plan(chain: &ChainState, parsed: &Parsed) -> Result<Plan, String> {
         Some(endpoint) => Ok(Plan::Sticky(endpoint)),
         None if active_only => Ok(Plan::ActiveOnly),
         None => Ok(Plan::Read(needs)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tx_hash_is_checked_not_sliced() {
+        let hash = format!("0x{}", "aB".repeat(32));
+        assert_eq!(tx_hash(&hash), Some(hash.to_ascii_lowercase()));
+        // 66 bytes, but a multi-byte character straddles byte 2: slicing
+        // `[2..]` panicked here.
+        let straddle = format!("a\u{e9}{}", "b".repeat(63));
+        assert_eq!(straddle.len(), 66);
+        assert_eq!(tx_hash(&straddle), None);
+        for bad in [
+            String::new(),
+            "0x".to_string(),
+            "0x12".to_string(),
+            format!("0X{}", "a".repeat(64)),
+            format!("0x{}", "g".repeat(64)),
+            format!("0x{}", "a".repeat(65)),
+            format!("0x{}\u{e9}", "a".repeat(62)),
+        ] {
+            assert_eq!(tx_hash(&bad), None, "{bad}");
+        }
     }
 }

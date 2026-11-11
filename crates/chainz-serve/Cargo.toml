@@ -13,7 +13,6 @@ chainz-core.workspace = true
 chainz-rpc.workspace = true
 tokio = { workspace = true, features = ["signal"] }
 bytes.workspace = true
-serde.workspace = true
 serde_json.workspace = true
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio", "http1", "server-graceful"] }
