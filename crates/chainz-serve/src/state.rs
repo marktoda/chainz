@@ -2,9 +2,10 @@
 //!
 //! A [`Snapshot`] is immutable and replaced wholesale on reload. Live state
 //! (limiters, heads, sticky filters) is carried across reloads when the
-//! chain or endpoint is unchanged.
+//! chain (same name and ID) or endpoint (same chain ID, URL and headers) is
+//! unchanged.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -22,6 +23,10 @@ use crate::classify::Needs;
 /// A failover target must be within this many blocks of the chain's head
 /// high-water mark.
 pub const MAX_HEAD_LAG: u64 = 2;
+/// Probe rounds the high-water mark is taken over. Long enough that one
+/// failed probe of the leading endpoint doesn't drop the mark, short enough
+/// that one bogus head doesn't hold it up for good.
+const HEAD_ROUNDS: usize = 3;
 /// Sticky filter entries kept per chain.
 const MAX_FILTERS: usize = 4096;
 
@@ -92,8 +97,11 @@ impl EndpointState {
 
 /// Per-chain state that survives reloads.
 #[derive(Debug, Default)]
-pub struct ChainLive {
-    /// Head high-water mark; 0 = unknown.
+struct ChainLive {
+    /// The best head of each of the last [`HEAD_ROUNDS`] probe rounds that
+    /// had one, oldest first.
+    rounds: Mutex<VecDeque<u64>>,
+    /// Their maximum: the head high-water mark; 0 = unknown.
     hwm: AtomicU64,
     /// Filter ID → (endpoint that created it, last use).
     filters: Mutex<HashMap<String, (String, Instant)>>,
@@ -132,9 +140,20 @@ impl ChainState {
         }
     }
 
-    /// Raise the high-water mark.
-    pub fn observe_head(&self, head: u64) {
-        self.live.hwm.fetch_max(head, Ordering::Relaxed);
+    /// Record a probe round's best head (`None`: no probe succeeded). The
+    /// mark is the best head over the last [`HEAD_ROUNDS`] rounds, so it
+    /// never steps back on one failed probe, and a bogus head (a node
+    /// briefly reporting a block far ahead) ages out instead of blocking
+    /// failover and archive routing for good.
+    pub fn record_round(&self, best: Option<u64>) {
+        let Some(best) = best else { return };
+        let mut rounds = self.live.rounds.lock().unwrap_or_else(|e| e.into_inner());
+        if rounds.len() == HEAD_ROUNDS {
+            rounds.pop_front();
+        }
+        rounds.push_back(best);
+        let mark = rounds.iter().copied().max().unwrap_or(0);
+        self.live.hwm.store(mark, Ordering::Relaxed);
     }
 
     /// The active endpoint, then the failover list.
@@ -243,7 +262,14 @@ impl Snapshot {
         let mut lookup = HashMap::new();
         let mut warnings = Vec::new();
         for (name, chain) in &config.chains {
-            let old = previous.and_then(|p| p.chain(name));
+            // The same chain: same name and same ID. A chain whose ID
+            // changed starts afresh (its heads and filters are another
+            // chain's).
+            let old = previous.and_then(|p| {
+                p.chains
+                    .iter()
+                    .find(|o| o.name == *name && o.id == chain.id)
+            });
             let mut endpoints = HashMap::with_capacity(chain.rpcs.len());
             for (endpoint_name, endpoint) in &chain.rpcs {
                 let built = if endpoint.is_websocket() {
@@ -358,7 +384,7 @@ fn build_target(
         &loader,
     );
     let url = vars.expand(&endpoint.url)?;
-    let mut fingerprint = url.to_string();
+    let mut fingerprint = format!("{}\n{url}", chain.id);
     let mut headers = Vec::with_capacity(endpoint.headers.len());
     for (name, value) in &endpoint.headers {
         let value = vars
@@ -437,7 +463,7 @@ rpcs.sock = "ws://127.0.0.1:3"
         assert!(!format!("{snap:?}").contains("sekrit-key"));
 
         // Live state.
-        eth.observe_head(100);
+        eth.record_round(Some(100));
         eth.remember_filter("0xAB", "main");
         let main = eth.active.clone().unwrap();
         main.set_head(Some(100));
@@ -475,6 +501,55 @@ rpcs.sock = "ws://127.0.0.1:3"
             &main,
             rotated.chain("eth").unwrap().active.as_ref().unwrap()
         ));
+
+        // Same name, new chain ID: nothing carries over.
+        let eth3 = rotated.chain("eth").unwrap();
+        eth3.remember_filter("0xcd", "main");
+        let paths = write(
+            dir.path(),
+            &CONFIG.replace("id = 1\n", "id = 10\n"),
+            "[vars]\nGATEWAY_TEST_KEY = \"rotated\"\n",
+        );
+        let moved = Snapshot::load(&paths, None, Some(&rotated)).unwrap();
+        let eth4 = moved.chain("eth").unwrap();
+        assert_eq!(eth4.id, 10);
+        assert_eq!(eth4.head(), None);
+        assert_eq!(eth4.filter_endpoint("0xcd"), None);
+        assert!(!Arc::ptr_eq(
+            eth3.active.as_ref().unwrap(),
+            eth4.active.as_ref().unwrap()
+        ));
+        assert_eq!(eth4.active.as_ref().unwrap().target.chain_id(), 10);
+    }
+
+    #[test]
+    fn a_bogus_head_ages_out_of_the_mark() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = write(dir.path(), CONFIG, "[vars]\nGATEWAY_TEST_KEY = \"k\"\n");
+        let snap = Snapshot::load(&paths, None, None).unwrap();
+        let eth = snap.chain("eth").unwrap();
+        let backup = eth.failover[0].clone();
+        backup.set_head(Some(100));
+        eth.record_round(Some(100));
+        assert!(eth.head_is_current(&backup));
+
+        // One round with a wild head: failover stops...
+        eth.record_round(Some(1_000_000_000));
+        assert_eq!(eth.head(), Some(1_000_000_000));
+        assert!(!eth.head_is_current(&backup));
+        // ...a round with no head at all changes nothing...
+        eth.record_round(None);
+        assert_eq!(eth.head(), Some(1_000_000_000));
+        // ...and sane rounds push it out.
+        for head in [101, 101, 102] {
+            eth.record_round(Some(head));
+        }
+        assert_eq!(eth.head(), Some(102));
+        backup.set_head(Some(101));
+        assert!(eth.head_is_current(&backup));
+        // A lower best head than earlier rounds doesn't drop the mark.
+        eth.record_round(Some(90));
+        assert_eq!(eth.head(), Some(102));
     }
 
     #[test]
