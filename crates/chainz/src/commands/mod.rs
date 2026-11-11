@@ -1,8 +1,6 @@
-//! Command handlers. One module per noun.
-//!
-//! To add or fill in a handler: write `pub fn run(...) -> Result<i32>` in
-//! the noun's module and route it from [`dispatch`]. Return the process
-//! exit code; errors print as `Error: …` and exit 1.
+//! Command handlers, one module per noun, routed from [`dispatch`]. A
+//! handler returns the process exit code; an error prints as `Error: …`
+//! and exits 1 (or the code a typed error carries, see `ui::exit_code`).
 
 mod addr;
 mod chain;
@@ -18,11 +16,12 @@ mod top;
 mod var;
 
 use crate::cli::{Command, Opt};
-use crate::prompt::{Prompt, SystemPrompt, is_tty};
-use anyhow::{Result, bail};
+use crate::prompt::{self, is_tty};
+use crate::ui;
+use anyhow::{Context, Result, anyhow, bail};
 use chainz_core::resolve::{self, ChainRef, Source};
 use chainz_core::runtime::Runtime;
-use chainz_core::{Chainz, LoadMode, StorePaths};
+use chainz_core::{Address, Chainz, LoadMode, StorePaths};
 use clap::CommandFactory;
 
 /// Route a parsed command line to its handler.
@@ -32,18 +31,8 @@ pub fn dispatch(opt: Opt) -> Result<i32> {
     };
     match cmd {
         Command::Exec(args) => exec::exec(args),
-        Command::Shell {
-            chain,
-            signer,
-            direct,
-        } => exec::shell(chain, signer, direct),
-        Command::Env {
-            chain,
-            shell,
-            signer,
-            rpc,
-            direct,
-        } => exec::env(chain, shell, signer, rpc, direct),
+        Command::Shell { context } => exec::shell(context),
+        Command::Env { context, shell } => exec::env(context, shell),
         Command::Use { chain, clear } => chain::use_default(chain, clear),
         Command::Ls(args) => chain::ls(&args),
         Command::Top { once, json, reveal } => top::run(once, json, reveal),
@@ -112,7 +101,7 @@ pub fn pick_chain(chainz: &Chainz, message: &str) -> Result<String> {
         .iter()
         .map(|(n, c)| format!("{n} ({})", c.id))
         .collect();
-    let index = SystemPrompt.select(message, &items, 0)?;
+    let index = prompt::select(message, &items, 0)?;
     Ok(chains
         .get_index(index)
         .expect("picked from the list")
@@ -129,7 +118,7 @@ pub fn select_target(
 ) -> Result<ChainRef> {
     match resolve::select(chainz.config(), Some(runtime), explicit)? {
         Some((target, Source::Default)) => {
-            eprintln!("chainz: {} (default)", target.name());
+            note_default(target.name());
             Ok(target)
         }
         Some((target, _)) => Ok(target),
@@ -140,4 +129,73 @@ pub fn select_target(
 /// Resolve a configured chain (no forks) for management commands.
 pub fn chain_arg(chainz: &Chainz, query: &str) -> Result<String> {
     resolve::resolve_configured(chainz.config(), query)
+}
+
+/// Say on stderr that the default chain applies (the user didn't name one).
+pub fn note_default(chain: &str) {
+    eprintln!("chainz: {chain} (default)");
+}
+
+/// The runtime registry (`$XDG_RUNTIME_DIR/chainz`).
+pub fn runtime() -> Result<Runtime> {
+    Runtime::resolve().context("unable to find the runtime directory")
+}
+
+/// Parse an address argument; the error names `what` it was for.
+pub fn parse_address(input: &str, what: &str) -> Result<Address> {
+    input
+        .parse()
+        .map_err(|e| anyhow!("{what} '{input}' is not an address: {e}"))
+}
+
+fn editor() -> String {
+    std::env::var("VISUAL")
+        .or_else(|_| std::env::var("EDITOR"))
+        .unwrap_or_else(|_| "vi".to_string())
+}
+
+/// Open `text` in `$EDITOR` and return the edited text.
+fn edit_text(text: &str, suffix: &str) -> Result<String> {
+    let mut file = tempfile::Builder::new()
+        .prefix("chainz-")
+        .suffix(suffix)
+        .tempfile()?;
+    std::io::Write::write_all(&mut file, text.as_bytes())?;
+    let path = file.path().to_path_buf();
+    let editor = editor();
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("{editor} \"$1\""))
+        .arg("sh")
+        .arg(&path)
+        .status()
+        .with_context(|| format!("failed to start {editor}"))?;
+    if !status.success() {
+        bail!("{editor} exited with {status}; nothing changed");
+    }
+    Ok(std::fs::read_to_string(&path)?)
+}
+
+/// Edit `text` as TOML in `$EDITOR` until `save` accepts it. On a TTY a
+/// rejected edit is shown and the user may edit again (from their edit);
+/// off a TTY the error is returned. `Ok(false)` when nothing changed.
+pub fn edit_until_saved(text: &str, mut save: impl FnMut(&str) -> Result<()>) -> Result<bool> {
+    let mut current = text.to_string();
+    loop {
+        let edited = edit_text(&current, ".toml")?;
+        if edited == current {
+            return Ok(false);
+        }
+        match save(&edited) {
+            Ok(()) => return Ok(true),
+            Err(e) if is_tty() => {
+                eprintln!("{}", ui::fail(&format!("{e:#}")));
+                if !prompt::confirm("Edit again?", true)? {
+                    return Err(ui::cancelled());
+                }
+                current = edited;
+            }
+            Err(e) => return Err(e),
+        }
+    }
 }

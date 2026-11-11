@@ -34,32 +34,17 @@ pub enum Command {
 
     /// Open a subshell with a chain's context exported
     Shell {
-        /// Chain name, alias, prefix, ID, or fork name
-        chain: Option<String>,
-        /// Use this signer instead of the chain's
-        #[arg(long)]
-        signer: Option<String>,
-        /// Bypass a running gateway
-        #[arg(long)]
-        direct: bool,
+        #[command(flatten)]
+        context: ContextArgs,
     },
 
     /// Print a chain's context as shell exports: eval "$(chainz env base)"
     Env {
-        /// Chain name, alias, prefix, ID, or fork name
-        chain: Option<String>,
+        #[command(flatten)]
+        context: ContextArgs,
         /// Output syntax (default: from $SHELL)
         #[arg(long, value_enum)]
         shell: Option<ShellKind>,
-        /// Use this signer instead of the chain's
-        #[arg(long)]
-        signer: Option<String>,
-        /// Use this endpoint instead of the active one
-        #[arg(long)]
-        rpc: Option<String>,
-        /// Bypass a running gateway
-        #[arg(long)]
-        direct: bool,
     },
 
     /// Set the default chain (exec notes on stderr whenever it applies)
@@ -149,8 +134,8 @@ pub enum Command {
         /// Repair what can be repaired (dead active RPCs, literal credentials)
         #[arg(long)]
         fix: bool,
-        /// Verify the built-in token registry on chain
-        #[arg(long)]
+        /// Verify the built-in token registry on chain (checks only)
+        #[arg(long, conflicts_with = "fix")]
         tokens: bool,
     },
 
@@ -167,8 +152,9 @@ pub enum Command {
     },
 }
 
-#[derive(Debug, Args)]
-pub struct ExecArgs {
+/// The context selectors shared by `exec`, `env` and `shell`.
+#[derive(Debug, Clone, Default, Args)]
+pub struct ContextArgs {
     /// Chain name, alias, prefix, ID, or fork name
     pub chain: Option<String>,
     /// Use this signer instead of the chain's
@@ -180,6 +166,12 @@ pub struct ExecArgs {
     /// Bypass a running gateway
     #[arg(long)]
     pub direct: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ExecArgs {
+    #[command(flatten)]
+    pub context: ContextArgs,
     /// Export the signer's private key as RAW_PRIVATE_KEY
     #[arg(long)]
     pub expose_key: bool,
@@ -224,7 +216,11 @@ pub struct ServeArgs {
 #[derive(Debug, Subcommand)]
 pub enum ServeCommand {
     /// Show whether the gateway runs, and its chains
-    Status,
+    Status {
+        /// JSON output
+        #[arg(long)]
+        json: bool,
+    },
     /// Stop the gateway
     Stop,
     /// Show request records
@@ -272,7 +268,12 @@ pub struct ForkArgs {
 #[derive(Debug, Subcommand)]
 pub enum ForkCommand {
     /// List live forks
-    Ls,
+    #[command(visible_alias = "list")]
+    Ls {
+        /// JSON output
+        #[arg(long)]
+        json: bool,
+    },
     /// Stop a fork
     Stop {
         /// Fork name
@@ -286,6 +287,7 @@ pub enum ForkCommand {
 #[derive(Debug, Subcommand)]
 pub enum ChainCommand {
     /// List chains
+    #[command(visible_alias = "list")]
     Ls(ListArgs),
     /// Add a chain from chainlist (by ID or name) or by hand
     Add {
@@ -329,18 +331,21 @@ pub enum ChainCommand {
         remove: bool,
     },
     /// Remove a chain (exact name or ID)
+    #[command(visible_alias = "remove")]
     Rm { chain: String },
 }
 
 #[derive(Debug, Subcommand)]
 pub enum RpcCommand {
     /// List endpoints with their latest health
+    #[command(visible_alias = "list")]
     Ls {
         /// Only this chain
         chain: Option<String>,
         #[arg(long)]
         json: bool,
-        /// Show credential-bearing URLs and header values
+        /// Show credential-bearing URLs and header values (as configured,
+        /// `${VAR}`s unexpanded)
         #[arg(long)]
         reveal: bool,
     },
@@ -355,7 +360,7 @@ pub enum RpcCommand {
         #[arg(long = "header", value_name = "NAME: VALUE")]
         headers: Vec<String>,
         /// Append to the chain's failover list
-        #[arg(long)]
+        #[arg(long, conflicts_with = "activate")]
         failover: bool,
         /// Make it the active endpoint
         #[arg(long = "use")]
@@ -367,6 +372,7 @@ pub enum RpcCommand {
     /// Make an endpoint active
     Use { chain: String, name: String },
     /// Remove an endpoint
+    #[command(visible_alias = "remove")]
     Rm { chain: String, name: String },
     /// Probe, rank and tag endpoints
     Bench {
@@ -375,6 +381,9 @@ pub enum RpcCommand {
         /// Activate the best endpoint and propose a failover list
         #[arg(long)]
         fix: bool,
+        /// With --fix: also write the proposed failover lists, without asking
+        #[arg(long, requires = "fix")]
+        yes: bool,
     },
     /// Find public endpoints on chainlist, probe them, offer to add
     Discover {
@@ -382,6 +391,9 @@ pub enum RpcCommand {
         /// Re-download the chainlist
         #[arg(long)]
         refresh: bool,
+        /// Add every endpoint that answered, without asking
+        #[arg(long)]
+        yes: bool,
     },
 }
 
@@ -389,9 +401,12 @@ pub enum RpcCommand {
 pub enum BackendArg {
     Keyring,
     Encrypted,
-    #[value(name = "1password")]
+    /// `one-password` is the v1 name
+    #[value(name = "1password", alias = "one-password")]
     OnePassword,
     Keystore,
+    /// `private-key` is the v1 name
+    #[value(alias = "private-key")]
     Plaintext,
 }
 
@@ -409,7 +424,7 @@ pub enum SignerCommand {
         /// Read the private key from stdin
         #[arg(long)]
         stdin: bool,
-        /// Private key as an argument (visible in history; prefer --stdin)
+        /// Private key as an argument (visible in history and `ps`; prefer --stdin)
         #[arg(long, hide = true, conflicts_with = "stdin")]
         key: Option<String>,
         /// Where the key lives (default: keyring, else encrypted)
@@ -429,16 +444,22 @@ pub enum SignerCommand {
         address: Option<String>,
     },
     /// List signers (never shows key material)
+    #[command(visible_alias = "list")]
     Ls {
         #[arg(long)]
         json: bool,
     },
-    /// Remove a signer
+    /// Remove a signer and delete its key material (keyring entry or
+    /// secrets.toml entry); asks first unless --yes
+    #[command(visible_alias = "remove")]
     Rm {
         name: String,
         /// Detach it from chains that use it
         #[arg(long)]
         force: bool,
+        /// Don't ask for confirmation (required off a TTY)
+        #[arg(long, short)]
+        yes: bool,
     },
     /// Move keys into safe storage
     Migrate {
@@ -464,20 +485,31 @@ pub enum AddrCommand {
         all_chains: bool,
     },
     /// List labels
+    #[command(visible_alias = "list")]
     Ls {
         #[arg(long)]
         chain: Option<String>,
         #[arg(long)]
         builtin: bool,
+        /// JSON output
+        #[arg(long)]
+        json: bool,
     },
     /// Remove a label
+    #[command(visible_alias = "remove")]
     Rm {
         name: String,
+        /// Only on this configured chain (or '*' for the every-chain entry)
         #[arg(long)]
         chain: Option<String>,
     },
     /// Reverse-look-up an address
-    Find { address: String },
+    Find {
+        address: String,
+        /// JSON output
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -485,6 +517,7 @@ pub enum VarCommand {
     /// Set a variable (prefer --stdin over an argument)
     Set {
         name: String,
+        /// The value (visible in shell history and `ps`; prefer --stdin)
         value: Option<String>,
         #[arg(long, conflicts_with = "value")]
         stdin: bool,

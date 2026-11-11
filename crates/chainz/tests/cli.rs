@@ -1,177 +1,21 @@
-//! End-to-end CLI tests.
-//!
-//! Every invocation runs inside a [`Sandbox`]: `HOME` and all four XDG
-//! directories point into a fresh temp dir, `CHAINZ_DISABLE_KEYRING` is set
-//! (the OS keyring is never touched), and context variables inherited from
-//! the caller's shell are removed. Never build a `Command` for the binary
-//! any other way.
+//! End-to-end CLI tests. Every invocation runs inside a sandbox (see
+//! `common`): cleared environment, scratch `HOME` and XDG directories, the
+//! OS keyring disabled.
 
-use assert_cmd::Command;
+mod common;
+
+use common::{MockRpc, Sandbox, TEST_ADDRESS, TEST_KEY, mode, set_mode, stderr, stdout};
 use predicates::prelude::*;
 use std::fs;
-use std::io::{Read, Write};
-use std::net::TcpListener;
-use std::path::{Path, PathBuf};
-use tempfile::TempDir;
+use std::path::Path;
 
-/// Well-known anvil test keys #0 and #1.
-const TEST_KEY: &str = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
-const TEST_ADDRESS: &str = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
+/// Well-known anvil test key #1.
 const TEST_KEY_2: &str = "59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
 const TEST_ADDRESS_2: &str = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
 
-/// Variables chainz reads or exports; scrubbed from every test process.
-const SCRUBBED: &[&str] = &[
-    "CHAINZ_CHAIN",
-    "ETH_RPC_URL",
-    "ETH_RPC_HEADERS",
-    "CHAIN_ID",
-    "CHAIN",
-    "CHAIN_NAME",
-    "ETHERSCAN_API_KEY",
-    "VERIFIER_URL",
-    "VERIFIER_API_KEY",
-    "ETH_FROM",
-    "WALLET_ADDRESS",
-    "ETH_KEYSTORE",
-    "RAW_PRIVATE_KEY",
-    "VISUAL",
-    "EDITOR",
-];
-
-/// An isolated home for one test.
-struct Sandbox {
-    root: TempDir,
-}
-
-impl Sandbox {
-    fn new() -> Self {
-        let root = TempDir::new().unwrap();
-        for d in ["home", "config", "state", "cache", "runtime"] {
-            fs::create_dir_all(root.path().join(d)).unwrap();
-        }
-        Self { root }
-    }
-
-    fn home(&self) -> PathBuf {
-        self.root.path().join("home")
-    }
-
-    /// `$XDG_CONFIG_HOME/chainz`.
-    fn dir(&self) -> PathBuf {
-        self.root.path().join("config").join("chainz")
-    }
-
-    fn config_path(&self) -> PathBuf {
-        self.dir().join("config.toml")
-    }
-
-    fn secrets_path(&self) -> PathBuf {
-        self.dir().join("secrets.toml")
-    }
-
-    fn apply(&self, cmd: &mut std::process::Command) {
-        let r = self.root.path();
-        for name in SCRUBBED {
-            cmd.env_remove(name);
-        }
-        cmd.env("HOME", r.join("home"))
-            .env("XDG_CONFIG_HOME", r.join("config"))
-            .env("XDG_STATE_HOME", r.join("state"))
-            .env("XDG_CACHE_HOME", r.join("cache"))
-            .env("XDG_RUNTIME_DIR", r.join("runtime"))
-            .env("CHAINZ_DISABLE_KEYRING", "1")
-            .env("NO_COLOR", "1");
-    }
-
-    /// The binary, sandboxed.
-    fn cmd(&self) -> Command {
-        let mut std = std::process::Command::new(assert_cmd::cargo::cargo_bin!("chainz"));
-        self.apply(&mut std);
-        Command::from_std(std)
-    }
-
-    /// The binary as a plain `std::process::Command` (for spawning).
-    fn process(&self) -> std::process::Command {
-        let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("chainz"));
-        self.apply(&mut cmd);
-        cmd
-    }
-
-    fn write_config(&self, toml: &str) {
-        fs::create_dir_all(self.dir()).unwrap();
-        fs::write(self.config_path(), toml).unwrap();
-        set_mode(&self.config_path(), 0o600);
-    }
-
-    fn write_secrets(&self, toml: &str) {
-        fs::create_dir_all(self.dir()).unwrap();
-        fs::write(self.secrets_path(), toml).unwrap();
-        set_mode(&self.secrets_path(), 0o600);
-    }
-
-    fn config(&self) -> String {
-        fs::read_to_string(self.config_path()).unwrap()
-    }
-
-    fn secrets(&self) -> String {
-        fs::read_to_string(self.secrets_path()).unwrap_or_default()
-    }
-
-    /// Chains `(name, id)` on a dead local RPC, a plaintext `default`
-    /// signer (TEST_KEY) attached to each.
-    fn seed(&self, chains: &[(&str, u64)]) {
-        let mut toml = String::from("version = 2\n\n[signers.default]\nbackend = \"plaintext\"\n");
-        toml.push_str(&format!("address = \"{TEST_ADDRESS}\"\n"));
-        for (name, id) in chains {
-            toml.push_str(&format!(
-                "\n[chains.{name}]\nid = {id}\nsigner = \"default\"\nrpc = \"local\"\n\n[chains.{name}.rpcs]\nlocal = \"http://127.0.0.1:1\"\n"
-            ));
-        }
-        self.write_config(&toml);
-        self.write_secrets(&format!(
-            "[signers.default]\nprivate_key = \"{TEST_KEY}\"\n"
-        ));
-    }
-}
-
-#[cfg(unix)]
-fn set_mode(path: &Path, mode: u32) {
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
-}
-
-#[cfg(unix)]
-fn mode(path: &Path) -> u32 {
-    use std::os::unix::fs::PermissionsExt;
-    fs::metadata(path).unwrap().permissions().mode() & 0o777
-}
-
-/// Serve `n` deterministic `eth_chainId` responses on a local port.
-fn chain_id_rpc(chain_id: u64, n: usize) -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let address = listener.local_addr().unwrap();
-    std::thread::spawn(move || {
-        for _ in 0..n {
-            let Ok((mut stream, _)) = listener.accept() else {
-                return;
-            };
-            let mut request = [0_u8; 4096];
-            let _ = stream.read(&mut request);
-            let body = format!(r#"{{"jsonrpc":"2.0","id":1,"result":"0x{chain_id:x}"}}"#);
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                body.len(),
-                body
-            );
-            let _ = stream.write_all(response.as_bytes());
-        }
-    });
-    format!("http://{address}")
-}
-
-fn stdout(output: &std::process::Output) -> String {
-    String::from_utf8_lossy(&output.stdout).into_owned()
+/// A mock answering `eth_chainId` with `chain_id`.
+fn chain_id_rpc(chain_id: u64) -> String {
+    MockRpc::chain_id(chain_id).url()
 }
 
 fn fixture(name: &str) -> String {
@@ -279,6 +123,7 @@ fn concurrent_updates_do_not_lose_changes() {
             sb.process()
                 .args(["var", "set", &format!("V{i}"), "value"])
                 .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
                 .spawn()
                 .unwrap()
         })
@@ -548,7 +393,7 @@ fn signer_rm_requires_force_when_attached() {
         .failure()
         .stderr(predicate::str::contains("--force"));
     sb.cmd()
-        .args(["signer", "rm", "default", "--force"])
+        .args(["signer", "rm", "default", "--force", "--yes"])
         .assert()
         .success();
     assert!(!sb.config().contains("[signers.default]"));
@@ -613,7 +458,7 @@ fn keystore_signer_is_a_reference() {
 #[test]
 fn chain_add_by_hand_checks_chain_id() {
     let sb = Sandbox::new();
-    let url = chain_id_rpc(8453, 1);
+    let url = chain_id_rpc(8453);
     sb.cmd()
         .args(["chain", "add", "8453", "--rpc", &url])
         .assert()
@@ -621,7 +466,7 @@ fn chain_add_by_hand_checks_chain_id() {
         .stdout(predicate::str::contains("Added chain 'base'"));
     assert!(sb.config().contains("[chains.base]"));
     // Wrong ID is refused.
-    let url = chain_id_rpc(1, 1);
+    let url = chain_id_rpc(1);
     sb.cmd()
         .args(["chain", "add", "10", "--rpc", &url])
         .assert()
@@ -1116,7 +961,7 @@ fn doctor_reports_dead_rpc_and_plaintext_signer() {
 #[test]
 fn doctor_fix_moves_literal_credentials_into_variables() {
     let sb = Sandbox::new();
-    let url = chain_id_rpc(1, 4);
+    let url = chain_id_rpc(1);
     sb.write_config(&format!(
         "version = 2\n[chains.eth]\nid = 1\nrpc = \"local\"\n[chains.eth.rpcs]\nlocal = \"{url}\"\ninfura = \"https://mainnet.infura.invalid/v3/0123456789abcdef0123456789abcdef\"\n"
     ));
@@ -1193,4 +1038,484 @@ fn chain_edit_replaces_one_chain() {
         .success();
     assert!(sb.config().contains("id = 84532"));
     assert!(sb.config().contains("[chains.eth]"));
+}
+
+// ------------------------------------------------- regressions and v1 names
+
+/// An infura-style URL whose key `chain add`/`rpc add` move to secrets.toml.
+const INFURA_URL: &str = "https://mainnet.infura.invalid/v3/0123456789abcdef0123456789abcdef";
+const INFURA_KEY: &str = "0123456789abcdef0123456789abcdef";
+
+/// A mock chain: `eth_chainId` is `chain_id`, the head is `head`, and every
+/// answer takes `delay`.
+fn chain_rpc(chain_id: u64, head: u64, delay: std::time::Duration) -> MockRpc {
+    MockRpc::start(move |request| {
+        std::thread::sleep(delay);
+        Ok(match request.method.as_str() {
+            "eth_chainId" => serde_json::json!(format!("{chain_id:#x}")),
+            "eth_blockNumber" => serde_json::json!(format!("{head:#x}")),
+            _ => serde_json::Value::Null,
+        })
+    })
+}
+
+/// A fresh chainlist cache with one entry.
+fn seed_chainlist(sb: &Sandbox, name: &str, chain_id: u64, rpcs: &[&str]) {
+    let path = sb.cache_file("chains.json");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let entry = serde_json::json!([{
+        "name": name, "chainId": chain_id, "shortName": name.to_lowercase(), "rpc": rpcs,
+        "nativeCurrency": {"name": "Ether", "symbol": "ETH", "decimals": 18}
+    }]);
+    fs::write(path, entry.to_string()).unwrap();
+}
+
+/// `(active, [(name, url)])` of a chain, URLs revealed.
+fn endpoints(sb: &Sandbox, chain: &str) -> (String, Vec<(String, String)>) {
+    let shown: serde_json::Value =
+        serde_json::from_str(&sb.ok(&["chain", "show", chain, "--json", "--reveal"])).unwrap();
+    let list = shown["endpoints"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            (
+                e["name"].as_str().unwrap().to_string(),
+                e["url"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    (shown["rpc"].as_str().unwrap().to_string(), list)
+}
+
+#[test]
+fn chain_add_from_chainlist_skips_invalid_urls_and_picks_a_live_one() {
+    let sb = Sandbox::new();
+    let live = chain_rpc(8453, 100, std::time::Duration::ZERO);
+    // An invalid URL first: every probe result must stay paired with its
+    // own URL, so the live one is still the one chosen.
+    seed_chainlist(
+        &sb,
+        "Base",
+        8453,
+        &[
+            "http://bad host",
+            "http://127.0.0.1:1",
+            &live.url(),
+            "https://x.invalid/${API_KEY}",
+        ],
+    );
+    let out = sb.run(&["chain", "add", "base"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        stdout(&out),
+        "Added chain 'base' (8453) with 2 endpoint(s); active: local\n"
+    );
+    let (active, list) = endpoints(&sb, "base");
+    assert_eq!(active, "local");
+    assert_eq!(
+        list,
+        [
+            ("local".to_string(), live.url()),
+            ("local-2".to_string(), "http://127.0.0.1:1".to_string())
+        ]
+    );
+    assert!(!sb.config().contains("bad host"));
+}
+
+#[test]
+fn chain_add_and_rpc_add_move_url_keys_into_secrets() {
+    let sb = Sandbox::new();
+    sb.cmd()
+        .args(["chain", "add", "1", "--rpc", INFURA_URL, "--no-check"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("moved the secret in")
+                .and(predicate::str::contains("${INFURA_KEY}")),
+        );
+    assert!(sb.config().contains("/v3/${INFURA_KEY}"), "{}", sb.config());
+    assert!(!sb.config().contains(INFURA_KEY));
+    assert!(
+        sb.secrets()
+            .contains(&format!("INFURA_KEY = \"{INFURA_KEY}\""))
+    );
+
+    // The same key again reuses the variable; a different one gets its own.
+    let other = INFURA_URL.replace("0123", "9999");
+    sb.cmd()
+        .args([
+            "rpc",
+            "add",
+            "eth",
+            &other,
+            "--name",
+            "second",
+            "--no-check",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("moved the secret in"));
+    let config = sb.config();
+    assert!(!config.contains("9999"), "{config}");
+    assert!(sb.secrets().contains("9999"));
+    // Exec still sees the real URL.
+    sb.cmd()
+        .args([
+            "exec",
+            "eth",
+            "--rpc",
+            "second",
+            "--",
+            "sh",
+            "-c",
+            "echo $ETH_RPC_URL",
+        ])
+        .assert()
+        .success()
+        .stdout(format!("{other}\n"));
+}
+
+#[test]
+fn rpc_bench_fix_activates_the_best_and_yes_writes_failover() {
+    let sb = Sandbox::new();
+    let fast = chain_rpc(1, 1_000, std::time::Duration::ZERO);
+    let slow = chain_rpc(1, 1_000, std::time::Duration::from_millis(300));
+    let config = format!(
+        "version = 2\n[chains.eth]\nid = 1\nrpc = \"dead\"\n[chains.eth.rpcs]\ndead = \"http://127.0.0.1:1\"\nfast = \"{}\"\nslow = \"{}\"\n",
+        fast.url(),
+        slow.url()
+    );
+    sb.write_config(&config);
+
+    // Report only.
+    let report = sb.ok(&["rpc", "bench", "eth"]);
+    assert!(
+        report.contains("best: fast (run with --fix to activate)"),
+        "{report}"
+    );
+    assert!(sb.config().contains("rpc = \"dead\""));
+
+    // --fix off a TTY activates the best but leaves failover unwritten.
+    let fixed = sb.ok(&["rpc", "bench", "eth", "--fix"]);
+    assert!(
+        fixed.contains("eth: active → fast; proposed failover: slow"),
+        "{fixed}"
+    );
+    assert!(fixed.contains("failover lists not written"), "{fixed}");
+    assert!(sb.config().contains("rpc = \"fast\""));
+    assert!(!sb.config().contains("failover"));
+
+    // --yes writes it.
+    sb.write_config(&config);
+    sb.ok(&["rpc", "bench", "--fix", "--yes"]);
+    let written = sb.config();
+    assert!(written.contains("rpc = \"fast\""), "{written}");
+    assert!(written.contains("failover = [\"slow\"]"), "{written}");
+
+    // --yes needs --fix.
+    sb.cmd().args(["rpc", "bench", "--yes"]).assert().code(2);
+}
+
+#[test]
+fn rpc_discover_lists_off_a_tty_and_yes_adds_the_live_ones() {
+    let sb = Sandbox::new();
+    let live = chain_rpc(1, 1_000, std::time::Duration::ZERO);
+    sb.write_config(
+        "version = 2\n[chains.eth]\nid = 1\nrpc = \"known\"\n[chains.eth.rpcs]\nknown = \"http://127.0.0.1:9/\"\n",
+    );
+    seed_chainlist(
+        &sb,
+        "Ethereum",
+        1,
+        &[
+            "http://bad host",
+            "http://127.0.0.1:1",
+            &live.url(),
+            "http://127.0.0.1:9",
+        ],
+    );
+
+    // Off a TTY without --yes: the ranked list and a hint, nothing added.
+    let before = sb.config();
+    let listed = sb.run(&["rpc", "discover", "eth"]);
+    assert!(listed.status.success(), "{}", stderr(&listed));
+    let text = stdout(&listed);
+    assert!(text.contains(&live.url()), "{text}");
+    assert!(text.contains("chainz rpc discover eth --yes"), "{text}");
+    assert!(
+        stderr(&listed).contains("skipping [REDACTED URL]: invalid endpoint: invalid URL"),
+        "{}",
+        stderr(&listed)
+    );
+    assert_eq!(sb.config(), before);
+
+    // --yes adds every endpoint that answered, and only those.
+    let added = sb.ok(&["rpc", "discover", "eth", "--yes"]);
+    assert_eq!(added, "Added 1 endpoint(s) to 'eth': local\n");
+    let (_, list) = endpoints(&sb, "eth");
+    assert_eq!(
+        list,
+        [
+            ("known".to_string(), "http://127.0.0.1:9/".to_string()),
+            ("local".to_string(), live.url())
+        ]
+    );
+}
+
+/// An (empty) keystore file in the sandbox.
+fn keystore_file(sb: &Sandbox) -> std::path::PathBuf {
+    let path = sb.home().join("ks.json");
+    fs::write(&path, "{}").unwrap();
+    path
+}
+
+#[test]
+fn signer_migrate_off_a_tty_changes_nothing_and_reports_each_failure() {
+    let sb = Sandbox::new();
+    sb.seed(&[("eth", 1)]);
+    let unchanged = |sb: &Sandbox| (sb.config(), sb.secrets());
+    let before = unchanged(&sb);
+
+    // The keyring is disabled in tests; encrypted (the default without a
+    // keyring) needs a prompt.
+    let out = sb.run(&["signer", "migrate", "default", "--to", "keyring"]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("keyring is unavailable"),
+        "{}",
+        stderr(&out)
+    );
+    let out = sb.run(&["signer", "migrate", "default"]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("interactive password prompt"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(unchanged(&sb), before);
+
+    sb.cmd()
+        .args(["key", "add", "second", "--type", "private-key", "--stdin"])
+        .write_stdin(TEST_KEY_2)
+        .assert()
+        .success();
+    let before = unchanged(&sb);
+    let out = sb.run(&["signer", "migrate"]);
+    assert!(
+        stderr(&out).contains("2 plaintext signers (default, second); pass a name or --all"),
+        "{}",
+        stderr(&out)
+    );
+    // --all tries every one and names each failure.
+    let out = sb.run(&["signer", "migrate", "--all", "--to", "encrypted"]);
+    assert_eq!(out.status.code(), Some(1));
+    let err = stderr(&out);
+    assert!(
+        err.contains("✗ 'default': ") && err.contains("✗ 'second': "),
+        "{err}"
+    );
+    assert!(
+        err.contains("2 of 2 signers not moved: default, second"),
+        "{err}"
+    );
+    assert_eq!(unchanged(&sb), before);
+
+    // References are never moved.
+    sb.cmd()
+        .args([
+            "signer",
+            "add",
+            "ks",
+            "--backend",
+            "keystore",
+            "--address",
+            TEST_ADDRESS_2,
+        ])
+        .arg("--path")
+        .arg(keystore_file(&sb))
+        .assert()
+        .success();
+    let out = sb.run(&["signer", "migrate", "ks"]);
+    assert!(
+        stderr(&out).contains("chainz does not move it"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn signer_rm_needs_yes_off_a_tty_but_references_do_not() {
+    let sb = Sandbox::new();
+    sb.seed(&[("eth", 1)]);
+    let out = sb.run(&["signer", "rm", "default", "--force"]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("pass --yes to confirm"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(sb.secrets().contains(TEST_KEY), "nothing deleted");
+    assert!(sb.config().contains("[signers.default]"));
+
+    // A keystore reference deletes no key material: no confirmation.
+    sb.cmd()
+        .args([
+            "signer",
+            "add",
+            "ks",
+            "--backend",
+            "keystore",
+            "--address",
+            TEST_ADDRESS_2,
+        ])
+        .arg("--path")
+        .arg(keystore_file(&sb))
+        .assert()
+        .success();
+    sb.ok(&["signer", "remove", "ks"]);
+    sb.ok(&["key", "rm", "default", "--force", "-y"]);
+    assert!(!sb.secrets().contains(TEST_KEY));
+}
+
+#[test]
+fn secrets_given_as_arguments_are_warned_about() {
+    let sb = Sandbox::new();
+    sb.seed(&[("eth", 1)]);
+    sb.cmd()
+        .args(["var", "set", "TOKEN", "abc"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "visible in shell history and `ps`; prefer --stdin",
+        ));
+    sb.cmd()
+        .args([
+            "signer",
+            "add",
+            "argkey",
+            "--key",
+            TEST_KEY_2,
+            "--backend",
+            "plaintext",
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "a private key given as an argument",
+        ));
+    // --stdin is quiet.
+    sb.cmd()
+        .args(["var", "set", "OTHER", "--stdin"])
+        .write_stdin("abc")
+        .assert()
+        .success()
+        .stderr("");
+}
+
+#[test]
+fn v1_command_names_still_work() {
+    let sb = Sandbox::new();
+    sb.seed(&[("eth", 1)]);
+    assert!(sb.ok(&["list"]).contains("eth"));
+    assert!(sb.ok(&["chain", "list"]).contains("eth"));
+    assert!(sb.ok(&["rpc", "list"]).contains("local"));
+    assert!(sb.ok(&["key", "list"]).contains("default"));
+    sb.cmd()
+        .args(["var", "set", "TOKEN", "--stdin"])
+        .write_stdin("hunter2")
+        .assert()
+        .success();
+    assert!(sb.ok(&["var", "list", "--show"]).contains("hunter2"));
+    assert_eq!(sb.ok(&["var", "get", "TOKEN", "--show"]), "hunter2\n");
+    sb.ok(&["var", "remove", "TOKEN"]);
+    assert!(!sb.ok(&["var", "list"]).contains("TOKEN"));
+    sb.cmd()
+        .args([
+            "key",
+            "add",
+            "one",
+            "--type",
+            "one-password",
+            "--vault",
+            "v",
+            "--item",
+            "i",
+            "--address",
+            TEST_ADDRESS_2,
+        ])
+        .assert()
+        .success();
+    assert!(
+        sb.config().contains("backend = \"1password\""),
+        "{}",
+        sb.config()
+    );
+    sb.ok(&["key", "remove", "one"]);
+    sb.ok(&["chain", "remove", "eth"]);
+}
+
+#[test]
+fn exec_exit_codes_for_missing_and_unrunnable_commands() {
+    let sb = Sandbox::new();
+    sb.seed(&[("eth", 1)]);
+    sb.cmd()
+        .args(["exec", "eth", "--", "chainz-no-such-command"])
+        .assert()
+        .code(127)
+        .stderr(predicate::str::contains(
+            "failed to run 'chainz-no-such-command': command not found",
+        ));
+    let script = sb.home().join("not-executable.sh");
+    fs::write(&script, "#!/bin/sh\necho ran\n").unwrap();
+    set_mode(&script, 0o644);
+    sb.cmd()
+        .args(["exec", "eth", "--"])
+        .arg(&script)
+        .assert()
+        .code(126)
+        .stdout("")
+        .stderr(predicate::str::contains("permission denied"));
+}
+
+#[test]
+fn v1_explorer_tokens_expand_with_a_deprecation_warning() {
+    let sb = Sandbox::new();
+    sb.write_config(
+        "version = 2\n[explorers.scan]\napi = \"https://scan.invalid/api\"\nkey = \"${SCAN_KEY}\"\n[chains.eth]\nid = 1\nrpc = \"a\"\nexplorer = \"scan\"\n[chains.eth.rpcs]\na = \"http://127.0.0.1:1\"\n",
+    );
+    sb.write_secrets("[vars]\nSCAN_KEY = \"scankey\"\n");
+    sb.cmd()
+        .args([
+            "exec",
+            "eth",
+            "--",
+            "echo",
+            "@verification_url",
+            "@verifier_api_key",
+        ])
+        .assert()
+        .success()
+        .stdout("https://scan.invalid/api scankey\n")
+        .stderr(
+            predicate::str::contains("@verification_url is deprecated")
+                .and(predicate::str::contains("@verifier_api_key is deprecated")),
+        );
+}
+
+#[test]
+fn expose_key_explain_never_unlocks() {
+    let sb = Sandbox::new();
+    // An encrypted signer: unlocking would need a password prompt, which
+    // fails off a TTY. --explain must not try.
+    sb.write_config(&format!(
+        "version = 2\n[signers.vault]\nbackend = \"encrypted\"\naddress = \"{TEST_ADDRESS}\"\n[chains.eth]\nid = 1\nsigner = \"vault\"\nrpc = \"a\"\n[chains.eth.rpcs]\na = \"http://127.0.0.1:1\"\n"
+    ));
+    sb.write_secrets("[signers.vault]\nciphertext = \"not-real\"\n");
+    let explained = sb.ok(&["exec", "eth", "--expose-key", "--explain", "--", "true"]);
+    assert!(explained.contains("RAW_PRIVATE_KEY"), "{explained}");
+    sb.cmd()
+        .args(["exec", "eth", "--expose-key", "--", "true"])
+        .assert()
+        .failure();
 }

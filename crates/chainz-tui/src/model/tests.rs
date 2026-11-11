@@ -65,7 +65,7 @@ fn state() -> State {
         chain("base", 8453, &[("a", "http://127.0.0.1:5")]),
         chain("arb", 42161, &[("a", "http://127.0.0.1:6")]),
     ]);
-    let store = HealthStore::load(std::path::Path::new("/nonexistent/chainz")).unwrap();
+    let store = HealthStore::empty();
     State::new(&plan, &store)
 }
 
@@ -298,7 +298,7 @@ fn a_reloaded_plan_keeps_what_is_still_true() {
         state.chains[1].plan.clone(),
         chain("op", 10, &[("a", "http://127.0.0.1:7")]),
     ]);
-    let store = HealthStore::load(std::path::Path::new("/nonexistent/chainz")).unwrap();
+    let store = HealthStore::empty();
     let rebuilt = state.rebuilt(&next, &store);
 
     let names: Vec<&str> = rebuilt

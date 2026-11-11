@@ -6,27 +6,29 @@ use super::open;
 use crate::{net, ui};
 use anyhow::Result;
 use chainz_core::Chainz;
-use chainz_core::labels::{BuiltinToken, LabelIndex, LabelSource, builtin_tokens};
+use chainz_core::labels::{BuiltinToken, builtin_tokens};
 use chainz_core::model::Chain;
 use chainz_core::names;
-use chainz_rpc::{BlockId, RpcClient, RpcError, Target};
+use chainz_rpc::erc20::{self, DECIMALS, SYMBOL};
+use chainz_rpc::{BlockId, RetryOn, RetryPolicy, RpcClient, Target};
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-/// `symbol()`.
-const SYMBOL: [u8; 4] = [0x95, 0xd8, 0x9b, 0x41];
-/// `decimals()`.
-const DECIMALS: [u8; 4] = [0x31, 0x3c, 0xe5, 0x67];
-/// Waits before each further attempt of a request that failed in transit.
-const BACKOFF: [Duration; 4] = [
-    Duration::from_millis(500),
-    Duration::from_secs(1),
-    Duration::from_secs(2),
-    Duration::from_secs(4),
-];
-/// The longest `Retry-After` honoured.
-const MAX_WAIT: Duration = Duration::from_secs(10);
+/// How each request is retried: up to five attempts on transient failures
+/// (timeouts, connection errors, rate limits, 502–504), waiting 0.5, 1, 2
+/// then 4 s, or a rate limit's `Retry-After` up to 10 s. A public endpoint
+/// asked about many tokens in a row often needs this.
+fn retry_policy() -> RetryPolicy {
+    RetryPolicy {
+        max_attempts: 5,
+        backoff: Duration::from_millis(500),
+        max_backoff: Duration::from_secs(4),
+        max_retry_after: Duration::from_secs(10),
+        timeout: Duration::from_secs(10),
+        retry_on: RetryOn::ALL,
+    }
+}
 
 /// One chain's entries and how they fared.
 enum Outcome {
@@ -120,24 +122,6 @@ pub fn run() -> Result<i32> {
         }
     }
 
-    // Your own labels that hide a built-in token on a configured chain.
-    let index = LabelIndex::new(config);
-    for token in builtin_tokens() {
-        if let Some((chain, _)) = config.chain_by_id(token.chain_id)
-            && let Ok(label) = index.resolve(&token.name, token.chain_id)
-            && label.source != LabelSource::Token
-            && label.address != token.address
-        {
-            println!(
-                "{}",
-                ui::warn(&format!(
-                    "{chain}: your @{} ({}) shadows the built-in token",
-                    token.name, label.address
-                ))
-            );
-        }
-    }
-
     println!();
     let total = ok + failed + skipped;
     let summary = format!("{total} registry entries: {ok} ok, {failed} failed, {skipped} skipped");
@@ -170,7 +154,7 @@ fn endpoint(chainz: &Chainz, name: &str, chain: &Chain) -> Result<(String, Targe
         if let Some(endpoint) = chain.rpcs.get(ep)
             && !endpoint.is_websocket()
         {
-            return net::target(chainz, name, chain, ep, endpoint)
+            return net::target(chainz, name, chain.id, ep, endpoint)
                 .map(|target| (names::endpoint_name_for_url(&endpoint.url), target))
                 .map_err(|e| format!("{e:#}"));
         }
@@ -215,12 +199,13 @@ async fn check_chain(
     chain_id: u64,
     tokens: &[&'static BuiltinToken],
 ) -> Outcome {
-    if let Err(e) = retry(|| client.check_chain_id(target, chain_id)).await {
+    let retry = retry_policy();
+    if let Err(e) = retry.run(|| client.check_chain_id(target, chain_id)).await {
         return Outcome::Unreachable(e.to_string());
     }
     let mut verdicts = Vec::with_capacity(tokens.len());
     for token in tokens {
-        verdicts.push(check_token(client, target, token).await);
+        verdicts.push(check_token(client, target, &retry, token).await);
     }
     Outcome::Checked(verdicts)
 }
@@ -228,19 +213,23 @@ async fn check_chain(
 async fn check_token(
     client: &RpcClient,
     target: &Target,
+    retry: &RetryPolicy,
     token: &BuiltinToken,
 ) -> Result<(), String> {
     let address = token.address.to_string();
-    let code: String = retry(|| client.request(target, "eth_getCode", json!([address, "latest"])))
+    let code: String = retry
+        .run(|| client.request(target, "eth_getCode", json!([address, "latest"])))
         .await
         .map_err(|e| format!("eth_getCode failed: {e}"))?;
     if code.trim_start_matches("0x").is_empty() {
         return Err("no code at this address".to_string());
     }
-    let symbol = retry(|| client.call(target, &address, &SYMBOL, BlockId::Latest))
+    let symbol = retry
+        .run(|| client.call(target, &address, &SYMBOL, BlockId::Latest))
         .await
         .map_err(|e| format!("symbol() failed: {e}"))?;
-    let decimals = retry(|| client.call(target, &address, &DECIMALS, BlockId::Latest))
+    let decimals = retry
+        .run(|| client.call(target, &address, &DECIMALS, BlockId::Latest))
         .await
         .map_err(|e| format!("decimals() failed: {e}"))?;
     compare(token, &symbol, &decimals)
@@ -249,7 +238,7 @@ async fn check_token(
 /// Compare raw `symbol()` and `decimals()` return data with the registry.
 fn compare(token: &BuiltinToken, symbol: &[u8], decimals: &[u8]) -> Result<(), String> {
     let mut wrong = Vec::new();
-    match decode_string(symbol) {
+    match erc20::decode_string(symbol) {
         Some(s) if s == token.symbol => {}
         Some(s) => wrong.push(format!(
             "symbol() is {s:?}, the registry says {:?}",
@@ -257,7 +246,7 @@ fn compare(token: &BuiltinToken, symbol: &[u8], decimals: &[u8]) -> Result<(), S
         )),
         None => wrong.push("symbol() returned no string".to_string()),
     }
-    match decode_u8(decimals) {
+    match erc20::decode_u8(decimals) {
         Some(d) if d == token.decimals => {}
         Some(d) => wrong.push(format!(
             "decimals() is {d}, the registry says {}",
@@ -270,72 +259,6 @@ fn compare(token: &BuiltinToken, symbol: &[u8], decimals: &[u8]) -> Result<(), S
     } else {
         Err(wrong.join("; "))
     }
-}
-
-/// Run `call`, trying again with a growing wait after transient failures
-/// (timeouts, connection errors, rate limits, 5xx). A rate limit's
-/// `Retry-After` is honoured up to [`MAX_WAIT`].
-async fn retry<T, F, Fut>(call: F) -> Result<T, RpcError>
-where
-    F: Fn() -> Fut,
-    Fut: std::future::Future<Output = Result<T, RpcError>>,
-{
-    let mut waits = BACKOFF.iter();
-    loop {
-        match call().await {
-            Err(e) if transient(&e) => match waits.next() {
-                Some(wait) => {
-                    let asked = match e {
-                        RpcError::RateLimited { retry_after } => retry_after,
-                        _ => None,
-                    };
-                    tokio::time::sleep(asked.map_or(*wait, |a| a.clamp(*wait, MAX_WAIT))).await
-                }
-                None => return Err(e),
-            },
-            other => return other,
-        }
-    }
-}
-
-fn transient(error: &RpcError) -> bool {
-    match error {
-        RpcError::Timeout | RpcError::Connect | RpcError::RateLimited { .. } => true,
-        RpcError::Http(status) => *status >= 500,
-        _ => false,
-    }
-}
-
-/// A big-endian ABI word as a `usize`, if it fits.
-fn word(data: &[u8], at: usize) -> Option<usize> {
-    let word = data.get(at..at.checked_add(32)?)?;
-    if word[..24].iter().any(|b| *b != 0) {
-        return None;
-    }
-    usize::try_from(u64::from_be_bytes(word[24..].try_into().ok()?)).ok()
-}
-
-/// Decode an ABI `string` return value. Also accepts the `bytes32` that a
-/// few old tokens return (NUL padded).
-fn decode_string(data: &[u8]) -> Option<String> {
-    let bytes = if data.len() == 32 {
-        let end = data.iter().position(|b| *b == 0).unwrap_or(32);
-        &data[..end]
-    } else {
-        let offset = word(data, 0)?;
-        let len = word(data, offset)?;
-        let start = offset.checked_add(32)?;
-        data.get(start..start.checked_add(len)?)?
-    };
-    String::from_utf8(bytes.to_vec()).ok()
-}
-
-/// Decode an ABI `uint8` return value.
-fn decode_u8(data: &[u8]) -> Option<u8> {
-    if data.len() != 32 {
-        return None;
-    }
-    u8::try_from(word(data, 0)?).ok()
 }
 
 #[cfg(test)]
@@ -359,41 +282,6 @@ mod tests {
     }
 
     #[test]
-    fn decodes_abi_strings_and_bytes32() {
-        assert_eq!(decode_string(&abi_string("USDC")).as_deref(), Some("USDC"));
-        assert_eq!(
-            decode_string(&abi_string("USD₮0")).as_deref(),
-            Some("USD₮0")
-        );
-        assert_eq!(decode_string(&abi_string("")).as_deref(), Some(""));
-        let mut bytes32 = [0u8; 32];
-        bytes32[..3].copy_from_slice(b"MKR");
-        assert_eq!(decode_string(&bytes32).as_deref(), Some("MKR"));
-        // Truncated, empty, or with an offset or length that points nowhere.
-        assert_eq!(decode_string(&[]), None);
-        assert_eq!(decode_string(&abi_string("USDC")[..66]), None);
-        let mut far = abi_string("USDC");
-        far[..32].fill(0xff);
-        assert_eq!(decode_string(&far), None);
-        let mut long = abi_string("USDC");
-        long[32..64].fill(0xff);
-        assert_eq!(decode_string(&long), None);
-        let mut not_utf8 = abi_string("USDC");
-        not_utf8[64] = 0xff;
-        assert_eq!(decode_string(&not_utf8), None);
-    }
-
-    #[test]
-    fn decodes_uint8() {
-        assert_eq!(decode_u8(&abi_u8(6)), Some(6));
-        assert_eq!(decode_u8(&abi_u8(18)), Some(18));
-        assert_eq!(decode_u8(&[]), None);
-        let mut big = abi_u8(0);
-        big[30] = 1; // 256
-        assert_eq!(decode_u8(&big), None);
-    }
-
-    #[test]
     fn compare_names_each_mismatch() {
         let usdc = builtin_token(8453, "usdc").unwrap();
         assert_eq!(compare(usdc, &abi_string("USDC"), &abi_u8(6)), Ok(()));
@@ -414,18 +302,14 @@ mod tests {
     }
 
     #[test]
-    fn only_transport_errors_are_retried() {
-        assert!(transient(&RpcError::Timeout));
-        assert!(transient(&RpcError::Http(503)));
-        assert!(transient(&RpcError::RateLimited { retry_after: None }));
-        assert!(!transient(&RpcError::Http(404)));
-        assert!(!transient(&RpcError::Rpc {
+    fn retries_are_transient_only() {
+        let retry = retry_policy();
+        assert!(retry.retries(&chainz_rpc::RpcError::Timeout));
+        assert!(retry.retries(&chainz_rpc::RpcError::Http(503)));
+        assert!(!retry.retries(&chainz_rpc::RpcError::Rpc {
             code: 3,
             message: "execution reverted".into()
         }));
-        assert!(!transient(&RpcError::ChainMismatch {
-            expected: 1,
-            actual: 2
-        }));
+        assert_eq!(retry.max_attempts, 5);
     }
 }

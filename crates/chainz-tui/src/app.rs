@@ -409,7 +409,7 @@ mod tests {
             chain("base", 8453, &[("infura", "https://base.example.org")]),
             chain("arb", 42161, &[("uniswap", "https://arb.example.org")]),
         ]);
-        let store = HealthStore::load(std::path::Path::new("/nonexistent/chainz")).unwrap();
+        let store = HealthStore::empty();
         State::new(&plan, &store)
     }
 
@@ -666,7 +666,7 @@ mod tests {
 
     #[test]
     fn an_empty_config_has_nothing_to_act_on() {
-        let store = HealthStore::load(std::path::Path::new("/nonexistent/chainz")).unwrap();
+        let store = HealthStore::empty();
         let state = State::new(&plan(vec![]), &store);
         let mut app = App::default();
         for keys in ["j", "k", "\n", "s", "e", "y", "G", "l", "2js"] {

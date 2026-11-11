@@ -1,8 +1,11 @@
-//! Credential-safe presentation of chains for `ls`, `chain show` and JSON.
+//! Credential-safe presentation of chains for `ls`, `chain show` and JSON,
+//! and the one plain-text [`table`] layout.
 //!
 //! Redaction happens when a view is built, so renderers cannot leak raw
-//! secrets. `--reveal` shows raw config values (templates unexpanded);
-//! resolved secret values are only ever printed by `var get --reveal`.
+//! secrets. `--reveal` here shows raw config values (templates
+//! unexpanded). Resolved secret values are printed only where the user
+//! asks for them: `var get --reveal`, `var ls --reveal`, `exec`'s
+//! environment (`env`, `shell`, `exec --expose-key`), and `top --reveal`.
 
 use crate::ui;
 use chainz_core::model::{Chain, Config, Endpoint};
@@ -136,31 +139,35 @@ pub fn compact(config: &Config, reveal: bool) -> String {
             ]
         })
         .collect();
-    let headers = [" NAME", "ID", "RPC", "SIGNER", "EXPLORER"];
-    let mut widths = headers.map(console::measure_text_width);
-    for row in &rows {
-        for (w, cell) in widths.iter_mut().zip(row) {
-            *w = (*w).max(console::measure_text_width(cell));
+    table(&[" NAME", "ID", "RPC", "SIGNER", "EXPLORER"], &rows)
+}
+
+/// Left-aligned columns two spaces apart, a bold header row first.
+/// Widths are display widths, so styled and wide cells line up; trailing
+/// spaces are trimmed.
+pub fn table<R: AsRef<[String]>>(headers: &[&str], rows: &[R]) -> String {
+    let mut widths: Vec<usize> = headers
+        .iter()
+        .map(|h| console::measure_text_width(h))
+        .collect();
+    for row in rows {
+        for (width, cell) in widths.iter_mut().zip(row.as_ref()) {
+            *width = (*width).max(console::measure_text_width(cell));
         }
     }
-    let mut out = String::new();
-    let line = |cells: &[String]| {
-        cells
-            .iter()
-            .zip(widths)
-            .map(|(c, w)| pad_str(c, w, Alignment::Left, None).into_owned())
+    let line = |cells: &mut dyn Iterator<Item = String>| {
+        let mut text = cells
+            .zip(&widths)
+            .map(|(cell, width)| pad_str(&cell, *width, Alignment::Left, None).into_owned())
             .collect::<Vec<_>>()
-            .join("  ")
-            .trim_end()
-            .to_string()
+            .join("  ");
+        text.truncate(text.trim_end().len());
+        text.push('\n');
+        text
     };
-    let header: Vec<String> = headers
-        .iter()
-        .map(|h| style(h).bold().to_string())
-        .collect();
-    writeln!(out, "{}", line(&header)).ok();
-    for row in &rows {
-        writeln!(out, "{}", line(row)).ok();
+    let mut out = line(&mut headers.iter().map(|h| style(h).bold().to_string()));
+    for row in rows {
+        out.push_str(&line(&mut row.as_ref().iter().cloned()));
     }
     out
 }
@@ -223,4 +230,28 @@ pub fn show(view: &ChainView, extra: &[(String, String)]) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tables_align_on_display_width() {
+        console::set_colors_enabled(false);
+        let rows = [
+            vec![
+                "base-fork".to_string(),
+                "0x0123…4567".to_string(),
+                "5s".into(),
+            ],
+            // Wide characters take two cells.
+            vec!["日本".to_string(), "-".to_string(), "1s".into()],
+            vec!["x".to_string(), "-".to_string(), String::new()],
+        ];
+        assert_eq!(
+            table(&["NAME", "ADDRESS", "UP"], &rows),
+            "NAME       ADDRESS      UP\nbase-fork  0x0123…4567  5s\n日本       -            1s\nx          -\n"
+        );
+    }
 }

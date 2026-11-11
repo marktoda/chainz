@@ -1,17 +1,20 @@
-//! The `chainz fork` handlers: start (supervise), `ls`, `stop`.
+//! `chainz fork CHAIN`: start a fork and supervise it until it stops.
 
 use super::fund::{self, FundPlan};
-use super::{process, proxy};
-use crate::cli::{ForkArgs, ForkCommand};
-use crate::commands::{chain_arg, open};
-use crate::{net, ui};
+use super::{endpoint, process};
+use crate::cli::ForkArgs;
+use crate::commands::{chain_arg, open, runtime};
+use crate::{net, sys, ui};
 use anyhow::{Context as _, Result, anyhow, bail};
+use chainz_core::fmt::{group, short_address};
 use chainz_core::names::{self, RESERVED_FORK_NAMES};
-use chainz_core::runtime::{ForkRecord, Runtime, ServeInfo};
-use chainz_core::{Address, Chain, Chainz, Config};
-use chainz_rpc::{Capabilities, HttpUpstream, RpcClient, Target, probe_capabilities};
+use chainz_core::runtime::{ForkRecord, Runtime};
+use chainz_core::{Chain, Chainz, Config};
+use chainz_rpc::{HttpUpstream, RetryPolicy, RpcClient, Target};
+use chainz_serve::PinnedProxy;
+use std::fs::File;
 use std::net::TcpListener;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ExitStatus};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -24,21 +27,6 @@ const SUPERVISOR_ENV: &str = "CHAINZ_FORK_SUPERVISOR";
 const READY_TIMEOUT: Duration = Duration::from_secs(120);
 /// Chains anvil can't fork.
 const UNFORKABLE: &[(u64, &str)] = &[(324, "zkSync Era"), (300, "zkSync Sepolia")];
-
-/// `chainz fork …`.
-pub fn run(cmd: Option<ForkCommand>, args: ForkArgs) -> Result<i32> {
-    match cmd {
-        None => start(args),
-        Some(ForkCommand::Ls) => ls(),
-        Some(ForkCommand::Stop { name, all }) => stop(name.as_deref(), all),
-    }
-}
-
-fn runtime() -> Result<Runtime> {
-    Runtime::resolve().context("unable to find the runtime directory")
-}
-
-// ------------------------------------------------------------------ rules
 
 /// Reject chains anvil can't fork, before anything starts.
 fn ensure_forkable(chain_name: &str, chain_id: u64) -> Result<()> {
@@ -131,60 +119,28 @@ fn plan_funding(
     }))
 }
 
-// ----------------------------------------------------------------- output
-
-/// `38112904` → `38,112,904`.
-fn group_thousands(n: u64) -> String {
-    let digits = n.to_string();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    out
-}
-
-/// `0x0123…4567`.
-fn short_address(address: &Address) -> String {
-    let full = address.to_checksum();
-    format!("{}…{}", &full[..6], &full[full.len() - 4..])
-}
-
-fn format_uptime(secs: u64) -> String {
-    match secs {
-        0..60 => format!("{secs}s"),
-        60..3600 => format!("{}m {}s", secs / 60, secs % 60),
-        3600..86400 => format!("{}h {}m", secs / 3600, secs % 3600 / 60),
-        _ => format!("{}d {}h", secs / 86400, secs % 86400 / 3600),
-    }
-}
-
 fn summary_line(record: &ForkRecord, block: u64) -> String {
     format!(
         "{}  {}  block {}  chain {}",
         record.name,
         record.rpc_url(),
-        group_thousands(block),
+        group(block),
         record.chain_id
     )
 }
 
-fn now_secs() -> u64 {
+pub(super) fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
 }
 
-fn anvil_target(chain_id: u64, port: u16) -> Result<Target> {
+pub(super) fn anvil_target(chain_id: u64, port: u16) -> Result<Target> {
     Target::new(chain_id, "anvil", &format!("http://127.0.0.1:{port}"), &[])
         .map_err(|e| anyhow!("{e}"))
 }
 
-// ------------------------------------------------------------------ start
-
-fn start(args: ForkArgs) -> Result<i32> {
+pub fn start(args: ForkArgs) -> Result<i32> {
     let chainz = open()?;
     let runtime = runtime()?;
     let query = args
@@ -247,7 +203,7 @@ fn detach(runtime: &Runtime, name: &str) -> Result<i32> {
     use std::io::Read;
     use std::process::{Command, Stdio};
     let log_path = process::log_path(name)?;
-    let log = process::open_log(&log_path, true)?;
+    let log = sys::open_log(&log_path, true)?;
     let exe = std::env::current_exe().context("unable to find the chainz binary")?;
     let mut command = Command::new(exe);
     command
@@ -256,7 +212,7 @@ fn detach(runtime: &Runtime, name: &str) -> Result<i32> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(log);
-    process::detach_session(&mut command);
+    sys::detach(&mut command);
     let mut child = command
         .spawn()
         .context("unable to start the background supervisor")?;
@@ -320,20 +276,22 @@ impl Drop for Supervisor<'_> {
 /// A fork that is up and registered.
 struct Running {
     /// Keeps the proxy serving for the fork's whole life.
-    _proxy: proxy::Proxy,
-    log_path: std::path::PathBuf,
+    _proxy: PinnedProxy,
+    log_path: PathBuf,
 }
 
+/// Start the fork, then wait. A stop signal exits with 128 + its number
+/// (130 for Ctrl-C) whether it arrives while starting or once running.
 async fn supervise(supervisor: &mut Supervisor<'_>, job: &Job<'_>) -> Result<i32> {
     let running = tokio::select! {
         result = start_fork(supervisor, job) => result?,
-        () = process::shutdown() => return Ok(130),
+        code = process::shutdown() => return Ok(code),
     };
     let me = std::process::id();
     loop {
-        if process::shutdown_requested() {
+        if let Some(code) = process::shutdown_requested() {
             eprintln!("{}", ui::dim(&format!("stopped {}", job.name)));
-            return Ok(0);
+            return Ok(code);
         }
         if let Some(anvil) = supervisor.anvil.as_mut()
             && let Some(status) = anvil.try_wait()?
@@ -360,6 +318,7 @@ async fn supervise(supervisor: &mut Supervisor<'_>, job: &Job<'_>) -> Result<i32
 
 async fn start_fork(supervisor: &mut Supervisor<'_>, job: &Job<'_>) -> Result<Running> {
     let Job {
+        chainz,
         runtime,
         parent,
         chain,
@@ -368,80 +327,23 @@ async fn start_fork(supervisor: &mut Supervisor<'_>, job: &Job<'_>) -> Result<Ru
         ..
     } = *job;
     let client = RpcClient::new();
-    let (endpoint, target) = choose_endpoint(job, &client).await?;
+    let (endpoint, target) = endpoint::choose(chainz, parent, chain, args.block, &client).await?;
 
     // One upstream for the fork's whole life, always behind our own
     // proxy: the real endpoint, or a running gateway pinned to it. Anvil's
     // argv (world-readable in /proc) then only ever holds the proxy's
     // per-fork token, never the gateway's token or an endpoint secret.
-    let (target, route) = match gateway(runtime) {
-        Some(info) => {
-            let url = info.chain_url(parent, Some(&endpoint));
-            let target = Target::new(chain.id, endpoint.as_str(), &url, &[])
-                .map_err(|e| anyhow!("gateway URL: {e}"))?;
-            (target, "gateway")
-        }
-        None => (target, "proxy"),
-    };
+    // Retries stay on that endpoint: mixing nodes would corrupt the fork.
+    let (target, route) = endpoint::route(runtime, parent, chain.id, &endpoint, target)?;
     let upstream = Arc::new(HttpUpstream::new(client.clone()));
-    let proxy = proxy::start(upstream, target)
+    let proxy = PinnedProxy::start(upstream, target, RetryPolicy::same_endpoint_transient())
         .await
         .context("unable to start the fork proxy")?;
-    let fork_url = proxy.url();
 
     let log_path = process::log_path(name)?;
-    let log = process::open_log(&log_path, !job.detached)?;
+    let log = sys::open_log(&log_path, !job.detached)?;
     let chain_id = args.chain_id.unwrap_or(chain.id);
-    let mut from = FIRST_PORT;
-    let mut attempt = 0;
-    let port = loop {
-        attempt += 1;
-        let port = match args.port {
-            Some(port) => port,
-            None => {
-                let taken: Vec<u16> = process::entries(runtime)
-                    .into_iter()
-                    .filter(|e| e.name != name)
-                    .filter_map(|e| e.port)
-                    .collect();
-                first_free_port(from, |p| taken.contains(&p) || port_busy(p))
-                    .ok_or_else(|| anyhow!("no free port from {FIRST_PORT} upward"))?
-            }
-        };
-        let log_start = log.metadata().map(|m| m.len()).unwrap_or(0);
-        let spec = process::AnvilSpec {
-            fork_url: &fork_url,
-            port,
-            block: args.block,
-            chain_id: args.chain_id,
-        };
-        let anvil = process::spawn_anvil(&spec, &log)?;
-        process::write_pids(
-            runtime,
-            name,
-            &process::Pids {
-                supervisor: std::process::id(),
-                anvil: Some(anvil.id()),
-                port: Some(port),
-            },
-        )?;
-        let anvil = supervisor.anvil.insert(anvil);
-        match wait_ready(anvil, chain_id, port, &log_path, log_start).await? {
-            None => break port,
-            Some(status) => {
-                supervisor.anvil = None;
-                // Lost a race for an auto-allocated port: take the next.
-                if args.port.is_none() && attempt < 5 && port_busy(port) {
-                    from = port.saturating_add(1);
-                    continue;
-                }
-                bail!(
-                    "anvil exited before the fork was ready ({status}):\n{}",
-                    process::log_tail(&log_path, log_start, 12)
-                );
-            }
-        }
-    };
+    let port = spawn_on_free_port(supervisor, job, &proxy.url(), &log, &log_path).await?;
 
     // Deals walk upstream state through the proxy: allow them time.
     let anvil_client = RpcClient::with_timeout(Duration::from_secs(90));
@@ -473,7 +375,7 @@ async fn start_fork(supervisor: &mut Supervisor<'_>, job: &Job<'_>) -> Result<Ru
         if !report.funded.is_empty() {
             println!(
                 "funded {} ({}): {}",
-                short_address(&plan.address),
+                short_address(&plan.address.to_checksum()),
                 plan.signer,
                 report.funded.join(", ")
             );
@@ -501,12 +403,78 @@ async fn start_fork(supervisor: &mut Supervisor<'_>, job: &Job<'_>) -> Result<Ru
     })
 }
 
-/// The gateway's discovery record, when one is running.
-fn gateway(runtime: &Runtime) -> Option<ServeInfo> {
-    if !runtime.serve_running() {
-        return None;
+/// Spawn anvil on `--port`, or on the first free port from
+/// [`FIRST_PORT`] up, and wait until it serves. Another process can take an
+/// auto-allocated port between the check and anvil's bind (parallel forks
+/// do): then the next port is tried, up to five times. Returns the port.
+async fn spawn_on_free_port(
+    supervisor: &mut Supervisor<'_>,
+    job: &Job<'_>,
+    fork_url: &str,
+    log: &File,
+    log_path: &Path,
+) -> Result<u16> {
+    let Job {
+        runtime,
+        chain,
+        name,
+        args,
+        ..
+    } = *job;
+    let chain_id = args.chain_id.unwrap_or(chain.id);
+    let mut from = FIRST_PORT;
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let port = match args.port {
+            Some(port) => port,
+            None => {
+                let taken: Vec<u16> = process::entries(runtime)
+                    .into_iter()
+                    .filter(|e| e.name != name)
+                    .filter_map(|e| e.port)
+                    .collect();
+                first_free_port(from, |p| taken.contains(&p) || port_busy(p))
+                    .ok_or_else(|| anyhow!("no free port from {FIRST_PORT} upward"))?
+            }
+        };
+        let log_start = log.metadata().map(|m| m.len()).unwrap_or(0);
+        let spec = process::AnvilSpec {
+            fork_url,
+            port,
+            block: args.block,
+            chain_id: args.chain_id,
+        };
+        let anvil = process::spawn_anvil(&spec, log)?;
+        process::write_pids(
+            runtime,
+            name,
+            &process::Pids {
+                supervisor: std::process::id(),
+                anvil: Some(anvil.id()),
+                port: Some(port),
+            },
+        )?;
+        let anvil = supervisor.anvil.insert(anvil);
+        match wait_ready(anvil, chain_id, port, log_path, log_start).await? {
+            None => return Ok(port),
+            Some(status) => {
+                supervisor.anvil = None;
+                // Lost a race for an auto-allocated port (the winner may
+                // already have let go of it again): take the next.
+                let lost_port =
+                    port_busy(port) || log_contains(log_path, log_start, "Address already in use");
+                if args.port.is_none() && attempt < 5 && lost_port {
+                    from = port.saturating_add(1);
+                    continue;
+                }
+                bail!(
+                    "anvil exited before the fork was ready ({status}):\n{}",
+                    process::log_tail(log_path, log_start, 12)
+                );
+            }
+        }
     }
-    runtime.read_serve_info().ok().flatten()
 }
 
 /// Wait until our anvil serves `eth_chainId` on `port`. `Ok(Some(status))`
@@ -563,208 +531,6 @@ fn log_contains(path: &Path, from: u64, needle: &str) -> bool {
     file.seek(SeekFrom::Start(from)).is_ok()
         && file.read_to_end(&mut bytes).is_ok()
         && String::from_utf8_lossy(&bytes).contains(needle)
-}
-
-// --------------------------------------------------------------- endpoint
-
-/// The one endpoint this fork uses for its whole life.
-///
-/// Without `--block`: the chain's active endpoint. With `--block`: an
-/// archive-capable one (cached capability tags first, then a fresh probe),
-/// preferring the active endpoint, then the failover list, then the rest.
-/// The fork refuses to start when none qualifies.
-async fn choose_endpoint(job: &Job<'_>, client: &RpcClient) -> Result<(String, Target)> {
-    let Job {
-        chainz,
-        parent,
-        chain,
-        ..
-    } = *job;
-    let Some(block) = job.args.block else {
-        let name = &chain.rpc;
-        let endpoint = chain
-            .rpcs
-            .get(name)
-            .ok_or_else(|| anyhow!("chain '{parent}' has no endpoint '{name}'"))?;
-        if endpoint.is_websocket() {
-            bail!(
-                "chain '{parent}' is on websocket endpoint '{name}', which a fork can't use; activate an HTTP endpoint with `chainz rpc use {parent} NAME`"
-            );
-        }
-        let target = net::target(chainz, parent, chain, name, endpoint)?;
-        client
-            .check_chain_id(&target, chain.id)
-            .await
-            .map_err(|e| anyhow!("can't fork '{parent}' from endpoint '{name}': {e}"))?;
-        return Ok((name.clone(), target));
-    };
-
-    let mut candidates: Vec<(String, Target)> = Vec::new();
-    for name in archive_order(chain) {
-        let endpoint = &chain.rpcs[&name];
-        if endpoint.is_websocket() {
-            continue;
-        }
-        match net::target(chainz, parent, chain, &name, endpoint) {
-            Ok(target) => candidates.push((name, target)),
-            Err(e) => eprintln!("{}", ui::warn(&format!("{e:#}"))),
-        }
-    }
-    let mut store = net::health_store();
-    for (name, target) in &candidates {
-        let cached = store
-            .capabilities(chain.id, name)
-            .is_some_and(|c| c.archive == Some(true));
-        if cached && client.check_chain_id(target, chain.id).await.is_ok() {
-            return Ok((name.clone(), target.clone()));
-        }
-    }
-
-    eprintln!(
-        "{}",
-        ui::dim(&format!(
-            "--block {block}: probing {} endpoint(s) of '{parent}' for archive state…",
-            candidates.len()
-        ))
-    );
-    let mut probes = tokio::task::JoinSet::new();
-    for (index, (_, target)) in candidates.iter().enumerate() {
-        let (client, target, id) = (client.clone(), target.clone(), chain.id);
-        probes.spawn(async move {
-            let capabilities = match client.check_chain_id(&target, id).await {
-                Ok(()) => Some(probe_capabilities(&client, &target).await),
-                Err(_) => None,
-            };
-            (index, capabilities)
-        });
-    }
-    let mut probed: Vec<Option<Capabilities>> = vec![None; candidates.len()];
-    while let Some(joined) = probes.join_next().await {
-        if let Ok((index, capabilities)) = joined {
-            probed[index] = capabilities;
-        }
-    }
-    let mut chosen = None;
-    for ((name, target), capabilities) in candidates.iter().zip(probed) {
-        let Some(capabilities) = capabilities else {
-            continue;
-        };
-        if chosen.is_none() && capabilities.archive == Some(true) {
-            chosen = Some((name.clone(), target.clone()));
-        }
-        store.set_capabilities(chain.id, name, capabilities);
-    }
-    let _ = store.save();
-    chosen.ok_or_else(|| {
-        anyhow!(
-            "--block {block} needs an archive endpoint, and none of the {} HTTP endpoint(s) of '{parent}' serves historical state; add one with `chainz rpc add {parent} URL`",
-            candidates.len()
-        )
-    })
-}
-
-/// Endpoint names in preference order: active, failover list, the rest.
-fn archive_order(chain: &Chain) -> Vec<String> {
-    let mut order: Vec<String> = Vec::with_capacity(chain.rpcs.len());
-    let preferred = std::iter::once(&chain.rpc).chain(&chain.failover);
-    for name in preferred.chain(chain.rpcs.keys()) {
-        if chain.rpcs.contains_key(name) && !order.contains(name) {
-            order.push(name.clone());
-        }
-    }
-    order
-}
-
-// -------------------------------------------------------------- ls / stop
-
-fn ls() -> Result<i32> {
-    let runtime = runtime()?;
-    process::reap(&runtime);
-    let forks = runtime
-        .list_forks()
-        .context("unable to read the fork registry")?;
-    if forks.is_empty() {
-        println!("no forks running (start one with `chainz fork CHAIN`)");
-        return Ok(0);
-    }
-    let heights = net::block_on(async {
-        let client = RpcClient::with_timeout(Duration::from_secs(2));
-        let mut heights = Vec::with_capacity(forks.len());
-        for fork in &forks {
-            let height = match anvil_target(fork.chain_id, fork.port) {
-                Ok(target) => client.block_number(&target).await.ok(),
-                Err(_) => None,
-            };
-            heights.push(height);
-        }
-        heights
-    });
-    let now = now_secs();
-    let mut rows = vec![["NAME", "URL", "PARENT", "BLOCK", "UPTIME", "PID"].map(String::from)];
-    for (fork, height) in forks.iter().zip(heights) {
-        rows.push([
-            fork.name.clone(),
-            fork.rpc_url(),
-            fork.parent.clone(),
-            height.map_or_else(|| "-".to_string(), group_thousands),
-            format_uptime(now.saturating_sub(fork.started_at)),
-            fork.pid.to_string(),
-        ]);
-    }
-    print!("{}", table(&rows));
-    Ok(0)
-}
-
-/// Left-aligned columns, two spaces apart.
-fn table(rows: &[[String; 6]]) -> String {
-    let mut widths = [0usize; 6];
-    for row in rows {
-        for (width, cell) in widths.iter_mut().zip(row) {
-            *width = (*width).max(cell.chars().count());
-        }
-    }
-    let mut out = String::new();
-    for row in rows {
-        let line: Vec<String> = row
-            .iter()
-            .zip(widths)
-            .map(|(cell, width)| format!("{cell:<width$}"))
-            .collect();
-        out.push_str(line.join("  ").trim_end());
-        out.push('\n');
-    }
-    out
-}
-
-fn stop(name: Option<&str>, all: bool) -> Result<i32> {
-    let runtime = runtime()?;
-    process::reap(&runtime);
-    let entries = process::entries(&runtime);
-    let targets: Vec<process::Entry> = match (name, all) {
-        (_, true) => entries,
-        (Some(name), false) => {
-            let live: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
-            match entries.iter().find(|e| e.name == name) {
-                Some(entry) => vec![entry.clone()],
-                None if live.is_empty() => bail!("no fork named '{name}' (no forks running)"),
-                None => bail!("no fork named '{name}' (running: {})", live.join(", ")),
-            }
-        }
-        (None, false) => bail!("which fork? chainz fork stop NAME, or --all"),
-    };
-    if targets.is_empty() {
-        println!("no forks running");
-        return Ok(0);
-    }
-    for entry in targets {
-        process::stop_supervisor(entry.supervisor);
-        if let Some(anvil) = entry.anvil {
-            process::kill_anvil(anvil, entry.port);
-        }
-        process::forget(&runtime, &entry.name);
-        println!("stopped {}", entry.name);
-    }
-    Ok(0)
 }
 
 #[cfg(test)]
@@ -825,6 +591,7 @@ rpcs.a = "https://a"
         assert_eq!(check("scratch_2"), Ok(()));
         // Reserved subcommand names.
         assert!(check("ls").unwrap_err().contains("subcommand"));
+        assert!(check("list").unwrap_err().contains("subcommand"));
         assert!(check("stop").unwrap_err().contains("subcommand"));
         // Configured chain names and aliases, case-insensitively.
         assert!(check("base").unwrap_err().contains("configured chain"));
@@ -907,25 +674,7 @@ rpcs.a = "https://a"
     }
 
     #[test]
-    fn archive_candidates_prefer_active_then_failover() {
-        let c = config();
-        assert_eq!(archive_order(&c.chains["base"]), ["b", "c", "a"]);
-    }
-
-    #[test]
-    fn output_formatting() {
-        assert_eq!(group_thousands(0), "0");
-        assert_eq!(group_thousands(999), "999");
-        assert_eq!(group_thousands(1000), "1,000");
-        assert_eq!(group_thousands(38_112_904), "38,112,904");
-        assert_eq!(format_uptime(5), "5s");
-        assert_eq!(format_uptime(125), "2m 5s");
-        assert_eq!(format_uptime(3780), "1h 3m");
-        assert_eq!(format_uptime(180_000), "2d 2h");
-        let address: Address = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
-            .parse()
-            .unwrap();
-        assert_eq!(short_address(&address), "0xf39F…2266");
+    fn summary() {
         let record = ForkRecord {
             name: "base-fork".into(),
             pid: 1,
@@ -938,14 +687,6 @@ rpcs.a = "https://a"
         assert_eq!(
             summary_line(&record, 38_112_904),
             "base-fork  http://127.0.0.1:8601  block 38,112,904  chain 8453"
-        );
-        let rows = [
-            ["NAME", "URL", "PARENT", "BLOCK", "UPTIME", "PID"].map(String::from),
-            ["base-fork", "http://x", "base", "-", "5s", "42"].map(String::from),
-        ];
-        assert_eq!(
-            table(&rows),
-            "NAME       URL       PARENT  BLOCK  UPTIME  PID\nbase-fork  http://x  base    -      5s      42\n"
         );
     }
 }

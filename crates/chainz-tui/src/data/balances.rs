@@ -188,7 +188,7 @@ async fn batch(
         for token in &chain.tokens {
             let call = json!({
                 "to": token.address.to_lower_hex(),
-                "data": abi::hex(&abi::balance_of(holder)),
+                "data": chainz_rpc::hex::encode(&abi::balance_of(holder)),
             });
             calls.push(("eth_call", json!([call, "latest"])));
         }
@@ -207,9 +207,9 @@ async fn batch(
             let value = result.ok()?;
             let text = value.as_str()?;
             if *method == "eth_getBalance" {
-                abi::quantity(text)
+                chainz_rpc::hex::parse_quantity_saturating(text).ok()
             } else {
-                let word = abi::unhex(text)?;
+                let word = chainz_rpc::hex::decode(text).ok()?;
                 (word.len() >= 32).then(|| abi::uint(&word[..32]))
             }
         })

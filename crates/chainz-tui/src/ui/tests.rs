@@ -18,7 +18,7 @@ use crate::plan::Plan;
 const NOW: u64 = 1_700_000_000_000;
 
 fn empty_store() -> HealthStore {
-    HealthStore::load(std::path::Path::new("/nonexistent/chainz")).unwrap()
+    HealthStore::empty()
 }
 
 fn fixture_plan() -> std::sync::Arc<Plan> {

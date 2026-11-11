@@ -1,47 +1,55 @@
 //! The hot path: `exec`, `shell`, `env`. Only `chainz-core` APIs: no
 //! async runtime, no sockets, no threads before `execvp`.
 
-use super::{open, select_target};
-use crate::cli::{ExecArgs, ShellKind};
+use super::{open, runtime, select_target};
+use crate::cli::{ContextArgs, ExecArgs, ShellKind};
 use crate::ui;
-use anyhow::{Context as _, Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail};
 use chainz_core::Chainz;
 use chainz_core::context::{self, CONTRACT_VARS, Context, EnvVar, ExecOptions, Expander};
 use chainz_core::runtime::Runtime;
 use chainz_core::signer::{self, SystemKeyBackend};
 
+/// The options and resolved context for `exec`, `env` or `shell`.
 fn context_for(
     chainz: &Chainz,
     runtime: &Runtime,
-    chain: Option<&str>,
-    opts: &ExecOptions,
-) -> Result<Context> {
-    let target = select_target(chainz, runtime, chain)?;
-    context::build(chainz, runtime, &target, opts)
-}
-
-fn runtime() -> Result<Runtime> {
-    Runtime::resolve().context("unable to find the runtime directory")
+    args: &ContextArgs,
+) -> Result<(ExecOptions, Context)> {
+    let opts = ExecOptions {
+        signer: args.signer.clone(),
+        rpc: args.rpc.clone(),
+        direct: args.direct,
+    };
+    let target = select_target(chainz, runtime, args.chain.as_deref())?;
+    let ctx = context::build(chainz, runtime, &target, &opts)?;
+    Ok((opts, ctx))
 }
 
 /// `chainz exec`.
 pub fn exec(args: ExecArgs) -> Result<i32> {
     let chainz = open()?;
     let runtime = runtime()?;
-    let opts = ExecOptions {
-        signer: args.signer.clone(),
-        rpc: args.rpc.clone(),
-        direct: args.direct,
-    };
-    let ctx = context_for(&chainz, &runtime, args.chain.as_deref(), &opts)?;
+    let (opts, ctx) = context_for(&chainz, &runtime, &args.context)?;
     let expander = Expander::new(&chainz, &runtime, &ctx, &opts);
     let argv = expander.expand_args(&args.command)?;
     for warning in expander.warnings() {
-        eprintln!("chainz: warning: {warning}");
+        eprintln!("{}", ui::warn(&warning));
     }
     let mut env = ctx.env()?;
     if args.expose_key {
-        env.push(expose_key(&chainz, &ctx)?);
+        let signer = expose_key_signer(&ctx)?;
+        // --explain shows the variable redacted: no reason to unlock.
+        let value = if args.explain {
+            String::new()
+        } else {
+            unlock(&chainz, signer)?
+        };
+        env.push(EnvVar {
+            name: "RAW_PRIVATE_KEY",
+            value,
+            secret: true,
+        });
     }
     if args.explain {
         print!("{}", explain(&ctx, &env, &argv));
@@ -58,44 +66,54 @@ pub fn exec(args: ExecArgs) -> Result<i32> {
     run(command, &argv[0].display)
 }
 
+/// Why a command could not be started, with the shell's exit code for it:
+/// 127 when it does not exist, 126 when it can't be executed.
+fn spawn_error(program: &str, error: &std::io::Error) -> anyhow::Error {
+    let (code, why) = match error.kind() {
+        std::io::ErrorKind::NotFound => (127, "command not found".to_string()),
+        std::io::ErrorKind::PermissionDenied => (126, "permission denied".to_string()),
+        _ => (126, error.to_string()),
+    };
+    anyhow::Error::new(ui::ExitCode {
+        code,
+        message: format!("failed to run '{program}': {why}"),
+    })
+}
+
 #[cfg(unix)]
 fn run(mut command: std::process::Command, program: &str) -> Result<i32> {
     use std::os::unix::process::CommandExt;
     // execvp: same PID; signals and the exit status belong to the command.
     let error = command.exec();
-    Err(anyhow!("failed to run '{program}': {error}"))
+    Err(spawn_error(program, &error))
 }
 
 #[cfg(not(unix))]
 fn run(mut command: std::process::Command, program: &str) -> Result<i32> {
     let status = command
         .status()
-        .with_context(|| format!("failed to run '{program}'"))?;
+        .map_err(|error| spawn_error(program, &error))?;
     Ok(status.code().unwrap_or(1))
 }
 
-fn expose_key(chainz: &Chainz, ctx: &Context) -> Result<EnvVar> {
+/// The signer `--expose-key` would unlock, if it may: never on a fork.
+fn expose_key_signer(ctx: &Context) -> Result<&str> {
     if ctx.fork.is_some() {
         bail!(
             "--expose-key is refused on a fork: a fork shares the real chain ID, so its signatures replay on the real chain. Use `cast send --unlocked` (anvil impersonates ETH_FROM)"
         );
     }
-    let signer_ctx = ctx
-        .signer
+    ctx.signer
         .as_ref()
-        .ok_or_else(|| anyhow!("chain '{}' has no signer: pass --signer", ctx.chain))?;
-    let signer = &chainz.config().signers[&signer_ctx.name];
-    let key = signer::unlock(
-        &SystemKeyBackend,
-        &signer_ctx.name,
-        signer,
-        chainz.secrets()?,
-    )?;
-    Ok(EnvVar {
-        name: "RAW_PRIVATE_KEY",
-        value: key.to_string(),
-        secret: true,
-    })
+        .map(|s| s.name.as_str())
+        .ok_or_else(|| anyhow!("chain '{}' has no signer: pass --signer", ctx.chain))
+}
+
+/// The signer's private key: keyring, password prompt or `op read`.
+fn unlock(chainz: &Chainz, name: &str) -> Result<String> {
+    let signer = &chainz.config().signers[name];
+    let key = signer::unlock(&SystemKeyBackend, name, signer, chainz.secrets()?)?;
+    Ok(key.to_string())
 }
 
 fn explain(ctx: &Context, env: &[EnvVar], argv: &[context::ExpandedArg]) -> String {
@@ -159,15 +177,10 @@ fn explain(ctx: &Context, env: &[EnvVar], argv: &[context::ExpandedArg]) -> Stri
 }
 
 /// `chainz shell`: a subshell with the context exported.
-pub fn shell(chain: Option<String>, signer: Option<String>, direct: bool) -> Result<i32> {
+pub fn shell(args: ContextArgs) -> Result<i32> {
     let chainz = open()?;
     let runtime = runtime()?;
-    let opts = ExecOptions {
-        signer,
-        rpc: None,
-        direct,
-    };
-    let ctx = context_for(&chainz, &runtime, chain.as_deref(), &opts)?;
+    let (_, ctx) = context_for(&chainz, &runtime, &args)?;
     let env = ctx.env()?;
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
     eprintln!(
@@ -191,27 +204,16 @@ pub fn shell(chain: Option<String>, signer: Option<String>, direct: bool) -> Res
     );
     let status = command
         .status()
-        .with_context(|| format!("failed to start {shell}"))?;
+        .map_err(|error| spawn_error(&shell, &error))?;
     eprintln!("{}", ui::dim(&format!("left {} shell", ctx.chain)));
     Ok(status.code().unwrap_or(1))
 }
 
 /// `chainz env`: shell exports for `eval`.
-pub fn env(
-    chain: Option<String>,
-    shell: Option<ShellKind>,
-    signer: Option<String>,
-    rpc: Option<String>,
-    direct: bool,
-) -> Result<i32> {
+pub fn env(args: ContextArgs, shell: Option<ShellKind>) -> Result<i32> {
     let chainz = open()?;
     let runtime = runtime()?;
-    let opts = ExecOptions {
-        signer,
-        rpc,
-        direct,
-    };
-    let ctx = context_for(&chainz, &runtime, chain.as_deref(), &opts)?;
+    let (_, ctx) = context_for(&chainz, &runtime, &args)?;
     let env = ctx.env()?;
     let kind = shell.unwrap_or_else(|| {
         match std::env::var("SHELL")
@@ -263,6 +265,16 @@ fn fish_quote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_and_unrunnable_commands_have_shell_exit_codes() {
+        use std::io::{Error, ErrorKind};
+        let code = |kind| ui::exit_code(&spawn_error("x", &Error::from(kind)));
+        assert_eq!(code(ErrorKind::NotFound), 127);
+        assert_eq!(code(ErrorKind::PermissionDenied), 126);
+        let error = spawn_error("nope", &Error::from(ErrorKind::NotFound));
+        assert_eq!(error.to_string(), "failed to run 'nope': command not found");
+    }
 
     #[test]
     fn quoting() {

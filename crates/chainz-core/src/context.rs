@@ -278,7 +278,8 @@ fn rpc_context(
             via_gateway: true,
         },
         None => {
-            let expanded = chainz.expand_endpoint(chain_name, chain, &endpoint_name, endpoint)?;
+            let expanded =
+                chainz.expand_endpoint(chain_name, chain.id, &endpoint_name, endpoint)?;
             RpcContext {
                 display: redact(&endpoint.url),
                 url: expanded.url,

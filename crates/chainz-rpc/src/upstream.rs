@@ -98,6 +98,52 @@ impl RetryPolicy {
         }
     }
 
+    /// Whether this policy retries `error` (attempts and `Retry-After`
+    /// limits aside): the [`RetryOn`] flags applied to an error from
+    /// [`RpcClient`]. Only 502, 503 and 504 count as gateway statuses.
+    pub fn retries(&self, error: &RpcError) -> bool {
+        let on = self.retry_on;
+        match error {
+            RpcError::Timeout => on.timeout,
+            RpcError::Connect => on.connect,
+            RpcError::RateLimited { .. } => on.rate_limited,
+            RpcError::Http(status) => on.gateway_status && matches!(status, 502..=504),
+            RpcError::Rpc { code, .. } => on.limit_exceeded && *code == LIMIT_EXCEEDED,
+            _ => false,
+        }
+    }
+
+    /// Run `call` (one request through [`RpcClient`], say) and retry it per
+    /// this policy: up to `max_attempts` in all, waiting the backoff between
+    /// attempts, or a 429's `Retry-After` when it is at most
+    /// `max_retry_after` (a longer one returns the error at once). The
+    /// per-attempt `timeout` is the client's business, not applied here.
+    pub async fn run<T, F, Fut>(&self, mut call: F) -> Result<T, RpcError>
+    where
+        F: FnMut() -> Fut,
+        Fut: Future<Output = Result<T, RpcError>>,
+    {
+        let max_attempts = self.max_attempts.max(1);
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            let error = match call().await {
+                Err(error) if attempt < max_attempts && self.retries(&error) => error,
+                other => return other,
+            };
+            let wait = match error {
+                RpcError::RateLimited {
+                    retry_after: Some(wait),
+                } if wait > self.max_retry_after => return Err(error),
+                RpcError::RateLimited {
+                    retry_after: Some(wait),
+                } => wait,
+                _ => self.backoff_for(attempt),
+            };
+            tokio::time::sleep(wait).await;
+        }
+    }
+
     /// The backoff before retry number `retry` (1-based).
     fn backoff_for(&self, retry: u32) -> Duration {
         let factor = 1u32
@@ -264,6 +310,91 @@ pub fn rpc_error_code(body: &[u8]) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    fn quick(max_attempts: u32) -> RetryPolicy {
+        RetryPolicy {
+            max_attempts,
+            backoff: Duration::from_millis(1),
+            max_backoff: Duration::from_millis(2),
+            max_retry_after: Duration::from_millis(50),
+            timeout: Duration::from_secs(1),
+            retry_on: RetryOn::ALL,
+        }
+    }
+
+    #[test]
+    fn only_transient_errors_are_retried() {
+        let all = RetryPolicy::same_endpoint_transient();
+        assert!(all.retries(&RpcError::Timeout));
+        assert!(all.retries(&RpcError::Connect));
+        assert!(all.retries(&RpcError::Http(503)));
+        assert!(all.retries(&RpcError::RateLimited { retry_after: None }));
+        assert!(all.retries(&RpcError::Rpc {
+            code: LIMIT_EXCEEDED,
+            message: "limit".into()
+        }));
+        assert!(!all.retries(&RpcError::Http(404)));
+        assert!(!all.retries(&RpcError::Http(500)));
+        assert!(!all.retries(&RpcError::Rpc {
+            code: 3,
+            message: "execution reverted".into()
+        }));
+        assert!(!all.retries(&RpcError::ChainMismatch {
+            expected: 1,
+            actual: 2
+        }));
+        assert!(!RetryPolicy::none().retries(&RpcError::Timeout));
+    }
+
+    #[tokio::test]
+    async fn run_retries_transient_errors_up_to_max_attempts() {
+        let calls = AtomicU32::new(0);
+        let ok = quick(3)
+            .run(|| {
+                let n = calls.fetch_add(1, Ordering::SeqCst);
+                async move { if n < 2 { Err(RpcError::Timeout) } else { Ok(n) } }
+            })
+            .await;
+        assert_eq!(ok, Ok(2));
+
+        // Exhausted: the last error.
+        calls.store(0, Ordering::SeqCst);
+        let failed: Result<(), _> = quick(2)
+            .run(|| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                async { Err(RpcError::Connect) }
+            })
+            .await;
+        assert_eq!(failed, Err(RpcError::Connect));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        // Not transient: one attempt.
+        calls.store(0, Ordering::SeqCst);
+        let failed: Result<(), _> = quick(5)
+            .run(|| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                async { Err(RpcError::Http(404)) }
+            })
+            .await;
+        assert_eq!(failed, Err(RpcError::Http(404)));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        // A Retry-After beyond the policy's limit is not waited out.
+        calls.store(0, Ordering::SeqCst);
+        let long = RpcError::RateLimited {
+            retry_after: Some(Duration::from_secs(60)),
+        };
+        let failed: Result<(), _> = quick(5)
+            .run(|| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                let long = long.clone();
+                async move { Err(long) }
+            })
+            .await;
+        assert_eq!(failed, Err(long));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn error_code_helper() {

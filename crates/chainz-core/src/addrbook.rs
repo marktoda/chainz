@@ -29,12 +29,6 @@ fn sort_key(label: &Label) -> (LabelSource, &str, Option<u64>) {
     (label.source, &label.name, chain)
 }
 
-/// Every label from every source: [`LabelIndex::labels`] for `config`.
-/// User entries that are invalid or name an unknown chain are skipped.
-pub fn all_labels(config: &Config) -> Vec<Label> {
-    LabelIndex::new(config).labels().collect()
-}
-
 /// The preferred name for `address` on `chain_id`: the first reverse label
 /// that also resolves forward to the same address there, so the name can
 /// be pasted back as `@name` (a shadowed built-in token never labels).

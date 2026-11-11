@@ -2,12 +2,13 @@
 
 use super::{chain_arg, open};
 use crate::cli::RpcCommand;
-use crate::prompt::{Prompt, SystemPrompt, is_tty};
+use crate::prompt::{self, is_tty};
 use crate::{net, ui};
 use anyhow::{Result, anyhow, bail};
+use chainz_core::extract::{self, Moved, VarTable};
 use chainz_core::model::Endpoint;
 use chainz_core::redact::redact;
-use chainz_core::{Chainz, edit, names};
+use chainz_core::{Chainz, Tx, edit, names};
 use chainz_rpc::chainlist;
 use chainz_rpc::{Health, HealthSample, ProbeResult, RpcClient, Target, classify, probe, rank};
 use indexmap::IndexMap;
@@ -31,8 +32,12 @@ pub fn run(cmd: RpcCommand) -> Result<i32> {
         } => add(&chain, &url, name, &headers, failover, activate, no_check),
         RpcCommand::Use { chain, name } => use_endpoint(&chain, &name),
         RpcCommand::Rm { chain, name } => rm(&chain, &name),
-        RpcCommand::Bench { chain, fix } => bench(chain, fix),
-        RpcCommand::Discover { chain, refresh } => discover(&chain, refresh),
+        RpcCommand::Bench { chain, fix, yes } => bench(chain, fix, yes),
+        RpcCommand::Discover {
+            chain,
+            refresh,
+            yes,
+        } => discover(&chain, refresh, yes),
     }
 }
 
@@ -48,6 +53,9 @@ struct EndpointRow {
     chain: String,
     name: String,
     url: String,
+    /// Header names and values (values redacted unless `--reveal`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    headers: Vec<(String, String)>,
     active: bool,
     failover: bool,
     latency_ms: Option<u32>,
@@ -72,6 +80,18 @@ fn ls(chain: Option<String>, json: bool, reveal: bool) -> Result<i32> {
                 } else {
                     redact(&e.url)
                 },
+                headers: e
+                    .headers
+                    .iter()
+                    .map(|(k, v)| {
+                        let v = if reveal {
+                            v.clone()
+                        } else {
+                            "[REDACTED]".into()
+                        };
+                        (k.clone(), v)
+                    })
+                    .collect(),
                 active: c.rpc == *ep,
                 failover: c.failover.contains(ep),
                 latency_ms: latest.filter(|s| s.error.is_none()).map(|s| s.latency_ms),
@@ -113,6 +133,9 @@ fn ls(chain: Option<String>, json: bool, reveal: bool) -> Result<i32> {
             r.url,
             ui::dim(&r.tags.join(" "))
         );
+        for (k, v) in &r.headers {
+            println!("      {}", ui::dim(&format!("{k}: {v}")));
+        }
     }
     Ok(0)
 }
@@ -133,11 +156,73 @@ fn parse_headers(raw: &[String]) -> Result<IndexMap<String, String>> {
     Ok(out)
 }
 
-fn check(chainz: &Chainz, chain: &str, ep: &str, endpoint: &Endpoint) -> Result<()> {
-    let c = &chainz.config().chains[chain];
-    let target = net::target(chainz, chain, c, ep, endpoint)?;
-    net::block_on(RpcClient::new().check_chain_id(&target, c.id))
+/// Check that `endpoint` answers with chain ID `chain_id`.
+pub(super) fn check(
+    chainz: &Chainz,
+    chain: &str,
+    chain_id: u64,
+    ep: &str,
+    endpoint: &Endpoint,
+) -> Result<()> {
+    let target = net::target(chainz, chain, chain_id, ep, endpoint)?;
+    net::block_on(RpcClient::new().check_chain_id(&target, chain_id))
         .map_err(|e| anyhow!("RPC check failed for {}: {e}", redact(&endpoint.url)))
+}
+
+/// Inside a transaction: move the literal secrets of `endpoints` (a known
+/// URL key, credential header values) into `secrets.toml` variables,
+/// rewriting the endpoints to reference them. Returns what moved.
+pub(super) fn extract_secrets(
+    tx: &mut Tx,
+    chain: &str,
+    endpoints: &mut [(String, Endpoint)],
+) -> Result<Vec<Moved>> {
+    let mut vars = VarTable::with_vars(&tx.secrets_view()?.vars);
+    let mut moved = Vec::new();
+    for (name, endpoint) in endpoints.iter_mut() {
+        moved.extend(extract::extract_endpoint(chain, name, endpoint, &mut vars));
+    }
+    for (name, value) in vars.created_vars() {
+        edit::set_var(&mut tx.secrets, name, value)?;
+    }
+    Ok(moved)
+}
+
+/// Say which secrets moved out of `config.toml`.
+pub(super) fn report_moved(moved: &[Moved]) {
+    for m in moved {
+        println!("  moved the secret in {m} (secrets.toml)");
+    }
+}
+
+/// Probe `urls` for chain `chain_id`. A URL that is not a valid endpoint is
+/// dropped (with a warning), so each result is paired with the URL it
+/// probed.
+pub(super) fn probe_urls(chain_id: u64, urls: &[String]) -> Vec<(String, ProbeResult)> {
+    let mut probed: Vec<String> = Vec::with_capacity(urls.len());
+    let mut targets = Vec::with_capacity(urls.len());
+    for url in urls {
+        match Target::new(chain_id, format!("rpc{}", targets.len()), url, &[]) {
+            Ok(target) => {
+                probed.push(url.clone());
+                targets.push(target);
+            }
+            Err(e) => eprintln!("{}", ui::warn(&format!("skipping {}: {e}", redact(url)))),
+        }
+    }
+    let mut results = net::block_on(async {
+        let mut rx = chainz_rpc::probe_all(&RpcClient::new(), targets, chain_id);
+        let mut out: Vec<Option<ProbeResult>> = vec![None; probed.len()];
+        while let Some((i, r)) = rx.recv().await {
+            out[i] = Some(r);
+        }
+        out
+    });
+    probed
+        .into_iter()
+        .zip(results.iter_mut())
+        .filter_map(|(url, result)| Some((url, result.take()?)))
+        .collect()
 }
 
 fn add(
@@ -168,19 +253,23 @@ fn add(
         }),
     };
     if !no_check && !endpoint.is_websocket() {
-        check(&chainz, &chain, &ep, &endpoint)?;
+        check(&chainz, &chain, c.id, &ep, &endpoint)?;
     }
-    chainz.transact(|tx| {
-        edit::add_endpoint(&mut tx.doc, &chain, &ep, &endpoint, failover)?;
+    let moved = chainz.transact(|tx| {
+        let mut endpoints = [(ep.clone(), endpoint)];
+        let moved = extract_secrets(tx, &chain, &mut endpoints)?;
+        let [(_, endpoint)] = &endpoints;
+        edit::add_endpoint(&mut tx.doc, &chain, &ep, endpoint, failover)?;
         if activate {
             edit::set_active(&mut tx.doc, &chain, &ep)?;
         }
-        Ok(())
+        Ok(moved)
     })?;
     println!(
         "Added endpoint '{ep}' to '{chain}'{}",
         if activate { " (active)" } else { "" }
     );
+    report_moved(&moved);
     Ok(0)
 }
 
@@ -231,7 +320,7 @@ pub(super) async fn probe_chains(
             if e.is_websocket() {
                 continue;
             }
-            let target = match net::target(chainz, chain, c, ep, e) {
+            let target = match net::target(chainz, chain, c.id, ep, e) {
                 Ok(t) => t,
                 Err(err) => {
                     eprintln!("{}", ui::warn(&format!("{err:#}")));
@@ -308,7 +397,7 @@ pub(super) fn health_label(h: &Health) -> String {
     }
 }
 
-fn bench(chain: Option<String>, fix: bool) -> Result<i32> {
+fn bench(chain: Option<String>, fix: bool, yes: bool) -> Result<i32> {
     let mut chainz = open()?;
     let chains = chains_for(&chainz, chain)?;
     let probed = net::block_on(probe_chains(&chainz, &chains, true))?;
@@ -379,13 +468,14 @@ fn bench(chain: Option<String>, fix: bool) -> Result<i32> {
             );
         }
         if changes.iter().any(|(_, _, p)| !p.is_empty()) {
-            if is_tty() {
-                write_failover =
-                    SystemPrompt.confirm("Write the proposed failover lists?", false)?;
+            if yes {
+                write_failover = true;
+            } else if is_tty() {
+                write_failover = prompt::confirm("Write the proposed failover lists?", false)?;
             } else {
                 println!(
                     "{}",
-                    ui::dim("failover lists not written (needs confirmation on a TTY)")
+                    ui::dim("failover lists not written (pass --yes, or confirm on a TTY)")
                 );
             }
         }
@@ -404,7 +494,7 @@ fn bench(chain: Option<String>, fix: bool) -> Result<i32> {
     Ok(0)
 }
 
-fn discover(chain: &str, refresh: bool) -> Result<i32> {
+fn discover(chain: &str, refresh: bool, yes: bool) -> Result<i32> {
     let mut chainz = open()?;
     let chain = chain_arg(&chainz, chain)?;
     let c = chainz.config().chains[&chain].clone();
@@ -422,30 +512,15 @@ fn discover(chain: &str, refresh: bool) -> Result<i32> {
         println!("Every public chainlist RPC for '{chain}' is already configured");
         return Ok(0);
     }
-    let targets: Vec<Target> = fresh
-        .iter()
-        .enumerate()
-        .filter_map(|(i, u)| Target::new(c.id, format!("new{i}"), u, &[]).ok())
-        .collect();
-    let results = net::block_on(async {
-        let client = RpcClient::new();
-        let mut rx = chainz_rpc::probe_all(&client, targets, c.id);
-        let mut out = vec![None; fresh.len()];
-        while let Some((i, r)) = rx.recv().await {
-            out[i] = Some(r);
-        }
-        out.into_iter()
-            .map(|r| r.expect("one result per target"))
-            .collect::<Vec<_>>()
-    });
+    let probed = probe_urls(c.id, &fresh);
+    let results: Vec<ProbeResult> = probed.iter().map(|(_, r)| r.clone()).collect();
     let order = rank(&results, &vec![None; results.len()]);
     let items: Vec<String> = order
         .iter()
-        .map(|&i| match &results[i] {
-            r if r.is_ok() => format!("{}  {}ms", fresh[i], r.latency.as_millis()),
-            r => format!(
-                "{}  {}",
-                fresh[i],
+        .map(|&i| match &probed[i] {
+            (url, r) if r.is_ok() => format!("{url}  {}ms", r.latency.as_millis()),
+            (url, r) => format!(
+                "{url}  {}",
                 r.error
                     .as_ref()
                     .map(|e| e.class().to_string())
@@ -453,26 +528,35 @@ fn discover(chain: &str, refresh: bool) -> Result<i32> {
             ),
         })
         .collect();
-    if !is_tty() {
+    let answered: Vec<usize> = (0..order.len())
+        .filter(|&p| probed[order[p]].1.is_ok())
+        .collect();
+    let picked = if yes {
+        answered
+    } else if is_tty() {
+        let defaults: Vec<bool> = (0..order.len()).map(|p| answered.contains(&p)).collect();
+        prompt::multi_select("Endpoints to add", &items, &defaults)?
+    } else {
         for item in &items {
             println!("{item}");
         }
         println!(
             "{}",
-            ui::dim(&format!("add one with `chainz rpc add {chain} <url>`"))
+            ui::dim(&format!(
+                "add them with `chainz rpc discover {chain} --yes`, or one with `chainz rpc add {chain} <url>`"
+            ))
         );
         return Ok(0);
-    }
-    let defaults: Vec<bool> = order.iter().map(|&i| results[i].is_ok()).collect();
-    let picked = SystemPrompt.multi_select("Endpoints to add", &items, &defaults)?;
+    };
     if picked.is_empty() {
+        println!("Nothing added");
         return Ok(0);
     }
     let added = chainz.transact(|tx| {
         let mut taken: Vec<String> = c.rpcs.keys().cloned().collect();
-        let mut added = 0;
+        let mut added = Vec::new();
         for p in &picked {
-            let url = &fresh[order[*p]];
+            let url = &probed[order[*p]].0;
             let ep = names::unique_name(&names::endpoint_name_for_url(url), |n| {
                 taken.iter().any(|t| t == n)
             });
@@ -483,11 +567,15 @@ fn discover(chain: &str, refresh: bool) -> Result<i32> {
                 &Endpoint::new(url.as_str()),
                 false,
             )?;
-            taken.push(ep);
-            added += 1;
+            taken.push(ep.clone());
+            added.push(ep);
         }
         Ok(added)
     })?;
-    println!("Added {added} endpoint(s) to '{chain}'");
+    println!(
+        "Added {} endpoint(s) to '{chain}': {}",
+        added.len(),
+        added.join(", ")
+    );
     Ok(0)
 }

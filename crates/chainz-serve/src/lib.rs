@@ -126,7 +126,7 @@ async fn foreground(config: GatewayConfig) -> Result<()> {
                     "\r\x1b[K:{} │ {} chains │ up {} │ last 60s: {} req, {} err, {} failover, {} rate-limited, p50 {} ms",
                     status.port,
                     status.chains.len(),
-                    uptime(status.uptime_secs),
+                    chainz_core::fmt::uptime(status.uptime_secs),
                     s.requests,
                     s.errors,
                     s.failovers,
@@ -140,13 +140,4 @@ async fn foreground(config: GatewayConfig) -> Result<()> {
     say("stopping (in-flight requests get up to 5 s)");
     gateway.shutdown().await;
     Ok(())
-}
-
-/// `42s`, `3m05s`, `2h07m`.
-pub fn uptime(secs: u64) -> String {
-    match secs {
-        0..60 => format!("{secs}s"),
-        60..3600 => format!("{}m{:02}s", secs / 60, secs % 60),
-        _ => format!("{}h{:02}m", secs / 3600, secs % 3600 / 60),
-    }
 }

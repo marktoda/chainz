@@ -28,16 +28,12 @@ clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 console = "0.16"
 dialoguer = { version = "0.12", features = ["fuzzy-select"] }
-rpassword = "7"
 zeroize = "1"
 tempfile.workspace = true
 toml_edit.workspace = true
-bytes.workspace = true
-rand = "0.9"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
-rustix = { version = "1", features = ["process"] }
 
 [dev-dependencies]
 assert_cmd = "2"

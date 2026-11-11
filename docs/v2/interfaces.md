@@ -15,8 +15,11 @@ means changing every caller in the same commit.
 | `chainz` (bin) | clap surface, handlers, pickers, output | builds a current-thread runtime only for network commands (`net::block_on`) |
 
 `chainz-rpc` does not depend on `chainz-core`. The bin bridges the two with
-`net::target(chainz, chain_name, chain, endpoint_name, endpoint) -> Result<Target>`,
-which expands `${VAR}`s.
+`net::target(chainz, chain_name, chain_id, endpoint_name, endpoint) -> Result<Target>`,
+which expands `${VAR}`s through
+`Chainz::expand_endpoint(chain_name, chain_id, endpoint_name, &Endpoint) -> Result<ExpandedEndpoint>`
+(the same call the gateway and `top` use; the chain need not be configured
+yet).
 
 ## Runtime registry (`chainz_core::runtime`)
 
@@ -65,7 +68,7 @@ present. The gateway holds the lock, writes `serve.json`, and serves
 **Forks.** The resolver checks configured chains first, then
 `forks/<name>.json`. Live forks resolve as `ChainRef::Fork(ForkRecord)`, and
 their context points at anvil with no explorer and no `ETH_KEYSTORE`. A fork
-can't be named `ls` or `stop` (`names::RESERVED_FORK_NAMES`). `fork` writes
+can't be named `ls`, `list` or `stop` (`names::RESERVED_FORK_NAMES`). `fork` writes
 and removes records, and removes stale ones (dead pid).
 
 ## Labels (`chainz_core::labels`)
@@ -91,6 +94,7 @@ impl LabelIndex {
     pub fn reverse(&self, chain_id: u64, address: &Address) -> Option<&Label>;
     pub fn reverse_all(&self, chain_id: u64, address: &Address) -> Vec<&Label>;
     pub fn names(&self) -> impl Iterator<Item = &str>;
+    pub fn labels(&self) -> impl Iterator<Item = Label> + '_; // every source, every chain
     pub fn labels_on(&self, chain_id: u64) -> Vec<Label>;
 }
 ```
@@ -112,7 +116,6 @@ pub fn set_address(doc: &mut DocumentMut, name: &str, scope: &str, address: &Add
 pub fn remove_address(doc: &mut DocumentMut, name: &str, scope: Option<&str>) -> Result<Vec<(String, String)>>;
 
 // chainz_core::addrbook
-pub fn all_labels(config: &Config) -> Vec<Label>;             // every source, every chain
 pub fn find(config: &Config, address: &Address) -> Vec<Label>; // `addr find`
 pub struct Labeler { /* … */ }                                 // `chainz label`
 impl Labeler {
@@ -139,7 +142,12 @@ pub struct RetryOn { pub connect: bool, pub timeout: bool, pub gateway_status: b
                      pub rate_limited: bool, pub limit_exceeded: bool } // + RetryOn::NONE / ::ALL
 pub struct RetryPolicy { pub max_attempts: u32, pub backoff: Duration, pub max_backoff: Duration,
                          pub max_retry_after: Duration, pub timeout: Duration, pub retry_on: RetryOn }
-impl RetryPolicy { pub fn none() -> Self; pub fn same_endpoint_transient() -> Self; }
+impl RetryPolicy {
+    pub fn none() -> Self;
+    pub fn same_endpoint_transient() -> Self;
+    pub fn retries(&self, error: &RpcError) -> bool;        // is this error retried?
+    pub async fn run<T, F, Fut>(&self, call: F) -> Result<T, RpcError>; // backoff + Retry-After
+}
 pub struct UpstreamResponse { pub status: u16, pub body: Bytes, pub attempts: u32,
                               pub latency: Duration, pub retry_after: Option<Duration> }
 pub struct HttpUpstream; impl HttpUpstream { pub fn new(client: RpcClient) -> Self }
@@ -255,6 +263,13 @@ and the gateway all use it.
   removes the rest from the child env.
 - Variables: `${NAME}` resolves to the built-ins (`CHAIN_ID`, `CHAIN`), then
   the process env, then `secrets.toml [vars]`.
+- Shared helpers, so crates don't keep private copies:
+  `chainz_core::fmt::{group, uptime, short_address}` (thousands separators,
+  `42s`/`12m05s`/`2h03m`/`3d04h`, `0x1234…abcd`);
+  `chainz_rpc::hex::{encode, decode, parse_quantity, parse_quantity_saturating}`;
+  `chainz_rpc::erc20::{SYMBOL, DECIMALS, decode_string, decode_u8}`;
+  `HealthStore::empty()` and `HealthStore::load_or_empty(Option<&Path>)` for
+  callers that treat an unreadable store as empty.
 
 ## Bin crate: adding a command handler
 
@@ -263,19 +278,25 @@ and the gateway all use it.
 2. Put the handler in a module, for example `commands/serve.rs` with
    `pub fn run(...) -> anyhow::Result<i32>`, and route it in
    `commands::dispatch`. The return value is the exit code. An `Err` prints
-   `Error: …` and exits 1. `ui::cancelled()` exits 130.
+   `Error: …` and exits 1, or with the code of a `ui::ExitCode` in its chain
+(exec uses 127/126). `ui::cancelled()` exits 130.
 3. Network work goes through `net::block_on(async { … })`, which creates a
    current-thread tokio runtime. A long-running server (`serve`, `top`) can
    build a multi-threaded runtime in its own crate. `exec`, `env`, `ls`, and
    `shell` must stay free of runtimes, sockets, and threads. The Linux strace
    test (`crates/chainz/tests/strace.rs`) enforces this.
-4. Tests go in `crates/chainz/tests/cli.rs` (or a new file) through
-   `Sandbox::new()`. Its `.cmd()` sets `HOME`, all four XDG dirs, and
-   `CHAINZ_DISABLE_KEYRING`, and scrubs inherited context vars. `.seed(&[("eth", 1)])`
-   writes chains on a dead local RPC with a plaintext `default` signer.
-   `chain_id_rpc(id, n)` serves `n` `eth_chainId` answers. Never run the
-   binary outside a sandbox. Run `cargo test` with `TMPDIR` pointed at a
-   scratch directory.
+4. Tests go in `crates/chainz/tests/cli.rs` (or a new file with
+   `mod common;`) through `common::Sandbox::new()`. Its `.cmd()` /
+   `.process()` clear the environment down to `PATH`, `TMPDIR`,
+   `RUST_BACKTRACE` and `LLVM_PROFILE_FILE`, then set `HOME`, all four XDG
+   dirs, `CHAINZ_DISABLE_KEYRING` and `NO_COLOR`, with stdin empty.
+   `.seed(&[("eth", 1)])` writes chains on a dead local RPC with a plaintext
+   `default` signer; `.run`/`.ok` run the binary. `common::MockRpc::start(handler)`
+   is a threaded keep-alive JSON-RPC mock (batches too) that records every
+   request. Never run the binary outside a sandbox, and never guess a free
+   port: use port 0 (`serve --port 0`, `anvil --port 0`) or let `fork`
+   pick, then read the port back. Run `cargo test` with `TMPDIR` pointed at
+   a scratch directory.
 5. Before committing, run `cargo fmt`,
    `cargo clippy --workspace --all-targets -- -D warnings`, and
    `cargo test --workspace`. The perf gate is `scripts/perf-gate.sh V1 V2`.

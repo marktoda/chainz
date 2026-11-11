@@ -1,9 +1,12 @@
 //! Minimal hex and JSON-RPC quantity helpers.
+//!
+//! Strict: a quantity is `0x` followed by hex digits only (no sign, no
+//! whitespace), so `0x+f` is rejected rather than read as 15.
 
 use crate::error::RpcError;
 
 /// Encode bytes as a `0x`-prefixed lowercase hex string.
-pub(crate) fn encode(data: &[u8]) -> String {
+pub fn encode(data: &[u8]) -> String {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
     let mut s = String::with_capacity(2 + data.len() * 2);
     s.push_str("0x");
@@ -15,7 +18,7 @@ pub(crate) fn encode(data: &[u8]) -> String {
 }
 
 /// Decode a `0x`-prefixed (or bare) hex string into bytes.
-pub(crate) fn decode(s: &str) -> Result<Vec<u8>, RpcError> {
+pub fn decode(s: &str) -> Result<Vec<u8>, RpcError> {
     let s = s.strip_prefix("0x").unwrap_or(s);
     if !s.len().is_multiple_of(2) {
         return Err(RpcError::InvalidResponse("odd-length hex data".into()));
@@ -34,14 +37,38 @@ pub(crate) fn decode(s: &str) -> Result<Vec<u8>, RpcError> {
         .collect()
 }
 
-/// Parse a JSON-RPC quantity (`0x`-prefixed hex, no leading-zero rule enforced).
-pub(crate) fn parse_quantity(s: &str) -> Result<u128, RpcError> {
+/// The hex digits of a quantity: `0x` (or `0X`) and at least one hex digit.
+fn quantity_digits(s: &str) -> Result<&str, RpcError> {
     let digits = s
         .strip_prefix("0x")
         .or_else(|| s.strip_prefix("0X"))
         .ok_or_else(|| RpcError::InvalidResponse("quantity is not 0x-prefixed".into()))?;
     if digits.is_empty() {
         return Err(RpcError::InvalidResponse("empty quantity".into()));
+    }
+    // `from_str_radix` accepts a leading sign: "+f" would parse as 15.
+    if !digits.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(RpcError::InvalidResponse("invalid quantity".into()));
+    }
+    Ok(digits)
+}
+
+/// Parse a JSON-RPC quantity (`0x`-prefixed hex, no leading-zero rule
+/// enforced). A value past `u128::MAX` is an error.
+pub fn parse_quantity(s: &str) -> Result<u128, RpcError> {
+    u128::from_str_radix(quantity_digits(s)?, 16)
+        .map_err(|_| RpcError::InvalidResponse("quantity out of range".into()))
+}
+
+/// Parse a JSON-RPC quantity, saturating at `u128::MAX` (a `uint256`
+/// balance or supply that does not fit is shown as the maximum).
+pub fn parse_quantity_saturating(s: &str) -> Result<u128, RpcError> {
+    let digits = quantity_digits(s)?.trim_start_matches('0');
+    if digits.len() > 32 {
+        return Ok(u128::MAX);
+    }
+    if digits.is_empty() {
+        return Ok(0);
     }
     u128::from_str_radix(digits, 16)
         .map_err(|_| RpcError::InvalidResponse("invalid quantity".into()))
@@ -82,5 +109,31 @@ mod tests {
         assert!(parse_quantity("0x").is_err());
         assert!(parse_u64("0x1ffffffffffffffff").is_err());
         assert_eq!(quantity(255), "0xff");
+    }
+
+    #[test]
+    fn signs_and_junk_are_rejected() {
+        for bad in ["0x+f", "0x-1", "0x 1", "+0xf", "0xg", "12", "0x"] {
+            assert!(parse_quantity(bad).is_err(), "{bad:?}");
+            assert!(parse_quantity_saturating(bad).is_err(), "{bad:?}");
+        }
+        assert!(decode("0x+f").is_err());
+        assert!(decode("+f-1").is_err());
+        assert_eq!(decode("0x0a0B").unwrap(), vec![10, 11]);
+    }
+
+    #[test]
+    fn saturating_quantities() {
+        assert_eq!(parse_quantity_saturating("0x0").unwrap(), 0);
+        assert_eq!(parse_quantity_saturating("0x000").unwrap(), 0);
+        assert_eq!(parse_quantity_saturating("0X1b").unwrap(), 27);
+        let big = format!("0x1{}", "0".repeat(40));
+        assert_eq!(parse_quantity_saturating(&big).unwrap(), u128::MAX);
+        assert!(parse_quantity(&big).is_err());
+        let max = format!("0x{}", "f".repeat(32));
+        assert_eq!(parse_quantity(&max).unwrap(), u128::MAX);
+        // Leading zeros don't count towards the width.
+        let padded = format!("0x{}1", "0".repeat(63));
+        assert_eq!(parse_quantity_saturating(&padded).unwrap(), 1);
     }
 }

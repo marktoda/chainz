@@ -19,15 +19,15 @@ pub mod chainlist;
 pub mod client;
 #[cfg(unix)]
 pub mod control;
+pub mod erc20;
 pub mod error;
+pub mod hex;
 pub mod history;
 pub mod limiter;
 pub mod probe;
 pub mod rank;
 pub mod target;
 pub mod upstream;
-
-mod hex;
 
 pub use capabilities::{Capabilities, probe_capabilities};
 pub use client::{BlockId, RpcClient};
