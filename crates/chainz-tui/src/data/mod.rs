@@ -189,10 +189,7 @@ impl Shared {
     /// dashboard's polling shows in its inspector), else the chain's active
     /// endpoint. The flag says which.
     fn route(&self, chain: &ChainPlan) -> (Result<Target, Fault>, bool) {
-        let invalid = |message: String| Fault {
-            class: ErrorClass::Invalid,
-            message,
-        };
+        let invalid = |message: String| Fault::new(ErrorClass::Invalid, message);
         let Some(active) = chain.active_endpoint() else {
             return (Err(invalid("no active endpoint".into())), false);
         };
@@ -329,13 +326,12 @@ fn provider_slots(plan: &Plan) -> Vec<u32> {
 /// How often `--once` retries a rate-limited request.
 const ONCE_RETRIES: u32 = 2;
 
-/// A 429, or the JSON-RPC "limit exceeded" some providers send instead.
+/// A 429, or the JSON-RPC "limit exceeded" (-32005) some providers send
+/// instead.
 fn rate_limited(fault: &Fault) -> bool {
     fault.class == ErrorClass::RateLimited
         || (fault.class == ErrorClass::Rpc
-            && fault
-                .message
-                .contains(&chainz_rpc::upstream::LIMIT_EXCEEDED.to_string()))
+            && fault.code == Some(chainz_rpc::upstream::LIMIT_EXCEEDED))
 }
 
 /// One round of everything `--once` reports: every chain's head and
@@ -344,17 +340,17 @@ pub async fn collect_once(shared: &Arc<Shared>, plan: &Plan) -> Vec<Update> {
     let mut updates = Vec::new();
     if let Some(info) = shared.gateway() {
         updates.push(Update::Gateway(Some(info)));
-        updates.push(Update::Traffic(
-            shared.link().snapshot().await.map_err(|e| e.to_string()),
-        ));
+        updates.push(Update::Traffic(traffic_snapshot(shared).await));
     }
     let holders = Arc::new(plan.holders());
     let mut set = JoinSet::new();
+    let mut names = HashMap::new();
     for (chain, slot) in plan.chains.iter().zip(provider_slots(plan)) {
         let (shared, chain, holders) = (shared.clone(), chain.clone(), holders.clone());
+        let name = chain.name.clone();
         // Per chain the requests go one after another, and chains on one
         // provider start a beat apart.
-        set.spawn(async move {
+        let task = set.spawn(async move {
             tokio::time::sleep(shared.tuning.stagger * slot).await;
             let mut poller = heads::Poller::new(shared.clone(), chain.clone());
             let mut head = poller.step().await;
@@ -393,11 +389,47 @@ pub async fn collect_once(shared: &Arc<Shared>, plan: &Plan) -> Vec<Update> {
             }
             updates
         });
+        names.insert(task.id(), name);
     }
-    while let Some(Ok(chain_updates)) = set.join_next().await {
-        updates.extend(chain_updates);
+    updates.extend(gather(set, &names).await);
+    updates
+}
+
+/// Every chain's updates from `set`. A chain whose task died is reported
+/// as a failed head, and the other chains' results are kept.
+async fn gather(
+    mut set: JoinSet<Vec<Update>>,
+    names: &HashMap<tokio::task::Id, String>,
+) -> Vec<Update> {
+    let mut updates = Vec::new();
+    while let Some(joined) = set.join_next().await {
+        match joined {
+            Ok(chain_updates) => updates.extend(chain_updates),
+            Err(error) => {
+                let Some(chain) = names.get(&error.id()) else {
+                    continue;
+                };
+                let fault = Fault::new(ErrorClass::Invalid, format!("internal error: {error}"));
+                updates.push(Update::Head {
+                    chain: chain.clone(),
+                    at_ms: now_ms(),
+                    via_gateway: false,
+                    result: Err(fault),
+                    block_time: None,
+                });
+            }
+        }
     }
     updates
+}
+
+/// The gateway's status and metrics, within `request_timeout`: a wedged
+/// control socket is an error, not a hang.
+async fn traffic_snapshot(shared: &Shared) -> Result<crate::model::TrafficSnapshot, String> {
+    tokio::time::timeout(shared.tuning.request_timeout, shared.link().snapshot())
+        .await
+        .unwrap_or_else(|_| Err(std::io::ErrorKind::TimedOut.into()))
+        .map_err(|e| e.to_string())
 }
 
 /// Probe the focused chain's endpoints every `probe_every`, and at once
@@ -502,10 +534,7 @@ async fn watch_loop(shared: Arc<Shared>, signals: Arc<Signals>) {
         let running = shared.gateway().is_some();
         if running {
             let link = shared.link();
-            let snapshot = tokio::time::timeout(shared.tuning.request_timeout, link.snapshot())
-                .await
-                .unwrap_or_else(|_| Err(std::io::ErrorKind::TimedOut.into()));
-            shared.send(Update::Traffic(snapshot.map_err(|e| e.to_string())));
+            shared.send(Update::Traffic(traffic_snapshot(&shared).await));
             // Reap a closed stream, then (re)subscribe.
             while feed.try_join_next().is_some() {}
             if feed.is_empty() {

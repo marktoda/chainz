@@ -87,10 +87,7 @@ fn failed(chain: &str, class: ErrorClass) -> Update {
         chain: chain.into(),
         at_ms: NOW,
         via_gateway: false,
-        result: Err(Fault {
-            class,
-            message: "failed".into(),
-        }),
+        result: Err(Fault::new(class, "failed")),
         block_time: None,
     }
 }
@@ -105,10 +102,7 @@ fn probes(results: &[(&str, Option<u64>, Option<ErrorClass>)]) -> Update {
                 let probe = Probe {
                     latency_ms: 40,
                     head: *head,
-                    error: error.map(|class| Fault {
-                        class,
-                        message: "failed".into(),
-                    }),
+                    error: error.map(|class| Fault::new(class, "failed")),
                 };
                 (name.to_string(), probe)
             })

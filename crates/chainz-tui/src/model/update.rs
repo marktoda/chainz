@@ -1,5 +1,7 @@
 //! What the workers report: one [`Update`] per finished request.
 
+use std::time::Duration;
+
 use chainz_rpc::{ErrorClass, RpcError};
 
 use super::traffic::{FeedItem, TrafficSnapshot};
@@ -11,6 +13,23 @@ pub struct Fault {
     pub class: ErrorClass,
     /// Human-readable text; never a URL or a header value.
     pub message: String,
+    /// The JSON-RPC error code, when the endpoint answered with one.
+    pub code: Option<i64>,
+    /// How long a rate-limited endpoint asked to be left alone
+    /// (`Retry-After`), when it said.
+    pub retry_after: Option<Duration>,
+}
+
+impl Fault {
+    /// A fault with no code and no retry hint.
+    pub fn new(class: ErrorClass, message: impl Into<String>) -> Self {
+        Fault {
+            class,
+            message: message.into(),
+            code: None,
+            retry_after: None,
+        }
+    }
 }
 
 impl From<&RpcError> for Fault {
@@ -18,6 +37,14 @@ impl From<&RpcError> for Fault {
         Fault {
             class: error.class(),
             message: error.to_string(),
+            code: match error {
+                RpcError::Rpc { code, .. } => Some(*code),
+                _ => None,
+            },
+            retry_after: match error {
+                RpcError::RateLimited { retry_after } => *retry_after,
+                _ => None,
+            },
         }
     }
 }

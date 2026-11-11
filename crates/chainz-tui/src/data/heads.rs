@@ -34,6 +34,60 @@ pub fn pace(block_time: Option<f64>, tuning: &Tuning) -> Duration {
     }
 }
 
+/// The longest `Retry-After` a poller honours: past this, a hostile or
+/// confused server could park a chain for good.
+pub const MAX_RETRY_AFTER: Duration = Duration::from_secs(300);
+
+/// What the wait before a chain's next head poll depends on.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct Pacing {
+    /// No key pressed for `idle_after`.
+    pub(super) idle: bool,
+    /// Consecutive failed polls.
+    pub(super) failures: u32,
+    /// The last failure's `Retry-After`.
+    pub(super) retry_after: Option<Duration>,
+    /// The measured block time.
+    pub(super) block_time: Option<f64>,
+    /// The block time is about to be measured (the look-back is pending).
+    pub(super) measuring: bool,
+}
+
+/// The wait before the next head poll.
+///
+/// - Healthy and idle: the ceiling (`max_pace`), whatever the block time.
+/// - Healthy, block time about to be measured: the floor (`min_pace`),
+///   rather than the slow pace an unknown block time gets.
+/// - Healthy: [`pace`].
+/// - Failing: `error_pace`, doubling per failure (1×, 2×, 4×), and never
+///   past the ceiling, which an idle dashboard waits outright. Only the
+///   server can stretch it further: a `Retry-After` (up to
+///   [`MAX_RETRY_AFTER`]) is honoured even past the ceiling, since polling
+///   sooner would only be refused again on the same metered key.
+pub(super) fn next_delay(p: Pacing, tuning: &Tuning) -> Duration {
+    let ceiling = tuning.max_pace.max(tuning.min_pace);
+    if p.failures > 0 {
+        let backoff = if p.idle {
+            ceiling
+        } else {
+            let doublings = (p.failures - 1).min(2);
+            tuning
+                .error_pace
+                .saturating_mul(1 << doublings)
+                .min(ceiling)
+        };
+        let asked = p.retry_after.unwrap_or_default().min(MAX_RETRY_AFTER);
+        return backoff.max(asked);
+    }
+    if p.idle {
+        ceiling
+    } else if p.measuring {
+        tuning.min_pace
+    } else {
+        pace(p.block_time, tuning)
+    }
+}
+
 /// A block time above this is not a block time: the timestamps are wrong
 /// (or the endpoint is lying), and nothing should be derived from them.
 pub const MAX_BLOCK_TIME: f64 = 3_600.0;
@@ -94,6 +148,8 @@ pub(super) struct Poller {
     anchor_after: u8,
     /// Consecutive failed polls.
     failures: u32,
+    /// The `Retry-After` of the last failure, if it had one.
+    retry_after: Option<Duration>,
 }
 
 impl Poller {
@@ -106,6 +162,7 @@ impl Poller {
             anchor_tries: 3,
             anchor_after: 0,
             failures: 0,
+            retry_after: None,
         }
     }
 
@@ -117,27 +174,31 @@ impl Poller {
         }
     }
 
-    /// Poll forever, starting after `delay` and waking early on a refresh.
-    pub(super) async fn run(mut self, delay: Duration, signals: Arc<Signals>) {
-        tokio::time::sleep(delay).await;
+    /// Poll forever: first after `offset` (the provider stagger), then
+    /// every [`next_delay`], and early on a refresh. A refresh wakes every
+    /// poller at once, so each waits its `offset` again before polling:
+    /// chains on one provider stay a beat apart.
+    pub(super) async fn run(mut self, offset: Duration, signals: Arc<Signals>) {
+        tokio::time::sleep(offset).await;
         loop {
             let update = self.step().await;
             self.shared.send(update);
-            let tuning = &self.shared.tuning;
-            let delay = match self.failures {
-                // Nobody is watching: poll at the ceiling until a key.
-                0 if self.shared.idle() => tuning.max_pace,
-                // The block time is about to be measured: come back at
-                // the floor rather than the slow pace an unknown one gets.
-                0 if self.clock.block_time().is_none() && self.anchor_tries > 0 => tuning.min_pace,
-                0 => pace(self.clock.block_time(), tuning),
-                // Back off a failing endpoint: 1×, 2×, then 4× the error pace.
-                n => tuning.error_pace * (1 << (n - 1).min(2)),
-            };
+            let delay = next_delay(self.pacing(), &self.shared.tuning);
             tokio::select! {
                 () = tokio::time::sleep(delay) => {}
-                () = signals.chains.notified() => {}
+                () = signals.chains.notified() => tokio::time::sleep(offset).await,
             }
+        }
+    }
+
+    /// What the next wait depends on, as of the last poll.
+    pub(super) fn pacing(&self) -> Pacing {
+        Pacing {
+            idle: self.shared.idle(),
+            failures: self.failures,
+            retry_after: self.retry_after,
+            block_time: self.clock.block_time(),
+            measuring: self.clock.block_time().is_none() && self.anchor_tries > 0,
         }
     }
 
@@ -165,6 +226,7 @@ impl Poller {
             Ok(_) => 0,
             Err(_) => self.failures.saturating_add(1),
         };
+        self.retry_after = result.as_ref().err().and_then(|f| f.retry_after);
         Update::Head {
             chain: self.chain.name.clone(),
             at_ms: now_ms(),
