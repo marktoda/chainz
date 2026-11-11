@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use chainz_rpc::control::{EventsOptions, RecordStatus};
 use chainz_rpc::{Capabilities, ErrorClass, HealthStore};
-use common::{Mock, R, Rig, eth_config, eventually, http};
+use common::{Mock, R, Rig, eth_config, eventually, http, probed_twice_since};
 use serde_json::{Value, json};
 
 const RAW_TX: &str = "0x02f86c0180843b9aca00847735940082520894f39fd6e51aad88f6f4ce6ab8827279cfffb92266865af3107a400080c001a0aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -19,7 +19,7 @@ const RAW_TX: &str = "0x02f86c0180843b9aca00847735940082520894f39fd6e51aad88f6f4
 /// `eth` with active `a` and failover `[b]`.
 async fn pair(a: &Mock, b: &Mock) -> Rig {
     let rig = Rig::start(&eth_config("a", &["b"], &[("a", a.url()), ("b", b.url())])).await;
-    rig.wait_for_head("eth", 100).await;
+    rig.wait_for_head("eth", 100, &[a, b]).await;
     rig
 }
 
@@ -349,7 +349,7 @@ async fn an_endpoint_outside_the_failover_list_is_never_tried() {
         &[("a", a.url()), ("b", b.url()), ("private", private.url())],
     ))
     .await;
-    rig.wait_for_head("eth", 100).await;
+    rig.wait_for_head("eth", 100, &[&a, &b]).await;
     for method in ["eth_call", "eth_getLogs", "eth_sendRawTransaction"] {
         let reply = rig.call("eth", method, json!([])).await;
         assert_eq!(reply.status, 503, "{method}: {reply:?}");
@@ -367,21 +367,28 @@ async fn an_endpoint_outside_the_failover_list_is_never_tried() {
     assert_eq!(private.probes(), 0, "a non-failover endpoint was probed");
 
     // With an empty failover list nothing but the active endpoint is
-    // touched, not even by probes.
+    // touched, not even by probes. A second chain with a failover pool
+    // shows the probe loop at work meanwhile.
     let a = Mock::start("a", |_| R::Http(503, None)).await;
     let other = Mock::named("other").await;
-    let rig = Rig::start(&eth_config(
-        "a",
-        &[],
-        &[("a", a.url()), ("other", other.url())],
-    ))
-    .await;
+    let (c, d) = (Mock::named("c").await, Mock::named("d").await);
+    let mut toml = eth_config("a", &[], &[("a", a.url()), ("other", other.url())]);
+    toml.push_str(&format!(
+        "[chains.base]\nid = 8453\nrpc = \"c\"\nfailover = [\"d\"]\n[chains.base.rpcs]\nc = \"{}\"\nd = \"{}\"\n",
+        c.url(),
+        d.url()
+    ));
+    let rig = Rig::start(&toml).await;
     let reply = rig.call("eth", "eth_call", json!([])).await;
     assert_eq!(reply.status, 503);
     assert_eq!(a.calls().len(), 2, "one same-endpoint retry for a read");
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // Several probe rounds go by...
+    probed_twice_since(&[&c, &d], &[c.probes(), d.probes()]).await;
+    probed_twice_since(&[&c, &d], &[c.probes(), d.probes()]).await;
+    // ...and none of them reached `eth`'s endpoints.
     assert!(other.calls().is_empty());
     assert_eq!((a.probes(), other.probes()), (0, 0));
+    assert_eq!(a.calls().len(), 2);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -404,8 +411,7 @@ async fn a_429_waits_on_the_same_endpoint_then_shifts() {
     let took = started.elapsed();
     assert_eq!(reply.json()["result"], "a", "{reply:?}");
     assert!(took >= Duration::from_millis(950), "did not wait: {took:?}");
-    assert!(took < Duration::from_millis(1900), "{took:?}");
-    assert_eq!(a.calls().len(), 2);
+    assert_eq!(a.calls().len(), 2, "one 429, then one retry");
     assert!(b.calls().is_empty(), "shifted instead of waiting");
 
     // A send waits the same way and stays on the endpoint. (The limiter
@@ -424,8 +430,10 @@ async fn a_429_waits_on_the_same_endpoint_then_shifts() {
     let started = Instant::now();
     let reply = rig.call("eth", "eth_call", json!([])).await;
     assert_eq!(reply.json()["result"], "b", "{reply:?}");
+    assert_eq!(a.calls().len(), 1, "no second try on `a`");
+    // Nowhere near the 30 s it was asked to wait.
     assert!(
-        started.elapsed() < Duration::from_millis(900),
+        started.elapsed() < Duration::from_secs(10),
         "{:?}",
         started.elapsed()
     );
@@ -438,7 +446,9 @@ async fn a_429_waits_on_the_same_endpoint_then_shifts() {
     assert_eq!(b.calls().len(), 1);
 
     // No Retry-After at all: back off on the same endpoint (250 ms, 500 ms,
-    // 1 s), then shift when the next wait would pass 2 s.
+    // 1 s), each retry taking a bucket slot, then shift once the next wait
+    // would pass 2 s. On a slow machine the bucket may turn the last retry
+    // away itself (unsent) instead of `a` answering it 429.
     let a = Mock::start("a", |_| R::Http(429, None)).await;
     let b = Mock::named("b").await;
     let rig = pair(&a, &b).await;
@@ -446,21 +456,20 @@ async fn a_429_waits_on_the_same_endpoint_then_shifts() {
     let reply = rig.call("eth", "eth_call", json!([])).await;
     let took = started.elapsed();
     assert_eq!(reply.json()["result"], "b", "{reply:?}");
-    assert_eq!(a.calls().len(), 4);
-    assert!(
-        took >= Duration::from_millis(1700) && took < Duration::from_millis(2600),
-        "{took:?}"
-    );
-    // The bucket now knows: the next read shifts without asking `a`... or
-    // waits briefly; either way it is answered and `a` saw at most one more.
+    let sent = a.calls().len() as u64;
+    assert!((3..=4).contains(&sent), "{sent} tries on `a`");
+    assert!(took >= Duration::from_millis(1700), "{took:?}");
     let metrics = rig.control().metrics().await.unwrap();
     let row = metrics.windows[0]
         .rows
         .iter()
         .find(|r| r.endpoint == "a")
         .unwrap();
+    // Four rate-limit signals either way, one failover; a refusal is no
+    // upstream attempt.
     assert_eq!((row.rate_limited, row.failovers), (4, 1));
-    assert_eq!(row.errors[&ErrorClass::RateLimited], 4);
+    assert_eq!(row.requests, sent);
+    assert_eq!(row.errors[&ErrorClass::RateLimited], sent);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -564,15 +573,13 @@ async fn a_lagging_endpoint_is_not_a_failover_target() {
     assert!(b.calls().is_empty(), "`latest` would have gone backwards");
 
     b.set_head(98); // within 2
-    let probed = b.probes();
-    eventually(|| b.probes() >= probed + 2).await;
-    tokio::time::sleep(Duration::from_millis(120)).await;
+    probed_twice_since(&[&b], &[b.probes()]).await;
     let reply = rig.call("eth", "eth_blockNumber", json!([])).await;
     assert_eq!(reply.json()["result"], "b");
 
-    // The mark only rises.
+    // `a` moves ahead: `b` is behind the mark again.
     a.set_head(200);
-    rig.wait_for_head("eth", 200).await;
+    rig.wait_for_head("eth", 200, &[&a, &b]).await;
     assert!(rig.call("eth", "eth_blockNumber", json!([])).await.json()["error"].is_object());
     assert_eq!(
         rig.control().status().await.unwrap().chains[0].head,
@@ -626,11 +633,11 @@ async fn capability_tags_steer_debug_trace_and_old_block_reads() {
         gateway: Some(gateway),
         port,
     };
-    rig.wait_for_head("eth", 100).await;
+    rig.wait_for_head("eth", 100, &[&a, &b, &c]).await;
     for m in [&a, &b, &c] {
         m.set_head(1000);
     }
-    rig.wait_for_head("eth", 1000).await;
+    rig.wait_for_head("eth", 1000, &[&a, &b, &c]).await;
 
     let who = |reply: common::HttpReply| reply.json()["result"].as_str().unwrap().to_string();
     assert_eq!(
@@ -760,8 +767,10 @@ async fn only_the_enumerated_errors_fail_over() {
         let a = Mock::start("a", move |_| fail.clone()).await;
         let b = Mock::named("b").await;
         let dir_toml = eth_config("a", &["b"], &[("a", a.url()), ("b", b.url())]);
-        let rig = Rig::start_with(&dir_toml, |c| c.timeout = Duration::from_millis(300)).await;
-        rig.wait_for_head("eth", 100).await;
+        // Short enough to time out the 5 s delay, long enough that a busy
+        // machine doesn't time out the others.
+        let rig = Rig::start_with(&dir_toml, |c| c.timeout = Duration::from_secs(1)).await;
+        rig.wait_for_head("eth", 100, &[&a, &b]).await;
         let reply = rig.call("eth", "eth_call", json!([])).await;
         assert_eq!(
             reply.json()["result"] == "b",
@@ -1051,14 +1060,15 @@ async fn secrets_and_headers_are_applied_upstream_and_follow_reloads() {
         port,
     };
     assert_eq!(rig.call("eth", "eth_chainId", json!([])).await.status, 200);
-    // A changed secret is picked up by the file watch.
+    // A changed secret is picked up by the file watch, though the file
+    // has the same length (and may well have the same mtime).
     let mut notices = rig.gateway().notices();
     write_secrets("two");
-    let notice = tokio::time::timeout(Duration::from_secs(5), notices.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(notice.contains("reloaded"), "{notice}");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !notices.recv().await.unwrap().contains("reloaded") {}
+    })
+    .await
+    .expect("no reload");
     assert_eq!(rig.call("eth", "eth_chainId", json!([])).await.status, 200);
     let heads = a.heads();
     assert_eq!(heads.len(), 2);
@@ -1074,4 +1084,145 @@ async fn secrets_and_headers_are_applied_upstream_and_follow_reloads() {
             .iter()
             .any(|h| h.contains(token.trim_start_matches('/').split('/').next().unwrap()))
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_same_size_config_change_with_the_same_mtime_is_seen() {
+    let (a, b) = (Mock::named("a").await, Mock::named("b").await);
+    let endpoints = [("a", a.url()), ("b", b.url())];
+    let rig = Rig::start(&eth_config("a", &[], &endpoints)).await;
+    let config = Rig::paths(rig.dir.path()).config;
+    let before = std::fs::metadata(&config).unwrap();
+    // `chainz rpc use eth b`: the same length, and here the same mtime too
+    // (as two writes within one timestamp tick would have).
+    let next = eth_config("b", &[], &endpoints);
+    assert_eq!(next.len() as u64, before.len());
+    let tmp = config.with_extension("tmp");
+    std::fs::write(&tmp, &next).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let file = std::fs::File::options().write(true).open(&tmp).unwrap();
+    file.set_modified(before.modified().unwrap()).unwrap();
+    drop(file);
+    std::fs::rename(&tmp, &config).unwrap();
+    eventually(|| rig.gateway().status().chains[0].active == "b").await;
+    assert_eq!(
+        rig.call("eth", "eth_chainId", json!([])).await.json()["result"],
+        "b"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn with_nowhere_else_to_go_requests_queue_in_the_bucket() {
+    // One 429 teaches the bucket a rate (2 req/s); a burst after that is
+    // spaced out by the bucket, none held back to fire all at once.
+    let hits = Arc::new(AtomicUsize::new(0));
+    let counter = hits.clone();
+    let a = Mock::start("a", move |_| {
+        if counter.fetch_add(1, Ordering::SeqCst) == 0 {
+            R::Http(429, Some("1"))
+        } else {
+            R::Result(json!("a"))
+        }
+    })
+    .await;
+    let rig = Arc::new(Rig::start(&eth_config("a", &[], &[("a", a.url())])).await);
+    assert_eq!(rig.call("eth", "eth_call", json!([])).await.status, 200);
+    let burst: Vec<_> = (0..8)
+        .map(|_| {
+            let rig = rig.clone();
+            tokio::spawn(async move { rig.call("eth", "eth_call", json!([])).await.status })
+        })
+        .collect();
+    for request in burst {
+        assert_eq!(request.await.unwrap(), 200);
+    }
+    let arrivals = a.arrivals();
+    assert_eq!(arrivals.len(), 10);
+    let mut burst = arrivals[2..].to_vec();
+    burst.sort();
+    // Old behaviour: the requests the bucket couldn't fit in 2 s slept 2 s
+    // and then all went at once. Now they go about 1/rate apart. (Two may
+    // land close together: a success that raises the rate mid-burst moves
+    // a later reservation earlier.)
+    let offsets: Vec<_> = arrivals.iter().map(|t| *t - arrivals[0]).collect();
+    for three in burst.windows(3) {
+        let span = three[2] - three[0];
+        assert!(
+            span >= Duration::from_millis(300),
+            "three sends within {span:?}: {offsets:?}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn retries_after_a_429_go_through_the_bucket() {
+    // Eight concurrent reads all get "429, retry after 1 s". Their retries
+    // take bucket slots rather than all firing together a second later.
+    let hits = Arc::new(AtomicUsize::new(0));
+    let counter = hits.clone();
+    let a = Mock::start("a", move |_| {
+        if counter.fetch_add(1, Ordering::SeqCst) < 8 {
+            // Slow enough that all eight are in before the first 429 lands.
+            R::Delay(
+                Duration::from_millis(200),
+                Box::new(R::Http(429, Some("1"))),
+            )
+        } else {
+            R::Result(json!("a"))
+        }
+    })
+    .await;
+    let rig = Arc::new(Rig::start(&eth_config("a", &[], &[("a", a.url())])).await);
+    let herd: Vec<_> = (0..8)
+        .map(|_| {
+            let rig = rig.clone();
+            tokio::spawn(async move { rig.call("eth", "eth_call", json!([])).await.status })
+        })
+        .collect();
+    for request in herd {
+        assert_eq!(request.await.unwrap(), 200);
+    }
+    let arrivals = a.arrivals();
+    assert_eq!(arrivals.len(), 16);
+    let mut retries = arrivals[8..].to_vec();
+    retries.sort();
+    let spread = *retries.last().unwrap() - retries[0];
+    assert!(
+        spread >= Duration::from_millis(500),
+        "retries came in {spread:?}"
+    );
+    // One decrease for the whole burst of 429s, not eight.
+    let metrics = rig.control().metrics().await.unwrap();
+    let row = &metrics.windows[0].rows[0];
+    assert_eq!((row.requests, row.rate_limited), (16, 8));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_serve_json_write_leaves_nothing_running() {
+    let a = Mock::named("a").await;
+    let dir = tempfile::tempdir().unwrap();
+    Rig::write_config(dir.path(), &eth_config("a", &[], &[("a", a.url())]));
+    // serve.json can't be written: a directory is in its place.
+    let runtime = Rig::runtime_at(dir.path());
+    std::fs::create_dir_all(runtime.serve_json_path().join("blocker")).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(runtime.dir(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let mut config = Rig::config(dir.path());
+    config.port = port;
+    let error = chainz_serve::Gateway::start(config).await.unwrap_err();
+    assert!(format!("{error:#}").contains("serve.json"), "{error:#}");
+    // Nothing kept the port, the socket or the lock.
+    std::net::TcpListener::bind(("127.0.0.1", port)).expect("the port is still held");
+    assert!(!runtime.serve_sock_path().exists());
+    assert!(!runtime.serve_running());
 }

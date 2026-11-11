@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chainz_core::StorePaths;
 use chainz_core::runtime::Runtime;
@@ -39,6 +39,7 @@ pub struct Mock {
     port: u16,
     calls: Arc<Mutex<Vec<Value>>>,
     heads: Arc<Mutex<Vec<String>>>,
+    arrivals: Arc<Mutex<Vec<Instant>>>,
     probes: Arc<AtomicUsize>,
     head: Arc<AtomicU64>,
     task: JoinHandle<()>,
@@ -61,23 +62,29 @@ impl Mock {
         let head = Arc::new(AtomicU64::new(100));
         let handler: Arc<Handler> = Arc::new(handler);
         let heads = Arc::new(Mutex::new(Vec::new()));
-        let state = (calls.clone(), probes.clone(), head.clone(), heads.clone());
+        let arrivals = Arc::new(Mutex::new(Vec::new()));
+        let seen = Seen {
+            calls: calls.clone(),
+            heads: heads.clone(),
+            arrivals: arrivals.clone(),
+            probes: probes.clone(),
+            head: head.clone(),
+        };
         let task = tokio::spawn(async move {
             // Owned here: aborting this task drops every connection.
             let mut connections = tokio::task::JoinSet::new();
             loop {
-                let Ok((stream, _)) = listener.accept().await else {
-                    continue;
-                };
-                let (calls, probes, head, heads) = state.clone();
-                connections.spawn(connection(
-                    stream,
-                    handler.clone(),
-                    calls,
-                    probes,
-                    head,
-                    heads,
-                ));
+                tokio::select! {
+                    accepted = listener.accept() => {
+                        let Ok((stream, _)) = accepted else {
+                            // Don't spin on a persistent accept error.
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                            continue;
+                        };
+                        connections.spawn(connection(stream, handler.clone(), seen.clone()));
+                    }
+                    Some(_) = connections.join_next(), if !connections.is_empty() => {}
+                }
             }
         });
         Mock {
@@ -85,6 +92,7 @@ impl Mock {
             port,
             calls,
             heads,
+            arrivals,
             probes,
             head,
             task,
@@ -106,6 +114,11 @@ impl Mock {
         self.heads.lock().unwrap().clone()
     }
 
+    /// When each non-probe request arrived, in order.
+    pub fn arrivals(&self) -> Vec<Instant> {
+        self.arrivals.lock().unwrap().clone()
+    }
+
     /// Methods of every non-probe call received.
     pub fn methods(&self) -> Vec<String> {
         self.calls()
@@ -122,7 +135,6 @@ impl Mock {
         self.head.store(head, Ordering::SeqCst);
     }
 
-    /// Stop listening and drop every open connection, mid-response or not.
     /// Stop serving and wait until the listener and every connection are
     /// dropped. `abort` alone only requests cancellation: on a multi-thread
     /// runtime the task can still accept one more call before it stops.
@@ -138,14 +150,24 @@ impl Drop for Mock {
     }
 }
 
-async fn connection(
-    mut stream: TcpStream,
-    handler: Arc<Handler>,
+/// What a mock records, shared with its connections.
+#[derive(Clone)]
+struct Seen {
     calls: Arc<Mutex<Vec<Value>>>,
+    heads: Arc<Mutex<Vec<String>>>,
+    arrivals: Arc<Mutex<Vec<Instant>>>,
     probes: Arc<AtomicUsize>,
     head: Arc<AtomicU64>,
-    heads: Arc<Mutex<Vec<String>>>,
-) {
+}
+
+async fn connection(mut stream: TcpStream, handler: Arc<Handler>, seen: Seen) {
+    let Seen {
+        calls,
+        heads,
+        arrivals,
+        probes,
+        head,
+    } = seen;
     let mut buf = Vec::new();
     loop {
         let Some((request_head, body)) = read_request(&mut stream, &mut buf).await else {
@@ -172,6 +194,7 @@ async fn connection(
                 Value::Array(items) => items.clone(),
                 one => vec![one.clone()],
             };
+            arrivals.lock().unwrap().push(Instant::now());
             calls.lock().unwrap().extend(items.iter().cloned());
             heads.lock().unwrap().push(request_head);
             let mut bodies = Vec::new();
@@ -407,8 +430,11 @@ impl Rig {
         ControlClient::new(self.runtime().serve_sock_path())
     }
 
-    /// Wait until `chain`'s head high-water mark is at least `head`.
-    pub async fn wait_for_head(&self, chain: &str, head: u64) {
+    /// Wait until `chain`'s head high-water mark is at least `head` and
+    /// the gateway holds a current head for each of `pool` (the mocks it
+    /// probes, all already serving the head waited for).
+    pub async fn wait_for_head(&self, chain: &str, head: u64, pool: &[&Mock]) {
+        let start: Vec<usize> = pool.iter().map(|m| m.probes()).collect();
         eventually(|| {
             self.gateway()
                 .status()
@@ -417,8 +443,10 @@ impl Rig {
                 .any(|c| c.chain == chain && c.head.is_some_and(|h| h >= head))
         })
         .await;
-        // One more probe round, so every endpoint's own head is in.
-        tokio::time::sleep(Duration::from_millis(120)).await;
+        // Two more probes of each: the first was received after the call
+        // began, so it saw the new head, and a probe round only starts
+        // once the previous round's results are stored.
+        probed_twice_since(pool, &start).await;
     }
 
     pub async fn shutdown(&mut self) {
@@ -426,6 +454,12 @@ impl Rig {
             gateway.shutdown().await;
         }
     }
+}
+
+/// Wait until each of `mocks` has been probed at least twice more than
+/// `start` (their probe counts at some earlier point, in order).
+pub async fn probed_twice_since(mocks: &[&Mock], start: &[usize]) {
+    eventually(|| mocks.iter().zip(start).all(|(m, s)| m.probes() >= s + 2)).await;
 }
 
 /// Poll `condition` for up to 5 s.
