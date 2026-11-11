@@ -709,3 +709,67 @@ fn doctor_tokens_fails_on_any_mismatch() {
     assert!(stdout(&plain).contains(&shadow), "{}", stdout(&plain));
 }
 
+#[test]
+fn doctor_tokens_and_fix_conflict() {
+    let sb = eth_and_base();
+    sb.cmd()
+        .args(["doctor", "--tokens", "--fix"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("cannot be used with"));
+}
+
+#[test]
+fn addr_ls_and_find_json_and_rm_by_chain_alias() {
+    let sb = eth_and_base();
+    sb.ok(&["chain", "alias", "base", "basechain"]);
+    sb.ok(&["addr", "add", "router", ROUTER, "--chain", "base"]);
+    sb.ok(&["addr", "add", "usdc", ROUTER, "--chain", "base"]);
+
+    let rows: Value = serde_json::from_str(&sb.ok(&["addr", "list", "--json"])).unwrap();
+    let router = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["name"] == "router")
+        .expect("router listed");
+    assert_eq!(
+        router,
+        &json!({"name": "router", "scope": "base", "chain_id": 8453,
+                "address": ROUTER, "source": "user", "shadowed": false})
+    );
+    // The built-in @usdc on base is hidden by the user's label.
+    let found: Value =
+        serde_json::from_str(&sb.ok(&["addr", "find", USDC_BASE, "--json"])).unwrap();
+    assert_eq!(
+        found,
+        json!([{"name": "usdc", "scope": "base", "chain_id": 8453, "address": USDC_BASE,
+                "source": "built-in", "shadowed": true}])
+    );
+    let found: Value = serde_json::from_str(&sb.ok(&["addr", "find", ROUTER, "--json"])).unwrap();
+    let names: Vec<&str> = found
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["router", "usdc"], "{found}");
+    // Nothing found: an empty array, and exit 1 as in text mode.
+    sb.cmd()
+        .args(["addr", "find", UNKNOWN, "--json"])
+        .assert()
+        .code(1)
+        .stdout("[]\n");
+
+    // --chain takes an alias (exact, like a name or ID; never a prefix).
+    sb.cmd()
+        .args(["addr", "remove", "router", "--chain", "basechain"])
+        .assert()
+        .success()
+        .stdout(format!("Removed @router on base ({ROUTER})\n"));
+    sb.cmd()
+        .args(["addr", "rm", "usdc", "--chain", "basech"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("exact chain name"));
+}
