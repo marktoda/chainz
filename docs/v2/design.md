@@ -47,7 +47,7 @@ V1 is a careful codebase: about 8,000 lines with transactional config writes, cr
 | Every command takes an exclusive config lock | Parallel `exec` calls in many terminals serialize on the lock | Reads take no lock: the atomic rename is enough. Writes lock. |
 | `@token` expansion is a string replace over a HashMap | Order is undefined. `@key` matches inside `@keystore`, and adding user tokens would collide. | One tokenizer with a fixed grammar (see Exec contract) |
 | Missing verifier settings are exported as `UNDEFINED` | Tools treat the literal as a real value | Unset variables are not exported |
-| `${VAR}` is expanded from config, then again from the environment | A value can be expanded twice | One pass: config first, then environment, no re-scan |
+| `${VAR}` is expanded from config, then again from the environment | A value can be expanded twice | One pass, no re-scan: built-ins, then environment, then `secrets.toml` |
 | alloy pulled in for `eth_chainId` and address derivation | 14 MB binary, about 3 minutes for a release build | A small JSON-RPC client over reqwest, plus `k256` and `sha3` |
 | Doctor, the wizards and listing each probe RPCs their own way | No shared notion of endpoint health | One `rpc` module, used by doctor, top, serve and fork |
 | Network-facing features bolted onto the CLI | No place for long-running processes | A runtime directory for live processes (gateway, forks) and their discovery |
@@ -171,7 +171,7 @@ eth = "0x…"
 "*" = "0x5afe…"                    # every chain: written only with --all-chains
 ```
 
-**Secrets** go in `~/.config/chainz/secrets.toml` (mode `0600`): the values `chainz var set` writes, plus plaintext keys if you opt into that backend. One template syntax covers everything: `${NAME}` resolves first from the process environment (so a one-off override works), then from `secrets.toml`, then from built-ins (`${CHAIN_ID}`, `${CHAIN}`). It is a single pass with no re-scan. An unresolved `${NAME}` is an error, never passed through literally.
+**Secrets** go in `~/.config/chainz/secrets.toml` (mode `0600`): the values `chainz var set` writes, plus plaintext keys if you opt into that backend. One template syntax covers everything: `${NAME}` resolves first from the built-ins (`${CHAIN_ID}`, `${CHAIN}`), then from the process environment (so a one-off override works), then from `secrets.toml`. Built-ins come first on purpose: chainz exports `CHAIN_ID` into child shells, so letting the environment win would make a nested `chainz exec eth` inside `chainz shell base` build base's URLs. For the same reason, inside a chainz context (`CHAINZ_CHAIN` is set, as in `chainz shell` or after `eval "$(chainz env …)"`) the environment is skipped for the exec contract's own variables (`ETHERSCAN_API_KEY`, `VERIFIER_API_KEY`, `ETH_RPC_URL` and the rest of the table under Exec contract): there they hold the enclosing chain's values, and a nested `chainz exec eth` in `chainz shell celo` must not send celo's explorer key to Etherscan. It is a single pass with no re-scan. An unresolved `${NAME}` is an error, never passed through literally.
 
 The main config holds no secrets **once `doctor` is clean**: `doctor` warns about any endpoint URL or explorer key that embeds a literal credential, and `doctor --fix` offers to move it into a variable.
 

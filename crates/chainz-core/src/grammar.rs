@@ -16,7 +16,6 @@
 //! unknown token inside a longer argument passes through unchanged).
 
 use crate::names::is_token_byte;
-use std::borrow::Cow;
 
 /// One `@name[:chain]` occurrence.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,13 +32,13 @@ pub struct TokenRef<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Piece<'a> {
     /// Literal text (escapes already applied).
-    Text(Cow<'a, str>),
+    Text(String),
     /// A token.
     Token(TokenRef<'a>),
 }
 
 /// Split `arg` into literal text and tokens.
-pub fn tokenize(arg: &str) -> Vec<Piece<'_>> {
+pub(crate) fn tokenize(arg: &str) -> Vec<Piece<'_>> {
     let b = arg.as_bytes();
     let mut pieces = Vec::new();
     let mut text = String::new();
@@ -78,7 +77,7 @@ pub fn tokenize(arg: &str) -> Vec<Piece<'_>> {
             if k == b.len() || (b[k] != b'/' && b[k] != b'.') {
                 text.push_str(&arg[lit_start..i]);
                 if !text.is_empty() {
-                    pieces.push(Piece::Text(Cow::Owned(std::mem::take(&mut text))));
+                    pieces.push(Piece::Text(std::mem::take(&mut text)));
                 }
                 pieces.push(Piece::Token(TokenRef {
                     raw: &arg[i..k],
@@ -94,21 +93,22 @@ pub fn tokenize(arg: &str) -> Vec<Piece<'_>> {
     }
     text.push_str(&arg[lit_start..]);
     if !text.is_empty() {
-        pieces.push(Piece::Text(Cow::Owned(text)));
+        pieces.push(Piece::Text(text));
     }
     pieces
 }
 
-/// The token, when `arg` is exactly one token and nothing else.
-pub fn whole_token(arg: &str) -> Option<TokenRef<'_>> {
-    match tokenize(arg).as_slice() {
-        [Piece::Token(t)] if t.raw.len() == arg.len() => Some(t.clone()),
+/// The token, when `pieces` (the tokenized `arg`) are exactly one token
+/// and nothing else.
+pub(crate) fn sole_token<'p, 'a>(pieces: &'p [Piece<'a>], arg: &str) -> Option<&'p TokenRef<'a>> {
+    match pieces {
+        [Piece::Token(t)] if t.raw.len() == arg.len() => Some(t),
         _ => None,
     }
 }
 
 /// Whether `arg` contains an `@` at all (fast path: no tokenizing needed).
-pub fn may_contain_tokens(arg: &str) -> bool {
+pub(crate) fn may_contain_tokens(arg: &str) -> bool {
     arg.contains('@')
 }
 
@@ -120,7 +120,7 @@ mod tests {
         tokenize(arg)
             .into_iter()
             .map(|p| match p {
-                Piece::Text(t) => t.into_owned(),
+                Piece::Text(t) => t,
                 Piece::Token(t) => format!(
                     "<{}{}>",
                     t.name,
@@ -161,6 +161,10 @@ mod tests {
             render("ünï@wallet"),
             "ünï@wallet".replace("@wallet", "<wallet>")
         );
+    }
+
+    fn whole_token(arg: &str) -> Option<TokenRef<'_>> {
+        sole_token(&tokenize(arg), arg).cloned()
     }
 
     #[test]

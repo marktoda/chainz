@@ -54,8 +54,11 @@ impl Address {
     pub fn from_private_key(private_key: &str) -> Result<Self, PrivateKeyError> {
         let bytes = parse_private_key(private_key)?;
         let secret = k256::SecretKey::from_slice(&bytes[..]).map_err(|_| PrivateKeyError)?;
-        let point = secret.public_key().to_sec1_bytes_uncompressed();
-        let hash = Keccak256::digest(&point[1..]);
+        let point = {
+            use k256::elliptic_curve::sec1::ToEncodedPoint;
+            secret.public_key().to_encoded_point(false)
+        };
+        let hash = Keccak256::digest(&point.as_bytes()[1..]);
         let mut out = [0u8; 20];
         out.copy_from_slice(&hash[12..]);
         Ok(Address(out))
@@ -79,17 +82,6 @@ fn parse_private_key(input: &str) -> Result<zeroize::Zeroizing<[u8; 32]>, Privat
     let mut bytes = zeroize::Zeroizing::new([0u8; 32]);
     hex::decode_to_slice(hex_str, &mut bytes[..]).map_err(|_| PrivateKeyError)?;
     Ok(bytes)
-}
-
-trait Uncompressed {
-    fn to_sec1_bytes_uncompressed(&self) -> Vec<u8>;
-}
-
-impl Uncompressed for k256::PublicKey {
-    fn to_sec1_bytes_uncompressed(&self) -> Vec<u8> {
-        use k256::elliptic_curve::sec1::ToEncodedPoint;
-        self.to_encoded_point(false).as_bytes().to_vec()
-    }
 }
 
 impl FromStr for Address {
@@ -175,9 +167,18 @@ mod tests {
             "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913".parse::<Address>(),
             Ok(a)
         );
+        // Mixed case whose checksum does not match these bytes.
         assert_eq!(
             "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02912".parse::<Address>(),
-            Err(AddressError::Format).or(Err(AddressError::Checksum))
+            Err(AddressError::Checksum)
+        );
+        assert_eq!(
+            "0x833589fcd6edb6e08f4c7c32d4f71b54bda0291z".parse::<Address>(),
+            Err(AddressError::Format)
+        );
+        assert_eq!(
+            "0x833589fcd6edb6e08f4c7c32d4f71b54bda029".parse::<Address>(),
+            Err(AddressError::Format)
         );
         assert_eq!(
             "0x833589FCD6eDb6E08f4c7C32D4f71b54bdA02913".parse::<Address>(),

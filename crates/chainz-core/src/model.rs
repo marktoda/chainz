@@ -282,7 +282,8 @@ impl Chain {
         self.rpcs.get(&self.rpc)
     }
 
-    /// All names this chain answers to besides its key: its aliases.
+    /// Whether `query` equals one of this chain's aliases, ignoring ASCII
+    /// case. The chain's own name (its key) is not checked.
     pub fn matches_alias(&self, query: &str) -> bool {
         self.aliases.iter().any(|a| a.eq_ignore_ascii_case(query))
     }

@@ -8,6 +8,7 @@ pub mod addrbook;
 pub mod address;
 pub mod context;
 pub mod edit;
+pub mod extract;
 pub mod grammar;
 pub mod labels;
 pub mod migrate;

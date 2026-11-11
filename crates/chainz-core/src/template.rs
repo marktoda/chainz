@@ -9,6 +9,8 @@
 //! `secrets.toml`. Built-ins come first because chainz itself exports
 //! `CHAIN_ID` into child shells; letting the environment win would make a
 //! nested `chainz exec eth` inside `chainz shell base` build base's URLs.
+//! Likewise, inside a chainz context (`CHAINZ_CHAIN` set) the environment
+//! is skipped for the exec contract's own variables.
 
 use std::borrow::Cow;
 
@@ -35,19 +37,55 @@ pub fn has_templates(input: &str) -> bool {
     input.contains("${")
 }
 
+/// One piece of a template, as [`spans`] yields it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Span<'a> {
+    /// Literal text.
+    Text(&'a str),
+    /// `${NAME}`: the text between the braces, not yet validated.
+    Var(&'a str),
+    /// A `${` with no closing `}`: the rest of the input from `${` on.
+    Unterminated(&'a str),
+}
+
+/// The one `${…}` scanner: split `input` into literal text and variable
+/// references, left to right. Never fails; callers decide what an invalid
+/// name or an unterminated `${` means.
+pub(crate) fn spans(input: &str) -> impl Iterator<Item = Span<'_>> {
+    let mut rest = input;
+    std::iter::from_fn(move || {
+        if rest.is_empty() {
+            return None;
+        }
+        let Some(start) = rest.find("${") else {
+            return Some(Span::Text(std::mem::take(&mut rest)));
+        };
+        if start > 0 {
+            let text = &rest[..start];
+            rest = &rest[start..];
+            return Some(Span::Text(text));
+        }
+        let after = &rest[2..];
+        match after.find('}') {
+            Some(end) => {
+                rest = &after[end + 1..];
+                Some(Span::Var(&after[..end]))
+            }
+            None => Some(Span::Unterminated(std::mem::take(&mut rest))),
+        }
+    })
+}
+
 /// The variable names `input` references, in order (duplicates kept).
 pub fn references(input: &str) -> Result<Vec<&str>, TemplateError> {
     let mut names = Vec::new();
-    let mut rest = input;
-    while let Some(start) = rest.find("${") {
-        let after = &rest[start + 2..];
-        let end = after.find('}').ok_or(TemplateError::Unterminated)?;
-        let name = &after[..end];
-        if !is_valid_name(name) {
-            return Err(TemplateError::InvalidName(name.to_string()));
+    for span in spans(input) {
+        match span {
+            Span::Text(_) => {}
+            Span::Var(name) if is_valid_name(name) => names.push(name),
+            Span::Var(name) => return Err(TemplateError::InvalidName(name.to_string())),
+            Span::Unterminated(_) => return Err(TemplateError::Unterminated),
         }
-        names.push(name);
-        rest = &after[end + 1..];
     }
     Ok(names)
 }
@@ -55,9 +93,9 @@ pub fn references(input: &str) -> Result<Vec<&str>, TemplateError> {
 /// Expand every `${NAME}` in `input` through `lookup`, in one pass.
 /// `lookup` returns `Ok(None)` for an unknown name, which becomes
 /// [`TemplateError::Unresolved`].
-pub fn expand<'a, E>(
+pub fn expand<'a, 'v, E>(
     input: &'a str,
-    mut lookup: impl FnMut(&str) -> Result<Option<Cow<'a, str>>, E>,
+    mut lookup: impl FnMut(&str) -> Result<Option<Cow<'v, str>>, E>,
 ) -> Result<Cow<'a, str>, E>
 where
     E: From<TemplateError>,
@@ -66,23 +104,41 @@ where
         return Ok(Cow::Borrowed(input));
     }
     let mut out = String::with_capacity(input.len());
-    let mut rest = input;
-    while let Some(start) = rest.find("${") {
-        out.push_str(&rest[..start]);
-        let after = &rest[start + 2..];
-        let end = after.find('}').ok_or(TemplateError::Unterminated)?;
-        let name = &after[..end];
-        if !is_valid_name(name) {
-            return Err(TemplateError::InvalidName(name.to_string()).into());
+    for span in spans(input) {
+        match span {
+            Span::Text(text) => out.push_str(text),
+            Span::Var(name) if !is_valid_name(name) => {
+                return Err(TemplateError::InvalidName(name.to_string()).into());
+            }
+            Span::Var(name) => match lookup(name)? {
+                Some(value) => out.push_str(&value),
+                None => return Err(TemplateError::Unresolved(name.to_string()).into()),
+            },
+            Span::Unterminated(_) => return Err(TemplateError::Unterminated.into()),
         }
-        match lookup(name)? {
-            Some(value) => out.push_str(&value),
-            None => return Err(TemplateError::Unresolved(name.to_string()).into()),
-        }
-        rest = &after[end + 1..];
     }
-    out.push_str(rest);
     Ok(Cow::Owned(out))
+}
+
+/// Rename variable references in one pass: every `${OLD}` whose name is a
+/// key of `renames` becomes `${NEW}`; a new name is never renamed again.
+/// Everything else, malformed templates included, is copied unchanged.
+pub(crate) fn rename_vars<S: std::hash::BuildHasher>(
+    input: &str,
+    renames: &std::collections::HashMap<String, String, S>,
+) -> String {
+    let mut out = String::with_capacity(input.len());
+    for span in spans(input) {
+        match span {
+            Span::Text(text) | Span::Unterminated(text) => out.push_str(text),
+            Span::Var(name) => {
+                out.push_str("${");
+                out.push_str(renames.get(name).map_or(name, String::as_str));
+                out.push('}');
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -124,6 +180,37 @@ mod tests {
         assert_eq!(
             run("${a-b}", &[]),
             Err(TemplateError::InvalidName("a-b".into()))
+        );
+    }
+
+    #[test]
+    fn spans_split_text_and_variables() {
+        assert_eq!(
+            spans("a${B}c${}${D").collect::<Vec<_>>(),
+            [
+                Span::Text("a"),
+                Span::Var("B"),
+                Span::Text("c"),
+                Span::Var(""),
+                Span::Unterminated("${D")
+            ]
+        );
+        assert_eq!(spans("").count(), 0);
+        assert_eq!(
+            spans("${A}${B}").collect::<Vec<_>>(),
+            [Span::Var("A"), Span::Var("B")]
+        );
+    }
+
+    #[test]
+    fn renames_in_one_pass() {
+        let renames: HashMap<String, String> = [("A-B", "A_B"), ("A_B", "A_B_2")]
+            .into_iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect();
+        assert_eq!(
+            rename_vars("x/${A-B}/${A_B}/${C}/${A-B", &renames),
+            "x/${A_B}/${A_B_2}/${C}/${A-B"
         );
     }
 

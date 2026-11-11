@@ -12,9 +12,9 @@
 //!   time a v1 `config.json` exists and `config.toml` does not.
 
 use crate::migrate;
-use crate::model::Config;
+use crate::model::{Chain, Config, Endpoint};
 use crate::paths;
-use crate::secrets::Secrets;
+use crate::secrets::{Builtins, Secrets, VarResolver};
 use crate::validate;
 use anyhow::{Context, Result, anyhow};
 use std::cell::OnceCell;
@@ -130,10 +130,47 @@ fn read_secrets(path: &Path) -> Result<Secrets> {
 /// TOML parse errors quote the offending line, which may hold a secret
 /// (an inline credential, a variable value): keep only message and position.
 pub fn redact_toml_error(error: &toml::de::Error) -> String {
-    let message = error.message();
-    match error.span() {
+    redact_parse_error(error.message(), error.span())
+}
+
+/// [`redact_toml_error`] for any TOML error's message and span (the
+/// `toml_edit` parser and deserializer errors quote the source line too).
+pub(crate) fn redact_parse_error(message: &str, span: Option<std::ops::Range<usize>>) -> String {
+    match span {
         Some(span) => format!("{message} (at byte {})", span.start),
         None => message.to_string(),
+    }
+}
+
+fn parse_document(text: &str, path: &Path) -> Result<DocumentMut> {
+    text.parse().map_err(|e: toml_edit::TomlError| {
+        anyhow!(
+            "failed to parse {}: {}",
+            path.display(),
+            redact_parse_error(e.message(), e.span())
+        )
+    })
+}
+
+/// An endpoint with every `${VAR}` expanded: what is actually sent.
+/// `Debug` shows the redacted URL and header names only.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ExpandedEndpoint {
+    /// The URL, secrets expanded.
+    pub url: String,
+    /// Header names and expanded values, in config order.
+    pub headers: Vec<(String, String)>,
+}
+
+impl std::fmt::Debug for ExpandedEndpoint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExpandedEndpoint")
+            .field("url", &crate::redact::redact(&self.url))
+            .field(
+                "headers",
+                &self.headers.iter().map(|(k, _)| k).collect::<Vec<_>>(),
+            )
+            .finish()
     }
 }
 
@@ -226,6 +263,43 @@ impl Chainz {
         Ok(self.secrets.get_or_init(|| loaded))
     }
 
+    /// Expand the URL and header values of `endpoint`, named `endpoint_name`
+    /// on the chain `chain_name`: built-ins from the chain, then variables
+    /// as [`VarResolver`] looks them up (`secrets.toml` is read only if
+    /// needed). Errors name the chain, endpoint, header and variable, never
+    /// a value.
+    pub fn expand_endpoint(
+        &self,
+        chain_name: &str,
+        chain: &Chain,
+        endpoint_name: &str,
+        endpoint: &Endpoint,
+    ) -> Result<ExpandedEndpoint> {
+        let loader = || self.secrets();
+        let vars = VarResolver::new(
+            Builtins {
+                chain_id: Some(chain.id),
+                chain: Some(chain_name),
+            },
+            &loader,
+        );
+        let url = vars
+            .expand(&endpoint.url)
+            .with_context(|| format!("chain '{chain_name}' endpoint '{endpoint_name}' URL"))?
+            .into_owned();
+        let mut headers = Vec::with_capacity(endpoint.headers.len());
+        for (name, value) in &endpoint.headers {
+            let value = vars
+                .expand(value)
+                .with_context(|| {
+                    format!("chain '{chain_name}' endpoint '{endpoint_name}' header '{name}'")
+                })?
+                .into_owned();
+            headers.push((name.clone(), value));
+        }
+        Ok(ExpandedEndpoint { url, headers })
+    }
+
     /// Run one locked read-modify-write transaction. `edit` mutates the
     /// documents; the result is validated and written (secrets first) only
     /// if it changed. On any error nothing is written.
@@ -241,12 +315,8 @@ impl Chainz {
             .unwrap_or_else(|| NEW_CONFIG.to_string());
         let secrets_orig = secrets_text.clone().unwrap_or_default();
         let mut tx = Tx {
-            doc: config_orig
-                .parse()
-                .with_context(|| format!("failed to parse {}", self.paths.config.display()))?,
-            secrets: secrets_orig
-                .parse()
-                .map_err(|_| anyhow!("failed to parse {}", self.paths.secrets.display()))?,
+            doc: parse_document(&config_orig, &self.paths.config)?,
+            secrets: parse_document(&secrets_orig, &self.paths.secrets)?,
         };
         let out = edit(&mut tx)?;
         let new_config = tx.doc.to_string();
@@ -260,7 +330,7 @@ impl Chainz {
         })?;
         validate::validate(&config, Some(&secrets))
             .context("refusing to write an invalid config")?;
-        if new_secrets != secrets_orig || (secrets_text.is_none() && !new_secrets.is_empty()) {
+        if new_secrets != secrets_orig {
             paths::write_atomically(&self.paths.secrets, new_secrets.as_bytes())
                 .with_context(|| format!("failed to write {}", self.paths.secrets.display()))?;
         }
@@ -286,7 +356,12 @@ pub struct Tx {
 impl Tx {
     /// The typed view of the document as edited so far.
     pub fn config(&self) -> Result<Config> {
-        toml_edit::de::from_str(&self.doc.to_string()).context("edited config does not parse")
+        toml_edit::de::from_str(&self.doc.to_string()).map_err(|e| {
+            anyhow!(
+                "edited config does not parse: {}",
+                redact_parse_error(e.message(), e.span())
+            )
+        })
     }
 
     /// The typed view of the secrets as edited so far.
@@ -339,6 +414,34 @@ mod tests {
     }
 
     #[test]
+    fn expand_endpoint_expands_url_and_headers() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = StorePaths::in_dir(dir.path().to_path_buf());
+        std::fs::write(
+            &paths.config,
+            "version = 2\n[chains.eth]\nid = 1\nrpc = \"gw\"\nrpcs.gw = { url = \"https://gw.example/${CHAIN}/${CHAIN_ID}\", headers = { x-key = \"${STORE_TEST_GW}\" } }\nrpcs.bad = \"https://x.example/${STORE_TEST_UNSET}\"\n",
+        )
+        .unwrap();
+        std::fs::write(&paths.secrets, "[vars]\nSTORE_TEST_GW = \"gw-secret\"\n").unwrap();
+        let chainz = Chainz::open_at(paths, LoadMode::Strict).unwrap();
+        let chain = &chainz.config().chains["eth"];
+        let gw = chainz
+            .expand_endpoint("eth", chain, "gw", &chain.rpcs["gw"])
+            .unwrap();
+        assert_eq!(gw.url, "https://gw.example/eth/1");
+        assert_eq!(gw.headers, [("x-key".to_string(), "gw-secret".to_string())]);
+        assert!(!format!("{gw:?}").contains("gw-secret"));
+        let err = chainz
+            .expand_endpoint("eth", chain, "bad", &chain.rpcs["bad"])
+            .unwrap_err();
+        let err = format!("{err:#}");
+        assert!(
+            err.contains("endpoint 'bad' URL") && err.contains("STORE_TEST_UNSET"),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn loose_permissions_are_tightened_on_read() {
         let dir = tempfile::tempdir().unwrap();
         let paths = StorePaths::in_dir(dir.path().to_path_buf());
@@ -355,6 +458,41 @@ mod tests {
                 .mode();
             assert_eq!(mode & 0o777, 0o600);
         }
+    }
+
+    #[test]
+    fn transaction_parse_errors_do_not_echo_the_source_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = StorePaths::in_dir(dir.path().to_path_buf());
+        std::fs::write(&paths.config, NEW_CONFIG).unwrap();
+        let mut chainz = Chainz::open_at(paths.clone(), LoadMode::Strict).unwrap();
+        // Broken by hand after loading: transact re-reads and re-parses.
+        std::fs::write(
+            &paths.config,
+            "version = 2\nx = \"https://rpc.example/v3/super-secret-key\" trailing\n",
+        )
+        .unwrap();
+        let err = format!("{:#}", chainz.transact(|_| Ok(())).unwrap_err());
+        assert!(!err.contains("super-secret-key"), "{err}");
+        assert!(err.contains("config.toml"), "{err}");
+
+        std::fs::write(&paths.config, NEW_CONFIG).unwrap();
+        std::fs::write(&paths.secrets, "K = \"super-secret-var\" trailing\n").unwrap();
+        let err = format!("{:#}", chainz.transact(|_| Ok(())).unwrap_err());
+        assert!(!err.contains("super-secret-var"), "{err}");
+    }
+
+    #[test]
+    fn tx_config_errors_do_not_echo_the_source_line() {
+        let tx = Tx {
+            doc: "version = 2\nchains.eth = { id = 1, rpc = 5, rpcs = { a = \"https://x.example/v3/super-secret-key\" } }\n"
+                .parse()
+                .unwrap(),
+            secrets: DocumentMut::new(),
+        };
+        let err = format!("{:#}", tx.config().unwrap_err());
+        assert!(!err.contains("super-secret-key"), "{err}");
+        assert!(err.contains("edited config does not parse"), "{err}");
     }
 
     #[test]

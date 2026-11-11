@@ -108,17 +108,12 @@ fn is_local(host: &str) -> bool {
 }
 
 fn variable_templates(input: &str) -> Vec<String> {
-    let mut templates = Vec::new();
-    let mut remainder = input;
-    while let Some(start) = remainder.find("${") {
-        let Some(relative_end) = remainder[start..].find('}') else {
-            break;
-        };
-        let end = start + relative_end + 1;
-        templates.push(remainder[start..end].to_string());
-        remainder = &remainder[end..];
-    }
-    templates
+    crate::template::spans(input)
+        .filter_map(|span| match span {
+            crate::template::Span::Var(name) => Some(format!("${{{name}}}")),
+            _ => None,
+        })
+        .collect()
 }
 
 #[cfg(test)]

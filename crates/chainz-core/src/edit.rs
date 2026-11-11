@@ -10,7 +10,7 @@ use crate::model::{Endpoint, Explorer, Signer};
 use crate::names;
 use crate::secrets::SignerSecret;
 use anyhow::{Result, anyhow, bail};
-use toml_edit::{Array, DocumentMut, InlineTable, Item, Table, TableLike, Value, value};
+use toml_edit::{Array, DocumentMut, InlineTable, Item, Key, Table, TableLike, Value, value};
 
 /// A chain to insert.
 #[derive(Debug, Clone)]
@@ -66,7 +66,7 @@ fn string_array(items: &[String]) -> Value {
 }
 
 /// The TOML value of an endpoint: a string, or `{ url, headers }`.
-pub fn endpoint_value(endpoint: &Endpoint) -> Value {
+pub(crate) fn endpoint_value(endpoint: &Endpoint) -> Value {
     if endpoint.headers.is_empty() {
         return Value::from(endpoint.url.as_str());
     }
@@ -172,7 +172,8 @@ pub fn rename_chain(doc: &mut DocumentMut, old: &str, new: &str) -> Result<()> {
     Ok(())
 }
 
-/// Rename `old` to `new` in a table, keeping its position.
+/// Rename `old` to `new` in a table, keeping its position and every key's
+/// formatting and comments.
 fn rename_key(table: Option<&mut dyn TableLike>, old: &str, new: &str) -> Result<()> {
     let table = table.ok_or_else(|| anyhow!("missing table"))?;
     if !table.contains_key(old) {
@@ -181,13 +182,24 @@ fn rename_key(table: Option<&mut dyn TableLike>, old: &str, new: &str) -> Result
     if table.contains_key(new) {
         bail!("'{new}' already exists");
     }
-    let entries: Vec<(String, Item)> = table
+    let names: Vec<String> = table.iter().map(|(k, _)| k.to_string()).collect();
+    let entries: Vec<(Key, Item)> = names
         .iter()
-        .map(|(k, v)| (k.to_string(), v.clone()))
+        .filter_map(|name| table.get_key_value(name))
+        .map(|(key, item)| {
+            let key = if key.get() == old {
+                Key::new(new)
+                    .with_leaf_decor(key.leaf_decor().clone())
+                    .with_dotted_decor(key.dotted_decor().clone())
+            } else {
+                key.clone()
+            };
+            (key, item.clone())
+        })
         .collect();
     table.clear();
-    for (k, v) in entries {
-        table.insert(if k == old { new } else { &k }, v);
+    for (key, item) in entries {
+        table.entry_format(&key).or_insert(item);
     }
     Ok(())
 }
@@ -204,7 +216,7 @@ pub fn set_aliases(doc: &mut DocumentMut, chain: &str, aliases: &[String]) -> Re
 }
 
 /// Set or clear a chain's string field (`signer`, `explorer`, `rpc`).
-pub fn set_chain_field(
+pub(crate) fn set_chain_field(
     doc: &mut DocumentMut,
     chain: &str,
     key: &str,
@@ -362,7 +374,7 @@ pub fn remove_signer(doc: &mut DocumentMut, name: &str, detach: bool) -> Result<
 }
 
 /// Write `[explorers.NAME]`.
-pub fn set_explorer(doc: &mut DocumentMut, name: &str, explorer: &Explorer) -> Result<()> {
+pub(crate) fn set_explorer(doc: &mut DocumentMut, name: &str, explorer: &Explorer) -> Result<()> {
     let explorers = implicit_table(doc, "explorers")?;
     let mut t = Table::new();
     t.insert("api", value(explorer.api.as_str()));
@@ -402,15 +414,13 @@ pub enum SetAddress {
 }
 
 /// Why `name` cannot be a label, if it cannot. `signers` are the
-/// configured signer names (signers are labels automatically).
+/// configured signer names (signers are labels automatically). The one
+/// definition of the label-name rules, shared by validation.
 pub fn check_label_name<'a>(name: &str, signers: impl IntoIterator<Item = &'a str>) -> Result<()> {
-    if !names::is_valid_label_name(name) || name.bytes().any(|b| b.is_ascii_uppercase()) {
+    if !names::is_valid_label_name(name) {
         bail!("label name '{name}' must match [a-z0-9_-]+");
     }
-    if names::CONTEXT_TOKENS.contains(&name)
-        || names::DEPRECATED_TOKENS.iter().any(|(n, _)| *n == name)
-        || name == "key"
-    {
+    if names::is_reserved_token(name) {
         bail!("'{name}' is a context token (@{name}) and cannot be used as a label");
     }
     if signers.into_iter().any(|s| s.eq_ignore_ascii_case(name)) {
@@ -698,6 +708,32 @@ mod tests {
         assert!(
             !text.contains("default") && !text.contains("router"),
             "{text}"
+        );
+    }
+
+    #[test]
+    fn rename_keeps_every_key_comment_and_format() {
+        let text = "version = 2\n\n[chains.eth]\nid = 1\nrpc = \"a\"\nrpcs.a = \"https://a.example\"\n\n[chains.base]\nid = 8453\nrpc = \"a\"\nrpcs.a = \"https://a.example\"\n\n[addresses.router]\n# the mainnet deployment\neth   =   \"0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf\" # trailing\n# the base deployment\nbase = \"0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf\"\n";
+        let mut doc: DocumentMut = text.parse().unwrap();
+        rename_chain(&mut doc, "eth", "mainnet").unwrap();
+        let out = doc.to_string();
+        assert!(
+            out.contains(
+                "# the mainnet deployment\nmainnet   =   \"0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf\" # trailing\n# the base deployment\nbase = "
+            ),
+            "{out}"
+        );
+        assert!(
+            out.find("[chains.mainnet]") < out.find("[chains.base]"),
+            "{out}"
+        );
+        // Renaming another key leaves the renamed one's comment in place.
+        rename_chain(&mut doc, "base", "b").unwrap();
+        let out = doc.to_string();
+        assert!(out.contains("# the base deployment\nb = "), "{out}");
+        assert!(
+            out.contains("# the mainnet deployment\nmainnet   ="),
+            "{out}"
         );
     }
 

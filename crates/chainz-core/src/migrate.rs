@@ -4,45 +4,68 @@
 //! 1. Runs under the config write lock and re-checks that `config.toml` is
 //!    still absent, so parallel `exec`s migrate exactly once.
 //! 2. Chains get short names from [`crate::names::SHORT_NAMES`] (else a slug);
-//!    the old name becomes an alias.
+//!    the old name becomes an alias. Chains sharing a chain ID are merged.
+//!    An alias that is another chain's name or alias is dropped.
 //! 3. Every endpoint is kept and named after its host, `-ws` for websockets,
 //!    `-2`, `-3` on collision; headers stay inline; `failover` starts empty.
-//! 4. Literal Infura `/v3/<key>` and Alchemy `/v2/<key>` keys move into
-//!    variables; other inline credentials stay and are reported.
+//! 4. Literal Infura `/v3/<key>` and Alchemy `/v2/<key>` keys and credential
+//!    header values move into variables ([`crate::extract`]); other inline
+//!    credentials stay and are reported.
 //! 5. Literal verifier keys move into variables; chains sharing an
 //!    explorer URL shape and key share one named explorer; chains without a
 //!    verifier get none.
 //! 6. `key_name` becomes `signer`; key records keep backend and cached
-//!    address; variables move to `secrets.toml`.
+//!    address; variables move to `secrets.toml`, renamed if v2 would reject
+//!    the name (valid names are kept first; a clash gets `_2`, `_3`…).
 //! 7. Writes `secrets.toml`, then `config.toml` (fsync + rename each), then
-//!    renames the v1 file to `config.v1.json.bak`.
+//!    renames the v1 file to `config.v1.json.bak` (`.chainz.v1.json.bak`
+//!    for the legacy `~/.chainz.json`).
+//!
+//! Migration never aborts over one bad entry, since every command migrates
+//! automatically: whatever cannot be carried over is skipped and reported
+//! in [`Summary::attention`], and stays in the v1 backup. Keys and secrets
+//! are never dropped without such a note.
 
 use crate::address::Address;
 use crate::edit::{self, NewChain};
+use crate::extract::{self, VarTable};
 use crate::model::{Backend, Endpoint, Explorer, Signer};
-use crate::names::{self, CONTEXT_TOKENS};
+use crate::names;
 use crate::paths;
 use crate::secrets::{BUILTIN_VARS, SignerSecret};
 use crate::store::{StorePaths, WriteLock};
 use crate::template;
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow};
 use indexmap::IndexMap;
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
+use std::path::{Path, PathBuf};
 use toml_edit::DocumentMut;
 
-/// v1 `config.json`.
+pub use crate::extract::extract_known_key;
+
+/// v1 `config.json`. Chains and keys that do not parse are skipped with a
+/// note rather than failing the whole migration.
 #[derive(Deserialize)]
 struct V1Config {
     #[serde(default)]
-    chains: Vec<V1Chain>,
+    chains: Vec<Readable<V1Chain>>,
     #[serde(default)]
     variables: BTreeMap<String, String>,
     #[serde(default)]
-    keys: BTreeMap<String, V1Key>,
+    keys: BTreeMap<String, Readable<V1Key>>,
     #[serde(default)]
     default_chain: Option<String>,
+}
+
+/// An entry that parsed, or one that did not (unknown key type, missing
+/// field).
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Readable<T> {
+    Ok(T),
+    Unreadable(serde::de::IgnoredAny),
 }
 
 #[derive(Deserialize)]
@@ -134,6 +157,8 @@ pub struct Summary {
     pub extracted: Vec<String>,
     /// Items that need the user's attention (never contain values).
     pub attention: Vec<String>,
+    /// Where the v1 file was moved, once written.
+    pub backup: Option<PathBuf>,
 }
 
 impl fmt::Display for Summary {
@@ -174,63 +199,6 @@ impl fmt::Debug for Plan {
             .field("summary", &self.summary)
             .finish_non_exhaustive()
     }
-}
-
-/// Assigns variable names to secret values, reusing an existing variable
-/// that already holds the same value.
-struct VarTable {
-    by_value: HashMap<String, String>,
-    names: IndexMap<String, String>,
-    created: Vec<String>,
-}
-
-impl VarTable {
-    fn intern(&mut self, base: &str, secret: &str) -> String {
-        if let Some(name) = self.by_value.get(secret) {
-            return name.clone();
-        }
-        let name = (1..)
-            .map(|n| {
-                if n == 1 {
-                    base.to_string()
-                } else {
-                    format!("{base}_{n}")
-                }
-            })
-            .find(|n| !self.names.contains_key(n))
-            .expect("a free name exists");
-        self.names.insert(name.clone(), secret.to_string());
-        self.by_value.insert(secret.to_string(), name.clone());
-        self.created.push(name.clone());
-        name
-    }
-}
-
-/// Find a literal Infura or Alchemy key in `url`: returns the text before
-/// and after the key, the base variable name, and the key.
-pub fn extract_known_key(url: &str) -> Option<(&str, &str, &'static str, &str)> {
-    let parsed = url::Url::parse(url).ok()?;
-    let host = parsed.host_str()?.to_ascii_lowercase();
-    let labels: Vec<&str> = host.split('.').collect();
-    let (marker, base) = if labels.contains(&"infura") {
-        ("/v3/", "INFURA_KEY")
-    } else if labels.contains(&"alchemy") {
-        ("/v2/", "ALCHEMY_KEY")
-    } else {
-        return None;
-    };
-    let start = url.find(marker)? + marker.len();
-    let rest = &url[start..];
-    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-    let key = &rest[..end];
-    if key.len() < 8
-        || !key
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-    {
-        return None;
-    }
-    Some((&url[..start], &rest[end..], base, key))
 }
 
 /// Heuristic: does `url` still embed a literal credential (userinfo, a
@@ -281,34 +249,24 @@ fn normalize_explorer_api(url: &str, chain_id: u64) -> String {
     }
 }
 
+/// The v2 name for v1 key `raw`: a slug, with `-signer` appended if it
+/// would shadow a token (`@wallet`, `@chainname`…), unique among `taken`.
 fn signer_name(raw: &str, taken: &HashSet<String>) -> String {
     let mut base = names::slugify(raw);
-    if CONTEXT_TOKENS.contains(&base.as_str()) || base == "key" {
+    if names::is_reserved_token(&base) {
         base.push_str("-signer");
     }
     names::unique_name(&base, |n| taken.contains(n))
 }
 
-/// Compute the migration of v1 JSON text without touching the filesystem.
-pub fn plan(v1_json: &str) -> Result<Plan> {
-    let v1: V1Config = serde_json::from_str(v1_json).map_err(|e| {
-        anyhow!(
-            "failed to parse the v1 config: {:?} error at line {}, column {}",
-            e.classify(),
-            e.line(),
-            e.column()
-        )
-    })?;
-    let mut summary = Summary::default();
-    let mut vars = VarTable {
-        by_value: HashMap::new(),
-        names: IndexMap::new(),
-        created: Vec::new(),
-    };
-
-    // Variables (step 6), sanitizing names v2 would reject.
-    let mut var_renames: HashMap<String, String> = HashMap::new();
-    for (name, value) in &v1.variables {
+/// New names for the v1 variables v2 would reject (`A-B`, `CHAIN`). Names
+/// that are already valid are claimed first, so a cleaned-up name never
+/// takes one; a clash gets `_2`, `_3`….
+fn var_renames(vars: &BTreeMap<String, String>) -> HashMap<String, String> {
+    let keep = |n: &str| template::is_valid_name(n) && !BUILTIN_VARS.contains(&n);
+    let mut taken: HashSet<String> = vars.keys().filter(|n| keep(n)).cloned().collect();
+    let mut renames = HashMap::new();
+    for name in vars.keys().filter(|n| !keep(n)) {
         let mut clean: String = name
             .chars()
             .map(|c| {
@@ -325,314 +283,62 @@ pub fn plan(v1_json: &str) -> Result<Plan> {
         if BUILTIN_VARS.contains(&clean.as_str()) {
             clean.push_str("_VAR");
         }
-        let clean = names::unique_name(&clean, |n| vars.names.contains_key(n));
-        if clean != *name {
+        let new = extract::unique_var_name(&clean, |n| taken.contains(n));
+        taken.insert(new.clone());
+        renames.insert(name.clone(), new);
+    }
+    renames
+}
+
+/// Compute the migration of v1 JSON text without touching the filesystem.
+pub fn plan(v1_json: &str) -> Result<Plan> {
+    let v1: V1Config = serde_json::from_str(v1_json).map_err(|e| {
+        anyhow!(
+            "failed to parse the v1 config: {:?} error at line {}, column {}",
+            e.classify(),
+            e.line(),
+            e.column()
+        )
+    })?;
+    let mut summary = Summary::default();
+
+    // Variables (step 6), renaming those v2 would reject. Every template
+    // is rewritten in one pass, so renames never chain.
+    let renames = var_renames(&v1.variables);
+    let rename = |text: &str| template::rename_vars(text, &renames);
+    let mut vars = VarTable::new();
+    for (name, value) in &v1.variables {
+        let new = renames.get(name).unwrap_or(name);
+        if new != name {
             summary.attention.push(format!(
-                "variable '{name}' was renamed to '{clean}'; update any ${{{name}}} references"
+                "variable '{name}' was renamed to '{new}'; update any ${{{name}}} references outside chainz"
             ));
-            var_renames.insert(name.clone(), clean.clone());
         }
-        vars.by_value
-            .entry(value.clone())
-            .or_insert_with(|| clean.clone());
-        vars.names.insert(clean, value.clone());
+        vars.insert(new, value);
         summary.variables += 1;
     }
 
-    // Signers.
+    let (signer_records, signer_names) = migrate_keys(&v1.keys, &mut summary);
+    let chains = migrate_chains(&v1.chains, &rename, &signer_names, &mut vars, &mut summary);
+
     let mut config = DocumentMut::new();
     config.decor_mut().set_prefix(
         "# chainz configuration (v2), migrated from the v1 config.json.\n# Secrets live in secrets.toml; reference them as ${NAME}.\n",
     );
     config["version"] = toml_edit::value(2);
     let mut secrets = DocumentMut::new();
-    let mut signer_names: HashMap<String, String> = HashMap::new();
-    let mut taken: HashSet<String> = HashSet::new();
-    let mut signer_records: Vec<(String, Signer, Option<SignerSecret>)> = Vec::new();
-    for (raw_name, key) in &v1.keys {
-        let name = signer_name(raw_name, &taken);
-        taken.insert(name.clone());
-        if name != *raw_name {
-            summary
-                .attention
-                .push(format!("key '{raw_name}' became signer '{name}'"));
-        }
-        signer_names.insert(raw_name.clone(), name.clone());
-        let mut address = key
-            .address
-            .as_deref()
-            .and_then(|a| a.parse::<Address>().ok());
-        let mut signer = Signer {
-            backend: Backend::Keyring,
-            address: None,
-            service: None,
-            username: None,
-            path: None,
-            vault: None,
-            item: None,
-        };
-        let mut secret = None;
-        match &key.kind {
-            V1KeyKind::Keyring { service, username } => {
-                signer.backend = Backend::Keyring;
-                if service != crate::model::KEYRING_SERVICE {
-                    signer.service = Some(service.clone());
-                }
-                if *username != name {
-                    signer.username = Some(username.clone());
-                }
-            }
-            V1KeyKind::PrivateKey { value } => {
-                signer.backend = Backend::Plaintext;
-                address = address.or_else(|| Address::from_private_key(value).ok());
-                let mut s = SignerSecret::default();
-                s.private_key = Some(value.trim().to_string());
-                secret = Some(s);
-                summary.attention.push(format!(
-                    "signer '{name}' is plaintext; move it with `chainz signer migrate {name}`"
-                ));
-            }
-            V1KeyKind::EncryptedKey {
-                value,
-                nonce,
-                salt,
-                version,
-                kdf_memory_kib,
-                kdf_iterations,
-                kdf_parallelism,
-            } => {
-                signer.backend = Backend::Encrypted;
-                let mut s = SignerSecret::default();
-                s.ciphertext = Some(value.clone());
-                s.nonce = Some(nonce.clone());
-                s.salt = Some(salt.clone());
-                s.version = Some(version.unwrap_or(1));
-                s.kdf_memory_kib = *kdf_memory_kib;
-                s.kdf_iterations = *kdf_iterations;
-                s.kdf_parallelism = *kdf_parallelism;
-                secret = Some(s);
-            }
-            V1KeyKind::OnePassword { vault, item } => {
-                signer.backend = Backend::OnePassword;
-                signer.vault = Some(vault.clone());
-                signer.item = Some(item.clone());
-            }
-        }
-        if address.is_none() {
-            summary.attention.push(format!(
-                "signer '{name}' has no cached address; @wallet needs one (re-add it or run `chainz signer migrate {name}`)"
-            ));
-        }
-        signer.address = address;
-        signer_records.push((name, signer, secret));
-        summary.signers += 1;
-    }
-
-    // Chains, endpoints, credentials, explorers.
-    let mut chain_names: HashMap<String, String> = HashMap::new();
-    let mut used_names: HashSet<String> = HashSet::new();
-    let mut explorers: IndexMap<String, (String, Explorer)> = IndexMap::new(); // name -> (group key, explorer)
-    let mut groups: HashMap<(String, Option<String>), String> = HashMap::new();
-    let mut new_chains: Vec<(String, NewChain)> = Vec::new();
-
-    for chain in &v1.chains {
-        let base = names::short_name(chain.chain_id)
-            .map(str::to_string)
-            .unwrap_or_else(|| names::slugify(&chain.name));
-        let name = names::unique_name(&base, |n| {
-            used_names.contains(n) || n.parse::<u64>().is_ok()
-        });
-        used_names.insert(name.clone());
-        chain_names.insert(chain.name.to_ascii_lowercase(), name.clone());
-        for alias in &chain.aliases {
-            chain_names.insert(alias.to_ascii_lowercase(), name.clone());
-        }
-
-        let mut aliases: Vec<String> = Vec::new();
-        for alias in std::iter::once(&chain.name).chain(chain.aliases.iter()) {
-            let alias = alias.trim();
-            if alias.is_empty()
-                || alias.eq_ignore_ascii_case(&name)
-                || alias.parse::<u64>().is_ok()
-                || aliases.iter().any(|a| a.eq_ignore_ascii_case(alias))
-            {
-                continue;
-            }
-            aliases.push(alias.to_string());
-        }
-
-        // Endpoints (step 3), keeping v1 order; the selected URL is added
-        // if a legacy config listed it only in selected_rpc.
-        let mut raw: Vec<(String, IndexMap<String, String>)> = chain
-            .rpc_urls
-            .iter()
-            .map(|e| match e {
-                V1Endpoint::Url(url) => (url.clone(), IndexMap::new()),
-                V1Endpoint::Detailed { url, headers } => (
-                    url.clone(),
-                    headers
-                        .iter()
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect(),
-                ),
-            })
-            .collect();
-        if !chain.selected_rpc.is_empty() && !raw.iter().any(|(u, _)| *u == chain.selected_rpc) {
-            raw.push((chain.selected_rpc.clone(), IndexMap::new()));
-        }
-        if raw.is_empty() {
-            bail!(
-                "v1 chain '{}' has no RPC URLs; fix config.json and retry",
-                chain.name
-            );
-        }
-        let mut rpcs: Vec<(String, Endpoint)> = Vec::new();
-        let mut active = None;
-        for (url, headers) in raw {
-            let base = names::endpoint_name_for_url(&url);
-            let ep_name = names::unique_name(&base, |n| rpcs.iter().any(|(e, _)| e == n));
-            if url == chain.selected_rpc && active.is_none() {
-                active = Some(ep_name.clone());
-            }
-            let mut new_url = url.clone();
-            if let Some((before, after, var_base, key)) = extract_known_key(&url) {
-                let var = vars.intern(var_base, key);
-                new_url = format!("{before}${{{var}}}{after}");
-            }
-            for (old, new) in &var_renames {
-                new_url = new_url.replace(&format!("${{{old}}}"), &format!("${{{new}}}"));
-            }
-            if let Some(kind) = inline_credential(&new_url) {
-                summary.attention.push(format!(
-                    "chain '{name}' endpoint '{ep_name}' embeds a credential ({kind}); move it into a variable"
-                ));
-            }
-            let mut endpoint = Endpoint::new(new_url);
-            for (k, mut v) in headers {
-                for (old, new) in &var_renames {
-                    v = v.replace(&format!("${{{old}}}"), &format!("${{{new}}}"));
-                }
-                if !template::has_templates(&v) {
-                    summary.attention.push(format!(
-                        "chain '{name}' endpoint '{ep_name}' header '{k}' holds a literal value; move it into a variable"
-                    ));
-                }
-                endpoint.headers.insert(k, v);
-            }
-            rpcs.push((ep_name, endpoint));
-            summary.endpoints += 1;
-        }
-        let rpc = active.unwrap_or_else(|| rpcs[0].0.clone());
-
-        // Explorer (step 5).
-        let explorer = match (&chain.verification_url, &chain.verification_api_key) {
-            (None, None) => None,
-            (url, key) => {
-                let key_value = key.as_ref().filter(|k| !k.trim().is_empty());
-                let Some(url) = url.as_ref().filter(|u| !u.trim().is_empty()) else {
-                    if let Some(key) = key_value {
-                        let var = vars.intern(
-                            &format!(
-                                "{}_VERIFIER_API_KEY",
-                                name.to_ascii_uppercase().replace('-', "_")
-                            ),
-                            key,
-                        );
-                        summary.attention.push(format!(
-                            "chain '{name}' had a verifier key but no URL; the key is kept as ${{{var}}} with no explorer attached"
-                        ));
-                    }
-                    new_chains.push((
-                        name.clone(),
-                        NewChain {
-                            id: chain.chain_id,
-                            aliases,
-                            signer: None,
-                            explorer: None,
-                            rpc,
-                            failover: vec![],
-                            rpcs,
-                        },
-                    ));
-                    set_signer_ref(&mut new_chains, chain, &signer_names, &mut summary);
-                    summary.chains += 1;
-                    continue;
-                };
-                let api = normalize_explorer_api(url, chain.chain_id);
-                let group_key = (api.clone(), key_value.cloned());
-                match groups.get(&group_key) {
-                    Some(existing) => Some(existing.clone()),
-                    None => {
-                        let host_label = names::endpoint_name_for_url(&api);
-                        let host_label = host_label.trim_end_matches("-ws");
-                        let exp_name = names::unique_name(
-                            if host_label == "rpc" || host_label == "local" {
-                                "explorer"
-                            } else {
-                                host_label
-                            },
-                            |n| explorers.contains_key(n),
-                        );
-                        let key_ref = key_value.map(|k| {
-                            if template::has_templates(k) {
-                                k.clone()
-                            } else {
-                                let base = if exp_name == "etherscan" {
-                                    "ETHERSCAN_API_KEY".to_string()
-                                } else {
-                                    format!(
-                                        "{}_API_KEY",
-                                        exp_name.to_ascii_uppercase().replace('-', "_")
-                                    )
-                                };
-                                format!("${{{}}}", vars.intern(&base, k))
-                            }
-                        });
-                        explorers.insert(
-                            exp_name.clone(),
-                            (
-                                String::new(),
-                                Explorer {
-                                    api,
-                                    key: key_ref,
-                                    url: None,
-                                },
-                            ),
-                        );
-                        groups.insert(group_key, exp_name.clone());
-                        Some(exp_name)
-                    }
-                }
-            }
-        };
-        new_chains.push((
-            name.clone(),
-            NewChain {
-                id: chain.chain_id,
-                aliases,
-                signer: None,
-                explorer,
-                rpc,
-                failover: vec![],
-                rpcs,
-            },
-        ));
-        set_signer_ref(&mut new_chains, chain, &signer_names, &mut summary);
-        summary.chains += 1;
-    }
-
     if let Some(default) = &v1.default_chain {
-        match chain_names.get(&default.to_ascii_lowercase()) {
+        match chains.by_v1_name.get(&default.to_ascii_lowercase()) {
             Some(name) => config["default"] = toml_edit::value(name.as_str()),
             None => summary.attention.push(format!(
                 "default chain '{default}' was not found and was dropped"
             )),
         }
     }
-    for (name, (_, explorer)) in &explorers {
+    for (name, explorer) in &chains.explorers {
         edit::set_explorer(&mut config, name, explorer)?;
     }
-    for (name, chain) in &new_chains {
+    for (name, chain) in &chains.list {
         edit::insert_chain(&mut config, name, chain)?;
     }
     for (name, signer, secret) in &signer_records {
@@ -641,10 +347,10 @@ pub fn plan(v1_json: &str) -> Result<Plan> {
             edit::set_signer_secret(&mut secrets, name, secret)?;
         }
     }
-    for (name, value) in &vars.names {
+    for (name, value) in vars.iter() {
         edit::set_var(&mut secrets, name, value)?;
     }
-    summary.extracted = vars.created;
+    summary.extracted = vars.created().to_vec();
     if !secrets.is_empty() {
         secrets
             .decor_mut()
@@ -653,8 +359,9 @@ pub fn plan(v1_json: &str) -> Result<Plan> {
 
     let config_toml = config.to_string();
     let secrets_toml = secrets.to_string();
-    // The result must load and validate like any hand-written config.
-    let parsed = crate::store::parse_config(&config_toml, std::path::Path::new("config.toml"))?;
+    // The result must load and validate like any hand-written config. Every
+    // entry that could fail was skipped above, so a failure here is a bug.
+    let parsed = crate::store::parse_config(&config_toml, Path::new("config.toml"))?;
     let parsed_secrets = crate::secrets::Secrets::parse(&secrets_toml).map_err(|e| {
         anyhow!(
             "migrated secrets do not parse: {}",
@@ -662,7 +369,7 @@ pub fn plan(v1_json: &str) -> Result<Plan> {
         )
     })?;
     crate::validate::validate(&parsed, Some(&parsed_secrets))
-        .context("migrated config is invalid")?;
+        .context("migrated config is invalid (a chainz bug: please report it; the v1 config was left untouched)")?;
     Ok(Plan {
         config_toml,
         secrets_toml,
@@ -670,25 +377,534 @@ pub fn plan(v1_json: &str) -> Result<Plan> {
     })
 }
 
-fn set_signer_ref(
-    chains: &mut [(String, NewChain)],
-    v1: &V1Chain,
-    signer_names: &HashMap<String, String>,
+/// A migrated signer: name, record, key material for secrets.toml.
+type SignerRecord = (String, Signer, Option<SignerSecret>);
+
+/// Migrate v1 keys to signers. Returns the records and the v1 → v2 name
+/// map. A key that cannot be carried over is skipped with a note.
+fn migrate_keys(
+    keys: &BTreeMap<String, Readable<V1Key>>,
     summary: &mut Summary,
-) {
-    let Some(key_name) = &v1.key_name else { return };
-    let (name, chain) = chains.last_mut().expect("just pushed");
-    match signer_names.get(key_name) {
-        Some(signer) => chain.signer = Some(signer.clone()),
-        None => summary.attention.push(format!(
-            "chain '{name}' referenced missing key '{key_name}'; no signer attached"
-        )),
+) -> (Vec<SignerRecord>, HashMap<String, String>) {
+    let mut records = Vec::new();
+    let mut names: HashMap<String, String> = HashMap::new();
+    let mut taken: HashSet<String> = HashSet::new();
+    for (raw_name, key) in keys {
+        let Readable::Ok(key) = key else {
+            summary.attention.push(format!(
+                "key '{raw_name}' could not be read (unknown type or missing field) and was not migrated; it stays in the v1 backup"
+            ));
+            continue;
+        };
+        let name = signer_name(raw_name, &taken);
+        let (signer, secret) = match migrate_key(&name, key, &mut summary.attention) {
+            Ok(migrated) => migrated,
+            Err(reason) => {
+                summary.attention.push(format!(
+                    "key '{raw_name}' was not migrated: {reason}; it stays in the v1 backup"
+                ));
+                continue;
+            }
+        };
+        if name != *raw_name {
+            summary
+                .attention
+                .push(format!("key '{raw_name}' became signer '{name}'"));
+        }
+        taken.insert(name.clone());
+        names.insert(raw_name.clone(), name.clone());
+        records.push((name, signer, secret));
+        summary.signers += 1;
+    }
+    (records, names)
+}
+
+/// One v1 key as a signer record (and key material), or why it cannot be.
+fn migrate_key(
+    name: &str,
+    key: &V1Key,
+    attention: &mut Vec<String>,
+) -> Result<(Signer, Option<SignerSecret>), String> {
+    let mut address = key
+        .address
+        .as_deref()
+        .and_then(|a| a.parse::<Address>().ok());
+    let mut signer = Signer {
+        backend: Backend::Keyring,
+        address: None,
+        service: None,
+        username: None,
+        path: None,
+        vault: None,
+        item: None,
+    };
+    let mut secret = None;
+    match &key.kind {
+        V1KeyKind::Keyring { service, username } => {
+            signer.backend = Backend::Keyring;
+            if service != crate::model::KEYRING_SERVICE {
+                signer.service = Some(service.clone());
+            }
+            if username != name {
+                signer.username = Some(username.clone());
+            }
+        }
+        V1KeyKind::PrivateKey { value } => {
+            let derived = Address::from_private_key(value)
+                .map_err(|_| "it holds an invalid private key".to_string())?;
+            if address.is_some_and(|cached| cached != derived) {
+                attention.push(format!(
+                    "signer '{name}' had a cached address that does not match its key; the key's own address is used"
+                ));
+            }
+            address = Some(derived);
+            signer.backend = Backend::Plaintext;
+            let mut s = SignerSecret::default();
+            s.private_key = Some(value.trim().to_string());
+            secret = Some(s);
+            attention.push(format!(
+                "signer '{name}' is plaintext; move it with `chainz signer migrate {name}`"
+            ));
+        }
+        V1KeyKind::EncryptedKey {
+            value,
+            nonce,
+            salt,
+            version,
+            kdf_memory_kib,
+            kdf_iterations,
+            kdf_parallelism,
+        } => {
+            signer.backend = Backend::Encrypted;
+            let mut s = SignerSecret::default();
+            s.ciphertext = Some(value.clone());
+            s.nonce = Some(nonce.clone());
+            s.salt = Some(salt.clone());
+            s.version = Some(version.unwrap_or(1));
+            s.kdf_memory_kib = *kdf_memory_kib;
+            s.kdf_iterations = *kdf_iterations;
+            s.kdf_parallelism = *kdf_parallelism;
+            crate::signer::validate_envelope(&s)
+                .map_err(|e| format!("its encrypted key cannot be read ({e})"))?;
+            secret = Some(s);
+        }
+        V1KeyKind::OnePassword { vault, item } => {
+            if vault.trim().is_empty() || item.trim().is_empty() {
+                return Err("its 1Password vault or item is empty".to_string());
+            }
+            signer.backend = Backend::OnePassword;
+            signer.vault = Some(vault.clone());
+            signer.item = Some(item.clone());
+        }
+    }
+    if address.is_none() {
+        attention.push(format!(
+            "signer '{name}' has no cached address; @wallet needs one (re-add it or run `chainz signer migrate {name}`)"
+        ));
+    }
+    signer.address = address;
+    Ok((signer, secret))
+}
+
+/// One v2 chain assembled from one or more v1 entries (v1 allowed several
+/// entries with the same chain ID; v2 does not, so they are merged).
+#[derive(Default)]
+struct ChainPlan {
+    id: u64,
+    name: String,
+    /// The v1 names (`true`) and aliases (`false`) of every merged entry.
+    v1_names: Vec<(String, bool)>,
+    rpcs: Vec<(String, Endpoint)>,
+    rpc: Option<String>,
+    explorer: Option<String>,
+    signer: Option<String>,
+}
+
+/// The migrated chains and explorers.
+struct Chains {
+    list: Vec<(String, NewChain)>,
+    explorers: IndexMap<String, Explorer>,
+    /// Lowercase v1 name (or, failing that, alias) → v2 chain name.
+    by_v1_name: HashMap<String, String>,
+}
+
+fn migrate_chains(
+    v1_chains: &[Readable<V1Chain>],
+    rename: &dyn Fn(&str) -> String,
+    signer_names: &HashMap<String, String>,
+    vars: &mut VarTable,
+    summary: &mut Summary,
+) -> Chains {
+    let mut chains: Vec<&V1Chain> = Vec::with_capacity(v1_chains.len());
+    for chain in v1_chains {
+        match chain {
+            Readable::Ok(chain) => chains.push(chain),
+            Readable::Unreadable(_) => summary.attention.push(
+                "a v1 chain entry could not be read (missing name or chain_id) and was not migrated; it stays in the v1 backup".to_string(),
+            ),
+        }
+    }
+
+    // One plan per chain ID.
+    let mut plans: Vec<ChainPlan> = Vec::new();
+    let mut owner: Vec<usize> = Vec::with_capacity(chains.len());
+    let mut by_id: HashMap<u64, usize> = HashMap::new();
+    for chain in &chains {
+        let i = *by_id.entry(chain.chain_id).or_insert_with(|| {
+            plans.push(ChainPlan {
+                id: chain.chain_id,
+                ..ChainPlan::default()
+            });
+            plans.len() - 1
+        });
+        owner.push(i);
+    }
+
+    // Names (step 2): built-in short names first, so a slug never takes one.
+    let mut used: HashSet<String> = HashSet::new();
+    for plan in &mut plans {
+        if let Some(short) = names::short_name(plan.id)
+            && used.insert(short.to_string())
+        {
+            plan.name = short.to_string();
+        }
+    }
+    for (chain, &i) in chains.iter().zip(&owner) {
+        if plans[i].name.is_empty() {
+            let base = names::short_name(chain.chain_id)
+                .map(str::to_string)
+                .unwrap_or_else(|| names::slugify(&chain.name));
+            let name = names::unique_name(&base, |n| used.contains(n) || n.parse::<u64>().is_ok());
+            used.insert(name.clone());
+            plans[i].name = name;
+        }
+    }
+
+    let mut explorers: IndexMap<String, Explorer> = IndexMap::new();
+    let mut groups: HashMap<(String, Option<String>), String> = HashMap::new();
+    for (chain, &i) in chains.iter().zip(&owner) {
+        let name = plans[i].name.clone();
+        if let Some((first, _)) = plans[i].v1_names.first() {
+            summary.attention.push(format!(
+                "v1 chains '{first}' and '{}' share chain ID {}; they were merged into chain '{name}'",
+                chain.name, chain.chain_id
+            ));
+        }
+        plans[i].v1_names.push((chain.name.clone(), true));
+        plans[i]
+            .v1_names
+            .extend(chain.aliases.iter().map(|a| (a.clone(), false)));
+
+        migrate_endpoints(chain, &name, &mut plans[i], rename, vars, summary);
+
+        let explorer = migrate_explorer(
+            chain,
+            &name,
+            rename,
+            vars,
+            &mut explorers,
+            &mut groups,
+            summary,
+        );
+        let plan = &mut plans[i];
+        match (&plan.explorer, explorer) {
+            (None, explorer) => plan.explorer = explorer,
+            (Some(kept), Some(other)) if *kept != other => summary.attention.push(format!(
+                "chain '{name}': v1 entry '{}' used another verifier, which was not attached (explorer '{other}' exists for it)",
+                chain.name
+            )),
+            _ => {}
+        }
+
+        if let Some(key_name) = &chain.key_name {
+            match (signer_names.get(key_name), &plan.signer) {
+                (None, _) => summary.attention.push(format!(
+                    "chain '{name}' referenced key '{key_name}', which was not migrated; no signer attached"
+                )),
+                (Some(signer), None) => plan.signer = Some(signer.clone()),
+                (Some(signer), Some(kept)) if signer != kept => {
+                    summary.attention.push(format!(
+                        "chain '{name}': v1 entry '{}' used key '{key_name}'; signer '{kept}' was kept",
+                        chain.name
+                    ))
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // A chain needs an endpoint.
+    plans.retain(|plan| {
+        if plan.rpcs.is_empty() {
+            summary.attention.push(format!(
+                "chain '{}' (chain ID {}) has no usable RPC URL and was not migrated; it stays in the v1 backup",
+                plan.name, plan.id
+            ));
+        }
+        !plan.rpcs.is_empty()
+    });
+
+    // v1 names resolve first, then v1 aliases (for `default_chain`).
+    let mut by_v1_name: HashMap<String, String> = HashMap::new();
+    for want_name in [true, false] {
+        for plan in &plans {
+            for (v1_name, is_name) in &plan.v1_names {
+                if *is_name == want_name {
+                    by_v1_name
+                        .entry(v1_name.to_ascii_lowercase())
+                        .or_insert_with(|| plan.name.clone());
+                }
+            }
+        }
+    }
+
+    // Aliases: an alias another chain already answers to is dropped.
+    let mut answers: HashMap<String, String> = plans
+        .iter()
+        .map(|p| (p.name.clone(), p.name.clone()))
+        .collect();
+    let mut list = Vec::with_capacity(plans.len());
+    for plan in plans {
+        let mut aliases: Vec<String> = Vec::new();
+        for (raw, _) in &plan.v1_names {
+            let alias = raw.trim();
+            if alias.is_empty()
+                || alias.eq_ignore_ascii_case(&plan.name)
+                || alias.parse::<u64>().is_ok()
+                || aliases.iter().any(|a| a.eq_ignore_ascii_case(alias))
+            {
+                continue;
+            }
+            if alias.chars().any(char::is_control) {
+                summary.attention.push(format!(
+                    "an alias of chain '{}' contains a control character and was dropped",
+                    plan.name
+                ));
+                continue;
+            }
+            let key = alias.to_ascii_lowercase();
+            if let Some(other) = answers.get(&key)
+                && *other != plan.name
+            {
+                summary.attention.push(format!(
+                    "alias '{alias}' of chain '{}' was dropped: it is already the name or an alias of chain '{other}'",
+                    plan.name
+                ));
+                continue;
+            }
+            answers.insert(key, plan.name.clone());
+            aliases.push(alias.to_string());
+        }
+        let rpc = plan.rpc.unwrap_or_else(|| plan.rpcs[0].0.clone());
+        summary.chains += 1;
+        list.push((
+            plan.name,
+            NewChain {
+                id: plan.id,
+                aliases,
+                signer: plan.signer,
+                explorer: plan.explorer,
+                rpc,
+                failover: vec![],
+                rpcs: plan.rpcs,
+            },
+        ));
+    }
+    Chains {
+        list,
+        explorers,
+        by_v1_name,
     }
 }
 
+/// Endpoints (steps 3 and 4), in v1 order; the selected URL is added if a
+/// legacy config listed it only in `selected_rpc`. Appends to `plan`.
+fn migrate_endpoints(
+    chain: &V1Chain,
+    name: &str,
+    plan: &mut ChainPlan,
+    rename: &dyn Fn(&str) -> String,
+    vars: &mut VarTable,
+    summary: &mut Summary,
+) {
+    let mut raw: Vec<(&str, Vec<(&str, &str)>)> = chain
+        .rpc_urls
+        .iter()
+        .map(|e| match e {
+            V1Endpoint::Url(url) => (url.as_str(), Vec::new()),
+            V1Endpoint::Detailed { url, headers } => (
+                url.as_str(),
+                headers
+                    .iter()
+                    .map(|(k, v)| (k.as_str(), v.as_str()))
+                    .collect(),
+            ),
+        })
+        .collect();
+    if !chain.selected_rpc.is_empty() && !raw.iter().any(|(u, _)| *u == chain.selected_rpc) {
+        raw.push((&chain.selected_rpc, Vec::new()));
+    }
+    for (url, headers) in raw {
+        let selected = url == chain.selected_rpc;
+        let new_url = rename(url);
+        if new_url.trim().is_empty()
+            || new_url.chars().any(char::is_whitespace)
+            || template::references(&new_url).is_err()
+        {
+            summary.attention.push(format!(
+                "chain '{name}' has an empty or malformed endpoint URL; it was skipped and stays in the v1 backup"
+            ));
+            continue;
+        }
+        let ep_name = names::unique_name(&names::endpoint_name_for_url(&new_url), |n| {
+            plan.rpcs.iter().any(|(e, _)| e == n)
+        });
+        let mut endpoint = Endpoint::new(new_url);
+        let mut unexportable = Vec::new();
+        for (header, value) in headers {
+            let mut value = rename(value);
+            let at = format!("chain '{name}' endpoint '{ep_name}' header '{header}'");
+            if header.is_empty() || !header.bytes().all(crate::validate::is_header_name_byte) {
+                let kept = if value.is_empty() || !extract::is_literal(&value) {
+                    String::new()
+                } else {
+                    let base = extract::var_base(&[&ep_name, "HEADER"]);
+                    format!("; its value is kept as ${{{}}}", vars.intern(&base, &value))
+                };
+                summary
+                    .attention
+                    .push(format!("{at} has an invalid name and was dropped{kept}"));
+                continue;
+            }
+            if template::references(&value).is_err() {
+                // Not a usable template: keep the whole value as a secret.
+                let base = extract::var_base(&[&ep_name, header]);
+                let var = vars.intern(&base, &value);
+                summary.attention.push(format!(
+                    "{at} had a malformed ${{…}}; its whole value moved to ${{{var}}}"
+                ));
+                value = format!("${{{var}}}");
+            }
+            if !extract::is_literal(&value) && value.contains(['\r', '\n']) {
+                summary.attention.push(format!(
+                    "{at} contains a line break and was dropped; it stays in the v1 backup"
+                ));
+                continue;
+            }
+            if value.contains([',', '\r', '\n']) {
+                unexportable.push(at);
+            }
+            endpoint.headers.insert(header.to_string(), value);
+        }
+        extract::extract_endpoint(name, &ep_name, &mut endpoint, vars);
+        for at in unexportable {
+            summary.attention.push(format!(
+                "{at} contains a comma or line break, so `exec --direct` cannot export it via ETH_RPC_HEADERS (the gateway still sends it)"
+            ));
+        }
+        if let Some(kind) = inline_credential(&endpoint.url) {
+            summary.attention.push(format!(
+                "chain '{name}' endpoint '{ep_name}' embeds a credential ({kind}); move it into a variable"
+            ));
+        }
+        for (header, value) in &endpoint.headers {
+            if extract::is_literal(value) {
+                summary.attention.push(format!(
+                    "chain '{name}' endpoint '{ep_name}' header '{header}' holds a literal value; move it into a variable"
+                ));
+            }
+        }
+        // A merged duplicate chain often repeats an endpoint.
+        let ep_name = match plan.rpcs.iter().find(|(_, e)| *e == endpoint) {
+            Some((existing, _)) => existing.clone(),
+            None => {
+                plan.rpcs.push((ep_name.clone(), endpoint));
+                summary.endpoints += 1;
+                ep_name
+            }
+        };
+        if selected && plan.rpc.is_none() {
+            plan.rpc = Some(ep_name);
+        }
+    }
+}
+
+/// The explorer (step 5) for one v1 chain: chains sharing an API URL shape
+/// and key share one. Returns its name, or `None` without a usable URL.
+fn migrate_explorer(
+    chain: &V1Chain,
+    name: &str,
+    rename: &dyn Fn(&str) -> String,
+    vars: &mut VarTable,
+    explorers: &mut IndexMap<String, Explorer>,
+    groups: &mut HashMap<(String, Option<String>), String>,
+    summary: &mut Summary,
+) -> Option<String> {
+    let key = chain
+        .verification_api_key
+        .as_deref()
+        .map(rename)
+        .filter(|k| !k.trim().is_empty());
+    let mut api = chain
+        .verification_url
+        .as_deref()
+        .filter(|u| !u.trim().is_empty())
+        .map(|u| normalize_explorer_api(&rename(u), chain.chain_id));
+    if api
+        .as_deref()
+        .is_some_and(|a| a.chars().any(char::is_whitespace) || template::references(a).is_err())
+    {
+        summary.attention.push(format!(
+            "chain '{name}' has a malformed verifier URL; no explorer was attached (it stays in the v1 backup)"
+        ));
+        api = None;
+    }
+    let Some(api) = api else {
+        if let Some(key) = key {
+            let kept = if extract::is_literal(&key) {
+                let var = vars.intern(&extract::var_base(&[name, "VERIFIER_API_KEY"]), &key);
+                format!("the key is kept as ${{{var}}} with")
+            } else {
+                "it has".to_string()
+            };
+            summary.attention.push(format!(
+                "chain '{name}' had a verifier key but no usable URL; {kept} no explorer attached"
+            ));
+        }
+        return None;
+    };
+    let group = (api, key);
+    if let Some(existing) = groups.get(&group) {
+        return Some(existing.clone());
+    }
+    let host = names::endpoint_name_for_url(&group.0);
+    let host = host.trim_end_matches("-ws");
+    let exp_name = names::unique_name(
+        if host == "rpc" || host == "local" {
+            "explorer"
+        } else {
+            host
+        },
+        |n| explorers.contains_key(n),
+    );
+    let key_ref = group.1.as_deref().map(|k| {
+        extract::extract_explorer_key(&exp_name, k, vars).unwrap_or_else(|| k.to_string())
+    });
+    explorers.insert(
+        exp_name.clone(),
+        Explorer {
+            api: group.0.clone(),
+            key: key_ref,
+            url: None,
+        },
+    );
+    groups.insert(group, exp_name.clone());
+    Some(exp_name)
+}
+
 /// Backup name for a migrated v1 file.
-fn backup_path(source: &std::path::Path) -> std::path::PathBuf {
-    let dir = source.parent().unwrap_or(std::path::Path::new("."));
+fn backup_path(source: &Path) -> PathBuf {
+    let dir = source.parent().unwrap_or(Path::new("."));
     if source.file_name().is_some_and(|n| n == "config.json") {
         dir.join("config.v1.json.bak")
     } else {
@@ -707,7 +923,8 @@ pub fn migrate_locked(paths: &StorePaths) -> Result<Option<Summary>> {
     };
     let text = std::fs::read_to_string(&source)
         .with_context(|| format!("failed to read {}", source.display()))?;
-    let plan = plan(&text).with_context(|| format!("failed to migrate {}", source.display()))?;
+    let mut plan =
+        plan(&text).with_context(|| format!("failed to migrate {}", source.display()))?;
     paths::ensure_private_dir(&paths.dir)?;
     if !plan.secrets_toml.is_empty() {
         paths::write_atomically(&paths.secrets, plan.secrets_toml.as_bytes())
@@ -723,12 +940,13 @@ pub fn migrate_locked(paths: &StorePaths) -> Result<Option<Summary>> {
             backup.display()
         )
     })?;
+    plan.summary.backup = Some(backup);
     Ok(Some(plan.summary))
 }
 
 /// Migrate on first run: take the lock, re-check, migrate, and report on
 /// stderr. Safe to call from many processes at once.
-pub fn auto_migrate(paths: &StorePaths) -> Result<()> {
+pub(crate) fn auto_migrate(paths: &StorePaths) -> Result<()> {
     let _lock = WriteLock::acquire(paths)?;
     if let Some(summary) = migrate_locked(paths)? {
         report(&summary, paths);
@@ -739,10 +957,14 @@ pub fn auto_migrate(paths: &StorePaths) -> Result<()> {
 /// Print a migration summary to stderr.
 pub fn report(summary: &Summary, paths: &StorePaths) {
     eprintln!("chainz: {summary}");
-    eprintln!(
-        "chainz: wrote {} (v1 config kept as config.v1.json.bak)",
-        paths.config.display()
-    );
+    match &summary.backup {
+        Some(backup) => eprintln!(
+            "chainz: wrote {} (v1 config kept as {})",
+            paths.config.display(),
+            backup.display()
+        ),
+        None => eprintln!("chainz: wrote {}", paths.config.display()),
+    }
     for item in &summary.attention {
         eprintln!("chainz:   - {item}");
     }
