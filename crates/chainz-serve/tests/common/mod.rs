@@ -123,8 +123,12 @@ impl Mock {
     }
 
     /// Stop listening and drop every open connection, mid-response or not.
-    pub fn kill(&self) {
+    /// Stop serving and wait until the listener and every connection are
+    /// dropped. `abort` alone only requests cancellation: on a multi-thread
+    /// runtime the task can still accept one more call before it stops.
+    pub async fn kill(&mut self) {
         self.task.abort();
+        let _ = (&mut self.task).await;
     }
 }
 

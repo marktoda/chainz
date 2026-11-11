@@ -177,7 +177,7 @@ async fn auth_rejects_wrong_token_bad_host_non_post_and_non_json() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn killing_the_active_upstream_mid_stream_fails_zero_reads() {
     // Slow enough that requests are in flight when the upstream dies.
-    let a = Mock::start("a", |_| {
+    let mut a = Mock::start("a", |_| {
         R::Delay(Duration::from_millis(5), Box::new(R::Result(json!("a"))))
     })
     .await;
@@ -206,7 +206,7 @@ async fn killing_the_active_upstream_mid_stream_fails_zero_reads() {
         }));
     }
     eventually(|| done.load(Ordering::SeqCst) >= 100).await;
-    a.kill();
+    a.kill().await;
     let mut by_a = 0;
     let mut by_b = 0;
     for worker in workers {
@@ -321,10 +321,10 @@ async fn a_send_never_leaves_the_active_endpoint() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_dead_active_send_fails_without_trying_anything_else() {
-    let a = Mock::named("a").await;
+    let mut a = Mock::named("a").await;
     let b = Mock::named("b").await;
     let rig = pair(&a, &b).await;
-    a.kill();
+    a.kill().await;
     let reply = rig
         .call("eth", "eth_sendRawTransaction", json!([RAW_TX]))
         .await;
@@ -465,7 +465,7 @@ async fn a_429_waits_on_the_same_endpoint_then_shifts() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn filters_are_sticky_to_the_endpoint_that_created_them() {
-    let a = Mock::start("a", |call| match call["method"].as_str().unwrap() {
+    let mut a = Mock::start("a", |call| match call["method"].as_str().unwrap() {
         "eth_newFilter" => R::Result(json!("0xF1")),
         "eth_newBlockFilter" => R::Result(json!("0xf2")),
         _ => R::Result(json!("a")),
@@ -545,7 +545,7 @@ async fn filters_are_sticky_to_the_endpoint_that_created_them() {
     // Never failed over: with `a` gone the filter read fails, although `b`
     // (now active) is healthy.
     let before = b.calls().len();
-    a.kill();
+    a.kill().await;
     let reply = rig
         .call("eth", "eth_getFilterChanges", json!(["0xf1"]))
         .await;
