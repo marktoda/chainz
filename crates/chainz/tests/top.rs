@@ -111,9 +111,23 @@ fn aggregate3_result(values: &[u128]) -> String {
     format!("0x{out}")
 }
 
+/// Mainnet USDC, lower case and without `0x`.
+const USDC: &str = "a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48";
+
+/// The target of every call in `aggregate3` calldata, lower-case hex.
+fn aggregate3_targets(calldata: &str) -> Vec<String> {
+    let args = &calldata[10..]; // after "0x" and the selector
+    let word = |i: usize| &args[i * 64..(i + 1) * 64];
+    let number = |i: usize| usize::from_str_radix(&word(i)[48..], 16).unwrap();
+    let count = number(1);
+    (0..count)
+        .map(|i| word(2 + number(2 + i) / 32)[24..].to_lowercase())
+        .collect()
+}
+
 /// A mock chain 1: head 1,000 with 12 s blocks, and a Multicall3 that
-/// reports 1.5 ETH, then the registry's tokens in name order (2.5 USDC,
-/// 0 WETH). Returns its URL and the request paths and methods it saw.
+/// reports 1.5 ETH, 2.5 USDC and nothing of any other token. Returns its
+/// URL and the request paths and methods it saw.
 fn mock_rpc() -> (String, Seen) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
@@ -158,11 +172,19 @@ fn mock_rpc() -> (String, Seen) {
                         "baseFeePerGas": "0x3b9aca00",
                     })
                 }
-                "eth_call" => json!(aggregate3_result(&[
-                    1_500_000_000_000_000_000,
-                    2_500_000,
-                    0
-                ])),
+                "eth_call" => {
+                    let calldata = request["params"][0]["data"].as_str().unwrap();
+                    let values: Vec<u128> = aggregate3_targets(calldata)
+                        .iter()
+                        .enumerate()
+                        .map(|(i, target)| match (i, target.as_str()) {
+                            (0, _) => 1_500_000_000_000_000_000,
+                            (_, USDC) => 2_500_000,
+                            _ => 0,
+                        })
+                        .collect();
+                    json!(aggregate3_result(&values))
+                }
                 _ => Value::Null,
             };
             log.lock().unwrap().push((path, method));
@@ -239,11 +261,13 @@ fn once_json_prints_one_snapshot() {
         on_live["native"],
         json!({"symbol": "ETH", "decimals": 18, "raw": "1500000000000000000", "formatted": "1.5"})
     );
-    let usdc = &on_live["tokens"][0];
-    assert_eq!(usdc["name"], "usdc");
-    assert_eq!(usdc["balance"]["formatted"], "2.5");
-    assert_eq!(usdc["balance"]["decimals"], 6);
-    assert_eq!(on_live["tokens"][1]["balance"]["formatted"], "0");
+    let token = |name: &str| {
+        let tokens = on_live["tokens"].as_array().unwrap();
+        tokens.iter().find(|t| t["name"] == name).unwrap().clone()
+    };
+    assert_eq!(token("usdc")["balance"]["formatted"], "2.5");
+    assert_eq!(token("usdc")["balance"]["decimals"], 6);
+    assert_eq!(token("weth")["balance"]["formatted"], "0");
     assert_eq!(balances["chains"][1]["error"]["class"], "connect");
     assert_eq!(balances["chains"][1]["native"], Value::Null);
 

@@ -189,3 +189,76 @@ fn record_status_serde_shape() {
         "{m}"
     );
 }
+
+#[tokio::test]
+async fn events_backlog_and_follow() {
+    let dir = socket_dir();
+    let server = server(&dir).await;
+    let client = ControlClient::new(server.path());
+    for i in 0..5 {
+        server.push_event(record(i, true));
+    }
+    // The last two buffered records, then the end of the stream.
+    let mut replay = client
+        .events_with(EventsOptions {
+            backlog: 2,
+            follow: false,
+        })
+        .await
+        .unwrap();
+    assert_eq!(replay.recv().await.unwrap().id, 3);
+    assert_eq!(replay.recv().await.unwrap().id, 4);
+    assert!(replay.recv().await.is_none());
+    assert_eq!(server.event_subscribers(), 0);
+
+    // Backlog, then live records, with nothing lost in between.
+    let mut tail = client
+        .events_with(EventsOptions {
+            backlog: 100,
+            follow: true,
+        })
+        .await
+        .unwrap();
+    server.push_event(record(5, true));
+    for i in 0..6 {
+        let got = tokio::time::timeout(Duration::from_secs(5), tail.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.id, i);
+    }
+
+    // The default is live records only.
+    assert_eq!(EventsOptions::default().path(), EVENTS_PATH);
+    let options = EventsOptions {
+        backlog: 7,
+        follow: false,
+    };
+    assert_eq!(options.path(), "/_chainz/events?backlog=7&follow=false");
+    assert_eq!(
+        EventsOptions::from_query("backlog=7&follow=false&x=1"),
+        options
+    );
+    assert_eq!(EventsOptions::from_query(""), EventsOptions::default());
+}
+
+#[tokio::test]
+async fn long_socket_paths_work() {
+    // Deeper than sockaddr_un allows (about 107 bytes).
+    let dir = socket_dir();
+    let deep = dir.path().join("d".repeat(60)).join("e".repeat(60));
+    std::fs::create_dir_all(&deep).unwrap();
+    let socket = deep.join("serve.sock");
+    assert!(socket.as_os_str().len() > 108);
+    if !cfg!(target_os = "linux") {
+        return;
+    }
+    let server = MockControlServer::start(&socket, status(), metrics(1))
+        .await
+        .unwrap();
+    assert!(socket.exists());
+    let client = ControlClient::new(&socket);
+    assert_eq!(client.status().await.unwrap(), status());
+    drop(server);
+    assert!(!socket.exists());
+}

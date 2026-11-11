@@ -513,7 +513,7 @@ async fn watch_loop(shared: Arc<Shared>, signals: Arc<Signals>) {
             if feed.is_empty() {
                 let shared = shared.clone();
                 feed.spawn(async move {
-                    let Ok(mut events) = link.events().await else {
+                    let Ok(mut events) = link.events(crate::model::FEED_CAP).await else {
                         return;
                     };
                     while let Some(item) = events.next().await {

@@ -5,8 +5,8 @@
 //!
 //! What the dashboard depends on:
 //!
-//! - `ControlClient::new(socket)`, `status()`, `metrics()`, `events()`,
-//!   `reload()`;
+//! - `ControlClient::new(socket)`, `status()`, `metrics()`,
+//!   `events_with(EventsOptions { backlog, follow })`, `reload()`;
 //! - `Status { version, port, uptime_secs, chains }` and
 //!   `ChainStatus { chain, active, head }`;
 //! - `MetricsSnapshot { windows }`, `MetricsWindow { window_secs, rows }`,
@@ -21,7 +21,8 @@ use std::io;
 use std::path::PathBuf;
 
 use chainz_rpc::control::{
-    ControlClient, MetricsRow, MetricsSnapshot, MetricsWindow, RecordStatus, RequestRecord, Status,
+    ControlClient, EventsOptions, MetricsRow, MetricsSnapshot, MetricsWindow, RecordStatus,
+    RequestRecord, Status,
 };
 use tokio::sync::mpsc;
 
@@ -60,10 +61,15 @@ impl GatewayLink {
         Ok(snapshot(status, metrics))
     }
 
-    /// Subscribe to the request stream.
-    pub async fn events(&self) -> io::Result<EventStream> {
+    /// Subscribe to the request stream: first up to `backlog` requests the
+    /// gateway already served (oldest first), then live ones.
+    pub async fn events(&self, backlog: usize) -> io::Result<EventStream> {
+        let options = EventsOptions {
+            backlog,
+            follow: true,
+        };
         Ok(EventStream {
-            records: self.client.events().await?,
+            records: self.client.events_with(options).await?,
         })
     }
 
@@ -343,7 +349,18 @@ mod tests {
 
         assert_eq!(link.snapshot().await.unwrap(), traffic());
 
-        let mut events = link.events().await.unwrap();
+        // Served before the dashboard opened: replayed as backlog.
+        server.push_event(record(5, 500, "eth_chainId", ""));
+        server.push_event(record(6, 600, "eth_gasPrice", ""));
+        let mut events = link.events(1).await.unwrap();
+        let replayed = tokio::time::timeout(Duration::from_secs(5), events.next())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((replayed.id, replayed.method.as_str()), (6, "eth_gasPrice"));
+        while server.event_subscribers() == 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
         server.push_event(record(7, 1_000, "eth_call", "@usdc.balanceOf(@wallet)"));
         server.push_event(failed_record(8, 2_000));
         let first = tokio::time::timeout(Duration::from_secs(5), events.next())

@@ -172,8 +172,8 @@ impl Plan {
     }
 
     /// Token label names across every chain: the Balances tab's columns.
-    /// The wrapped native token sits next to the native balance; the rest
-    /// follow by name.
+    /// The wrapped native token sits next to the native balance, then the
+    /// majors in a fixed order, then anything else by name.
     pub fn token_names(&self) -> Vec<String> {
         let mut names: Vec<String> = Vec::new();
         for token in self.chains.iter().flat_map(|c| &c.tokens) {
@@ -181,15 +181,18 @@ impl Plan {
                 names.push(token.name.clone());
             }
         }
-        names.sort_by_key(|name| (name != "weth", name.clone()));
+        const ORDER: [&str; 5] = ["weth", "usdc", "usdt", "dai", "wbtc"];
+        let rank = |name: &str| ORDER.iter().position(|n| *n == name).unwrap_or(ORDER.len());
+        names.sort_by_key(|name| (rank(name), name.clone()));
         names
     }
 }
 
 /// The registry's `weth` entry is each chain's wrapped native token (WETH,
-/// WBNB, WPOL), so the native symbol is its symbol without the `W`.
+/// WBNB, WPOL), so the native symbol is its symbol without the `W`. Where
+/// the native token is itself the ERC-20 (CELO), the symbol has no `W`.
 fn native_symbol(tokens: &[TokenPlan]) -> Option<String> {
     let wrapped = tokens.iter().find(|t| t.name == "weth")?;
-    let native = wrapped.symbol.strip_prefix('W')?;
+    let native = wrapped.symbol.strip_prefix('W').unwrap_or(&wrapped.symbol);
     (!native.is_empty()).then(|| native.to_string())
 }

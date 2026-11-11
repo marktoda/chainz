@@ -719,7 +719,13 @@ impl State {
                 self.traffic_error = None;
             }
             Update::Traffic(Err(message)) => self.traffic_error = Some(message),
-            Update::Feed(item) => push_capped(&mut self.feed, item, FEED_CAP),
+            // A resubscription replays the backlog: skip what is already shown.
+            Update::Feed(item) => {
+                let shown = |f: &FeedItem| f.id == item.id && f.at_ms == item.at_ms;
+                if !self.feed.iter().any(shown) {
+                    push_capped(&mut self.feed, item, FEED_CAP);
+                }
+            }
             // Handled by the event loop, which owns the config.
             Update::ConfigChanged => {}
         }
@@ -1046,6 +1052,11 @@ mod tests {
                 bytes: 0,
             }));
         }
+        assert_eq!(state.feed.len(), FEED_CAP);
+        assert_eq!(state.feed.front().unwrap().id, 50);
+        // A replayed record (the backlog after a reconnect) is not doubled.
+        let again = state.feed.back().unwrap().clone();
+        state.apply(Update::Feed(again));
         assert_eq!(state.feed.len(), FEED_CAP);
         assert_eq!(state.feed.front().unwrap().id, 50);
         // 25 requests a second, over the last 10 s.

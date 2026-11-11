@@ -1,17 +1,19 @@
-//! Command handlers. One module per noun; `stubs` holds the stream-owned
-//! commands until their streams replace them.
+//! Command handlers. One module per noun.
 //!
 //! To add or fill in a handler: write `pub fn run(...) -> Result<i32>` in
 //! the noun's module and route it from [`dispatch`]. Return the process
 //! exit code; errors print as `Error: …` and exit 1.
 
+mod addr;
 mod chain;
 mod config;
 mod doctor;
 mod exec;
+mod fork;
 mod rpc;
+mod serve;
 mod signer;
-mod stubs;
+mod tokens;
 mod top;
 mod var;
 
@@ -45,17 +47,17 @@ pub fn dispatch(opt: Opt) -> Result<i32> {
         Command::Use { chain, clear } => chain::use_default(chain, clear),
         Command::Ls(args) => chain::ls(&args),
         Command::Top { once, json, reveal } => top::run(once, json, reveal),
-        Command::Serve { cmd, args } => stubs::serve(cmd, args),
-        Command::Fork { cmd, args } => stubs::fork(cmd, args),
+        Command::Serve { cmd, args } => serve::run(cmd, args),
+        Command::Fork { cmd, args } => fork::run(cmd, args),
         Command::Chain { cmd } => chain::run(cmd),
         Command::Rpc { cmd } => rpc::run(cmd),
         Command::Signer { cmd } => signer::run(cmd),
-        Command::Addr { cmd } => stubs::addr(cmd),
-        Command::Label { chain } => stubs::label(chain),
+        Command::Addr { cmd } => addr::run(cmd),
+        Command::Label { chain } => addr::label(chain),
         Command::Var { cmd } => var::run(cmd),
         Command::Doctor { fix, tokens } => {
             if tokens {
-                stubs::doctor_tokens()
+                tokens::run()
             } else {
                 doctor::run(fix)
             }
