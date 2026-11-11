@@ -1,8 +1,8 @@
 //! The address book: names for addresses, in both directions.
 //!
-//! **Frozen interface** (Phase 0): [`LabelIndex`] resolves a name on a
-//! chain (`@usdc`, `@myrouter`, `@funder`) and reverse-looks-up a
-//! `(chain_id, address)`. It covers three sources:
+//! [`LabelIndex`] resolves a name on a chain (`@usdc`, `@myrouter`,
+//! `@funder`) and reverse-looks-up a `(chain_id, address)`. It covers
+//! three sources:
 //!
 //! 1. user labels, `[addresses.NAME]` in config (per chain, or `"*"`);
 //! 2. signers (every signer with a cached address is a label on every chain);
@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 
 /// The token registry source, compiled into the binary.
-pub const TOKENS_TOML: &str = include_str!("tokens.toml");
+pub(crate) const TOKENS_TOML: &str = include_str!("tokens.toml");
 
 /// One built-in token entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -140,18 +140,38 @@ struct Entry {
     all_chains: Option<Address>,
 }
 
+/// Reverse maps: address to labels, per chain and for every chain.
+#[derive(Debug, Default)]
+struct Reverse {
+    by_chain: HashMap<(u64, Address), Vec<Label>>,
+    any_chain: HashMap<Address, Vec<Label>>,
+}
+
 /// Forward and reverse index over user labels, signers and built-in tokens.
+/// The reverse maps are built on first use, so `exec`, which only resolves
+/// names, never pays for them.
 #[derive(Debug, Default)]
 pub struct LabelIndex {
     user: HashMap<String, Entry>,
     signers: HashMap<String, Address>,
-    reverse: HashMap<(u64, Address), Vec<Label>>,
-    reverse_any: HashMap<Address, Vec<Label>>,
+    /// User labels, then signers, in config order.
+    configured: Vec<Label>,
+    reverse: OnceLock<Reverse>,
+}
+
+fn token_label(token: &BuiltinToken) -> Label {
+    Label {
+        name: token.name.clone(),
+        address: token.address,
+        source: LabelSource::Token,
+        scope: LabelScope::Chain(token.chain_id),
+    }
 }
 
 impl LabelIndex {
     /// Build the index from config (user labels, signers) plus the built-in
-    /// registry. Invalid user entries are skipped (validation reports them).
+    /// registry. Invalid user entries, and entries naming an unknown chain,
+    /// are skipped (validation reports them).
     pub fn new(config: &Config) -> Self {
         let mut index = LabelIndex::default();
         for (name, entries) in &config.addresses {
@@ -161,73 +181,68 @@ impl LabelIndex {
                 let Ok(address) = address.parse::<Address>() else {
                     continue;
                 };
-                if scope == "*" {
+                let scope = if scope == "*" {
                     entry.all_chains = Some(address);
-                    index.add_reverse_any(Label {
-                        name: name.clone(),
-                        address,
-                        source: LabelSource::User,
-                        scope: LabelScope::AllChains,
-                    });
+                    LabelScope::AllChains
                 } else if let Some(chain) = config.chains.get(scope) {
                     entry.per_chain.insert(chain.id, address);
-                    index.add_reverse(
-                        chain.id,
-                        Label {
-                            name: name.clone(),
-                            address,
-                            source: LabelSource::User,
-                            scope: LabelScope::Chain(chain.id),
-                        },
-                    );
-                }
+                    LabelScope::Chain(chain.id)
+                } else {
+                    continue;
+                };
+                index.configured.push(Label {
+                    name: name.clone(),
+                    address,
+                    source: LabelSource::User,
+                    scope,
+                });
             }
             index.user.insert(name, entry);
         }
         for (name, signer) in &config.signers {
             if let Some(address) = signer.address {
-                index.signers.insert(name.to_ascii_lowercase(), address);
-                index.add_reverse_any(Label {
-                    name: name.to_ascii_lowercase(),
+                let name = name.to_ascii_lowercase();
+                index.signers.insert(name.clone(), address);
+                index.configured.push(Label {
+                    name,
                     address,
                     source: LabelSource::Signer,
                     scope: LabelScope::AllChains,
                 });
             }
         }
-        for token in builtin_tokens() {
-            index.add_reverse(
-                token.chain_id,
-                Label {
-                    name: token.name.clone(),
-                    address: token.address,
-                    source: LabelSource::Token,
-                    scope: LabelScope::Chain(token.chain_id),
-                },
-            );
-        }
-        for labels in index
-            .reverse
-            .values_mut()
-            .chain(index.reverse_any.values_mut())
-        {
-            labels.sort_by(|a, b| (a.source, &a.name).cmp(&(b.source, &b.name)));
-        }
         index
     }
 
-    fn add_reverse(&mut self, chain_id: u64, label: Label) {
-        self.reverse
-            .entry((chain_id, label.address))
-            .or_default()
-            .push(label);
+    /// Every label from every source: user labels and signers in config
+    /// order, then the built-in tokens. Shadowed built-in tokens are
+    /// included; compare against [`Self::resolve`] to tell.
+    pub fn labels(&self) -> impl Iterator<Item = Label> + '_ {
+        self.configured
+            .iter()
+            .cloned()
+            .chain(builtin_tokens().iter().map(token_label))
     }
 
-    fn add_reverse_any(&mut self, label: Label) {
-        self.reverse_any
-            .entry(label.address)
-            .or_default()
-            .push(label);
+    fn reverse_maps(&self) -> &Reverse {
+        self.reverse.get_or_init(|| {
+            let mut reverse = Reverse::default();
+            for label in self.labels() {
+                match label.scope {
+                    LabelScope::Chain(id) => reverse
+                        .by_chain
+                        .entry((id, label.address))
+                        .or_default()
+                        .push(label),
+                    LabelScope::AllChains => reverse
+                        .any_chain
+                        .entry(label.address)
+                        .or_default()
+                        .push(label),
+                }
+            }
+            reverse
+        })
     }
 
     /// Resolve `name` (case-insensitive) on `chain_id`.
@@ -290,12 +305,13 @@ impl LabelIndex {
 
     /// Every label for `(chain_id, address)`, preferred first.
     pub fn reverse_all(&self, chain_id: u64, address: &Address) -> Vec<&Label> {
-        let mut out: Vec<&Label> = self
-            .reverse
+        let reverse = self.reverse_maps();
+        let mut out: Vec<&Label> = reverse
+            .by_chain
             .get(&(chain_id, *address))
             .into_iter()
             .flatten()
-            .chain(self.reverse_any.get(address).into_iter().flatten())
+            .chain(reverse.any_chain.get(address).into_iter().flatten())
             .collect();
         out.sort_by(|a, b| (a.source, &a.name).cmp(&(b.source, &b.name)));
         out
@@ -407,6 +423,35 @@ eth = "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf"
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn labels_lists_every_source_and_reverse_maps_are_lazy() {
+        let index = LabelIndex::new(&config());
+        assert!(index.reverse.get().is_none(), "built only on first use");
+        let labels: Vec<Label> = index.labels().collect();
+        let configured: Vec<(&str, LabelSource)> = labels
+            .iter()
+            .filter(|l| l.source != LabelSource::Token)
+            .map(|l| (l.name.as_str(), l.source))
+            .collect();
+        assert_eq!(
+            configured,
+            [
+                ("myrouter", LabelSource::User),
+                ("my-safe", LabelSource::User),
+                ("usdc", LabelSource::User),
+                ("funder", LabelSource::Signer)
+            ]
+        );
+        assert_eq!(labels.len() - configured.len(), builtin_tokens().len());
+        index.resolve("usdc", 1).unwrap();
+        assert!(index.reverse.get().is_none());
+        let funder: Address = "0x2B5AD5c4795c026514f8317c7a215E218DcCD6cF"
+            .parse()
+            .unwrap();
+        assert!(index.reverse(1, &funder).is_some());
+        assert!(index.reverse.get().is_some());
     }
 
     #[test]

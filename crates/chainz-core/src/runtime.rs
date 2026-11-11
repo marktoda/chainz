@@ -1,7 +1,7 @@
 //! The runtime registry: discovery of live processes chainz started.
 //!
-//! **Frozen interface** (Phase 0). Lives in `$XDG_RUNTIME_DIR/chainz/`,
-//! falling back to the state dir when there is no runtime dir (macOS):
+//! Lives in `$XDG_RUNTIME_DIR/chainz/`, falling back to the state dir when
+//! there is no runtime dir (macOS):
 //!
 //! | File | Written by | Meaning |
 //! | --- | --- | --- |
@@ -122,7 +122,7 @@ impl Runtime {
     }
 
     /// `serve.lock`.
-    pub fn serve_lock_path(&self) -> PathBuf {
+    pub(crate) fn serve_lock_path(&self) -> PathBuf {
         self.dir.join("serve.lock")
     }
 
@@ -142,7 +142,7 @@ impl Runtime {
     }
 
     /// `forks/<name>.json`.
-    pub fn fork_path(&self, name: &str) -> PathBuf {
+    pub(crate) fn fork_path(&self, name: &str) -> PathBuf {
         self.forks_dir().join(format!("{name}.json"))
     }
 
@@ -201,8 +201,7 @@ impl Runtime {
 
     /// **Exec seam for the gateway.** The loopback URL `exec` should use for
     /// `chain` (pinned to `endpoint` when given), or `None` when no gateway
-    /// is running. Phase 0 has no gateway, so this returns `None` until the
-    /// Gateway stream holds `serve.lock` and writes `serve.json`.
+    /// is running (nothing holds `serve.lock`, or `serve.json` is missing).
     pub fn gateway_url(&self, chain: &str, endpoint: Option<&str>) -> Option<String> {
         if !self.serve_running() {
             return None;

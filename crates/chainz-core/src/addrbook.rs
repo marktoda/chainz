@@ -3,7 +3,7 @@
 //! behind `chainz label` ([`Labeler`]).
 
 use crate::address::Address;
-use crate::labels::{Label, LabelIndex, LabelScope, LabelSource, builtin_tokens};
+use crate::labels::{Label, LabelIndex, LabelScope, LabelSource};
 use crate::model::Config;
 use std::collections::HashMap;
 use std::io::{self, BufRead, Read, Write};
@@ -13,8 +13,8 @@ use std::io::{self, BufRead, Read, Write};
 /// Shadowed built-in tokens are included; compare against
 /// [`LabelIndex::resolve`] to tell.
 pub fn find(config: &Config, address: &Address) -> Vec<Label> {
-    let mut out: Vec<Label> = all_labels(config)
-        .into_iter()
+    let mut out: Vec<Label> = LabelIndex::new(config)
+        .labels()
         .filter(|l| l.address == *address)
         .collect();
     out.sort_by(|a, b| sort_key(a).cmp(&sort_key(b)));
@@ -29,48 +29,10 @@ fn sort_key(label: &Label) -> (LabelSource, &str, Option<u64>) {
     (label.source, &label.name, chain)
 }
 
-/// Every label from every source, in no particular order. User entries
-/// that are invalid or name an unknown chain are skipped, as in
-/// [`LabelIndex::new`].
+/// Every label from every source: [`LabelIndex::labels`] for `config`.
+/// User entries that are invalid or name an unknown chain are skipped.
 pub fn all_labels(config: &Config) -> Vec<Label> {
-    let mut out = Vec::new();
-    for (name, entries) in &config.addresses {
-        for (scope, address) in entries {
-            let Ok(address) = address.parse::<Address>() else {
-                continue;
-            };
-            let scope = if scope == "*" {
-                LabelScope::AllChains
-            } else if let Some(chain) = config.chains.get(scope) {
-                LabelScope::Chain(chain.id)
-            } else {
-                continue;
-            };
-            out.push(Label {
-                name: name.to_ascii_lowercase(),
-                address,
-                source: LabelSource::User,
-                scope,
-            });
-        }
-    }
-    for (name, signer) in &config.signers {
-        if let Some(address) = signer.address {
-            out.push(Label {
-                name: name.to_ascii_lowercase(),
-                address,
-                source: LabelSource::Signer,
-                scope: LabelScope::AllChains,
-            });
-        }
-    }
-    out.extend(builtin_tokens().iter().map(|t| Label {
-        name: t.name.clone(),
-        address: t.address,
-        source: LabelSource::Token,
-        scope: LabelScope::Chain(t.chain_id),
-    }));
-    out
+    LabelIndex::new(config).labels().collect()
 }
 
 /// The preferred name for `address` on `chain_id`: the first reverse label
@@ -132,7 +94,7 @@ impl Labeler {
     /// all agree on one name across every chain.
     pub fn any_chain(config: &Config) -> Self {
         let index = LabelIndex::new(config);
-        let mut labels = all_labels(config);
+        let mut labels: Vec<Label> = index.labels().collect();
         labels.sort_by(|a, b| sort_key(a).cmp(&sort_key(b)));
         let mut everywhere: HashMap<Address, String> = HashMap::new();
         let mut per_chain: HashMap<Address, Option<&str>> = HashMap::new();
@@ -369,7 +331,7 @@ base = "{USDC_BASE}"
 
     #[test]
     fn registry_is_well_formed() {
-        use crate::labels::builtin_token;
+        use crate::labels::{builtin_token, builtin_tokens};
         const NAMES: [&str; 6] = ["weth", "usdc", "usdce", "usdt", "dai", "wbtc"];
         let tokens = builtin_tokens();
         let mut seen = std::collections::HashSet::new();
