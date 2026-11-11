@@ -301,6 +301,7 @@ pub(crate) fn fast() -> Tuning {
         watch_every: Duration::from_millis(100),
         stagger: Duration::ZERO,
         retry_wait: Duration::from_millis(50),
+        idle_after: Duration::from_secs(300),
     }
 }
 

@@ -261,12 +261,14 @@ pub(crate) fn run(chainz: Chainz, runtime: Runtime, options: Options) -> Result<
 
     let mut drawn = Instant::now();
     let mut dirty = false;
+    let mut last_key = Instant::now();
     'ui: loop {
         if event::poll(POLL)? {
             // Take everything that is already waiting, then draw once.
             loop {
                 match event::read()? {
                     Event::Key(key) => {
+                        last_key = Instant::now();
                         let action = dash.app.on_key(key, &dash.state, now_ms());
                         if !dash.act(&mut screen, action)? {
                             break 'ui;
@@ -281,6 +283,8 @@ pub(crate) fn run(chainz: Chainz, runtime: Runtime, options: Options) -> Result<
                 }
             }
         }
+        let idle_after = dash.shared.tuning().idle_after;
+        dash.shared.set_idle(last_key.elapsed() >= idle_after);
         let mut reload = false;
         while let Ok(update) = dash.updates.try_recv() {
             match update {

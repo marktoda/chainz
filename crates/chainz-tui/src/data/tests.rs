@@ -21,12 +21,12 @@ fn tuning() -> Tuning {
 }
 
 #[test]
-fn pace_is_the_block_time_within_one_to_twelve_seconds() {
+fn pace_is_the_block_time_within_three_to_twelve_seconds() {
     let t = tuning();
     let secs = |s: f64| pace(Some(s), &t).as_secs_f64();
-    assert_eq!(secs(0.25), 1.0); // arbitrum: floor
-    assert_eq!(secs(1.0), 1.0);
-    assert_eq!(secs(2.0), 2.0); // base
+    assert_eq!(secs(0.25), 3.0); // arbitrum: floor
+    assert_eq!(secs(2.0), 3.0); // base: floor
+    assert_eq!(secs(5.0), 5.0);
     assert_eq!(secs(12.04), 12.0); // ethereum: ceiling
     assert_eq!(secs(600.0), 12.0);
     // Until the block time is known, and for nonsense, poll slowly.
@@ -34,6 +34,105 @@ fn pace_is_the_block_time_within_one_to_twelve_seconds() {
     assert_eq!(pace(Some(f64::NAN), &t), Duration::from_secs(12));
     assert_eq!(pace(Some(0.0), &t), Duration::from_secs(12));
     assert_eq!(pace(Some(-3.0), &t), Duration::from_secs(12));
+}
+
+#[test]
+fn hostile_timestamps_cannot_crash_or_skew_the_pacing() {
+    let t = tuning();
+    // Values `Duration::from_secs_f64` would panic on.
+    for secs in [1e300, f64::MAX, u64::MAX as f64 * 4.0, f64::INFINITY] {
+        assert_eq!(pace(Some(secs), &t), Duration::from_secs(12), "{secs}");
+    }
+    assert_eq!(pace(Some(f64::MIN_POSITIVE), &t), Duration::from_secs(3));
+    assert_eq!(pace(Some(f64::NEG_INFINITY), &t), Duration::from_secs(12));
+
+    // A huge timestamp delta: one block, "u64::MAX seconds" later.
+    let mut clock = BlockClock::default();
+    clock.observe(1_000, 0);
+    clock.observe(1_001, u64::MAX);
+    assert_eq!(clock.block_time(), None);
+    assert_eq!(pace(clock.block_time(), &t), Duration::from_secs(12));
+    // Just over an hour per block is not believed; an hour is.
+    let mut clock = BlockClock::default();
+    clock.observe(10, NOW);
+    clock.observe(11, NOW + 3_601);
+    assert_eq!(clock.block_time(), None);
+    let mut clock = BlockClock::default();
+    clock.observe(10, NOW);
+    clock.observe(11, NOW + 3_600);
+    assert_eq!(clock.block_time(), Some(3_600.0));
+    // Time that stands still or runs backwards is not a block time.
+    let mut clock = BlockClock::default();
+    clock.observe(10, NOW);
+    clock.observe(20, NOW);
+    assert_eq!(clock.block_time(), None);
+    clock.observe(30, NOW - 500);
+    assert_eq!(clock.block_time(), None);
+    // A hostile anchor (block 0 at time u64::MAX, or far in the past).
+    let mut clock = BlockClock::default();
+    clock.observe(u64::MAX, NOW);
+    clock.anchor(0, u64::MAX);
+    assert_eq!(clock.block_time(), None);
+    let mut clock = BlockClock::default();
+    clock.observe(2, u64::MAX);
+    clock.anchor(1, 0);
+    assert_eq!(clock.block_time(), None);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_hostile_endpoint_does_not_stop_the_poller() {
+    let dir = tempfile::tempdir().unwrap();
+    // Every block claims a timestamp near u64::MAX, except the look-back
+    // block, which claims zero.
+    let rpc = MockRpc::calls(|_, params| {
+        let latest = params[0] == "latest";
+        Ok(json!({
+            "number": if latest { "0x3e8" } else { "0x320" },
+            "timestamp": if latest { "0xfffffffffffffff0" } else { "0x0" },
+            "baseFeePerGas": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        }))
+    })
+    .await;
+    let plan = chains_only(vec![chain("evil", 1, &[("a", &rpc.url)])]);
+    let (shared, updates) = shared(dir.path(), fast());
+    let _engine = Engine::start(&Handle::current(), &shared, &plan);
+    tokio::time::sleep(Duration::from_millis(1_500)).await;
+    // Still polling (at the ceiling: 600 ms in the test tuning), no panic.
+    assert!(latest_polls(&rpc) >= 3, "{} polls", latest_polls(&rpc));
+    let mut state = State::new(&plan, &shared.store());
+    while let Ok(update) = updates.try_recv() {
+        state.apply(update);
+    }
+    let chain = &state.chains[0];
+    assert_eq!(chain.block_time, None);
+    assert_eq!(chain.head.as_ref().unwrap().base_fee, Some(u128::MAX));
+    // Rendering and the snapshot survive it too.
+    let _ = chain.status(state.slow_threshold());
+    let _ = chain.block_age(crate::model::now_ms());
+    serde_json::to_string(&crate::snapshot::Snapshot::new(
+        &state,
+        crate::model::now_ms(),
+    ))
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_idle_dashboard_polls_at_the_ceiling() {
+    let dir = tempfile::tempdir().unwrap();
+    let rpc = MockRpc::chain(5_000, NOW, 0.01).await; // would poll every 100 ms
+    let plan = chains_only(vec![chain("quick", 1, &[("a", &rpc.url)])]);
+    let (shared, _updates) = shared(dir.path(), fast());
+    shared.set_idle(true);
+    let _engine = Engine::start(&Handle::current(), &shared, &plan);
+    tokio::time::sleep(Duration::from_millis(1_500)).await;
+    // Every 600 ms while idle: 0, 0.6, 1.2.
+    let idle = latest_polls(&rpc);
+    assert!((2..=4).contains(&idle), "{idle} polls while idle");
+    // A key press: back to the chain's own pace from the next tick.
+    shared.set_idle(false);
+    tokio::time::sleep(Duration::from_millis(1_500)).await;
+    let active = latest_polls(&rpc) - idle;
+    assert!(active >= 8, "{active} polls once active");
 }
 
 #[test]
@@ -82,14 +181,14 @@ async fn pollers_pace_each_chain_by_its_block_time() {
     tokio::time::sleep(Duration::from_millis(2_100)).await;
     drop(engine);
 
-    // Every chain: one poll, a short 200 ms wait while the block time is
-    // measured, then its own pace. So about 20, 9 and 5 polls in 2.1 s.
+    // Every chain: one poll, a wait at the floor (100 ms) while the block
+    // time is measured, then its own pace. About 21, 9 and 5 polls in 2.1 s.
     let (q, m, s) = (
         latest_polls(&quick),
         latest_polls(&medium),
         latest_polls(&slow),
     );
-    assert!((14..=21).contains(&q), "quick polled {q} times");
+    assert!((15..=22).contains(&q), "quick polled {q} times");
     assert!((7..=10).contains(&m), "medium polled {m} times");
     assert!((4..=5).contains(&s), "slow polled {s} times");
 

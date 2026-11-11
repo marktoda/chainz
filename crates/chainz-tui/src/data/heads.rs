@@ -13,16 +13,30 @@ use crate::model::{Fault, Head, Update, now_ms};
 use crate::plan::ChainPlan;
 
 /// How long to wait before the next head poll: the chain's block time,
-/// kept within `[min_pace, max_pace]`. An unknown block time polls at the
-/// slow end.
+/// kept within `[min_pace, max_pace]` (3–12 s by default). An unknown block
+/// time polls at the slow end.
+///
+/// The floor is 3 s rather than the block time of the fastest chains
+/// because every poll is a billed request on a metered API key, and several
+/// chains usually share one key.
+///
+/// `block_time` derives from timestamps an RPC endpoint reported, so it is
+/// untrusted: it is clamped as a float, before it becomes a `Duration`
+/// (`Duration::from_secs_f64` panics on a value that does not fit).
 pub fn pace(block_time: Option<f64>, tuning: &Tuning) -> Duration {
+    let (min, max) = (tuning.min_pace, tuning.max_pace.max(tuning.min_pace));
     match block_time {
         Some(secs) if secs.is_finite() && secs > 0.0 => {
-            Duration::from_secs_f64(secs).clamp(tuning.min_pace, tuning.max_pace)
+            let clamped = secs.clamp(min.as_secs_f64(), max.as_secs_f64());
+            Duration::try_from_secs_f64(clamped).unwrap_or(max)
         }
-        _ => tuning.max_pace,
+        _ => max,
     }
 }
+
+/// A block time above this is not a block time: the timestamps are wrong
+/// (or the endpoint is lying), and nothing should be derived from them.
+pub const MAX_BLOCK_TIME: f64 = 3_600.0;
 
 /// Average block time from the `(number, timestamp)` pairs seen so far.
 #[derive(Debug, Default)]
@@ -54,11 +68,17 @@ impl BlockClock {
     }
 
     /// Seconds per block, once two different blocks have been seen.
+    ///
+    /// `None` when the pair is implausible: timestamps that do not advance
+    /// with the block number, or an implied block time over
+    /// [`MAX_BLOCK_TIME`]. The inputs come from an untrusted endpoint.
     pub fn block_time(&self) -> Option<f64> {
         let (first, first_at) = *self.seen.front()?;
         let (last, last_at) = *self.seen.back()?;
-        (last > first && last_at >= first_at)
-            .then(|| (last_at - first_at) as f64 / (last - first) as f64)
+        let blocks = last.checked_sub(first).filter(|n| *n > 0)?;
+        let elapsed = last_at.checked_sub(first_at).filter(|s| *s > 0)?;
+        let secs = elapsed as f64 / blocks as f64;
+        (secs.is_finite() && secs <= MAX_BLOCK_TIME).then_some(secs)
     }
 }
 
@@ -105,13 +125,13 @@ impl Poller {
             self.shared.send(update);
             let tuning = &self.shared.tuning;
             let delay = match self.failures {
-                // The block time is about to be measured: come back soon
-                // rather than at the slow pace an unknown one gets.
-                0 if self.clock.block_time().is_none() && self.anchor_tries > 0 => {
-                    tuning.min_pace * 2
-                }
+                // Nobody is watching: poll at the ceiling until a key.
+                0 if self.shared.idle() => tuning.max_pace,
+                // The block time is about to be measured: come back at
+                // the floor rather than the slow pace an unknown one gets.
+                0 if self.clock.block_time().is_none() && self.anchor_tries > 0 => tuning.min_pace,
                 0 => pace(self.clock.block_time(), tuning),
-                // Back off a failing endpoint: 4 s, 8 s, then every 16 s.
+                // Back off a failing endpoint: 1×, 2×, then 4× the error pace.
                 n => tuning.error_pace * (1 << (n - 1).min(2)),
             };
             tokio::select! {

@@ -36,7 +36,8 @@ pub use heads::{BlockClock, pace};
 /// Every interval and deadline the workers use; tests shrink them.
 #[derive(Debug, Clone)]
 pub struct Tuning {
-    /// Fastest head poll, for chains with sub-second blocks.
+    /// Fastest head poll, for chains with fast blocks. Each poll is a
+    /// billed request on a metered key, hence 3 s and not 1 s.
     pub min_pace: Duration,
     /// Slowest head poll, also used while the block time is unknown.
     pub max_pace: Duration,
@@ -59,12 +60,15 @@ pub struct Tuning {
     pub stagger: Duration,
     /// `--once` only: wait before retrying a rate-limited request.
     pub retry_wait: Duration,
+    /// With no key pressed for this long, heads are polled at `max_pace`
+    /// until the next key: a dashboard left open should cost little.
+    pub idle_after: Duration,
 }
 
 impl Default for Tuning {
     fn default() -> Self {
         Tuning {
-            min_pace: Duration::from_secs(1),
+            min_pace: Duration::from_secs(3),
             max_pace: Duration::from_secs(12),
             error_pace: Duration::from_secs(4),
             request_timeout: Duration::from_secs(5),
@@ -75,6 +79,7 @@ impl Default for Tuning {
             watch_every: Duration::from_secs(2),
             stagger: Duration::from_millis(250),
             retry_wait: Duration::from_secs(1),
+            idle_after: Duration::from_secs(300),
         }
     }
 }
@@ -91,6 +96,8 @@ pub struct Shared {
     gateway: RwLock<Option<ServeInfo>>,
     /// Chain ID → whether Multicall3 has code there (once known).
     multicall: Mutex<HashMap<u64, bool>>,
+    /// No key for `idle_after`: head pollers slow to the ceiling.
+    idle: std::sync::atomic::AtomicBool,
 }
 
 impl std::fmt::Debug for Shared {
@@ -117,9 +124,25 @@ impl Shared {
             tuning,
             updates,
             multicall: Mutex::new(HashMap::new()),
+            idle: std::sync::atomic::AtomicBool::new(false),
         };
         shared.detect_gateway();
         Arc::new(shared)
+    }
+
+    /// The worker intervals.
+    pub fn tuning(&self) -> &Tuning {
+        &self.tuning
+    }
+
+    /// Tell the head pollers whether anyone is watching. Takes effect at
+    /// each poller's next tick; going active again causes no burst.
+    pub fn set_idle(&self, idle: bool) {
+        self.idle.store(idle, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn idle(&self) -> bool {
+        self.idle.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// The health history, as of the latest probe.

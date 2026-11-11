@@ -306,7 +306,7 @@ One `rpc` module gives every feature the same client, the same idea of endpoint 
 
 | Tab | Shows | Source and refresh |
 | --- | --- | --- |
-| Chains | head, block age, average block time, base fee, active RPC, p50 latency, sparkline, status | one batched request per chain (`eth_blockNumber`, `eth_getBlockByNumber(latest)`), paced by the chain's block time, 1–12 s |
+| Chains | head, block age, average block time, base fee, active RPC, p50 latency, sparkline, status | one request per chain (`eth_getBlockByNumber(latest)`), paced by the chain's block time, 3–12 s |
 | Endpoints | every endpoint of the selected chain: latency, lag, error class, capability tags; `s` makes it the active one | probes from the RPC layer, every 15 s |
 | Balances | each signer's native balance and major-token balances per chain | one Multicall3 `eth_call` per chain and signer, every 30 s and on `r` |
 | Traffic | when `serve` runs: requests per second, a live request feed with labels, top methods, errors and 429s per endpoint | the gateway's `/_chainz/events` and `/_chainz/metrics` |
@@ -314,6 +314,8 @@ One `rpc` module gives every feature the same client, the same idea of endpoint 
 **Keys:** `1`–`4` switch tabs, `j`/`k` move, `/` filters chains, `enter` drills into a chain, `s` sets the active RPC (a normal transactional config write), `e` drops into `chainz shell` for the selected chain and returns on exit, `y` copies the selected address or URL (redacted unless `--reveal`), `q` quits.
 
 The dashboard never unlocks a signer: balances use cached addresses only. It sends at most one request per chain per tick, plus bounded probes, so leaving it open all day stays well inside public RPC limits. Without a TTY, `chainz top --once --json` prints a single snapshot for scripts.
+
+**Pacing.** Every head poll is a billed request on a metered API key, and several chains usually share one key. So the poll interval has a 3 s floor even on chains with faster blocks, and a 12 s ceiling. After 5 minutes without a keypress every chain drops to the ceiling until the next key. Chains on one provider start 250 ms apart, and a failing endpoint is backed off.
 
 ## Address book and tokens
 
