@@ -32,6 +32,11 @@ rpassword = "7"
 zeroize = "1"
 tempfile.workspace = true
 toml_edit.workspace = true
+bytes.workspace = true
+rand = "0.9"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 assert_cmd = "2"

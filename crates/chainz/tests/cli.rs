@@ -223,13 +223,7 @@ fn completions_generate_for_zsh_and_bash() {
 fn stream_commands_are_stubs() {
     let sb = Sandbox::new();
     sb.seed(&[("eth", 1)]);
-    for args in [
-        vec!["serve"],
-        vec!["serve", "status"],
-        vec!["top"],
-        vec!["fork", "eth"],
-        vec!["fork", "ls"],
-    ] {
+    for args in [vec!["serve"], vec!["serve", "status"], vec!["top"]] {
         sb.cmd()
             .args(&args)
             .assert()

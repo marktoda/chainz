@@ -10,6 +10,7 @@ mod chain;
 mod config;
 mod doctor;
 mod exec;
+mod fork;
 mod rpc;
 mod signer;
 mod stubs;
@@ -47,7 +48,7 @@ pub fn dispatch(opt: Opt) -> Result<i32> {
         Command::Ls(args) => chain::ls(&args),
         Command::Top { once, json, reveal } => stubs::top(once, json, reveal),
         Command::Serve { cmd, args } => stubs::serve(cmd, args),
-        Command::Fork { cmd, args } => stubs::fork(cmd, args),
+        Command::Fork { cmd, args } => fork::run(cmd, args),
         Command::Chain { cmd } => chain::run(cmd),
         Command::Rpc { cmd } => rpc::run(cmd),
         Command::Signer { cmd } => signer::run(cmd),
