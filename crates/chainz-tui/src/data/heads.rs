@@ -71,7 +71,7 @@ impl BlockClock {
     ///
     /// `None` when the pair is implausible: timestamps that do not advance
     /// with the block number, or an implied block time over
-    /// [`MAX_BLOCK_TIME`]. The inputs come from an untrusted endpoint.
+    /// `MAX_BLOCK_TIME`. The inputs come from an untrusted endpoint.
     pub fn block_time(&self) -> Option<f64> {
         let (first, first_at) = *self.seen.front()?;
         let (last, last_at) = *self.seen.back()?;

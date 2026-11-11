@@ -1,7 +1,7 @@
 //! Process plumbing for forks: signals, liveness, the anvil child, and
 //! reaping what a dead supervisor left behind.
 //!
-//! The frozen [`ForkRecord`] holds the supervisor's PID only, so each fork
+//! The frozen [`ForkRecord`](chainz_core::runtime::ForkRecord) holds the supervisor's PID only, so each fork
 //! also has a sidecar, `forks/<name>.pids`, naming its anvil. The sidecar is
 //! created (exclusively) before anvil starts: it is both the claim on the
 //! name and what lets a later `chainz fork` find an orphaned anvil.

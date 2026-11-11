@@ -1,5 +1,5 @@
 //! The whole CLI surface (clap definitions only). Handlers live in
-//! `commands/`; stream-owned commands dispatch to `commands::stubs`.
+//! `commands/`, one module per command.
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 

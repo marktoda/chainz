@@ -216,7 +216,7 @@ and the gateway all use it.
 
 1. The clap surface in `crates/chainz/src/cli.rs` is complete, including the
    stream commands. Keep its flags and add new ones only for your own command.
-2. Replace your stub in `commands/stubs.rs` with a module, for example
+2. (Done: every stub is replaced and `commands/stubs.rs` is gone.) Replace your stub in `commands/stubs.rs` with a module, for example
    `commands/serve.rs` with `pub fn run(...) -> anyhow::Result<i32>`. Then
    change the route in `commands::dispatch`. The return value is the exit
    code. An `Err` prints `Error: …` and exits 1. `ui::cancelled()` exits 130.
