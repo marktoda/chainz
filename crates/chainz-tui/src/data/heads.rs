@@ -92,8 +92,39 @@ pub(super) fn next_delay(p: Pacing, tuning: &Tuning) -> Duration {
 /// (or the endpoint is lying), and nothing should be derived from them.
 pub const MAX_BLOCK_TIME: f64 = 3_600.0;
 
+/// More blocks per second than any chain makes, with headroom: a jump
+/// faster than this between two heads is not believed.
+pub const MAX_BLOCK_RATE: u64 = 1_000;
+
+/// How far a head may fall back (a reorg, a lagging peer behind the
+/// gateway) before the clock takes it for a new chain of events.
+pub const MAX_STEP_BACK: u64 = 64;
+
+/// Whether `later` can follow `earlier` on a real chain: higher, with a
+/// timestamp that does not run backwards, at no more than
+/// [`MAX_BLOCK_RATE`] blocks a second and no more than [`MAX_BLOCK_TIME`]
+/// seconds a block.
+fn plausible(earlier: (u64, u64), later: (u64, u64)) -> bool {
+    let (Some(blocks), Some(secs)) = (
+        later.0.checked_sub(earlier.0),
+        later.1.checked_sub(earlier.1),
+    ) else {
+        return false;
+    };
+    blocks > 0
+        && blocks <= secs.saturating_add(1).saturating_mul(MAX_BLOCK_RATE)
+        && secs as f64 / blocks as f64 <= MAX_BLOCK_TIME
+}
+
 /// Average block time from the `(number, timestamp)` pairs seen so far.
-#[derive(Debug, Default)]
+///
+/// The pairs come from an untrusted endpoint. One that does not fit with
+/// the newest (a head at `u64::MAX`, a timestamp centuries ahead) starts
+/// the clock over from itself, rather than being kept or, worse, becoming
+/// a high-water mark that every honest head after it is measured against.
+/// The next honest head does not fit with a bogus one either, so the clock
+/// recovers after a single bad poll.
+#[derive(Debug, Clone, Default)]
 pub struct BlockClock {
     seen: VecDeque<(u64, u64)>,
 }
@@ -102,22 +133,32 @@ impl BlockClock {
     /// Observations kept; the estimate spans from the oldest to the newest.
     const CAPACITY: usize = 64;
 
-    /// Record a block; out-of-order and repeated heads are ignored.
+    /// Record a block. A repeated head and a small step back (a reorg)
+    /// are ignored; anything else implausible resets the clock.
     pub fn observe(&mut self, number: u64, timestamp: u64) {
+        let block = (number, timestamp);
         match self.seen.back() {
-            Some((newest, _)) if number <= *newest => {}
-            _ => self.seen.push_back((number, timestamp)),
+            None => self.seen.push_back(block),
+            Some(&newest) if plausible(newest, block) => self.seen.push_back(block),
+            Some(&(newest, _)) if number <= newest && newest - number <= MAX_STEP_BACK => {}
+            Some(_) => {
+                self.seen.clear();
+                self.seen.push_back(block);
+            }
         }
         while self.seen.len() > Self::CAPACITY {
             self.seen.pop_front();
         }
     }
 
-    /// Record an older block to measure from.
+    /// Record an older block to measure from; one that does not fit with
+    /// the oldest seen is ignored.
     pub fn anchor(&mut self, number: u64, timestamp: u64) {
         match self.seen.front() {
-            Some((oldest, _)) if number >= *oldest => {}
-            _ => self.seen.push_front((number, timestamp)),
+            Some(&oldest) if plausible((number, timestamp), oldest) => {
+                self.seen.push_front((number, timestamp));
+            }
+            _ => {}
         }
     }
 

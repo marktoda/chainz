@@ -9,7 +9,7 @@ use chainz_rpc::{ErrorClass, RpcError};
 use serde_json::{Value, json};
 use tokio::runtime::Handle;
 
-use super::heads::{BlockClock, MAX_RETRY_AFTER, Pacing, Poller, next_delay, pace};
+use super::heads::{BlockClock, MAX_BLOCK_RATE, MAX_RETRY_AFTER, Pacing, Poller, next_delay, pace};
 use super::testing::*;
 use super::*;
 use crate::gateway::testing as gw;
@@ -230,6 +230,48 @@ fn faults_keep_the_code_and_the_retry_after() {
     assert!(rate_limited(&fault));
     assert!(!rate_limited(&rpc(-32000, "upstream said -32005 earlier")));
     assert!(!rate_limited(&rpc(-320_050, "some other error")));
+}
+
+#[test]
+fn one_bogus_head_does_not_freeze_the_block_clock() {
+    // A head at u64::MAX: honest heads after it used to be "older" and
+    // were ignored until restart.
+    let mut clock = BlockClock::default();
+    clock.observe(1_000, NOW);
+    clock.anchor(800, NOW - 400);
+    assert_eq!(clock.block_time(), Some(2.0));
+    clock.observe(u64::MAX, NOW + 2);
+    clock.observe(1_005, NOW + 10);
+    clock.observe(1_010, NOW + 20);
+    assert_eq!(clock.block_time(), Some(2.0), "measuring again");
+    clock.observe(1_020, NOW + 40);
+    assert_eq!(clock.block_time(), Some(2.0));
+
+    // A timestamp centuries ahead: the same.
+    let mut clock = BlockClock::default();
+    clock.observe(1_000, NOW);
+    clock.observe(1_001, u64::MAX - 5);
+    assert_eq!(clock.block_time(), None);
+    clock.observe(1_002, NOW + 12);
+    clock.observe(1_003, NOW + 24);
+    assert_eq!(clock.block_time(), Some(12.0));
+
+    // A head far behind the newest (a different node, after a bogus one)
+    // starts over; a short step back (a reorg) is ignored.
+    let mut clock = BlockClock::default();
+    clock.observe(5_000, NOW);
+    clock.observe(4_990, NOW - 20);
+    clock.observe(5_001, NOW + 2);
+    assert_eq!(clock.block_time(), Some(2.0));
+    clock.observe(100, NOW + 4);
+    clock.observe(101, NOW + 7);
+    assert_eq!(clock.block_time(), Some(3.0));
+
+    // Implausibly many blocks for the time between them.
+    let mut clock = BlockClock::default();
+    clock.observe(10, NOW);
+    clock.observe(10 + 5 * MAX_BLOCK_RATE, NOW + 1);
+    assert_eq!(clock.block_time(), None, "starts over at the jump");
 }
 
 #[test]
@@ -1028,4 +1070,35 @@ async fn once_keeps_every_chain_when_one_task_dies() {
             ("eth".to_string(), "balances"),
         ]
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_idle_dashboard_does_not_probe() {
+    let dir = short_tempdir();
+    let rpc = MockRpc::chain(1_000, NOW, 2.0).await;
+    let spare = MockRpc::chain(1_000, NOW, 2.0).await;
+    let plan = chains_only(vec![chain(
+        "eth",
+        1,
+        &[("a", &rpc.url), ("spare", &spare.url)],
+    )]);
+    let (shared, updates) = shared(dir.path(), fast());
+    shared.set_idle(true);
+    let engine = Engine::start(&Handle::current(), &shared, &plan);
+    engine.focus(Some("eth".into()));
+    // Three probe intervals (400 ms each), and not one probe.
+    tokio::time::sleep(Duration::from_millis(1_200)).await;
+    assert!(spare.hits().is_empty(), "{:?}", spare.methods());
+    assert!(
+        !updates
+            .try_iter()
+            .any(|u| matches!(u, Update::Probes { .. }))
+    );
+    // A key: probing resumes.
+    shared.set_idle(false);
+    wait_for(&updates, |u| {
+        matches!(u, Update::Probes { .. }).then_some(())
+    })
+    .await;
+    assert!(!spare.hits().is_empty());
 }

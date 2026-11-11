@@ -5,7 +5,8 @@
 //!
 //! Traffic budget, per the design: one head request per chain per tick
 //! (paced by block time), one balance request per chain every 30 s, and
-//! probes only for the chain whose endpoints are on screen.
+//! probes only for the chain whose endpoints are on screen, and only while
+//! someone is pressing keys.
 
 pub mod abi;
 mod balances;
@@ -434,6 +435,7 @@ async fn traffic_snapshot(shared: &Shared) -> Result<crate::model::TrafficSnapsh
 
 /// Probe the focused chain's endpoints every `probe_every`, and at once
 /// when the focus moves to a chain whose last probe is older than that.
+/// While the dashboard is idle, rounds are skipped.
 async fn probe_loop(
     shared: Arc<Shared>,
     plan: Arc<Plan>,
@@ -454,7 +456,11 @@ async fn probe_loop(
         });
         tokio::select! {
             () = tokio::time::sleep(wait) => {
-                probe_chain(&shared, chain).await;
+                // Nobody is watching: skip the round, and look again an
+                // interval later. A key press makes the next one count.
+                if !shared.idle() {
+                    probe_chain(&shared, chain).await;
+                }
                 last.insert(chain.name.clone(), Instant::now());
             }
             changed = focus.changed() => {
