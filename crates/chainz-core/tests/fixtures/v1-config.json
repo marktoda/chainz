@@ -1,0 +1,435 @@
+{
+  "chains": [
+    {
+      "name": "Ethereum Mainnet",
+      "chain_id": 1,
+      "rpc_urls": [
+        "https://ethereum-mainnet.infura.invalid/v3/fa4c123b1612dd272d1371c17149d439",
+        "https://ethereum.swiftnodes.invalid/rpc?apikey=${SWIFT_API_KEY}",
+        "https://fake-ethereum-node.quiknode.invalid/ESQedUStPKR0CsTy4Qwb8DwkNhFdnXsiVpzz63F/",
+        {
+          "url": "https://gw.uniswap.invalid/rpc/1",
+          "headers": {
+            "x-internal-service-secret": "${UNI_GW_SECRET}"
+          }
+        },
+        "wss://ethereum.publicnode.invalid",
+        "wss://ethereum.drpc.invalid",
+        "wss://ethereum.tenderly.invalid",
+        "wss://ethereum.blockreq.invalid",
+        "https://ethereum-rpc.publicnode.invalid",
+        "https://ethereum-rpc.drpc.invalid",
+        "https://ethereum-rpc.tenderly.invalid",
+        "https://ethereum-rpc.blockreq.invalid/fkCzJr4i0B3J",
+        "https://ethereum-rpc.defibit.invalid",
+        "https://ethereum-rpc.ninicoin.invalid",
+        "https://ethereum-rpc.mevblocker.invalid",
+        "https://ethereum-rpc.rpcfree.invalid",
+        "https://ethereum-rpc.satelink.invalid",
+        "https://ethereum-rpc.xrpc.invalid",
+        "https://ethereum-rpc.beamrpc.invalid",
+        "https://ethereum-rpc.flashbots.invalid",
+        "https://ethereum-rpc.blockvectra.invalid",
+        "https://ethereum-rpc.securerpc.invalid",
+        "https://ethereum-rpc.nariox.invalid"
+      ],
+      "selected_rpc": "https://ethereum-mainnet.infura.invalid/v3/fa4c123b1612dd272d1371c17149d439",
+      "verification_api_key": "FAKEETHERSCANKEYKY40UVSWMFLZDE1F8R",
+      "verification_url": "https://api.etherscan.invalid/v2/api?chainid=1",
+      "key_name": "default"
+    },
+    {
+      "name": "Base",
+      "chain_id": 8453,
+      "rpc_urls": [
+        "https://base-mainnet.infura.invalid/v3/fa4c123b1612dd272d1371c17149d439",
+        "https://base.swiftnodes.invalid/rpc?apikey=${SWIFT_API_KEY}",
+        "https://fake-base-node.quiknode.invalid/rTAwR4y9ojfljoQoaF1LlqsajAIxNKu8iS2G8NPRVdD53X83RZJzz/",
+        {
+          "url": "https://gw.uniswap.invalid/rpc/8453",
+          "headers": {
+            "x-internal-service-secret": "${UNI_GW_SECRET}"
+          }
+        },
+        "wss://base.publicnode.invalid",
+        "wss://base.drpc.invalid",
+        "https://base-rpc.publicnode.invalid",
+        "https://base-rpc.drpc.invalid",
+        "https://base-rpc.tenderly.invalid",
+        "https://base-rpc.blockreq.invalid/zzgEOzdmenCk",
+        "https://base-rpc.defibit.invalid",
+        "https://base-rpc.ninicoin.invalid",
+        "https://base-rpc.mevblocker.invalid",
+        "https://base-rpc.rpcfree.invalid",
+        "https://base-rpc.satelink.invalid",
+        "https://base-rpc.xrpc.invalid"
+      ],
+      "selected_rpc": "https://base-mainnet.infura.invalid/v3/fa4c123b1612dd272d1371c17149d439",
+      "verification_api_key": "FAKEETHERSCANKEYKY40UVSWMFLZDE1F8R",
+      "verification_url": "https://api.etherscan.invalid/v2/api?chainid=8453",
+      "key_name": "default"
+    },
+    {
+      "name": "Unichain",
+      "chain_id": 130,
+      "rpc_urls": [
+        "https://unichain-mainnet.infura.invalid/v3/fa4c123b1612dd272d1371c17149d439",
+        {
+          "url": "https://gw.uniswap.invalid/rpc/130",
+          "headers": {
+            "x-internal-service-secret": "${UNI_GW_SECRET}"
+          }
+        },
+        "wss://unichain.publicnode.invalid",
+        "https://unichain-rpc.publicnode.invalid",
+        "https://unichain-rpc.drpc.invalid",
+        "https://unichain-rpc.tenderly.invalid",
+        "https://unichain-rpc.blockreq.invalid/hvMdgaKjIg8x"
+      ],
+      "selected_rpc": "https://unichain-mainnet.infura.invalid/v3/fa4c123b1612dd272d1371c17149d439",
+      "verification_api_key": null,
+      "verification_url": null,
+      "key_name": "default"
+    },
+    {
+      "name": "BNB Smart Chain",
+      "chain_id": 56,
+      "rpc_urls": [
+        "https://bnb-mainnet.infura.invalid/v3/fa4c123b1612dd272d1371c17149d439",
+        "https://bnb.swiftnodes.invalid/rpc?apikey=${SWIFT_API_KEY}",
+        "https://fake-bnb-node.quiknode.invalid/Nbe3nNyjOq9wMxEhh2FDEEtfjgVvVqE1SkHbn88H/",
+        {
+          "url": "https://gw.uniswap.invalid/rpc/56",
+          "headers": {
+            "x-internal-service-secret": "${UNI_GW_SECRET}"
+          }
+        },
+        "wss://bnb.publicnode.invalid",
+        "wss://bnb.drpc.invalid",
+        "https://bnb-rpc.publicnode.invalid",
+        "https://bnb-rpc.drpc.invalid",
+        "https://bnb-rpc.tenderly.invalid",
+        "https://bnb-rpc.blockreq.invalid/xjSI6bWHtP3f",
+        "https://bnb-rpc.defibit.invalid",
+        "https://bnb-rpc.ninicoin.invalid",
+        "https://bnb-rpc.mevblocker.invalid",
+        "https://bnb-rpc.rpcfree.invalid",
+        "https://bnb-rpc.satelink.invalid",
+        "https://bnb-rpc.xrpc.invalid",
+        "https://bnb-rpc.beamrpc.invalid",
+        "https://bnb-rpc.flashbots.invalid",
+        "https://bnb-rpc.blockvectra.invalid",
+        "https://bnb-rpc.securerpc.invalid",
+        "https://bnb-rpc.nariox.invalid",
+        "https://bnb-rpc.chainpulse.invalid",
+        "https://bnb-rpc.mycryptoapi.invalid"
+      ],
+      "selected_rpc": "https://bnb-mainnet.infura.invalid/v3/fa4c123b1612dd272d1371c17149d439",
+      "verification_api_key": "FAKEETHERSCANKEYKY40UVSWMFLZDE1F8R",
+      "verification_url": "https://api.etherscan.invalid/v2/api?chainid=56",
+      "key_name": "deployer"
+    },
+    {
+      "name": "Polygon Mainnet",
+      "chain_id": 137,
+      "rpc_urls": [
+        "https://polygon-mainnet.infura.invalid/v3/${INFURA_API_KEY}",
+        "https://polygon.swiftnodes.invalid/rpc?apikey=${SWIFT_API_KEY}",
+        "https://fake-polygon-node.quiknode.invalid/S2qHx6kwXoIIXGvOoNZYW2mZp0zVZomHFwUbbYrE/",
+        {
+          "url": "https://gw.uniswap.invalid/rpc/137",
+          "headers": {
+            "x-internal-service-secret": "${UNI_GW_SECRET}"
+          }
+        },
+        "wss://polygon.publicnode.invalid",
+        "wss://polygon.drpc.invalid",
+        "wss://polygon.tenderly.invalid",
+        "wss://polygon.blockreq.invalid",
+        "https://polygon-rpc.publicnode.invalid",
+        "https://polygon-rpc.drpc.invalid",
+        "https://polygon-rpc.tenderly.invalid",
+        "https://polygon-rpc.blockreq.invalid/qmSM9wCZ7Uw9",
+        "https://polygon-rpc.defibit.invalid",
+        "https://polygon-rpc.ninicoin.invalid",
+        "https://polygon-rpc.mevblocker.invalid",
+        "https://polygon-rpc.rpcfree.invalid"
+      ],
+      "selected_rpc": "https://polygon-mainnet.infura.invalid/v3/${INFURA_API_KEY}",
+      "verification_api_key": "FAKEETHERSCANKEYKY40UVSWMFLZDE1F8R",
+      "verification_url": "https://api.etherscan.invalid/v2/api?chainid=137",
+      "key_name": "default"
+    },
+    {
+      "name": "Celo Mainnet",
+      "chain_id": 42220,
+      "rpc_urls": [
+        "https://celo-mainnet.infura.invalid/v3/fa4c123b1612dd272d1371c17149d439",
+        {
+          "url": "https://gw.uniswap.invalid/rpc/42220",
+          "headers": {
+            "x-internal-service-secret": "${UNI_GW_SECRET}"
+          }
+        },
+        "wss://celo.publicnode.invalid",
+        "https://celo-rpc.publicnode.invalid",
+        "https://celo-rpc.drpc.invalid"
+      ],
+      "selected_rpc": "https://celo-mainnet.infura.invalid/v3/fa4c123b1612dd272d1371c17149d439",
+      "verification_api_key": "FAKEETHERSCANKEYKY40UVSWMFLZDE1F8R",
+      "verification_url": "https://api.etherscan.invalid/v2/api?chainid=42220",
+      "key_name": "default"
+    },
+    {
+      "name": "OP Mainnet",
+      "chain_id": 10,
+      "rpc_urls": [
+        "https://op-mainnet.infura.invalid/v3/fa4c123b1612dd272d1371c17149d439",
+        "https://op.swiftnodes.invalid/rpc?apikey=${SWIFT_API_KEY}",
+        "https://fake-op-node.quiknode.invalid/xfogoEmvnEN5N1aE6PwZPf1Qh6yYTWmE4lBYOvfZ/",
+        {
+          "url": "https://gw.uniswap.invalid/rpc/10",
+          "headers": {
+            "x-internal-service-secret": "${UNI_GW_SECRET}"
+          }
+        },
+        "wss://op.publicnode.invalid",
+        "wss://op.drpc.invalid",
+        "wss://op.tenderly.invalid",
+        "https://op-rpc.publicnode.invalid",
+        "https://op-rpc.drpc.invalid",
+        "https://op-rpc.tenderly.invalid",
+        "https://op-rpc.blockreq.invalid/8UzDzV8fUkki",
+        "https://op-rpc.defibit.invalid"
+      ],
+      "selected_rpc": "https://op-mainnet.infura.invalid/v3/fa4c123b1612dd272d1371c17149d439",
+      "verification_api_key": "FAKEETHERSCANKEYKY40UVSWMFLZDE1F8R",
+      "verification_url": "https://api.etherscan.invalid/v2/api?chainid=10",
+      "key_name": "default"
+    },
+    {
+      "name": "X Layer Mainnet",
+      "chain_id": 196,
+      "rpc_urls": [
+        {
+          "url": "https://gw.uniswap.invalid/rpc/196",
+          "headers": {
+            "x-internal-service-secret": "${UNI_GW_SECRET}"
+          }
+        },
+        "https://x-rpc.publicnode.invalid",
+        "https://x-rpc.drpc.invalid",
+        "https://x-rpc.tenderly.invalid"
+      ],
+      "selected_rpc": "https://gw.uniswap.invalid/rpc/196",
+      "verification_api_key": null,
+      "verification_url": null,
+      "key_name": "funder"
+    },
+    {
+      "name": "World Chain",
+      "chain_id": 480,
+      "rpc_urls": [
+        "https://world-mainnet.g.alchemy.invalid/v2/lSXpfKtHF4vUCsMehGAkWvj7FAc9QeWJ",
+        {
+          "url": "https://gw.uniswap.invalid/rpc/480",
+          "headers": {
+            "x-internal-service-secret": "${UNI_GW_SECRET}"
+          }
+        },
+        "wss://world.publicnode.invalid",
+        "https://world-rpc.publicnode.invalid",
+        "https://world-rpc.drpc.invalid",
+        "https://world-rpc.tenderly.invalid"
+      ],
+      "selected_rpc": "https://gw.uniswap.invalid/rpc/480",
+      "verification_api_key": "FAKEETHERSCANKEYKY40UVSWMFLZDE1F8R",
+      "verification_url": "https://api.etherscan.invalid/v2/api?chainid=480",
+      "key_name": "default"
+    },
+    {
+      "name": "Arbitrum One",
+      "chain_id": 42161,
+      "rpc_urls": [
+        "https://arbitrum-mainnet.infura.invalid/v3/${INFURA_API_KEY}",
+        "https://arbitrum-mainnet.g.alchemy.invalid/v2/${ALCHEMY_API_KEY}",
+        {
+          "url": "https://gw.uniswap.invalid/rpc/42161",
+          "headers": {
+            "x-internal-service-secret": "${UNI_GW_SECRET}"
+          }
+        },
+        "wss://arbitrum.publicnode.invalid",
+        "https://arbitrum-rpc.publicnode.invalid",
+        "https://arbitrum-rpc.drpc.invalid",
+        "https://arbitrum-rpc.tenderly.invalid",
+        "https://arbitrum-rpc.blockreq.invalid/bjL5DZPjN0ME"
+      ],
+      "selected_rpc": "https://gw.uniswap.invalid/rpc/42161",
+      "verification_api_key": "FAKEETHERSCANKEYKY40UVSWMFLZDE1F8R",
+      "verification_url": "https://api.etherscan.invalid/v2/api?chainid=42161",
+      "key_name": "default"
+    },
+    {
+      "name": "Zora",
+      "chain_id": 7777777,
+      "rpc_urls": [
+        {
+          "url": "https://gw.uniswap.invalid/rpc/7777777",
+          "headers": {
+            "x-internal-service-secret": "${UNI_GW_SECRET}"
+          }
+        },
+        "https://zora-rpc.publicnode.invalid",
+        "https://zora-rpc.drpc.invalid"
+      ],
+      "selected_rpc": "https://gw.uniswap.invalid/rpc/7777777",
+      "verification_api_key": null,
+      "verification_url": null,
+      "key_name": "default"
+    },
+    {
+      "name": "Soneium",
+      "chain_id": 1868,
+      "rpc_urls": [
+        {
+          "url": "https://gw.uniswap.invalid/rpc/1868",
+          "headers": {
+            "x-internal-service-secret": "${UNI_GW_SECRET}"
+          }
+        },
+        "https://soneium-rpc.publicnode.invalid"
+      ],
+      "selected_rpc": "https://gw.uniswap.invalid/rpc/1868",
+      "verification_api_key": null,
+      "verification_url": null,
+      "key_name": "default"
+    },
+    {
+      "name": "MegaETH Mainnet",
+      "chain_id": 4326,
+      "rpc_urls": [
+        {
+          "url": "https://gw.uniswap.invalid/rpc/4326",
+          "headers": {
+            "x-internal-service-secret": "${UNI_GW_SECRET}"
+          }
+        },
+        "wss://megaeth.publicnode.invalid",
+        "https://megaeth-rpc.publicnode.invalid",
+        "https://megaeth-rpc.drpc.invalid"
+      ],
+      "selected_rpc": "https://gw.uniswap.invalid/rpc/4326",
+      "verification_api_key": null,
+      "verification_url": null,
+      "key_name": "deployer"
+    },
+    {
+      "name": "Avalanche C-Chain",
+      "chain_id": 43114,
+      "rpc_urls": [
+        {
+          "url": "https://gw.uniswap.invalid/rpc/43114",
+          "headers": {
+            "x-internal-service-secret": "${UNI_GW_SECRET}"
+          }
+        },
+        "wss://avalanche.publicnode.invalid",
+        "https://avalanche-rpc.publicnode.invalid",
+        "https://avalanche-rpc.drpc.invalid",
+        "https://avalanche-rpc.tenderly.invalid"
+      ],
+      "selected_rpc": "https://gw.uniswap.invalid/rpc/43114",
+      "verification_api_key": null,
+      "verification_url": null,
+      "key_name": "default"
+    },
+    {
+      "name": "Robinhood Chain Mainnet",
+      "chain_id": 4663,
+      "rpc_urls": [
+        "https://robinhood-mainnet.g.alchemy.invalid/v2/lSXpfKtHF4vUCsMehGAkWvj7FAc9QeWJ",
+        {
+          "url": "https://gw.uniswap.invalid/rpc/4663",
+          "headers": {
+            "x-internal-service-secret": "${UNI_GW_SECRET}"
+          }
+        }
+      ],
+      "selected_rpc": "https://gw.uniswap.invalid/rpc/4663",
+      "verification_api_key": null,
+      "verification_url": null,
+      "key_name": "funder"
+    },
+    {
+      "name": "zkSync Mainnet",
+      "chain_id": 324,
+      "rpc_urls": [
+        "https://zksync-mainnet.infura.invalid/v3/${INFURA_API_KEY}",
+        "https://zksync-mainnet.g.alchemy.invalid/v2/J0RlgLKOmxgJTeKdNnFRIBXuDL7DxtpY",
+        {
+          "url": "https://gw.uniswap.invalid/rpc/324",
+          "headers": {
+            "x-internal-service-secret": "${UNI_GW_SECRET}"
+          }
+        },
+        "wss://zksync.publicnode.invalid",
+        "https://zksync-rpc.publicnode.invalid"
+      ],
+      "selected_rpc": "https://gw.uniswap.invalid/rpc/324",
+      "verification_api_key": null,
+      "verification_url": null,
+      "key_name": "default",
+      "aliases": [
+        "zksync era"
+      ]
+    },
+    {
+      "name": "Arc",
+      "chain_id": 5042,
+      "rpc_urls": [
+        "https://arc.swiftnodes.invalid/rpc?apikey=${SWIFT_API_KEY}",
+        "https://rpc.arc.invalid",
+        "wss://arc.publicnode.invalid",
+        "wss://arc.drpc.invalid",
+        "https://arc-rpc.publicnode.invalid",
+        "https://arc-rpc.drpc.invalid",
+        "https://arc-rpc.tenderly.invalid",
+        "https://arc-rpc.blockreq.invalid/Q7wjJJibaZUP"
+      ],
+      "selected_rpc": "https://rpc.arc.invalid",
+      "verification_api_key": null,
+      "verification_url": null,
+      "key_name": "default"
+    }
+  ],
+  "variables": {
+    "INFURA_API_KEY": "fa4c123b1612dd272d1371c17149d439",
+    "UNI_GW_SECRET": "fake-gateway-secret-gHV7iB3m03nb",
+    "SWIFT_API_KEY": "qnsGpWLuqIA1id6Vw5DQL05H",
+    "ALCHEMY_API_KEY": "A064GiIjHGb3CXlMaXZjljENUhJduRHH"
+  },
+  "keys": {
+    "default": {
+      "name": "default",
+      "address": "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf",
+      "type": "Keyring",
+      "service": "chainz",
+      "username": "default"
+    },
+    "deployer": {
+      "name": "deployer",
+      "address": "0x2B5AD5c4795c026514f8317c7a215E218DcCD6cF",
+      "type": "Keyring",
+      "service": "chainz",
+      "username": "deployer"
+    },
+    "funder": {
+      "name": "funder",
+      "address": "0x6813Eb9362372EEF6200f3b1dbC3f819671cBA69",
+      "type": "Keyring",
+      "service": "chainz",
+      "username": "funder"
+    }
+  }
+}

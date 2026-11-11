@@ -1,0 +1,171 @@
+# Built-in token registry. Every entry was verified on chain (code present,
+# symbol() and decimals() match) on 2026-11-11. Arc (5042) has no wrapped
+# native token (USDC is native), so it has no weth entry.
+
+[1.weth]
+address = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+symbol = "WETH"
+decimals = 18
+source = "https://ethereum.org/en/wrapped-eth/"
+
+[1.usdc]
+address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+symbol = "USDC"
+decimals = 6
+source = "https://developers.circle.com/stablecoins/usdc-contract-addresses"
+
+[8453.weth]
+address = "0x4200000000000000000000000000000000000006"
+symbol = "WETH"
+decimals = 18
+source = "https://docs.base.org/chain/base-contracts"
+
+[8453.usdc]
+address = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+symbol = "USDC"
+decimals = 6
+source = "https://developers.circle.com/stablecoins/usdc-contract-addresses"
+
+[130.weth]
+address = "0x4200000000000000000000000000000000000006"
+symbol = "WETH"
+decimals = 18
+source = "https://developers.uniswap.org/docs/unichain/technical-information/contract-addresses"
+
+[130.usdc]
+address = "0x078D782b760474a361dDA0AF3839290b0EF57AD6"
+symbol = "USDC"
+decimals = 6
+source = "https://developers.circle.com/stablecoins/usdc-contract-addresses"
+
+[56.weth]
+address = "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"
+symbol = "WBNB"
+decimals = 18
+source = "https://www.bnbchain.org/en/blog/what-is-wbnb"
+
+[137.weth]
+address = "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270"
+symbol = "WPOL"
+decimals = 18
+source = "https://forum.polygon.technology/t/pip-45-pos-mrc-20-token-symbol-change/19437"
+
+[137.usdc]
+address = "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
+symbol = "USDC"
+decimals = 6
+source = "https://developers.circle.com/stablecoins/usdc-contract-addresses"
+
+[42220.weth]
+address = "0x471EcE3750Da237f93B8E339c536989b8978a438"
+symbol = "CELO"
+decimals = 18
+source = "https://docs.celo.org/tooling/contracts/core-contracts"
+
+[42220.usdc]
+address = "0xcebA9300f2b948710d2653dD7B07f33A8B32118C"
+symbol = "USDC"
+decimals = 6
+source = "https://developers.circle.com/stablecoins/usdc-contract-addresses"
+
+[10.weth]
+address = "0x4200000000000000000000000000000000000006"
+symbol = "WETH"
+decimals = 18
+source = "https://specs.optimism.io/protocol/predeploys.html"
+
+[10.usdc]
+address = "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85"
+symbol = "USDC"
+decimals = 6
+source = "https://developers.circle.com/stablecoins/usdc-contract-addresses"
+
+[196.weth]
+address = "0xe538905cf8410324e03A5A23C1c177a474D59b2b"
+symbol = "WOKB"
+decimals = 18
+source = "https://github.com/okx/xlayer-tokenlist"
+
+[196.usdc]
+address = "0xB6CEceAB302E2E4948951eE7843FC24E92933061"
+symbol = "USDC"
+decimals = 6
+source = "https://developers.circle.com/stablecoins/usdc-contract-addresses"
+
+[480.weth]
+address = "0x4200000000000000000000000000000000000006"
+symbol = "WETH"
+decimals = 18
+source = "https://docs.world.org/world-chain/reference/useful-contracts"
+
+[480.usdc]
+address = "0x79A02482A880bCE3F13e09Da970dC34db4CD24d1"
+symbol = "USDC"
+decimals = 6
+source = "https://developers.circle.com/stablecoins/usdc-contract-addresses"
+
+[42161.weth]
+address = "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1"
+symbol = "WETH"
+decimals = 18
+source = "https://docs.arbitrum.io/build-decentralized-apps/reference/contract-addresses"
+
+[42161.usdc]
+address = "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"
+symbol = "USDC"
+decimals = 6
+source = "https://developers.circle.com/stablecoins/usdc-contract-addresses"
+
+[7777777.weth]
+address = "0x4200000000000000000000000000000000000006"
+symbol = "WETH"
+decimals = 18
+source = "https://github.com/ourzora/zora-protocol/blob/main/packages/shared-contracts/chainConfigs/7777777.json"
+
+[1868.weth]
+address = "0x4200000000000000000000000000000000000006"
+symbol = "WETH"
+decimals = 18
+source = "https://docs.soneium.org/docs/builders/contracts"
+
+[4326.weth]
+address = "0x4200000000000000000000000000000000000006"
+symbol = "WETH"
+decimals = 18
+source = "https://docs.megaeth.com/developer-docs/overview-1/contracts"
+
+[43114.weth]
+address = "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7"
+symbol = "WAVAX"
+decimals = 18
+source = "https://github.com/ava-labs/wrapped-assets"
+
+[43114.usdc]
+address = "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E"
+symbol = "USDC"
+decimals = 6
+source = "https://developers.circle.com/stablecoins/usdc-contract-addresses"
+
+[4663.weth]
+address = "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73"
+symbol = "WETH"
+decimals = 18
+source = "https://docs.robinhood.com/chain/contracts"
+
+[324.weth]
+address = "0x5AEa5775959fBC2557Cc8789bC1bf90A239D9a91"
+symbol = "WETH"
+decimals = 18
+source = "https://code.zksync.io/tutorials/foundry-era-test-node"
+
+[324.usdc]
+address = "0x1d17CBcF0D6D143135aE902365D2E5e2A16538D4"
+symbol = "USDC"
+decimals = 6
+source = "https://developers.circle.com/stablecoins/usdc-contract-addresses"
+
+[5042.usdc]
+address = "0x3600000000000000000000000000000000000000"
+symbol = "USDC"
+decimals = 6
+source = "https://developers.circle.com/stablecoins/usdc-contract-addresses"
