@@ -5,6 +5,7 @@
 //! the noun's module and route it from [`dispatch`]. Return the process
 //! exit code; errors print as `Error: …` and exit 1.
 
+mod addr;
 mod chain;
 mod config;
 mod doctor;
@@ -12,6 +13,7 @@ mod exec;
 mod rpc;
 mod signer;
 mod stubs;
+mod tokens;
 mod var;
 
 use crate::cli::{Command, Opt};
@@ -49,12 +51,12 @@ pub fn dispatch(opt: Opt) -> Result<i32> {
         Command::Chain { cmd } => chain::run(cmd),
         Command::Rpc { cmd } => rpc::run(cmd),
         Command::Signer { cmd } => signer::run(cmd),
-        Command::Addr { cmd } => stubs::addr(cmd),
-        Command::Label { chain } => stubs::label(chain),
+        Command::Addr { cmd } => addr::run(cmd),
+        Command::Label { chain } => addr::label(chain),
         Command::Var { cmd } => var::run(cmd),
         Command::Doctor { fix, tokens } => {
             if tokens {
-                stubs::doctor_tokens()
+                tokens::run()
             } else {
                 doctor::run(fix)
             }

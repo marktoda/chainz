@@ -229,9 +229,6 @@ fn stream_commands_are_stubs() {
         vec!["top"],
         vec!["fork", "eth"],
         vec!["fork", "ls"],
-        vec!["addr", "ls"],
-        vec!["label"],
-        vec!["doctor", "--tokens"],
     ] {
         sb.cmd()
             .args(&args)
