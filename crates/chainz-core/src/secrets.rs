@@ -128,9 +128,21 @@ pub const BUILTIN_VARS: [&str; 2] = ["CHAIN_ID", "CHAIN"];
 
 /// Resolves `${NAME}` for one context: built-ins, then the environment,
 /// then `secrets.toml` (loaded lazily, only when the environment misses).
+///
+/// Inside a chainz context (`CHAINZ_CHAIN` is set: `chainz shell`, `eval
+/// "$(chainz env …)"`, or a tool `exec` started) the environment is not
+/// consulted for the exec contract's own variables
+/// ([`CONTRACT_VARS`](crate::context::CONTRACT_VARS)): there they hold the
+/// enclosing chain's values, so a nested `chainz exec eth` inside `chainz
+/// shell celo` must not send celo's `ETHERSCAN_API_KEY` to Etherscan.
 pub struct VarResolver<'a> {
     builtins: Builtins<'a>,
     secrets: &'a dyn Fn() -> anyhow::Result<&'a Secrets>,
+    env: fn(&str) -> Option<String>,
+}
+
+fn process_env(name: &str) -> Option<String> {
+    std::env::var(name).ok()
 }
 
 impl<'a> VarResolver<'a> {
@@ -139,7 +151,11 @@ impl<'a> VarResolver<'a> {
         builtins: Builtins<'a>,
         secrets: &'a dyn Fn() -> anyhow::Result<&'a Secrets>,
     ) -> Self {
-        Self { builtins, secrets }
+        Self {
+            builtins,
+            secrets,
+            env: process_env,
+        }
     }
 
     /// Look up one name.
@@ -157,7 +173,9 @@ impl<'a> VarResolver<'a> {
             }
             _ => {}
         }
-        if let Ok(value) = std::env::var(name) {
+        let shadowed =
+            crate::context::CONTRACT_VARS.contains(&name) && (self.env)("CHAINZ_CHAIN").is_some();
+        if !shadowed && let Some(value) = (self.env)(name) {
             return Ok(Some(Cow::Owned(value)));
         }
         let secrets = (self.secrets)()?;
@@ -166,14 +184,8 @@ impl<'a> VarResolver<'a> {
 
     /// Expand every template in `input`. Errors name the variable, never a
     /// value.
-    pub fn expand<'i>(&self, input: &'i str) -> anyhow::Result<Cow<'i, str>>
-    where
-        'a: 'i,
-    {
-        template::expand(input, |name| {
-            self.lookup(name)
-                .map(|v| v.map(|v| Cow::Owned(v.into_owned())))
-        })
+    pub fn expand<'i>(&self, input: &'i str) -> anyhow::Result<Cow<'i, str>> {
+        template::expand(input, |name| self.lookup(name))
     }
 }
 
@@ -213,6 +225,44 @@ mod tests {
         );
         let err = r.expand("${CHAINZ_SURELY_UNSET_VAR}").unwrap_err();
         assert!(err.to_string().contains("CHAINZ_SURELY_UNSET_VAR"));
+    }
+
+    fn shell_env(name: &str) -> Option<String> {
+        match name {
+            "CHAINZ_CHAIN" => Some("celo".into()),
+            "ETHERSCAN_API_KEY" => Some("celo-explorer-key".into()),
+            "ETH_RPC_URL" => Some("https://celo.example".into()),
+            "INFURA_KEY" => Some("env-infura".into()),
+            _ => None,
+        }
+    }
+
+    fn plain_env(name: &str) -> Option<String> {
+        shell_env(name).filter(|_| name != "CHAINZ_CHAIN")
+    }
+
+    #[test]
+    fn inside_a_chainz_context_contract_vars_skip_the_environment() {
+        let secrets = Secrets::parse(
+            "[vars]\nETHERSCAN_API_KEY = \"own-key\"\nINFURA_KEY = \"file-infura\"\n",
+        )
+        .unwrap();
+        let loader = || Ok(&secrets);
+        let mut r = VarResolver::new(Builtins::default(), &loader);
+        r.env = shell_env;
+        // A contract variable comes from secrets.toml, not the enclosing
+        // chain's export; other variables still prefer the environment.
+        assert_eq!(r.expand("${ETHERSCAN_API_KEY}").unwrap(), "own-key");
+        assert_eq!(r.expand("${INFURA_KEY}").unwrap(), "env-infura");
+        let err = r.expand("${ETH_RPC_URL}").unwrap_err().to_string();
+        assert!(err.contains("ETH_RPC_URL"), "{err}");
+
+        // Outside chainz, the environment wins as usual.
+        r.env = plain_env;
+        assert_eq!(
+            r.expand("${ETHERSCAN_API_KEY}").unwrap(),
+            "celo-explorer-key"
+        );
     }
 
     #[test]

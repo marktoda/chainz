@@ -14,6 +14,10 @@ key = "${CTX_TEST_ETHERSCAN}"
 api = "https://explorer.example/api"
 key = "bs-literal"
 
+[explorers.unset]
+api = "https://unset.example/api"
+key = "${CTX_TEST_UNSET_EXPLORER_KEY}"
+
 [chains.eth]
 id = 1
 aliases = ["mainnet"]
@@ -37,6 +41,12 @@ id = 999
 rpc = "a"
 rpcs.a = "https://bare.example/${CTX_TEST_MISSING}"
 
+[chains.nosigner]
+id = 998
+explorer = "unset"
+rpc = "a"
+rpcs.a = "https://nosigner.example"
+
 [signers.default]
 backend = "keyring"
 address = "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf"
@@ -48,6 +58,7 @@ address = "0x2B5AD5c4795c026514f8317c7a215E218DcCD6cF"
 
 [addresses.myrouter]
 celo = "0x6813Eb9362372EEF6200f3b1dbC3f819671cBA69"
+bare = "0x6813Eb9362372EEF6200f3b1dbC3f819671cBA69"
 "#;
 
 const SECRETS: &str = "[vars]\nCTX_TEST_ETHERSCAN = \"es-key\"\nCTX_TEST_INFURA = \"inf-key\"\nCTX_TEST_GW = \"gw-secret\"\n";
@@ -282,8 +293,114 @@ fn token_errors() {
     assert!(err.contains("no address on chain 'eth'"), "{err}");
     let err = expand(&f, "eth", &["--x=@key"]).unwrap_err().to_string();
     assert!(err.contains("--expose-key"), "{err}");
-    let err = expand(&f, "bare", &["@wallet"]);
-    assert!(err.is_err());
+    // A chain whose context builds but has no signer.
+    let err = expand(&f, "nosigner", &["@wallet"])
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("chain 'nosigner' has no signer"), "{err}");
+}
+
+#[test]
+fn qualified_tokens_build_only_what_they_use() {
+    let f = fixture();
+    // `bare`'s endpoint needs an unset variable: its labels, ID, name and
+    // signer still resolve, only @rpc:bare fails.
+    let out = expand(
+        &f,
+        "eth",
+        &[
+            "@myrouter:bare",
+            "@chainid:bare",
+            "@chain:bare",
+            "@deployer:bare",
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        out,
+        [
+            "0x6813Eb9362372EEF6200f3b1dbC3f819671cBA69",
+            "999",
+            "bare",
+            "0x2B5AD5c4795c026514f8317c7a215E218DcCD6cF"
+        ]
+    );
+    let err = format!("{:#}", expand(&f, "eth", &["@rpc:bare"]).unwrap_err());
+    assert!(err.contains("CTX_TEST_MISSING"), "{err}");
+    let err = format!("{:#}", expand(&f, "eth", &["@wallet:bare"]).unwrap_err());
+    assert!(err.contains("chain 'bare' has no signer"), "{err}");
+    // The other chain's RPC and explorer, when asked for.
+    let out = expand(
+        &f,
+        "eth",
+        &["@rpc:celo", "@explorer:celo", "@explorer_key:celo"],
+    )
+    .unwrap();
+    assert_eq!(
+        out,
+        [
+            "https://celo.example",
+            "https://explorer.example/api",
+            "bs-literal"
+        ]
+    );
+}
+
+#[test]
+fn an_unset_explorer_key_fails_only_when_used() {
+    let f = fixture();
+    let c = ctx(&f, "nosigner", &ExecOptions::default()).unwrap();
+    let explorer = c.explorer.as_ref().unwrap();
+    assert!(explorer.key.is_none());
+    assert!(
+        explorer
+            .key_error
+            .as_deref()
+            .is_some_and(|e| e.contains("CTX_TEST_UNSET_EXPLORER_KEY")),
+        "{explorer:?}"
+    );
+    let env = env_map(&c);
+    assert!(!env.contains_key("ETHERSCAN_API_KEY") && !env.contains_key("VERIFIER_API_KEY"));
+    assert_eq!(env["VERIFIER_URL"], "https://unset.example/api");
+    assert_eq!(
+        expand(&f, "nosigner", &["@explorer", "@chainid"]).unwrap(),
+        ["https://unset.example/api", "998"]
+    );
+    let err = format!(
+        "{:#}",
+        expand(&f, "nosigner", &["@explorer_key"]).unwrap_err()
+    );
+    assert!(err.contains("CTX_TEST_UNSET_EXPLORER_KEY"), "{err}");
+    let err = format!(
+        "{:#}",
+        expand(&f, "eth", &["@explorer_key:nosigner"]).unwrap_err()
+    );
+    assert!(err.contains("CTX_TEST_UNSET_EXPLORER_KEY"), "{err}");
+}
+
+#[test]
+fn env_var_debug_redacts_urls() {
+    let var = EnvVar {
+        name: "VERIFIER_URL",
+        value: "https://explorer.example/api?apikey=verifier-secret".into(),
+        secret: true,
+    };
+    let debug = format!("{var:?}");
+    assert!(!debug.contains("verifier-secret"), "{debug}");
+    assert!(debug.starts_with("VERIFIER_URL=https://"), "{debug}");
+    let headers = EnvVar {
+        name: "ETH_RPC_HEADERS",
+        value: "x-key: header-secret".into(),
+        secret: true,
+    };
+    assert_eq!(format!("{headers:?}"), "ETH_RPC_HEADERS=x-key: [REDACTED]");
+    let f = fixture();
+    let env = ctx(&f, "celo", &ExecOptions::default())
+        .unwrap()
+        .env()
+        .unwrap();
+    let verifier = env.iter().find(|e| e.name == "VERIFIER_URL").unwrap();
+    assert!(verifier.secret);
 }
 
 #[test]
@@ -292,14 +409,26 @@ fn deprecated_tokens_warn_and_secrets_are_redacted_for_explain() {
     let opts = ExecOptions::default();
     let c = ctx(&f, "eth", &opts).unwrap();
     let e = Expander::new(&f.chainz, &f.runtime, &c, &opts);
-    let args: Vec<String> = ["@chainname", "@verifier_api_key", "--rpc-url=@rpc"]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    let args: Vec<String> = [
+        "@chainname",
+        "@verifier_api_key",
+        "--rpc-url=@rpc",
+        "@chainname",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
     let out = e.expand_args(&args).unwrap();
     assert_eq!(out[0].value, "eth");
     assert_eq!(out[1].value, "es-key");
     assert_eq!(out[1].display, "[REDACTED]");
     assert!(out[2].value.contains("inf-key") && !out[2].display.contains("inf-key"));
-    assert_eq!(e.warnings().len(), 2);
+    // Each warning once, even when repeated non-adjacently.
+    assert_eq!(
+        e.warnings(),
+        [
+            "@chainname is deprecated; use @chain",
+            "@verifier_api_key is deprecated; use @explorer_key"
+        ]
+    );
 }
