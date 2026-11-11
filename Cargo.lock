@@ -359,7 +359,6 @@ dependencies = [
  "hyper",
  "hyper-util",
  "rand 0.9.5",
- "serde",
  "serde_json",
  "sha3",
  "tempfile",

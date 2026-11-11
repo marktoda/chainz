@@ -73,8 +73,8 @@ async fn redirects_are_not_followed() {
     let elsewhere = MockHttp::start(|_, req| Resp::result(req, json!("0x1"))).await;
     for status in [301, 302, 307, 308] {
         let location = format!("http://localhost:{}/stolen", elsewhere.port);
-        let server = MockHttp::start(move |_, _| Resp::status(status).header("Location", &location))
-            .await;
+        let server =
+            MockHttp::start(move |_, _| Resp::status(status).header("Location", &location)).await;
         let err = RpcClient::new()
             .chain_id(&server.target(1))
             .await

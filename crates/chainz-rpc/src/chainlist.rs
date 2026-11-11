@@ -310,9 +310,7 @@ mod tests {
         // The cache dir is a file: the cache can't be written.
         let cache = dir.path().join("not-a-dir");
         std::fs::write(&cache, "").unwrap();
-        let entries = fetch_all_from(&url, &cache, true, CACHE_TTL)
-            .await
-            .unwrap();
+        let entries = fetch_all_from(&url, &cache, true, CACHE_TTL).await.unwrap();
         assert_eq!(entries.len(), 2);
     }
 }
