@@ -4,6 +4,7 @@
 //! only this crate, which keeps the hot path honest at compile time (and
 //! the `strace` test checks it at run time).
 
+pub mod addrbook;
 pub mod address;
 pub mod context;
 pub mod edit;

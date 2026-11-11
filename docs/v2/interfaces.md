@@ -105,7 +105,32 @@ built-in token. In config, `[addresses]` is `label -> chain name | "*" ->
 address`. For example, `[addresses.myrouter]` with `base = "0x…"`. Label
 names follow `names::is_valid_label_name` and can't use a `CONTEXT_TOKENS`
 name. The Address book stream owns `addr …`, `label`, and `doctor --tokens`.
-Its edits go in `chainz_core::edit`, which has no `[addresses]` helpers yet.
+
+Added by the Address book stream (additive; `LabelIndex` is unchanged):
+
+```rust
+// chainz_core::edit, inside `transact`
+pub const ALL_CHAINS: &str = "*";
+pub enum SetAddress { Added, Unchanged, Replaced(Address) }
+pub fn check_label_name<'a>(name: &str, signers: impl IntoIterator<Item = &'a str>) -> Result<()>;
+pub fn set_address(doc: &mut DocumentMut, name: &str, scope: &str, address: &Address, force: bool) -> Result<SetAddress>;
+pub fn remove_address(doc: &mut DocumentMut, name: &str, scope: Option<&str>) -> Result<Vec<(String, String)>>;
+
+// chainz_core::addrbook
+pub fn all_labels(config: &Config) -> Vec<Label>;             // every source, every chain
+pub fn find(config: &Config, address: &Address) -> Vec<Label>; // `addr find`
+pub struct Labeler { /* … */ }                                 // `chainz label`
+impl Labeler {
+    pub fn for_chain(config: &Config, chain_id: u64) -> Self;
+    pub fn any_chain(config: &Config) -> Self;   // "*" labels, signers, names that agree on every chain
+    pub fn name(&self, address: &Address) -> Option<&str>;
+    pub fn rewrite(&self, text: &[u8], out: &mut Vec<u8>);    // 0x… → name(0x…)
+    pub fn filter(&self, input: impl BufRead, output: impl Write) -> io::Result<()>;
+}
+```
+
+`Labeler::name` skips a built-in token that a user label shadows on that
+chain, so a name it returns always resolves back to the same address.
 
 ## Upstream (`chainz_rpc::upstream`), frozen
 
