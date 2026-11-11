@@ -226,7 +226,6 @@ fn stream_commands_are_stubs() {
     for args in [
         vec!["serve"],
         vec!["serve", "status"],
-        vec!["top"],
         vec!["fork", "eth"],
         vec!["fork", "ls"],
         vec!["addr", "ls"],

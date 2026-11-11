@@ -12,6 +12,7 @@ mod exec;
 mod rpc;
 mod signer;
 mod stubs;
+mod top;
 mod var;
 
 use crate::cli::{Command, Opt};
@@ -43,7 +44,7 @@ pub fn dispatch(opt: Opt) -> Result<i32> {
         } => exec::env(chain, shell, signer, rpc, direct),
         Command::Use { chain, clear } => chain::use_default(chain, clear),
         Command::Ls(args) => chain::ls(&args),
-        Command::Top { once, json, reveal } => stubs::top(once, json, reveal),
+        Command::Top { once, json, reveal } => top::run(once, json, reveal),
         Command::Serve { cmd, args } => stubs::serve(cmd, args),
         Command::Fork { cmd, args } => stubs::fork(cmd, args),
         Command::Chain { cmd } => chain::run(cmd),

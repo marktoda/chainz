@@ -8,11 +8,6 @@ fn not_yet(command: &str, stream: &str) -> Result<i32> {
     bail!("`chainz {command}` is not yet implemented ({stream} stream)")
 }
 
-/// `top` (Dashboard stream).
-pub fn top(_once: bool, _json: bool, _reveal: bool) -> Result<i32> {
-    not_yet("top", "Dashboard")
-}
-
 /// `serve [status|stop|log]` (Gateway stream).
 pub fn serve(cmd: Option<ServeCommand>, _args: ServeArgs) -> Result<i32> {
     let name = match cmd {
