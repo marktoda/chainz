@@ -5,7 +5,9 @@
 //! anything is written. They change only the keys they name, so a hand
 //! edited file keeps its comments, ordering and formatting.
 
+use crate::address::Address;
 use crate::model::{Endpoint, Explorer, Signer};
+use crate::names;
 use crate::secrets::SignerSecret;
 use anyhow::{Result, anyhow, bail};
 use toml_edit::{Array, DocumentMut, InlineTable, Item, Table, TableLike, Value, value};
@@ -385,6 +387,140 @@ pub fn set_explorer_key(doc: &mut DocumentMut, name: &str, key: &str) -> Result<
     Ok(())
 }
 
+/// The `[addresses.NAME]` scope key meaning "every chain".
+pub const ALL_CHAINS: &str = "*";
+
+/// What [`set_address`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SetAddress {
+    /// A new entry was written.
+    Added,
+    /// The entry already held this address; nothing changed.
+    Unchanged,
+    /// An existing entry was overwritten (only with `force`).
+    Replaced(Address),
+}
+
+/// Why `name` cannot be a label, if it cannot. `signers` are the
+/// configured signer names (signers are labels automatically).
+pub fn check_label_name<'a>(name: &str, signers: impl IntoIterator<Item = &'a str>) -> Result<()> {
+    if !names::is_valid_label_name(name) || name.bytes().any(|b| b.is_ascii_uppercase()) {
+        bail!("label name '{name}' must match [a-z0-9_-]+");
+    }
+    if names::CONTEXT_TOKENS.contains(&name)
+        || names::DEPRECATED_TOKENS.iter().any(|(n, _)| *n == name)
+        || name == "key"
+    {
+        bail!("'{name}' is a context token (@{name}) and cannot be used as a label");
+    }
+    if signers.into_iter().any(|s| s.eq_ignore_ascii_case(name)) {
+        bail!("'{name}' is a signer, and signers are labels already (@{name} is its address)");
+    }
+    Ok(())
+}
+
+fn table_keys(doc: &DocumentMut, key: &str) -> Vec<String> {
+    doc.get(key)
+        .and_then(Item::as_table_like)
+        .map(|t| t.iter().map(|(k, _)| k.to_string()).collect())
+        .unwrap_or_default()
+}
+
+/// Write `[addresses.NAME]` `scope = "0x…"` (checksummed). `scope` is a
+/// configured chain's name or [`ALL_CHAINS`]. The name is lowercased and
+/// must be a valid, unreserved label name. An entry that already holds a
+/// different address is an error unless `force`.
+pub fn set_address(
+    doc: &mut DocumentMut,
+    name: &str,
+    scope: &str,
+    address: &Address,
+    force: bool,
+) -> Result<SetAddress> {
+    let name = name.to_ascii_lowercase();
+    check_label_name(&name, table_keys(doc, "signers").iter().map(String::as_str))?;
+    if scope != ALL_CHAINS && !table_keys(doc, "chains").iter().any(|c| c == scope) {
+        bail!("chain '{scope}' not found");
+    }
+    let addresses = implicit_table(doc, "addresses")?;
+    if !addresses.contains_key(&name) {
+        addresses.insert(&name, Item::Table(Table::new()));
+    }
+    let entry = addresses
+        .get_mut(&name)
+        .and_then(Item::as_table_like_mut)
+        .ok_or_else(|| anyhow!("`addresses.{name}` must be a table"))?;
+    let previous = entry
+        .get(scope)
+        .map(|item| item.as_str().and_then(|s| s.parse::<Address>().ok()));
+    let outcome = match previous {
+        None => SetAddress::Added,
+        // Rewritten below all the same, which normalizes it to the checksum.
+        Some(Some(old)) if old == *address => SetAddress::Unchanged,
+        Some(old) if !force => {
+            let on = scope_phrase(scope);
+            let held = old.map_or_else(|| "an invalid value".to_string(), |a| a.to_checksum());
+            bail!("label '{name}' already has an address {on} ({held}); remove it first");
+        }
+        Some(old) => old.map_or(SetAddress::Added, SetAddress::Replaced),
+    };
+    match entry.get_mut(scope) {
+        // Replace the value in place so a trailing comment survives.
+        Some(Item::Value(slot)) => {
+            let decor = slot.decor().clone();
+            *slot = Value::from(address.to_checksum());
+            *slot.decor_mut() = decor;
+        }
+        _ => {
+            entry.insert(scope, value(address.to_checksum()));
+        }
+    }
+    Ok(outcome)
+}
+
+fn scope_phrase(scope: &str) -> String {
+    if scope == ALL_CHAINS {
+        "for every chain".to_string()
+    } else {
+        format!("on '{scope}'")
+    }
+}
+
+/// Remove a label: one entry (`scope` is a chain name or [`ALL_CHAINS`])
+/// or, with `None`, the whole label. Returns the removed scopes with their
+/// stored addresses, in file order.
+pub fn remove_address(
+    doc: &mut DocumentMut,
+    name: &str,
+    scope: Option<&str>,
+) -> Result<Vec<(String, String)>> {
+    let name = name.to_ascii_lowercase();
+    let addresses = doc
+        .get_mut("addresses")
+        .and_then(Item::as_table_like_mut)
+        .filter(|a| a.contains_key(&name))
+        .ok_or_else(|| anyhow!("label '{name}' not found"))?;
+    let stored = |item: &Item| item.as_str().unwrap_or_default().to_string();
+    let Some(scope) = scope else {
+        let removed = addresses.remove(&name).expect("checked above");
+        return Ok(removed
+            .as_table_like()
+            .map(|t| t.iter().map(|(k, v)| (k.to_string(), stored(v))).collect())
+            .unwrap_or_default());
+    };
+    let entry = addresses
+        .get_mut(&name)
+        .and_then(Item::as_table_like_mut)
+        .ok_or_else(|| anyhow!("`addresses.{name}` must be a table"))?;
+    let Some(removed) = entry.remove(scope) else {
+        bail!("label '{name}' has no address {}", scope_phrase(scope));
+    };
+    if entry.is_empty() {
+        addresses.remove(&name);
+    }
+    Ok(vec![(scope.to_string(), stored(&removed))])
+}
+
 /// Set a variable in `secrets.toml`.
 pub fn set_var(secrets: &mut DocumentMut, name: &str, v: &str) -> Result<()> {
     if !crate::template::is_valid_name(name) {
@@ -563,6 +699,152 @@ mod tests {
             !text.contains("default") && !text.contains("router"),
             "{text}"
         );
+    }
+
+    const A1: &str = "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf";
+    const A2: &str = "0x2B5AD5c4795c026514f8317c7a215E218DcCD6cF";
+    const LABELS: &str = "version = 2\n\n[chains.eth]\nid = 1\nrpc = \"a\"\nrpcs.a = \"https://a.example\"\n\n[chains.base]\nid = 8453\nrpc = \"a\"\nrpcs.a = \"https://a.example\"\n\n[signers.funder]\nbackend = \"keyring\"\n\n# my router\n[addresses.router]\neth = \"0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf\" # mainnet deployment\n";
+
+    fn addr(s: &str) -> Address {
+        s.parse().unwrap()
+    }
+
+    fn valid(doc: &DocumentMut) {
+        let config: crate::model::Config = toml_edit::de::from_str(&doc.to_string()).unwrap();
+        crate::validate::validate(&config, None).unwrap();
+    }
+
+    #[test]
+    fn set_address_per_chain_and_all_chains() {
+        let mut doc: DocumentMut = LABELS.parse().unwrap();
+        // Lowercase input is stored checksummed; the name is lowercased.
+        let lower = addr(&A2.to_ascii_lowercase());
+        assert_eq!(
+            set_address(&mut doc, "Router", "base", &lower, false).unwrap(),
+            SetAddress::Added
+        );
+        assert_eq!(
+            set_address(&mut doc, "my-safe", ALL_CHAINS, &addr(A1), false).unwrap(),
+            SetAddress::Added
+        );
+        let text = doc.to_string();
+        assert!(text.contains(&format!("base = \"{A2}\"")), "{text}");
+        assert!(
+            text.contains(&format!("[addresses.my-safe]\n\"*\" = \"{A1}\"")),
+            "{text}"
+        );
+        assert!(
+            text.contains("# my router") && text.contains("# mainnet deployment"),
+            "{text}"
+        );
+        assert!(!text.contains("Router"), "{text}");
+        valid(&doc);
+
+        // A first label creates the table.
+        let mut fresh: DocumentMut = DOC[..DOC.find("[addresses").unwrap()].parse().unwrap();
+        set_address(&mut fresh, "x", "eth", &addr(A1), false).unwrap();
+        assert!(
+            fresh
+                .to_string()
+                .contains(&format!("[addresses.x]\neth = \"{A1}\"")),
+            "{fresh}"
+        );
+    }
+
+    #[test]
+    fn set_address_refuses_to_overwrite_without_force() {
+        let mut doc: DocumentMut = LABELS.parse().unwrap();
+        let before = doc.to_string();
+        // Same address: nothing to do.
+        assert_eq!(
+            set_address(&mut doc, "router", "eth", &addr(A1), false).unwrap(),
+            SetAddress::Unchanged
+        );
+        assert_eq!(doc.to_string(), before);
+        let err = set_address(&mut doc, "router", "eth", &addr(A2), false).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("already has an address on 'eth'") && msg.contains(A1),
+            "{msg}"
+        );
+        assert_eq!(doc.to_string(), before);
+        assert_eq!(
+            set_address(&mut doc, "router", "eth", &addr(A2), true).unwrap(),
+            SetAddress::Replaced(addr(A1))
+        );
+        let text = doc.to_string();
+        assert!(
+            text.contains(&format!("eth = \"{A2}\" # mainnet deployment")),
+            "{text}"
+        );
+        // The "*" entry is a separate scope from a chain entry.
+        set_address(&mut doc, "router", ALL_CHAINS, &addr(A1), false).unwrap();
+        let err = set_address(&mut doc, "router", ALL_CHAINS, &addr(A2), false).unwrap_err();
+        assert!(err.to_string().contains("for every chain"), "{err}");
+    }
+
+    #[test]
+    fn set_address_rejects_reserved_names_signers_and_unknown_chains() {
+        let mut doc: DocumentMut = LABELS.parse().unwrap();
+        let before = doc.to_string();
+        for name in names::CONTEXT_TOKENS {
+            let err = set_address(&mut doc, name, "eth", &addr(A1), true).unwrap_err();
+            assert!(err.to_string().contains("context token"), "{name}: {err}");
+        }
+        for name in ["chainname", "verification_url", "key", "RPC", "Wallet"] {
+            let err = set_address(&mut doc, name, "eth", &addr(A1), true).unwrap_err();
+            assert!(err.to_string().contains("context token"), "{name}: {err}");
+        }
+        for name in ["funder", "FUNDER"] {
+            let err = set_address(&mut doc, name, ALL_CHAINS, &addr(A1), true).unwrap_err();
+            assert!(err.to_string().contains("is a signer"), "{name}: {err}");
+        }
+        for name in ["", "my router", "a.b", "a/b", "@x", "x:base", "é"] {
+            let err = set_address(&mut doc, name, "eth", &addr(A1), true).unwrap_err();
+            assert!(err.to_string().contains("[a-z0-9_-]+"), "{name:?}: {err}");
+        }
+        for scope in ["ghost", "ETH", "1", ""] {
+            let err = set_address(&mut doc, "x", scope, &addr(A1), true).unwrap_err();
+            assert!(err.to_string().contains("not found"), "{scope:?}: {err}");
+        }
+        assert_eq!(doc.to_string(), before);
+        // Built-in token names may be shadowed.
+        set_address(&mut doc, "usdc", "eth", &addr(A1), false).unwrap();
+        valid(&doc);
+    }
+
+    #[test]
+    fn remove_address_one_entry_or_the_whole_label() {
+        let mut doc: DocumentMut = LABELS.parse().unwrap();
+        set_address(&mut doc, "router", "base", &addr(A2), false).unwrap();
+        set_address(&mut doc, "router", ALL_CHAINS, &addr(A2), false).unwrap();
+        set_address(&mut doc, "other", "base", &addr(A2), false).unwrap();
+
+        assert!(remove_address(&mut doc, "ghost", None).is_err());
+        let err = remove_address(&mut doc, "other", Some("eth")).unwrap_err();
+        assert!(err.to_string().contains("no address on 'eth'"), "{err}");
+
+        assert_eq!(
+            remove_address(&mut doc, "Router", Some("base")).unwrap(),
+            vec![("base".to_string(), A2.to_string())]
+        );
+        let text = doc.to_string();
+        assert!(
+            text.contains("[addresses.router]") && text.contains("eth = "),
+            "{text}"
+        );
+        assert_eq!(
+            remove_address(&mut doc, "router", None).unwrap(),
+            vec![
+                ("eth".to_string(), A1.to_string()),
+                ("*".to_string(), A2.to_string())
+            ]
+        );
+        // Removing the last entry removes the label's table.
+        remove_address(&mut doc, "other", Some("base")).unwrap();
+        let text = doc.to_string();
+        assert!(!text.contains("addresses"), "{text}");
+        valid(&doc);
     }
 
     #[test]
