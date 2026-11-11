@@ -1,11 +1,15 @@
 //! Process plumbing for forks: signals, liveness, the anvil child, and
 //! reaping what a dead supervisor left behind.
 //!
-//! The frozen [`ForkRecord`](chainz_core::runtime::ForkRecord) holds the supervisor's PID only, so each fork
-//! also has a sidecar, `forks/<name>.pids`, naming its anvil. The sidecar is
-//! created (exclusively) before anvil starts: it is both the claim on the
-//! name and what lets a later `chainz fork` find an orphaned anvil.
+//! A [`ForkRecord`](chainz_core::runtime::ForkRecord) is what other
+//! commands read (`exec`, `top`), and it is written only once the fork is
+//! up. Each fork also has a sidecar, `forks/<name>.pids`, created
+//! (exclusively) before anvil starts and naming the supervisor, then
+//! anvil and its port: it is both the claim on the name and what lets a
+//! later `chainz fork` find an orphaned anvil, including one whose
+//! supervisor died before registering.
 
+use crate::sys::{self, signal};
 use anyhow::{Context as _, Result, anyhow, bail};
 use chainz_core::paths;
 use chainz_core::runtime::Runtime;
@@ -14,13 +18,14 @@ use std::fs::File;
 use std::io;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::{Duration, Instant};
 
-static SHUTDOWN: AtomicBool = AtomicBool::new(false);
+/// The stop signal that arrived, or 0.
+static SHUTDOWN: AtomicI32 = AtomicI32::new(0);
 
-extern "C" fn on_signal(_signal: libc::c_int) {
-    SHUTDOWN.store(true, Ordering::SeqCst);
+extern "C" fn on_signal(signal: libc::c_int) {
+    SHUTDOWN.store(signal, Ordering::SeqCst);
 }
 
 /// Turn SIGINT, SIGTERM and SIGHUP into a shutdown request.
@@ -34,21 +39,23 @@ pub fn install_signal_handlers() {
     }
 }
 
-/// Whether a stop signal arrived.
-pub fn shutdown_requested() -> bool {
-    SHUTDOWN.load(Ordering::SeqCst)
-}
-
-/// Resolves once a stop signal arrives.
-pub async fn shutdown() {
-    while !shutdown_requested() {
-        tokio::time::sleep(Duration::from_millis(50)).await;
+/// The exit code for the stop signal that arrived (128 + its number, so
+/// 130 for Ctrl-C), if one did.
+pub fn shutdown_requested() -> Option<i32> {
+    match SHUTDOWN.load(Ordering::SeqCst) {
+        0 => None,
+        signal => Some(128 + signal),
     }
 }
 
-fn signal(pid: i32, signal: libc::c_int) -> bool {
-    // SAFETY: plain syscall.
-    unsafe { libc::kill(pid, signal) == 0 }
+/// Resolves once a stop signal arrives, with its exit code.
+pub async fn shutdown() -> i32 {
+    loop {
+        if let Some(code) = shutdown_requested() {
+            return code;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 /// Whether a process with this PID exists (zombies included).
@@ -170,16 +177,22 @@ pub fn kill_anvil(pid: u32, port: Option<u16>) {
     }
 }
 
+/// How long a supervisor may take to stop on SIGTERM: it notices within
+/// 200 ms, then gives anvil up to 3 s before killing it. Generous, since a
+/// loaded machine is slow at all of it.
+const SUPERVISOR_GRACE: Duration = Duration::from_secs(10);
+
 /// Stop a supervisor: SIGTERM (it stops anvil and removes its record),
-/// then SIGKILL after 5 s.
+/// then SIGKILL after [`SUPERVISOR_GRACE`].
 pub fn stop_supervisor(pid: u32) {
     if !supervisor_alive(pid) {
         return;
     }
-    let raw = pid as i32;
-    signal(raw, libc::SIGTERM);
-    if !wait_until(Duration::from_secs(5), || !supervisor_alive(pid)) {
-        signal(raw, libc::SIGKILL);
+    if sys::signal_process(pid, libc::SIGTERM).is_err() {
+        return;
+    }
+    if !wait_until(SUPERVISOR_GRACE, || !supervisor_alive(pid)) {
+        let _ = sys::signal_process(pid, libc::SIGKILL);
         wait_until(Duration::from_secs(2), || !supervisor_alive(pid));
     }
 }
@@ -331,23 +344,6 @@ pub fn log_path(name: &str) -> Result<PathBuf> {
     Ok(dir.join(format!("{name}.log")))
 }
 
-/// Open the log for appending, optionally emptying it first.
-pub fn open_log(path: &std::path::Path, truncate: bool) -> Result<File> {
-    let mut options = std::fs::OpenOptions::new();
-    options.append(true).create(true);
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let file = options
-        .open(path)
-        .with_context(|| format!("unable to open {}", path.display()))?;
-    if truncate {
-        file.set_len(0)?;
-    }
-    Ok(file)
-}
-
 /// The last `lines` lines of the log, indented, for error messages.
 pub fn log_tail(path: &std::path::Path, from: u64, lines: usize) -> String {
     use std::io::{Read, Seek, SeekFrom};
@@ -465,18 +461,6 @@ pub fn redirect_output(log: &File) {
     unsafe {
         libc::dup2(log.as_raw_fd(), 1);
         libc::dup2(log.as_raw_fd(), 2);
-    }
-}
-
-/// Start a new session before exec (detached supervisor).
-pub fn detach_session(command: &mut Command) {
-    use std::os::unix::process::CommandExt;
-    // SAFETY: setsid is async-signal-safe.
-    unsafe {
-        command.pre_exec(|| {
-            libc::setsid();
-            Ok(())
-        });
     }
 }
 

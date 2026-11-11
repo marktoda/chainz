@@ -9,7 +9,6 @@ use chainz_core::Address;
 use chainz_core::Chainz;
 use chainz_core::labels::builtin_tokens;
 use chainz_core::redact::redact;
-use chainz_core::secrets::{Builtins, VarResolver};
 use chainz_rpc::Target;
 
 /// Everything the workers and the renderer need to know about the config.
@@ -88,32 +87,28 @@ impl Plan {
     /// do not resolve carries the error and shows as invalid.
     pub fn build(chainz: &Chainz, reveal: bool) -> Self {
         let config = chainz.config();
-        let loader = || chainz.secrets();
         let chains = config
             .chains
             .iter()
             .map(|(name, chain)| {
-                let vars = VarResolver::new(
-                    Builtins {
-                        chain_id: Some(chain.id),
-                        chain: Some(name),
-                    },
-                    &loader,
-                );
                 let endpoints = chain
                     .rpcs
                     .iter()
                     .map(|(ep_name, endpoint)| {
-                        let target = (|| {
-                            let url = vars.expand(&endpoint.url).map_err(|e| e.to_string())?;
-                            let mut headers = Vec::with_capacity(endpoint.headers.len());
-                            for (header, value) in &endpoint.headers {
-                                let value = vars.expand(value).map_err(|e| e.to_string())?;
-                                headers.push((header.clone(), value.into_owned()));
-                            }
-                            Target::new(chain.id, ep_name.as_str(), &url, &headers)
+                        // The bare cause ("variable ${X} is not set"): the
+                        // row already names the chain and the endpoint.
+                        let target = chainz
+                            .expand_endpoint(name, chain.id, ep_name, endpoint)
+                            .map_err(|e| e.root_cause().to_string())
+                            .and_then(|expanded| {
+                                Target::new(
+                                    chain.id,
+                                    ep_name.as_str(),
+                                    &expanded.url,
+                                    &expanded.headers,
+                                )
                                 .map_err(|e| e.to_string())
-                        })();
+                            });
                         EndpointPlan {
                             name: ep_name.clone(),
                             url: if reveal {

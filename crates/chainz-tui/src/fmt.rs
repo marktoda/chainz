@@ -2,18 +2,7 @@
 
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-/// `23481220` → `23,481,220`.
-pub fn group(n: u64) -> String {
-    let digits = n.to_string();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    out
-}
+pub use chainz_core::fmt::{group, short_address, uptime};
 
 /// A coarse age: `4s`, `3m`, `2h`, `5d`.
 pub fn age(secs: u64) -> String {
@@ -22,16 +11,6 @@ pub fn age(secs: u64) -> String {
         100..=5_999 => format!("{}m", secs / 60),
         6_000..=172_799 => format!("{}h", secs / 3_600),
         _ => format!("{}d", secs / 86_400),
-    }
-}
-
-/// An uptime: `42s`, `12m05s`, `2h03m`, `3d04h`.
-pub fn uptime(secs: u64) -> String {
-    match secs {
-        0..=59 => format!("{secs}s"),
-        60..=3_599 => format!("{}m{:02}s", secs / 60, secs % 60),
-        3_600..=86_399 => format!("{}h{:02}m", secs / 3_600, secs % 3_600 / 60),
-        _ => format!("{}d{:02}h", secs / 86_400, secs % 86_400 / 3_600),
     }
 }
 
@@ -122,15 +101,6 @@ pub fn units_exact(raw: u128, decimals: u8) -> String {
     }
 }
 
-/// `0x7E5F…5Bdf`.
-pub fn short_address(address: &str) -> String {
-    if address.len() == 42 && address.is_ascii() {
-        format!("{}…{}", &address[..6], &address[38..])
-    } else {
-        address.to_string()
-    }
-}
-
 /// Display width in terminal cells.
 pub fn width(s: &str) -> usize {
     UnicodeWidthStr::width(s)
@@ -207,24 +177,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn groups_thousands() {
-        assert_eq!(group(0), "0");
-        assert_eq!(group(999), "999");
-        assert_eq!(group(1_000), "1,000");
-        assert_eq!(group(23_481_220), "23,481,220");
-    }
-
-    #[test]
-    fn ages_and_uptimes() {
+    fn ages() {
         assert_eq!(age(4), "4s");
         assert_eq!(age(99), "99s");
         assert_eq!(age(100), "1m");
         assert_eq!(age(7_200), "2h");
         assert_eq!(age(400_000), "4d");
-        assert_eq!(uptime(42), "42s");
-        assert_eq!(uptime(725), "12m05s");
-        assert_eq!(uptime(7_380), "2h03m");
-        assert_eq!(uptime(273_600), "3d04h");
     }
 
     #[test]

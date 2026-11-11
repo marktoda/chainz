@@ -1,16 +1,17 @@
 //! `addr …` and `label`: the address book. Names for addresses, per chain
 //! or for every chain, and the reverse-label filter over stdin.
 
-use super::{open, select_target};
+use super::{note_default, open, parse_address, runtime, select_target};
 use crate::cli::AddrCommand;
-use anyhow::{Context, Result, anyhow, bail};
+use crate::ui;
+use anyhow::{Context, Result, bail};
 use chainz_core::addrbook::{self, Labeler};
 use chainz_core::edit::{self, ALL_CHAINS, SetAddress};
 use chainz_core::labels::{Label, LabelIndex, LabelScope, LabelSource, builtin_tokens};
 use chainz_core::model::Config;
 use chainz_core::resolve::{self, ChainRef, Source};
-use chainz_core::runtime::Runtime;
 use chainz_core::{Address, names};
+use serde::Serialize;
 use std::io;
 
 pub fn run(cmd: AddrCommand) -> Result<i32> {
@@ -21,14 +22,14 @@ pub fn run(cmd: AddrCommand) -> Result<i32> {
             chain,
             all_chains,
         } => add(&name, &address, chain.as_deref(), all_chains),
-        AddrCommand::Ls { chain, builtin } => ls(chain.as_deref(), builtin),
+        AddrCommand::Ls {
+            chain,
+            builtin,
+            json,
+        } => ls(chain.as_deref(), builtin, json),
         AddrCommand::Rm { name, chain } => rm(&name, chain.as_deref()),
-        AddrCommand::Find { address } => find(&address),
+        AddrCommand::Find { address, json } => find(&address, json),
     }
-}
-
-fn runtime() -> Result<Runtime> {
-    Runtime::resolve().context("unable to find the runtime directory")
 }
 
 /// `usdc` from `usdc`, `@usdc` or `USDC`.
@@ -37,12 +38,6 @@ fn label_name(input: &str) -> String {
         .strip_prefix('@')
         .unwrap_or(input)
         .to_ascii_lowercase()
-}
-
-fn parse_address(input: &str) -> Result<Address> {
-    input
-        .parse()
-        .map_err(|e| anyhow!("'{input}' is not an address: {e}"))
 }
 
 /// What to call chain `id`: its configured name, else its well-known
@@ -80,7 +75,7 @@ fn chain_id(config: &Config, target: &ChainRef) -> u64 {
 fn add(name: &str, address: &str, chain: Option<&str>, all_chains: bool) -> Result<i32> {
     let mut chainz = open()?;
     let name = label_name(name);
-    let address = parse_address(address)?;
+    let address = parse_address(address, "address")?;
     // Fail on a bad name before asking which chain.
     edit::check_label_name(&name, chainz.config().signers.keys().map(String::as_str))?;
     let scope = if all_chains {
@@ -138,30 +133,48 @@ fn add(name: &str, address: &str, chain: Option<&str>, all_chains: bool) -> Resu
         .collect();
     if !shadowed.is_empty() {
         eprintln!(
-            "chainz: note: @{name} now shadows the built-in token on {}",
-            shadowed.join(", ")
+            "{}",
+            ui::warn(&format!(
+                "@{name} now shadows the built-in token on {}",
+                shadowed.join(", ")
+            ))
         );
     }
     Ok(0)
 }
 
+#[derive(Serialize)]
 struct Row {
     name: String,
+    /// A chain name, or `*` for every chain.
     scope: String,
+    chain_id: Option<u64>,
     address: Address,
-    source: String,
+    source: &'static str,
+    /// A built-in token hidden by your own label of the same name.
+    shadowed: bool,
 }
 
-fn ls(chain: Option<&str>, builtin: bool) -> Result<i32> {
+impl Row {
+    fn new(config: &Config, label: Label, shadowed: bool) -> Self {
+        Row {
+            scope: scope_label(config, label.scope),
+            chain_id: match label.scope {
+                LabelScope::Chain(id) => Some(id),
+                LabelScope::AllChains => None,
+            },
+            source: source_label(label.source),
+            name: label.name,
+            address: label.address,
+            shadowed,
+        }
+    }
+}
+
+fn ls(chain: Option<&str>, builtin: bool, json: bool) -> Result<i32> {
     let chainz = open()?;
     let config = chainz.config();
     let index = LabelIndex::new(config);
-    let row = |label: Label, note: &str| Row {
-        scope: scope_label(config, label.scope),
-        source: format!("{}{note}", source_label(label.source)),
-        name: label.name,
-        address: label.address,
-    };
     let rows: Vec<Row> = match chain {
         // What `@name` means on one chain, after shadowing.
         Some(query) => {
@@ -170,12 +183,12 @@ fn ls(chain: Option<&str>, builtin: bool) -> Result<i32> {
                 .labels_on(chain_id(config, &target))
                 .into_iter()
                 .filter(|l| builtin || l.source != LabelSource::Token)
-                .map(|l| row(l, ""))
+                .map(|l| Row::new(config, l, false))
                 .collect()
         }
         // Everything, in config order; built-in tokens by chain ID.
-        None => addrbook::all_labels(config)
-            .into_iter()
+        None => index
+            .labels()
             .filter(|l| builtin || l.source != LabelSource::Token)
             .map(|l| {
                 let shadowed = match l.scope {
@@ -184,10 +197,14 @@ fn ls(chain: Option<&str>, builtin: bool) -> Result<i32> {
                         .is_ok_and(|r| r.source != LabelSource::Token),
                     _ => false,
                 };
-                row(l, if shadowed { " (shadowed)" } else { "" })
+                Row::new(config, l, shadowed)
             })
             .collect(),
     };
+    if json {
+        println!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(0);
+    }
     if rows.is_empty() {
         let hint = if builtin {
             ""
@@ -200,12 +217,13 @@ fn ls(chain: Option<&str>, builtin: bool) -> Result<i32> {
     let name_width = rows.iter().map(|r| r.name.len() + 1).max().unwrap_or(0);
     let scope_width = rows.iter().map(|r| r.scope.len()).max().unwrap_or(0);
     for r in rows {
+        let note = if r.shadowed { " (shadowed)" } else { "" };
         println!(
             "{:<name_width$}  {:<scope_width$}  {}  {}",
             format!("@{}", r.name),
             r.scope,
             r.address,
-            crate::ui::dim(&r.source)
+            ui::dim(&format!("{}{note}", r.source))
         );
     }
     Ok(0)
@@ -227,10 +245,12 @@ fn rm(name: &str, chain: Option<&str>) -> Result<i32> {
             .unwrap_or_default();
         bail!("label '{name}' not found{hint}");
     }
+    // Removal is destructive: an exact name, alias or ID, never a prefix
+    // (and never a fork: its labels are its parent's).
     let scope = match chain {
         None => None,
         Some(ALL_CHAINS) => Some(ALL_CHAINS.to_string()),
-        Some(query) => Some(resolve::resolve_exact(config, query)?),
+        Some(query) => Some(exact_chain(config, query)?),
     };
     let removed =
         chainz.transact(|tx| edit::remove_address(&mut tx.doc, &name, scope.as_deref()))?;
@@ -245,38 +265,56 @@ fn rm(name: &str, chain: Option<&str>) -> Result<i32> {
     Ok(0)
 }
 
-fn find(address: &str) -> Result<i32> {
+fn find(address: &str, json: bool) -> Result<i32> {
     let chainz = open()?;
     let config = chainz.config();
-    let address = parse_address(address)?;
-    let found = addrbook::find(config, &address);
-    if found.is_empty() {
+    let address = parse_address(address, "address")?;
+    let index = LabelIndex::new(config);
+    let rows: Vec<Row> = addrbook::find(config, &address)
+        .into_iter()
+        .map(|label| {
+            let shadowed = match label.scope {
+                LabelScope::AllChains => false,
+                LabelScope::Chain(id) => index
+                    .resolve(&label.name, id)
+                    .is_ok_and(|r| r.address != address),
+            };
+            Row::new(config, label, shadowed)
+        })
+        .collect();
+    if json {
+        println!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(if rows.is_empty() { 1 } else { 0 });
+    }
+    if rows.is_empty() {
         eprintln!("no label for {address}");
         return Ok(1);
     }
-    let index = LabelIndex::new(config);
-    for label in found {
-        let (on, shadowed) = match label.scope {
-            LabelScope::AllChains => ("every chain".to_string(), false),
-            LabelScope::Chain(id) => (
-                chain_label(config, id),
-                index
-                    .resolve(&label.name, id)
-                    .is_ok_and(|r| r.address != address),
-            ),
+    for row in rows {
+        let on = match row.chain_id {
+            None => "every chain",
+            Some(_) => row.scope.as_str(),
         };
-        let note = if shadowed {
-            format!(", shadowed by your @{}", label.name)
+        let note = if row.shadowed {
+            format!(", shadowed by your @{}", row.name)
         } else {
             String::new()
         };
-        println!(
-            "@{} on {on} ({}{note})",
-            label.name,
-            source_label(label.source)
-        );
+        println!("@{} on {on} ({}{note})", row.name, row.source);
     }
     Ok(0)
+}
+
+/// A configured chain by exact name, alias (any case) or ID.
+fn exact_chain(config: &Config, query: &str) -> Result<String> {
+    resolve::resolve_exact(config, query).or_else(|error| {
+        config
+            .chains
+            .iter()
+            .find(|(_, chain)| chain.aliases.iter().any(|a| a.eq_ignore_ascii_case(query)))
+            .map(|(name, _)| name.clone())
+            .ok_or(error)
+    })
 }
 
 /// `chainz label [--chain C]`: stdin to stdout, addresses rewritten as
@@ -288,7 +326,7 @@ pub fn label(chain: Option<String>) -> Result<i32> {
     let labeler = match resolve::select(config, Some(&runtime()?), chain.as_deref())? {
         Some((target, source)) => {
             if source == Source::Default {
-                eprintln!("chainz: {} (default)", target.name());
+                note_default(target.name());
             }
             Labeler::for_chain(config, chain_id(config, &target))
         }

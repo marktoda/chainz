@@ -8,6 +8,7 @@ mod cli;
 mod commands;
 mod net;
 mod prompt;
+mod sys;
 mod ui;
 mod view;
 
@@ -23,7 +24,7 @@ fn main() {
         }
         Err(error) => {
             eprintln!("Error: {error:#}");
-            1
+            ui::exit_code(&error)
         }
     };
     std::process::exit(code);

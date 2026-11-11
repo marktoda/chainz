@@ -12,7 +12,7 @@
 //!   time a v1 `config.json` exists and `config.toml` does not.
 
 use crate::migrate;
-use crate::model::{Chain, Config, Endpoint};
+use crate::model::{Config, Endpoint};
 use crate::paths;
 use crate::secrets::{Builtins, Secrets, VarResolver};
 use crate::validate;
@@ -264,21 +264,22 @@ impl Chainz {
     }
 
     /// Expand the URL and header values of `endpoint`, named `endpoint_name`
-    /// on the chain `chain_name`: built-ins from the chain, then variables
-    /// as [`VarResolver`] looks them up (`secrets.toml` is read only if
-    /// needed). Errors name the chain, endpoint, header and variable, never
-    /// a value.
+    /// on chain `chain_name` (ID `chain_id`): the built-ins `${CHAIN}` and
+    /// `${CHAIN_ID}`, then variables as [`VarResolver`] looks them up
+    /// (`secrets.toml` is read only if needed). The chain need not be
+    /// configured yet (`chain add` checks an endpoint before writing it).
+    /// Errors name the chain, endpoint, header and variable, never a value.
     pub fn expand_endpoint(
         &self,
         chain_name: &str,
-        chain: &Chain,
+        chain_id: u64,
         endpoint_name: &str,
         endpoint: &Endpoint,
     ) -> Result<ExpandedEndpoint> {
         let loader = || self.secrets();
         let vars = VarResolver::new(
             Builtins {
-                chain_id: Some(chain.id),
+                chain_id: Some(chain_id),
                 chain: Some(chain_name),
             },
             &loader,
@@ -426,13 +427,13 @@ mod tests {
         let chainz = Chainz::open_at(paths, LoadMode::Strict).unwrap();
         let chain = &chainz.config().chains["eth"];
         let gw = chainz
-            .expand_endpoint("eth", chain, "gw", &chain.rpcs["gw"])
+            .expand_endpoint("eth", chain.id, "gw", &chain.rpcs["gw"])
             .unwrap();
         assert_eq!(gw.url, "https://gw.example/eth/1");
         assert_eq!(gw.headers, [("x-key".to_string(), "gw-secret".to_string())]);
         assert!(!format!("{gw:?}").contains("gw-secret"));
         let err = chainz
-            .expand_endpoint("eth", chain, "bad", &chain.rpcs["bad"])
+            .expand_endpoint("eth", chain.id, "bad", &chain.rpcs["bad"])
             .unwrap_err();
         let err = format!("{err:#}");
         assert!(

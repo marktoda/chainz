@@ -70,7 +70,8 @@ type Key = (u64, String);
 /// concurrent writers do not lose each other's samples.
 #[derive(Debug, Clone)]
 pub struct HealthStore {
-    dir: PathBuf,
+    /// Where it is saved; `None` for a store with nowhere to go.
+    dir: Option<PathBuf>,
     entries: BTreeMap<Key, Entry>,
 }
 
@@ -82,9 +83,30 @@ impl HealthStore {
     /// empty store; other I/O errors (e.g. permissions) are returned.
     pub fn load(state_dir: &Path) -> io::Result<Self> {
         Ok(HealthStore {
-            dir: state_dir.to_path_buf(),
+            dir: Some(state_dir.to_path_buf()),
             entries: read_entries(&state_dir.join(FILE_NAME))?,
         })
+    }
+
+    /// An empty store that is never saved ([`save`](Self::save) fails).
+    pub fn empty() -> Self {
+        HealthStore {
+            dir: None,
+            entries: BTreeMap::new(),
+        }
+    }
+
+    /// The store in `state_dir`, or an empty one when there is no state
+    /// directory or its file can't be read. An unreadable store still
+    /// saves to `state_dir` (merging with what is there by then).
+    pub fn load_or_empty(state_dir: Option<&Path>) -> Self {
+        match state_dir {
+            Some(dir) => Self::load(dir).unwrap_or_else(|_| HealthStore {
+                dir: Some(dir.to_path_buf()),
+                entries: BTreeMap::new(),
+            }),
+            None => Self::empty(),
+        }
     }
 
     /// Append a sample, evicting the oldest beyond [`Self::CAPACITY`].
@@ -151,10 +173,13 @@ impl HealthStore {
     /// trimmed to [`Self::CAPACITY`]; for capabilities the most recently
     /// probed wins.
     pub fn save(&self) -> io::Result<()> {
-        create_private_dir(&self.dir)?;
-        let lock = open_private(&self.dir.join(LOCK_NAME))?;
+        let Some(dir) = &self.dir else {
+            return Err(io::Error::other("the health store has no state directory"));
+        };
+        create_private_dir(dir)?;
+        let lock = open_private(&dir.join(LOCK_NAME))?;
         lock.lock()?;
-        let path = self.dir.join(FILE_NAME);
+        let path = dir.join(FILE_NAME);
         let mut merged = read_entries(&path)?;
         for (key, ours) in &self.entries {
             let theirs = merged.entry(key.clone()).or_default();
@@ -173,7 +198,7 @@ impl HealthStore {
                 .collect(),
         };
         let json = serde_json::to_vec_pretty(&file).map_err(io::Error::other)?;
-        let result = write_atomic(&self.dir, &path, &json);
+        let result = write_atomic(dir, &path, &json);
         let _ = lock.unlock();
         result
     }
@@ -314,6 +339,23 @@ mod tests {
         // window 4 => [10, 20, 30, 100], lower median 20
         assert_eq!(store.p50(1, "a", 4), Some(Duration::from_millis(20)));
         assert_eq!(store.p50(1, "a", 1), Some(Duration::from_millis(30)));
+    }
+
+    #[test]
+    fn empty_and_load_or_empty() {
+        let mut empty = HealthStore::empty();
+        empty.record(1, "a", sample(1, 5, true));
+        assert_eq!(empty.samples(1, "a").len(), 1);
+        assert!(empty.save().is_err(), "nowhere to save");
+        assert!(HealthStore::load_or_empty(None).samples(1, "a").is_empty());
+
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("state");
+        let mut store = HealthStore::load_or_empty(Some(&dir));
+        store.record(1, "a", sample(1, 5, true));
+        store.save().unwrap();
+        let loaded = HealthStore::load_or_empty(Some(&dir));
+        assert_eq!(loaded.samples(1, "a"), vec![sample(1, 5, true)]);
     }
 
     #[test]

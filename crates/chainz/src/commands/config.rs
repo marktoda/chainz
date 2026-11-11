@@ -1,9 +1,7 @@
 //! `config path|edit|migrate`.
 
-use super::chain::edit_text;
+use super::edit_until_saved;
 use crate::cli::ConfigCommand;
-use crate::prompt::{Prompt, SystemPrompt, is_tty};
-use crate::ui;
 use anyhow::{Context, Result, bail};
 use chainz_core::store::{NEW_CONFIG, WriteLock};
 use chainz_core::{Chainz, LoadMode, StorePaths, migrate, paths};
@@ -36,35 +34,21 @@ fn edit() -> Result<i32> {
     let mut chainz = Chainz::open_at(StorePaths::resolve()?, LoadMode::Lenient)?;
     let original =
         paths::read_private(&chainz.paths().config)?.unwrap_or_else(|| NEW_CONFIG.to_string());
-    let mut text = original.clone();
-    loop {
-        let edited = edit_text(&text, ".toml")?;
-        if edited == text {
-            println!("No changes");
-            return Ok(0);
-        }
-        let result = chainz.transact(|tx| {
+    let saved = edit_until_saved(&original, |edited| {
+        chainz.transact(|tx| {
             if tx.doc.to_string() != original {
                 bail!("config.toml changed while you were editing; run the command again");
             }
             tx.doc = edited.parse().context("config.toml is not valid TOML")?;
             Ok(())
-        });
-        match result {
-            Ok(()) => {
-                println!("Saved {}", chainz.paths().config.display());
-                return Ok(0);
-            }
-            Err(e) if is_tty() => {
-                eprintln!("{}", ui::fail(&format!("{e:#}")));
-                if !SystemPrompt.confirm("Edit again?", true)? {
-                    return Err(ui::cancelled());
-                }
-                text = edited;
-            }
-            Err(e) => return Err(e),
-        }
+        })
+    })?;
+    if saved {
+        println!("Saved {}", chainz.paths().config.display());
+    } else {
+        println!("No changes");
     }
+    Ok(0)
 }
 
 fn migrate_cmd(dry_run: bool) -> Result<i32> {

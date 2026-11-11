@@ -11,10 +11,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chainz_core::labels::LabelIndex;
 use chainz_core::model::{Chain, Endpoint};
-use chainz_core::secrets::{Builtins, VarResolver};
 use chainz_core::{Chainz, LoadMode, StorePaths};
 use chainz_rpc::{AimdLimiter, Capabilities, HealthStore, Target};
 
@@ -375,25 +374,12 @@ fn build_target(
     endpoint_name: &str,
     endpoint: &Endpoint,
 ) -> Result<(Target, String)> {
-    let loader = || chainz.secrets();
-    let vars = VarResolver::new(
-        Builtins {
-            chain_id: Some(chain.id),
-            chain: Some(chain_name),
-        },
-        &loader,
-    );
-    let url = vars.expand(&endpoint.url)?;
-    let mut fingerprint = format!("{}\n{url}", chain.id);
-    let mut headers = Vec::with_capacity(endpoint.headers.len());
-    for (name, value) in &endpoint.headers {
-        let value = vars
-            .expand(value)
-            .with_context(|| format!("header '{name}'"))?;
+    let expanded = chainz.expand_endpoint(chain_name, chain.id, endpoint_name, endpoint)?;
+    let mut fingerprint = format!("{}\n{}", chain.id, expanded.url);
+    for (name, value) in &expanded.headers {
         fingerprint.push_str(&format!("\n{name}: {value}"));
-        headers.push((name.clone(), value.into_owned()));
     }
-    let target = Target::new(chain.id, endpoint_name, &url, &headers)?;
+    let target = Target::new(chain.id, endpoint_name, &expanded.url, &expanded.headers)?;
     Ok((target, fingerprint))
 }
 

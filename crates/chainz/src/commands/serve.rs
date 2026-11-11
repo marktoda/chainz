@@ -4,15 +4,16 @@
 //! to a running gateway through the runtime registry (`serve.lock`,
 //! `serve.json`) and the control socket (`serve.sock`).
 
+use super::runtime;
 use crate::cli::{ServeArgs, ServeCommand};
-use crate::{net, ui};
+use crate::{net, sys, ui, view};
 use anyhow::{Context, Result, bail};
 use chainz_core::paths;
 use chainz_core::runtime::{Runtime, ServeInfo};
 use chainz_rpc::control::{
     ControlClient, EVENTS_BUFFER, EventsOptions, MetricsRow, RecordStatus, RequestRecord, Status,
 };
-use console::{Alignment, pad_str};
+use serde::Serialize;
 use std::io::Write;
 use std::time::{Duration, Instant};
 
@@ -27,7 +28,7 @@ const FOLLOW_BACKLOG: usize = 10;
 pub fn run(cmd: Option<ServeCommand>, args: ServeArgs) -> Result<i32> {
     match cmd {
         None => start(args),
-        Some(ServeCommand::Status) => status(),
+        Some(ServeCommand::Status { json }) => status(json),
         Some(ServeCommand::Stop) => stop(),
         Some(ServeCommand::Log {
             follow,
@@ -35,10 +36,6 @@ pub fn run(cmd: Option<ServeCommand>, args: ServeArgs) -> Result<i32> {
             method,
         }) => log(follow, chain, method),
     }
-}
-
-fn runtime() -> Result<Runtime> {
-    Runtime::resolve().context("unable to find the runtime directory")
 }
 
 /// The running gateway's record, or `None` when no gateway holds the lock.
@@ -95,16 +92,7 @@ fn detach(args: &ServeArgs) -> Result<i32> {
     let state = paths::state_dir().context("unable to find the state directory")?;
     paths::ensure_private_dir(&state)?;
     let log_path = state.join("serve.log");
-    let mut options = std::fs::OpenOptions::new();
-    options.create(true).append(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let log = options
-        .open(&log_path)
-        .with_context(|| format!("can't open {}", log_path.display()))?;
+    let log = sys::open_log(&log_path, false)?;
 
     let exe = std::env::current_exe().context("can't find the chainz executable")?;
     let mut command = Command::new(exe);
@@ -120,12 +108,8 @@ fn detach(args: &ServeArgs) -> Result<i32> {
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log);
-    #[cfg(unix)]
-    {
-        // Its own process group: the terminal's Ctrl-C doesn't reach it.
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
-    }
+    // Its own session: the terminal's Ctrl-C and hangup don't reach it.
+    sys::detach(&mut command);
     let mut child = command.spawn().context("failed to start the gateway")?;
 
     let deadline = Instant::now() + START_TIMEOUT;
@@ -189,12 +173,7 @@ fn stop() -> Result<i32> {
 /// gateway's.
 #[cfg(unix)]
 fn terminate(pid: u32) -> Result<()> {
-    use rustix::process::{Pid, Signal, kill_process};
-    let pid = i32::try_from(pid)
-        .ok()
-        .and_then(Pid::from_raw)
-        .context("serve.json holds an invalid pid")?;
-    kill_process(pid, Signal::TERM).context("failed to signal the gateway")
+    sys::signal_process(pid, libc::SIGTERM).context("failed to signal the gateway")
 }
 
 #[cfg(not(unix))]
@@ -202,10 +181,30 @@ fn terminate(_pid: u32) -> Result<()> {
     bail!("`chainz serve stop` is not supported on this platform")
 }
 
-fn status() -> Result<i32> {
+/// `serve status --json`.
+#[derive(Serialize)]
+struct StatusJson<'a> {
+    running: bool,
+    #[serde(flatten)]
+    status: Option<&'a Status>,
+    /// Upstream metrics over the last 60 s.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_60s: Option<&'a [MetricsRow]>,
+}
+
+fn status(json: bool) -> Result<i32> {
     let runtime = runtime()?;
     let Some(info) = running(&runtime)? else {
-        println!("chainz serve: not running");
+        if json {
+            let stopped = StatusJson {
+                running: false,
+                status: None,
+                last_60s: None,
+            };
+            println!("{}", serde_json::to_string_pretty(&stopped)?);
+        } else {
+            println!("chainz serve: not running");
+        }
         return Ok(1);
     };
     let client = ControlClient::new(runtime.serve_sock_path());
@@ -226,7 +225,16 @@ fn status() -> Result<i32> {
         .find(|w| w.window_secs == 60)
         .map(|w| w.rows.as_slice())
         .unwrap_or_default();
-    print!("{}", render_status(&status, minute));
+    if json {
+        let running = StatusJson {
+            running: true,
+            status: Some(&status),
+            last_60s: Some(minute),
+        };
+        println!("{}", serde_json::to_string_pretty(&running)?);
+    } else {
+        print!("{}", render_status(&status, minute));
+    }
     Ok(0)
 }
 
@@ -269,7 +277,7 @@ fn render_status(status: &Status, minute: &[MetricsRow]) -> String {
         status.port,
         status.pid,
         status.version,
-        chainz_serve::uptime(status.uptime_secs)
+        chainz_core::fmt::uptime(status.uptime_secs)
     );
     let _ = writeln!(
         out,
@@ -279,7 +287,7 @@ fn render_status(status: &Status, minute: &[MetricsRow]) -> String {
     let header = [
         "CHAIN", "ID", "ACTIVE", "FAILOVER", "HEAD", "REQ", "ERR", "429", "P50",
     ];
-    let mut rows: Vec<[String; 9]> = vec![header.map(str::to_string)];
+    let mut rows: Vec<[String; 9]> = Vec::with_capacity(status.chains.len());
     for chain in &status.chains {
         let mut totals = Totals::default();
         minute
@@ -299,24 +307,8 @@ fn render_status(status: &Status, minute: &[MetricsRow]) -> String {
             totals.p50(),
         ]);
     }
-    let widths: Vec<usize> = (0..header.len())
-        .map(|i| {
-            rows.iter()
-                .map(|r| console::measure_text_width(&r[i]))
-                .max()
-                .unwrap_or(0)
-        })
-        .collect();
     out.push('\n');
-    for row in &rows {
-        let line = row
-            .iter()
-            .zip(&widths)
-            .map(|(cell, width)| pad_str(cell, *width, Alignment::Left, None).into_owned())
-            .collect::<Vec<_>>()
-            .join("  ");
-        let _ = writeln!(out, "{}", line.trim_end());
-    }
+    out.push_str(&view::table(&header, &rows));
     out
 }
 
@@ -473,6 +465,7 @@ mod tests {
 
     #[test]
     fn status_table() {
+        console::set_colors_enabled(false);
         let status = Status {
             version: "2.0.0".into(),
             pid: 42,

@@ -1,26 +1,11 @@
-//! Small adapter around terminal prompting.
-//!
-//! Interactive command workflows depend on this interface instead of terminal
-//! I/O directly, so their branching and cancellation behavior can be tested.
+//! Terminal prompts and stdin secrets. Interrupting a prompt (Ctrl-C, Esc)
+//! is [`ui::cancelled`], which exits 130.
 
 use crate::ui;
-use anyhow::{Context, Result};
-use dialoguer::{Confirm, FuzzySelect};
+use anyhow::{Context, Result, bail};
+use dialoguer::{Confirm, FuzzySelect, MultiSelect};
 use std::io::IsTerminal;
 use zeroize::Zeroizing;
-
-pub trait Prompt {
-    fn confirm(&mut self, message: &str, default: bool) -> Result<bool>;
-    fn select(&mut self, message: &str, items: &[String], default: usize) -> Result<usize>;
-    fn multi_select(
-        &mut self,
-        message: &str,
-        items: &[String],
-        defaults: &[bool],
-    ) -> Result<Vec<usize>>;
-}
-
-pub struct SystemPrompt;
 
 /// Whether pickers and prompts may be shown: stdin and stderr are both
 /// terminals. Scripts never block on a hidden prompt.
@@ -28,42 +13,55 @@ pub fn is_tty() -> bool {
     std::io::stdin().is_terminal() && std::io::stderr().is_terminal()
 }
 
-impl Prompt for SystemPrompt {
-    fn multi_select(
-        &mut self,
-        message: &str,
-        items: &[String],
-        defaults: &[bool],
-    ) -> Result<Vec<usize>> {
-        terminal_prompt(
-            dialoguer::MultiSelect::new()
-                .with_prompt(message)
-                .items(items)
-                .defaults(defaults)
-                .interact_opt(),
-        )?
-        .ok_or_else(ui::cancelled)
-    }
+/// Yes or no.
+pub fn confirm(message: &str, default: bool) -> Result<bool> {
+    terminal_prompt(
+        Confirm::new()
+            .with_prompt(message)
+            .default(default)
+            .interact(),
+    )
+}
 
-    fn confirm(&mut self, message: &str, default: bool) -> Result<bool> {
-        terminal_prompt(
-            Confirm::new()
-                .with_prompt(message)
-                .default(default)
-                .interact(),
-        )
+/// Go ahead with something destructive or batch-editing: `--yes` says so
+/// up front; otherwise ask on a TTY, and off a TTY fail with `hint` (what
+/// to pass instead). Declining is [`ui::cancelled`].
+pub fn confirm_or_yes(yes: bool, message: &str, hint: &str) -> Result<()> {
+    if yes {
+        return Ok(());
     }
+    if !is_tty() {
+        bail!("{hint}");
+    }
+    if confirm(message, false)? {
+        Ok(())
+    } else {
+        Err(ui::cancelled())
+    }
+}
 
-    fn select(&mut self, message: &str, items: &[String], default: usize) -> Result<usize> {
-        terminal_prompt(
-            FuzzySelect::new()
-                .with_prompt(format!("{} (ESC to exit)", message))
-                .items(items)
-                .default(default)
-                .interact_opt(),
-        )?
-        .ok_or_else(ui::cancelled)
-    }
+/// Pick one of `items`.
+pub fn select(message: &str, items: &[String], default: usize) -> Result<usize> {
+    terminal_prompt(
+        FuzzySelect::new()
+            .with_prompt(format!("{message} (ESC to exit)"))
+            .items(items)
+            .default(default)
+            .interact_opt(),
+    )?
+    .ok_or_else(ui::cancelled)
+}
+
+/// Pick any of `items`.
+pub fn multi_select(message: &str, items: &[String], defaults: &[bool]) -> Result<Vec<usize>> {
+    terminal_prompt(
+        MultiSelect::new()
+            .with_prompt(message)
+            .items(items)
+            .defaults(defaults)
+            .interact_opt(),
+    )?
+    .ok_or_else(ui::cancelled)
 }
 
 /// How a value piped on stdin is normalized before use.
@@ -93,90 +91,38 @@ fn normalize_stdin(raw: &str, label: &str, trim: StdinTrim) -> Result<Zeroizing<
         StdinTrim::TrailingNewlines => raw.trim_end_matches(['\r', '\n']),
     };
     if normalized.is_empty() {
-        anyhow::bail!("{label} from stdin was empty");
+        bail!("{label} from stdin was empty");
     }
     Ok(Zeroizing::new(normalized.to_string()))
+}
+
+/// A secret given as a command-line argument lands in shell history and is
+/// visible to other local users in `ps`: say so.
+pub fn warn_secret_argument(what: &str, instead: &str) {
+    eprintln!(
+        "{}",
+        ui::warn(&format!(
+            "{what} given as an argument is visible in shell history and `ps`; prefer {instead}"
+        ))
+    );
 }
 
 fn terminal_prompt<T>(result: dialoguer::Result<T>) -> Result<T> {
     match result {
         Ok(value) => Ok(value),
-        Err(dialoguer::Error::IO(error)) => terminal_io(Err(error)),
-    }
-}
-
-fn terminal_io<T>(result: std::io::Result<T>) -> Result<T> {
-    match result {
-        Ok(value) => Ok(value),
-        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => Err(ui::cancelled()),
-        Err(error) => Err(error.into()),
+        Err(dialoguer::Error::IO(error)) if error.kind() == std::io::ErrorKind::Interrupted => {
+            Err(ui::cancelled())
+        }
+        Err(dialoguer::Error::IO(error)) => Err(error.into()),
     }
 }
 
 #[cfg(test)]
-pub(crate) mod testing {
-    use super::Prompt;
-    use crate::ui;
-    use anyhow::{Result, anyhow};
-    use std::collections::VecDeque;
-
-    /// Scripted answers for testing interactive handlers.
-    #[derive(Debug)]
-    #[allow(dead_code)]
-    pub(crate) enum Answer {
-        Confirm(bool),
-        Select(usize),
-        Multi(Vec<usize>),
-        Cancel,
-    }
-
-    pub(crate) struct ScriptedPrompt {
-        answers: VecDeque<Answer>,
-    }
-
-    impl ScriptedPrompt {
-        pub(crate) fn new(answers: impl IntoIterator<Item = Answer>) -> Self {
-            Self {
-                answers: answers.into_iter().collect(),
-            }
-        }
-
-        fn next(&mut self) -> Result<Answer> {
-            self.answers
-                .pop_front()
-                .ok_or_else(|| anyhow!("scripted prompt ran out of answers"))
-        }
-    }
-
-    impl Prompt for ScriptedPrompt {
-        fn confirm(&mut self, _: &str, _: bool) -> Result<bool> {
-            match self.next()? {
-                Answer::Confirm(value) => Ok(value),
-                Answer::Cancel => Err(ui::cancelled()),
-                answer => Err(anyhow!("expected confirm answer, got {answer:?}")),
-            }
-        }
-
-        fn select(&mut self, _: &str, _: &[String], _: usize) -> Result<usize> {
-            match self.next()? {
-                Answer::Select(value) => Ok(value),
-                Answer::Cancel => Err(ui::cancelled()),
-                answer => Err(anyhow!("expected select answer, got {answer:?}")),
-            }
-        }
-
-        fn multi_select(&mut self, _: &str, _: &[String], _: &[bool]) -> Result<Vec<usize>> {
-            match self.next()? {
-                Answer::Multi(value) => Ok(value),
-                Answer::Cancel => Err(ui::cancelled()),
-                answer => Err(anyhow!("expected multi-select answer, got {answer:?}")),
-            }
-        }
-    }
+mod tests {
+    use super::*;
 
     #[test]
     fn stdin_normalization_modes() {
-        use super::{StdinTrim, normalize_stdin};
         let whitespace = normalize_stdin("  token \n", "API key", StdinTrim::Whitespace).unwrap();
         assert_eq!(whitespace.as_str(), "token");
         let newlines =
@@ -187,14 +133,11 @@ pub(crate) mod testing {
     }
 
     #[test]
-    fn scripted_prompt_models_selection_and_cancellation() {
-        let mut prompt = ScriptedPrompt::new([Answer::Select(1), Answer::Cancel]);
-        assert_eq!(
-            prompt.select("pick", &["a".into(), "b".into()], 0).unwrap(),
-            1
-        );
-        assert!(crate::ui::is_cancelled(
-            &prompt.confirm("sure?", true).unwrap_err()
-        ));
+    fn yes_skips_the_prompt_and_no_tty_needs_it() {
+        assert!(confirm_or_yes(true, "sure?", "pass --yes").is_ok());
+        if !is_tty() {
+            let err = confirm_or_yes(false, "sure?", "pass --yes").unwrap_err();
+            assert_eq!(err.to_string(), "pass --yes");
+        }
     }
 }

@@ -1,177 +1,21 @@
-//! End-to-end CLI tests.
-//!
-//! Every invocation runs inside a [`Sandbox`]: `HOME` and all four XDG
-//! directories point into a fresh temp dir, `CHAINZ_DISABLE_KEYRING` is set
-//! (the OS keyring is never touched), and context variables inherited from
-//! the caller's shell are removed. Never build a `Command` for the binary
-//! any other way.
+//! End-to-end CLI tests. Every invocation runs inside a sandbox (see
+//! `common`): cleared environment, scratch `HOME` and XDG directories, the
+//! OS keyring disabled.
 
-use assert_cmd::Command;
+mod common;
+
+use common::{MockRpc, Sandbox, TEST_ADDRESS, TEST_KEY, mode, set_mode, stdout};
 use predicates::prelude::*;
 use std::fs;
-use std::io::{Read, Write};
-use std::net::TcpListener;
-use std::path::{Path, PathBuf};
-use tempfile::TempDir;
+use std::path::Path;
 
-/// Well-known anvil test keys #0 and #1.
-const TEST_KEY: &str = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
-const TEST_ADDRESS: &str = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
+/// Well-known anvil test key #1.
 const TEST_KEY_2: &str = "59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
 const TEST_ADDRESS_2: &str = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
 
-/// Variables chainz reads or exports; scrubbed from every test process.
-const SCRUBBED: &[&str] = &[
-    "CHAINZ_CHAIN",
-    "ETH_RPC_URL",
-    "ETH_RPC_HEADERS",
-    "CHAIN_ID",
-    "CHAIN",
-    "CHAIN_NAME",
-    "ETHERSCAN_API_KEY",
-    "VERIFIER_URL",
-    "VERIFIER_API_KEY",
-    "ETH_FROM",
-    "WALLET_ADDRESS",
-    "ETH_KEYSTORE",
-    "RAW_PRIVATE_KEY",
-    "VISUAL",
-    "EDITOR",
-];
-
-/// An isolated home for one test.
-struct Sandbox {
-    root: TempDir,
-}
-
-impl Sandbox {
-    fn new() -> Self {
-        let root = TempDir::new().unwrap();
-        for d in ["home", "config", "state", "cache", "runtime"] {
-            fs::create_dir_all(root.path().join(d)).unwrap();
-        }
-        Self { root }
-    }
-
-    fn home(&self) -> PathBuf {
-        self.root.path().join("home")
-    }
-
-    /// `$XDG_CONFIG_HOME/chainz`.
-    fn dir(&self) -> PathBuf {
-        self.root.path().join("config").join("chainz")
-    }
-
-    fn config_path(&self) -> PathBuf {
-        self.dir().join("config.toml")
-    }
-
-    fn secrets_path(&self) -> PathBuf {
-        self.dir().join("secrets.toml")
-    }
-
-    fn apply(&self, cmd: &mut std::process::Command) {
-        let r = self.root.path();
-        for name in SCRUBBED {
-            cmd.env_remove(name);
-        }
-        cmd.env("HOME", r.join("home"))
-            .env("XDG_CONFIG_HOME", r.join("config"))
-            .env("XDG_STATE_HOME", r.join("state"))
-            .env("XDG_CACHE_HOME", r.join("cache"))
-            .env("XDG_RUNTIME_DIR", r.join("runtime"))
-            .env("CHAINZ_DISABLE_KEYRING", "1")
-            .env("NO_COLOR", "1");
-    }
-
-    /// The binary, sandboxed.
-    fn cmd(&self) -> Command {
-        let mut std = std::process::Command::new(assert_cmd::cargo::cargo_bin!("chainz"));
-        self.apply(&mut std);
-        Command::from_std(std)
-    }
-
-    /// The binary as a plain `std::process::Command` (for spawning).
-    fn process(&self) -> std::process::Command {
-        let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("chainz"));
-        self.apply(&mut cmd);
-        cmd
-    }
-
-    fn write_config(&self, toml: &str) {
-        fs::create_dir_all(self.dir()).unwrap();
-        fs::write(self.config_path(), toml).unwrap();
-        set_mode(&self.config_path(), 0o600);
-    }
-
-    fn write_secrets(&self, toml: &str) {
-        fs::create_dir_all(self.dir()).unwrap();
-        fs::write(self.secrets_path(), toml).unwrap();
-        set_mode(&self.secrets_path(), 0o600);
-    }
-
-    fn config(&self) -> String {
-        fs::read_to_string(self.config_path()).unwrap()
-    }
-
-    fn secrets(&self) -> String {
-        fs::read_to_string(self.secrets_path()).unwrap_or_default()
-    }
-
-    /// Chains `(name, id)` on a dead local RPC, a plaintext `default`
-    /// signer (TEST_KEY) attached to each.
-    fn seed(&self, chains: &[(&str, u64)]) {
-        let mut toml = String::from("version = 2\n\n[signers.default]\nbackend = \"plaintext\"\n");
-        toml.push_str(&format!("address = \"{TEST_ADDRESS}\"\n"));
-        for (name, id) in chains {
-            toml.push_str(&format!(
-                "\n[chains.{name}]\nid = {id}\nsigner = \"default\"\nrpc = \"local\"\n\n[chains.{name}.rpcs]\nlocal = \"http://127.0.0.1:1\"\n"
-            ));
-        }
-        self.write_config(&toml);
-        self.write_secrets(&format!(
-            "[signers.default]\nprivate_key = \"{TEST_KEY}\"\n"
-        ));
-    }
-}
-
-#[cfg(unix)]
-fn set_mode(path: &Path, mode: u32) {
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
-}
-
-#[cfg(unix)]
-fn mode(path: &Path) -> u32 {
-    use std::os::unix::fs::PermissionsExt;
-    fs::metadata(path).unwrap().permissions().mode() & 0o777
-}
-
-/// Serve `n` deterministic `eth_chainId` responses on a local port.
-fn chain_id_rpc(chain_id: u64, n: usize) -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let address = listener.local_addr().unwrap();
-    std::thread::spawn(move || {
-        for _ in 0..n {
-            let Ok((mut stream, _)) = listener.accept() else {
-                return;
-            };
-            let mut request = [0_u8; 4096];
-            let _ = stream.read(&mut request);
-            let body = format!(r#"{{"jsonrpc":"2.0","id":1,"result":"0x{chain_id:x}"}}"#);
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                body.len(),
-                body
-            );
-            let _ = stream.write_all(response.as_bytes());
-        }
-    });
-    format!("http://{address}")
-}
-
-fn stdout(output: &std::process::Output) -> String {
-    String::from_utf8_lossy(&output.stdout).into_owned()
+/// A mock answering `eth_chainId` with `chain_id`.
+fn chain_id_rpc(chain_id: u64) -> String {
+    MockRpc::chain_id(chain_id).url()
 }
 
 fn fixture(name: &str) -> String {
@@ -279,6 +123,7 @@ fn concurrent_updates_do_not_lose_changes() {
             sb.process()
                 .args(["var", "set", &format!("V{i}"), "value"])
                 .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
                 .spawn()
                 .unwrap()
         })
@@ -548,7 +393,7 @@ fn signer_rm_requires_force_when_attached() {
         .failure()
         .stderr(predicate::str::contains("--force"));
     sb.cmd()
-        .args(["signer", "rm", "default", "--force"])
+        .args(["signer", "rm", "default", "--force", "--yes"])
         .assert()
         .success();
     assert!(!sb.config().contains("[signers.default]"));
@@ -613,7 +458,7 @@ fn keystore_signer_is_a_reference() {
 #[test]
 fn chain_add_by_hand_checks_chain_id() {
     let sb = Sandbox::new();
-    let url = chain_id_rpc(8453, 1);
+    let url = chain_id_rpc(8453);
     sb.cmd()
         .args(["chain", "add", "8453", "--rpc", &url])
         .assert()
@@ -621,7 +466,7 @@ fn chain_add_by_hand_checks_chain_id() {
         .stdout(predicate::str::contains("Added chain 'base'"));
     assert!(sb.config().contains("[chains.base]"));
     // Wrong ID is refused.
-    let url = chain_id_rpc(1, 1);
+    let url = chain_id_rpc(1);
     sb.cmd()
         .args(["chain", "add", "10", "--rpc", &url])
         .assert()
@@ -1116,7 +961,7 @@ fn doctor_reports_dead_rpc_and_plaintext_signer() {
 #[test]
 fn doctor_fix_moves_literal_credentials_into_variables() {
     let sb = Sandbox::new();
-    let url = chain_id_rpc(1, 4);
+    let url = chain_id_rpc(1);
     sb.write_config(&format!(
         "version = 2\n[chains.eth]\nid = 1\nrpc = \"local\"\n[chains.eth.rpcs]\nlocal = \"{url}\"\ninfura = \"https://mainnet.infura.invalid/v3/0123456789abcdef0123456789abcdef\"\n"
     ));

@@ -1,22 +1,17 @@
 //! End-to-end tests for the address book: `addr …`, `@label` expansion in
 //! `exec`, `label`, and `doctor --tokens`.
 //!
-//! As in `cli.rs`, every invocation runs inside a [`Sandbox`]: `HOME` and
-//! all four XDG directories point into a fresh temp dir and the OS keyring
-//! is never touched.
+//! As in `cli.rs`, every invocation runs inside a sandbox (see `common`).
 
-use assert_cmd::Command;
+mod common;
+
 use chainz_core::labels::{BuiltinToken, builtin_token, builtin_tokens};
+use common::{MockRpc, Sandbox, TEST_ADDRESS, stdout};
 use predicates::prelude::*;
+use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::TcpListener;
+use std::io::{BufRead, BufReader, Write};
 use std::process::Stdio;
-use tempfile::TempDir;
-
-const TEST_KEY: &str = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
-const TEST_ADDRESS: &str = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
 
 const ROUTER: &str = "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf";
 const ROUTER_ETH: &str = "0x2B5AD5c4795c026514f8317c7a215E218DcCD6cF";
@@ -25,128 +20,32 @@ const UNKNOWN: &str = "0x1efF47bc3a10a45D4B230B5d10E37751FE6AA718";
 const USDC_BASE: &str = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
 const USDT_ETH: &str = "0xdAC17F958D2ee523a2206206994597C13D831ec7";
 
-/// Variables chainz reads or exports; scrubbed from every test process.
-const SCRUBBED: &[&str] = &[
-    "CHAINZ_CHAIN",
-    "ETH_RPC_URL",
-    "ETH_RPC_HEADERS",
-    "CHAIN_ID",
-    "CHAIN",
-    "CHAIN_NAME",
-    "ETHERSCAN_API_KEY",
-    "VERIFIER_URL",
-    "VERIFIER_API_KEY",
-    "ETH_FROM",
-    "WALLET_ADDRESS",
-    "ETH_KEYSTORE",
-    "RAW_PRIVATE_KEY",
-    "VISUAL",
-    "EDITOR",
-];
-
-/// An isolated home for one test.
-struct Sandbox {
-    root: TempDir,
+/// `eth` (1) and `base` (8453) on a dead local RPC.
+fn eth_and_base() -> Sandbox {
+    let sb = Sandbox::new();
+    sb.seed(&[("eth", 1), ("base", 8453)]);
+    sb
 }
 
-impl Sandbox {
-    fn new() -> Self {
-        let root = TempDir::new().unwrap();
-        for d in ["home", "config", "state", "cache", "runtime"] {
-            fs::create_dir_all(root.path().join(d)).unwrap();
-        }
-        Self { root }
-    }
+/// Chains `(name, id, rpc url)` with a plaintext `default` signer.
+fn seeded(chains: &[(&str, u64, &str)]) -> Sandbox {
+    let sb = Sandbox::new();
+    sb.seed_with(chains);
+    sb
+}
 
-    /// Chains `(name, id, rpc url)` with a plaintext `default` signer.
-    fn seeded(chains: &[(&str, u64, &str)]) -> Self {
-        let sb = Self::new();
-        let mut toml = String::from("version = 2\n\n[signers.default]\nbackend = \"plaintext\"\n");
-        toml.push_str(&format!("address = \"{TEST_ADDRESS}\"\n"));
-        for (name, id, url) in chains {
-            toml.push_str(&format!(
-                "\n[chains.{name}]\nid = {id}\nsigner = \"default\"\nrpc = \"local\"\n\n[chains.{name}.rpcs]\nlocal = \"{url}\"\n"
-            ));
-        }
-        let dir = sb.root.path().join("config").join("chainz");
-        fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("config.toml"), toml).unwrap();
-        fs::write(
-            dir.join("secrets.toml"),
-            format!("[signers.default]\nprivate_key = \"{TEST_KEY}\"\n"),
-        )
-        .unwrap();
-        #[cfg(unix)]
-        for f in ["config.toml", "secrets.toml"] {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(dir.join(f), fs::Permissions::from_mode(0o600)).unwrap();
-        }
-        sb
-    }
-
-    /// `eth` (1) and `base` (8453) on a dead local RPC.
-    fn eth_and_base() -> Self {
-        Self::seeded(&[
-            ("eth", 1, "http://127.0.0.1:1"),
-            ("base", 8453, "http://127.0.0.1:1"),
-        ])
-    }
-
-    fn apply(&self, cmd: &mut std::process::Command) {
-        let r = self.root.path();
-        for name in SCRUBBED {
-            cmd.env_remove(name);
-        }
-        cmd.env("HOME", r.join("home"))
-            .env("XDG_CONFIG_HOME", r.join("config"))
-            .env("XDG_STATE_HOME", r.join("state"))
-            .env("XDG_CACHE_HOME", r.join("cache"))
-            .env("XDG_RUNTIME_DIR", r.join("runtime"))
-            .env("CHAINZ_DISABLE_KEYRING", "1")
-            .env("NO_COLOR", "1");
-    }
-
-    /// The binary, sandboxed.
-    fn cmd(&self) -> Command {
-        Command::from_std(self.process())
-    }
-
-    /// The binary as a plain `std::process::Command` (for spawning).
-    fn process(&self) -> std::process::Command {
-        let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("chainz"));
-        self.apply(&mut cmd);
-        cmd
-    }
-
-    fn config(&self) -> String {
-        fs::read_to_string(self.root.path().join("config/chainz/config.toml")).unwrap()
-    }
-
-    /// Run `chainz <args>` and return its stdout; it must succeed.
-    fn ok(&self, args: &[&str]) -> String {
-        let out = self
-            .cmd()
-            .args(args)
-            .assert()
-            .success()
-            .get_output()
-            .clone();
-        String::from_utf8(out.stdout).unwrap()
-    }
-
-    /// `chainz exec <chain> -- echo <args>`, returning what echo printed.
-    fn echo(&self, chain: &str, args: &[&str]) -> String {
-        let mut all = vec!["exec", chain, "--", "echo"];
-        all.extend_from_slice(args);
-        self.ok(&all).trim_end().to_string()
-    }
+/// `chainz exec <chain> -- echo <args>`, returning what echo printed.
+fn echo(sb: &Sandbox, chain: &str, args: &[&str]) -> String {
+    let mut all = vec!["exec", chain, "--", "echo"];
+    all.extend_from_slice(args);
+    sb.ok(&all).trim_end().to_string()
 }
 
 // ---------------------------------------------------------------- addr
 
 #[test]
 fn addr_add_ls_find_rm_roundtrip() {
-    let sb = Sandbox::eth_and_base();
+    let sb = eth_and_base();
     sb.cmd()
         .args(["addr", "ls"])
         .assert()
@@ -279,7 +178,7 @@ fn addr_add_ls_find_rm_roundtrip() {
 
 #[test]
 fn addr_add_defaults_to_the_current_chain_context() {
-    let sb = Sandbox::eth_and_base();
+    let sb = eth_and_base();
     // No --chain, no $CHAINZ_CHAIN, no default, no TTY: an error, not a guess.
     sb.cmd()
         .args(["addr", "add", "myrouter", ROUTER])
@@ -320,7 +219,7 @@ fn addr_add_defaults_to_the_current_chain_context() {
 
 #[test]
 fn addr_add_rejects_bad_names_addresses_and_overwrites() {
-    let sb = Sandbox::eth_and_base();
+    let sb = eth_and_base();
     sb.ok(&["addr", "add", "myrouter", ROUTER, "--chain", "base"]);
     let before = sb.config();
     let fails = |args: &[&str], want: &str| {
@@ -415,16 +314,16 @@ fn addr_add_rejects_bad_names_addresses_and_overwrites() {
 
 #[test]
 fn shadowing_a_builtin_token_is_allowed_and_noted() {
-    let sb = Sandbox::eth_and_base();
+    let sb = eth_and_base();
     sb.cmd()
         .args(["addr", "add", "usdc", ROUTER, "--chain", "base"])
         .assert()
         .success()
-        .stderr("chainz: note: @usdc now shadows the built-in token on base\n");
-    assert_eq!(sb.echo("base", &["@usdc"]), ROUTER);
+        .stderr("⚠ @usdc now shadows the built-in token on base\n");
+    assert_eq!(echo(&sb, "base", &["@usdc"]), ROUTER);
     // Only on that chain.
     let usdc_eth = builtin_token(1, "usdc").unwrap().address.to_string();
-    assert_eq!(sb.echo("eth", &["@usdc"]), usdc_eth);
+    assert_eq!(echo(&sb, "eth", &["@usdc"]), usdc_eth);
     let found = sb.ok(&["addr", "find", USDC_BASE]);
     assert_eq!(found, "@usdc on base (built-in, shadowed by your @usdc)\n");
     let listed = sb.ok(&["addr", "ls", "--builtin"]);
@@ -440,30 +339,30 @@ fn shadowing_a_builtin_token_is_allowed_and_noted() {
 
 #[test]
 fn exec_expands_user_labels_per_chain_and_for_every_chain() {
-    let sb = Sandbox::eth_and_base();
+    let sb = eth_and_base();
     sb.ok(&["addr", "add", "myrouter", ROUTER, "--chain", "base"]);
     sb.ok(&["addr", "add", "my-safe", SAFE, "--all-chains"]);
 
     // Per chain: the label resolves where it was added.
-    assert_eq!(sb.echo("base", &["@myrouter"]), ROUTER);
+    assert_eq!(echo(&sb, "base", &["@myrouter"]), ROUTER);
     assert_eq!(
-        sb.echo("base", &["to=@MyRouter,x"]),
+        echo(&sb, "base", &["to=@MyRouter,x"]),
         format!("to={ROUTER},x")
     );
     // "*": on every chain.
-    assert_eq!(sb.echo("base", &["@my-safe"]), SAFE);
-    assert_eq!(sb.echo("eth", &["@my-safe"]), SAFE);
+    assert_eq!(echo(&sb, "base", &["@my-safe"]), SAFE);
+    assert_eq!(echo(&sb, "eth", &["@my-safe"]), SAFE);
     // A qualifier reaches another chain's entry.
-    assert_eq!(sb.echo("eth", &["@myrouter:base"]), ROUTER);
-    // Built-in tokens, including the ones this stream added.
-    assert_eq!(sb.echo("base", &["@usdc"]), USDC_BASE);
-    assert_eq!(sb.echo("eth", &["@usdt"]), USDT_ETH);
-    assert_eq!(sb.echo("base", &["@usdt:eth"]), USDT_ETH);
+    assert_eq!(echo(&sb, "eth", &["@myrouter:base"]), ROUTER);
+    // Built-in tokens.
+    assert_eq!(echo(&sb, "base", &["@usdc"]), USDC_BASE);
+    assert_eq!(echo(&sb, "eth", &["@usdt"]), USDT_ETH);
+    assert_eq!(echo(&sb, "base", &["@usdt:eth"]), USDT_ETH);
 
     // A per-chain entry beats "*" on its own chain only.
     sb.ok(&["addr", "add", "my-safe", ROUTER_ETH, "--chain", "eth"]);
-    assert_eq!(sb.echo("eth", &["@my-safe"]), ROUTER_ETH);
-    assert_eq!(sb.echo("base", &["@my-safe"]), SAFE);
+    assert_eq!(echo(&sb, "eth", &["@my-safe"]), ROUTER_ETH);
+    assert_eq!(echo(&sb, "base", &["@my-safe"]), SAFE);
 
     // Removing the label makes the token unknown again.
     sb.ok(&["addr", "rm", "myrouter"]);
@@ -476,7 +375,7 @@ fn exec_expands_user_labels_per_chain_and_for_every_chain() {
 
 #[test]
 fn exec_errors_when_a_label_has_no_address_on_the_chain() {
-    let sb = Sandbox::eth_and_base();
+    let sb = eth_and_base();
     sb.ok(&["addr", "add", "myrouter", ROUTER, "--chain", "base"]);
     sb.cmd()
         .args(["exec", "eth", "--", "echo", "@myrouter"])
@@ -508,7 +407,7 @@ fn exec_errors_when_a_label_has_no_address_on_the_chain() {
 
 #[test]
 fn label_rewrites_addresses_for_the_chain() {
-    let sb = Sandbox::eth_and_base();
+    let sb = eth_and_base();
     sb.ok(&["addr", "add", "myrouter", ROUTER, "--chain", "base"]);
     sb.ok(&["addr", "add", "pool", ROUTER, "--chain", "eth"]);
     sb.ok(&["addr", "add", "my-safe", SAFE, "--all-chains"]);
@@ -571,7 +470,7 @@ fn label_rewrites_addresses_for_the_chain() {
 
 #[test]
 fn label_passes_non_utf8_input_through() {
-    let sb = Sandbox::eth_and_base();
+    let sb = eth_and_base();
     let mut input = vec![0xff, 0x00, b' '];
     input.extend_from_slice(USDC_BASE.as_bytes());
     input.extend_from_slice(&[b' ', 0xfe, b'\n', 0x80]);
@@ -589,7 +488,7 @@ fn label_passes_non_utf8_input_through() {
 
 #[test]
 fn label_streams_line_by_line() {
-    let sb = Sandbox::eth_and_base();
+    let sb = eth_and_base();
     let mut child = sb
         .process()
         .args(["label", "--chain", "base"])
@@ -620,7 +519,7 @@ fn label_streams_line_by_line() {
 
 #[test]
 fn label_exits_quietly_when_the_reader_goes_away() {
-    let sb = Sandbox::eth_and_base();
+    let sb = eth_and_base();
     let mut child = sb
         .process()
         .args(["label", "--chain", "base"])
@@ -666,76 +565,25 @@ fn abi_string(s: &str) -> String {
 /// `symbol()` / `decimals()` calls for the given tokens (keyed by lowercase
 /// address). Unknown addresses have no code and revert.
 fn token_rpc(chain_id: u64, tokens: HashMap<String, MockToken>) -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let address = listener.local_addr().unwrap();
-    std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            let Ok(mut stream) = stream else { return };
-            let mut request = Vec::new();
-            let mut chunk = [0u8; 4096];
-            let body = loop {
-                let Ok(n) = stream.read(&mut chunk) else {
-                    break None;
-                };
-                if n == 0 {
-                    break None;
-                }
-                request.extend_from_slice(&chunk[..n]);
-                let text = String::from_utf8_lossy(&request);
-                let Some(split) = text.find("\r\n\r\n") else {
-                    continue;
-                };
-                let length: usize = text[..split]
-                    .lines()
-                    .find_map(|l| {
-                        l.to_ascii_lowercase()
-                            .strip_prefix("content-length:")
-                            .map(|v| v.trim().parse().unwrap())
-                    })
-                    .unwrap_or(0);
-                if text.len() >= split + 4 + length {
-                    break Some(text[split + 4..split + 4 + length].to_string());
-                }
-            };
-            let Some(body) = body else { continue };
-            let req: serde_json::Value = serde_json::from_str(&body).unwrap();
-            let params = &req["params"];
-            let result = match req["method"].as_str().unwrap() {
-                "eth_chainId" => Ok(format!("0x{chain_id:x}")),
-                "eth_getCode" => {
-                    let token = tokens.get(&params[0].as_str().unwrap().to_ascii_lowercase());
-                    Ok(if token.is_some_and(|t| t.code) {
-                        "0x6080"
-                    } else {
-                        "0x"
-                    }
-                    .to_string())
-                }
-                "eth_call" => {
-                    let token = tokens.get(&params[0]["to"].as_str().unwrap().to_ascii_lowercase());
-                    match (token, params[0]["data"].as_str().unwrap()) {
-                        (Some(t), "0x95d89b41") => Ok(format!("0x{}", abi_string(&t.symbol))),
-                        (Some(t), "0x313ce567") => Ok(format!("0x{:064x}", t.decimals)),
-                        _ => Err("execution reverted"),
-                    }
-                }
-                _ => Err("method not found"),
-            };
-            let reply = match result {
-                Ok(result) => serde_json::json!({"jsonrpc": "2.0", "id": req["id"], "result": result}),
-                Err(message) => serde_json::json!({"jsonrpc": "2.0", "id": req["id"], "error": {"code": 3, "message": message}}),
-            }
-            .to_string();
-            let _ = stream.write_all(
-                format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
-                    reply.len()
-                )
-                .as_bytes(),
-            );
+    let rpc = MockRpc::start(move |request| {
+        let params = &request.params;
+        let token = |address: &Value| tokens.get(&address.as_str()?.to_ascii_lowercase());
+        match request.method.as_str() {
+            "eth_chainId" => Ok(json!(format!("{chain_id:#x}"))),
+            "eth_getCode" => Ok(json!(if token(&params[0]).is_some_and(|t| t.code) {
+                "0x6080"
+            } else {
+                "0x"
+            })),
+            "eth_call" => match (token(&params[0]["to"]), params[0]["data"].as_str()) {
+                (Some(t), Some("0x95d89b41")) => Ok(json!(format!("0x{}", abi_string(&t.symbol)))),
+                (Some(t), Some("0x313ce567")) => Ok(json!(format!("0x{:064x}", t.decimals))),
+                _ => Err("execution reverted".into()),
+            },
+            _ => Err("method not found".into()),
         }
     });
-    format!("http://{address}")
+    rpc.url()
 }
 
 fn registry_on(chain_id: u64) -> Vec<&'static BuiltinToken> {
@@ -766,7 +614,7 @@ fn doctor_tokens_passes_when_the_chain_agrees_with_the_registry() {
     // Arbitrum's USDT answers `USD₮0`: symbols are compared as UTF-8.
     let base = token_rpc(8453, mock_tokens(8453));
     let arb = token_rpc(42161, mock_tokens(42161));
-    let sb = Sandbox::seeded(&[("base", 8453, &base), ("arb", 42161, &arb)]);
+    let sb = seeded(&[("base", 8453, &base), ("arb", 42161, &arb)]);
     let out = sb.ok(&["doctor", "--tokens"]);
     for t in registry_on(8453) {
         let line = format!(
@@ -803,7 +651,7 @@ fn doctor_tokens_fails_on_any_mismatch() {
     let rpc = token_rpc(8453, tokens);
     // `eth` answers with the wrong chain ID; `op` is unreachable.
     let wrong = token_rpc(5, HashMap::new());
-    let sb = Sandbox::seeded(&[
+    let sb = seeded(&[
         ("base", 8453, &rpc),
         ("eth", 1, &wrong),
         ("op", 10, "http://127.0.0.1:1"),
@@ -850,13 +698,14 @@ fn doctor_tokens_fails_on_any_mismatch() {
         out.contains("✗ op (10): could not connect to endpoint; "),
         "{out}"
     );
-    assert!(
-        out.contains(&format!(
-            "⚠ base: your @weth ({ROUTER}) shadows the built-in token"
-        )),
-        "{out}"
-    );
     let failed = 4 + registry_on(1).len() + registry_on(10).len();
     assert!(out.contains(&format!(": 1 ok, {failed} failed, ")), "{out}");
     assert!(!out.contains("127.0.0.1"), "{out}");
+    // Shadowing is a config matter: plain `doctor` notes it, `--tokens`
+    // (which checks the registry against the chain) does not.
+    let shadow = format!("⚠ base: your @weth ({ROUTER}) shadows the built-in token");
+    assert!(!out.contains(&shadow), "{out}");
+    let plain = sb.run(&["doctor"]);
+    assert!(stdout(&plain).contains(&shadow), "{}", stdout(&plain));
 }
+

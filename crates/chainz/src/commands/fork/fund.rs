@@ -5,14 +5,13 @@
 use anyhow::{Result, anyhow, bail};
 use chainz_core::labels::{LabelIndex, builtin_tokens};
 use chainz_core::{Address, Config};
+use chainz_rpc::erc20;
 use chainz_rpc::{BlockId, RpcClient, Target};
 use serde_json::{Value, json};
 
 /// Native units given to the signer.
 pub const NATIVE_AMOUNT: &str = "1000";
 const NATIVE_DECIMALS: u8 = 18;
-/// `decimals()`.
-const DECIMALS_SELECTOR: [u8; 4] = [0x31, 0x3c, 0xe5, 0x67];
 
 /// One `name=amount` pair, resolved before anvil starts.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -213,10 +212,10 @@ async fn deal(client: &RpcClient, anvil: &Target, owner: &str, token: &TokenGran
         Some(decimals) => decimals,
         None => {
             let data = client
-                .call(anvil, &address, &DECIMALS_SELECTOR, BlockId::Latest)
+                .call(anvil, &address, &erc20::DECIMALS, BlockId::Latest)
                 .await
                 .map_err(|e| anyhow!("could not read decimals(): {e}"))?;
-            parse_decimals(&data)
+            erc20::decode_u8(&data)
                 .ok_or_else(|| anyhow!("{address} does not answer decimals(): not an ERC-20?"))?
         }
     };
@@ -226,11 +225,6 @@ async fn deal(client: &RpcClient, anvil: &Target, owner: &str, token: &TokenGran
         .await
         .map_err(|e| anyhow!("{e}"))?;
     Ok(())
-}
-
-/// A `uint8` from a 32-byte ABI word.
-fn parse_decimals(data: &[u8]) -> Option<u8> {
-    (data.len() == 32 && data[..31].iter().all(|b| *b == 0)).then(|| data[31])
 }
 
 #[cfg(test)]
@@ -375,13 +369,7 @@ base = "0x00000000000000000000000000000000000c0de1"
     }
 
     #[test]
-    fn decimals_word_and_native_symbols() {
-        let mut word = [0u8; 32];
-        word[31] = 6;
-        assert_eq!(parse_decimals(&word), Some(6));
-        word[0] = 1;
-        assert_eq!(parse_decimals(&word), None);
-        assert_eq!(parse_decimals(&[]), None);
+    fn native_symbols() {
         assert_eq!(native_symbol(8453), "ETH");
         assert_eq!(native_symbol(137), "POL");
     }

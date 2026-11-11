@@ -5,8 +5,10 @@ use super::open_lenient;
 use super::rpc::{health_label, probe_chains};
 use crate::{net, ui};
 use anyhow::Result;
+use chainz_core::extract::{self, Location};
+use chainz_core::labels::{LabelIndex, LabelSource, builtin_tokens};
 use chainz_core::model::{Backend, Config};
-use chainz_core::{Chainz, edit, migrate, paths, template, validate};
+use chainz_core::{Chainz, edit, migrate, paths, validate};
 use chainz_rpc::{Health, classify, rank};
 
 #[derive(Default)]
@@ -62,6 +64,7 @@ pub fn run(fix: bool) -> Result<i32> {
         println!("{}", ui::dim("fix these with `chainz config edit`"));
         return Ok(1);
     }
+    shadowed_tokens(chainz.config(), &report);
 
     println!("{}", ui::section("credentials"));
     credentials(&mut chainz, fix, &mut report)?;
@@ -133,100 +136,65 @@ fn files(chainz: &Chainz, fix: bool, report: &mut Report) {
     }
 }
 
-/// A literal (non-template) value that looks like a credential.
-fn literal(value: &str) -> bool {
-    !value.is_empty() && !template::has_templates(value)
+/// Your own labels that hide a built-in token on a configured chain: a
+/// note, since shadowing is allowed but easy to forget.
+fn shadowed_tokens(config: &Config, report: &Report) {
+    let index = LabelIndex::new(config);
+    for token in builtin_tokens() {
+        if let Some((chain, _)) = config.chain_by_id(token.chain_id)
+            && let Ok(label) = index.resolve(&token.name, token.chain_id)
+            && label.source != LabelSource::Token
+            && label.address != token.address
+        {
+            report.note(&format!(
+                "{chain}: your @{} ({}) shadows the built-in token",
+                token.name, label.address
+            ));
+        }
+    }
 }
 
 fn credentials(chainz: &mut Chainz, fix: bool, report: &mut Report) -> Result<()> {
     let config = chainz.config().clone();
-    let mut extractable: Vec<(String, String)> = Vec::new();
+    let vars = chainz.secrets().map(|s| s.vars.clone()).unwrap_or_default();
+    let plan = extract::plan_secret_extraction(&config, &vars);
     let mut found = 0;
+    // Credentials in a URL that only a person can move (user info, a key
+    // in the query or an unknown provider's path).
     for (chain, c) in &config.chains {
         for (ep, e) in &c.rpcs {
-            if let Some(kind) = migrate::inline_credential(&e.url) {
+            if let Some(kind) = migrate::inline_credential(&e.url)
+                && extract::extract_known_key(&e.url).is_none()
+            {
                 found += 1;
                 report.problem(&format!(
-                    "chains.{chain}.rpcs.{ep}: literal credential in the URL ({kind})"
+                    "chains.{chain}.rpcs.{ep}: literal credential in the URL ({kind}); move it into a variable by hand"
                 ));
-                if migrate::extract_known_key(&e.url).is_some() {
-                    extractable.push((chain.clone(), ep.clone()));
-                }
-            }
-            for (h, v) in &e.headers {
-                if literal(v) && v.len() >= 16 {
-                    found += 1;
-                    report.problem(&format!(
-                        "chains.{chain}.rpcs.{ep}: header '{h}' holds a literal value; move it into a variable"
-                    ));
-                }
             }
         }
     }
-    let mut keys: Vec<String> = Vec::new();
-    for (name, e) in &config.explorers {
-        if e.key.as_deref().is_some_and(literal) {
-            found += 1;
-            report.problem(&format!("explorers.{name}: literal API key"));
-            keys.push(name.clone());
-        }
+    for moved in &plan.moved {
+        found += 1;
+        report.problem(&match &moved.location {
+            Location::Url { .. } => format!("{}: literal API key in the URL", moved.location),
+            Location::Header { .. } => format!("{} holds a literal value", moved.location),
+            Location::ExplorerKey { .. } => format!("{}: literal API key", moved.location),
+        });
     }
     if found == 0 {
         report.ok("no literal credentials in config.toml");
     }
-    if !fix || (extractable.is_empty() && keys.is_empty()) {
+    if !fix || plan.is_empty() {
         return Ok(());
     }
+    // Re-plan under the lock, against the files as they are now.
     let moved = chainz.transact(|tx| {
-        let secrets = tx.secrets_view()?;
-        let mut vars = secrets.vars.clone();
-        let mut intern = |base: &str, secret: &str| -> String {
-            if let Some((n, _)) = vars.iter().find(|(_, v)| v.as_str() == secret) {
-                return n.clone();
-            }
-            let name = (1..)
-                .map(|n| {
-                    if n == 1 {
-                        base.to_string()
-                    } else {
-                        format!("{base}_{n}")
-                    }
-                })
-                .find(|n| !vars.contains_key(n))
-                .expect("a free name");
-            vars.insert(name.clone(), secret.to_string());
-            name
-        };
-        let mut moved = Vec::new();
-        for (chain, ep) in &extractable {
-            let endpoint = &config.chains[chain].rpcs[ep];
-            let (before, after, base, key) =
-                migrate::extract_known_key(&endpoint.url).expect("checked above");
-            let var = intern(base, key);
-            let mut new = endpoint.clone();
-            new.url = format!("{before}${{{var}}}{after}");
-            edit::set_endpoint(&mut tx.doc, chain, ep, &new)?;
-            moved.push(format!("chains.{chain}.rpcs.{ep} → ${{{var}}}"));
-        }
-        for name in &keys {
-            let key = config.explorers[name]
-                .key
-                .as_deref()
-                .expect("checked above");
-            let base = format!("{}_API_KEY", name.to_ascii_uppercase().replace('-', "_"));
-            let var = intern(&base, key);
-            edit::set_explorer_key(&mut tx.doc, name, &format!("${{{var}}}"))?;
-            moved.push(format!("explorers.{name} → ${{{var}}}"));
-        }
-        for (n, v) in &vars {
-            if secrets.vars.get(n) != Some(v) {
-                edit::set_var(&mut tx.secrets, n, v)?;
-            }
-        }
-        Ok(moved)
+        let plan = extract::plan_secret_extraction(&tx.config()?, &tx.secrets_view()?.vars);
+        plan.apply(&mut tx.doc, &mut tx.secrets)?;
+        Ok(plan.moved)
     })?;
     for m in moved {
-        report.fixed(&m);
+        report.fixed(&m.to_string());
     }
     Ok(())
 }

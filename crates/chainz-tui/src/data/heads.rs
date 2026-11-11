@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use chainz_rpc::{BlockId, RpcClient, RpcError, Target};
 use serde_json::Value;
 
-use super::{Shared, Signals, Tuning, abi};
+use super::{Shared, Signals, Tuning};
 use crate::model::{Fault, Head, Update, now_ms};
 use crate::plan::ChainPlan;
 
@@ -310,7 +310,7 @@ impl Poller {
 }
 
 fn field(block: &Value, name: &str) -> Option<u128> {
-    abi::quantity(block.get(name)?.as_str()?)
+    chainz_rpc::hex::parse_quantity_saturating(block.get(name)?.as_str()?).ok()
 }
 
 /// The head, from one `eth_getBlockByNumber("latest")`.

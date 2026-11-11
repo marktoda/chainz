@@ -1,5 +1,6 @@
 //! The little ABI the dashboard needs: Multicall3 `aggregate3`, ERC-20
-//! `balanceOf`, and hex helpers. Hand-rolled to keep alloy out of the tree.
+//! `balanceOf`. Hand-rolled to keep alloy out of the tree; hex and
+//! quantities are `chainz_rpc::hex`.
 
 use chainz_core::Address;
 
@@ -105,45 +106,6 @@ pub fn uint(word: &[u8]) -> u128 {
     low.iter().fold(0u128, |n, b| n << 8 | u128::from(*b))
 }
 
-/// `0x`-prefixed lowercase hex.
-pub fn hex(data: &[u8]) -> String {
-    let mut s = String::with_capacity(2 + data.len() * 2);
-    s.push_str("0x");
-    for b in data {
-        s.push_str(&format!("{b:02x}"));
-    }
-    s
-}
-
-/// Decode `0x`-prefixed (or bare) hex.
-pub fn unhex(s: &str) -> Option<Vec<u8>> {
-    let s = s.strip_prefix("0x").unwrap_or(s);
-    // `from_str_radix` takes a sign: "+f" would decode as 0x0f.
-    if !s.len().is_multiple_of(2) || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return None;
-    }
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
-        .collect()
-}
-
-/// Parse a JSON-RPC quantity (`0x…`), saturating at `u128::MAX`.
-pub fn quantity(s: &str) -> Option<u128> {
-    let digits = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X"))?;
-    let digits = digits.trim_start_matches('0');
-    if digits.len() > 32 {
-        return digits
-            .bytes()
-            .all(|b| b.is_ascii_hexdigit())
-            .then_some(u128::MAX);
-    }
-    if digits.is_empty() {
-        return s.len().gt(&2).then_some(0);
-    }
-    u128::from_str_radix(digits, 16).ok()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -164,12 +126,15 @@ mod tests {
             (multicall3(), get_eth_balance(&holder)),
             (USDC.parse().unwrap(), balance_of(&holder)),
         ];
-        assert_eq!(hex(&encode_aggregate3(&calls)), CAST_CALLDATA);
+        assert_eq!(
+            chainz_rpc::hex::encode(&encode_aggregate3(&calls)),
+            CAST_CALLDATA
+        );
     }
 
     #[test]
     fn aggregate3_result_decodes() {
-        let data = unhex(CAST_RESULT).unwrap();
+        let data = chainz_rpc::hex::decode(CAST_RESULT).unwrap();
         assert_eq!(
             decode_aggregate3(&data, 3),
             Some(vec![Some(1234), None, Some(42)])
@@ -182,21 +147,11 @@ mod tests {
     }
 
     #[test]
-    fn uint_and_quantity_saturate() {
+    fn uint_saturates() {
         let mut w = [0u8; 32];
         w[31] = 7;
         assert_eq!(uint(&w), 7);
         w[0] = 1;
         assert_eq!(uint(&w), u128::MAX);
-        assert_eq!(quantity("0x0"), Some(0));
-        assert_eq!(quantity("0x1b"), Some(27));
-        assert_eq!(quantity("0x"), None);
-        assert_eq!(quantity("12"), None);
-        assert_eq!(quantity(&format!("0x1{}", "0".repeat(40))), Some(u128::MAX));
-        assert_eq!(unhex("0x0a0B"), Some(vec![10, 11]));
-        assert_eq!(unhex("0xabc"), None);
-        assert_eq!(unhex("0x+f"), None);
-        assert_eq!(unhex("+f-1"), None);
-        assert_eq!(unhex("0x"), Some(vec![]));
     }
 }

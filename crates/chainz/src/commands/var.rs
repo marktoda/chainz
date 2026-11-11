@@ -2,7 +2,7 @@
 
 use super::open;
 use crate::cli::VarCommand;
-use crate::prompt::{StdinTrim, read_stdin_secret};
+use crate::prompt::{self, StdinTrim, read_stdin_secret};
 use crate::ui;
 use anyhow::{Result, bail};
 use chainz_core::model::Config;
@@ -58,7 +58,10 @@ fn masked(value: &str) -> String {
 fn set(name: &str, value: Option<String>, stdin: bool) -> Result<i32> {
     check_name(name)?;
     let value = match value {
-        Some(v) => Zeroizing::new(v),
+        Some(v) => {
+            prompt::warn_secret_argument("a variable value", "--stdin or the prompt");
+            Zeroizing::new(v)
+        }
         None if stdin => read_stdin_secret("value", StdinTrim::TrailingNewlines)?,
         None => {
             let backend = SystemKeyBackend;

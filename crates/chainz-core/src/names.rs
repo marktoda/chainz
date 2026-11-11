@@ -19,7 +19,7 @@ pub const DEPRECATED_TOKENS: [(&str, &str); 3] = [
 ];
 
 /// Names a fork may not take (they are `chainz fork` subcommands).
-pub const RESERVED_FORK_NAMES: [&str; 2] = ["ls", "stop"];
+pub const RESERVED_FORK_NAMES: [&str; 3] = ["ls", "list", "stop"];
 
 /// Short names for well-known chain IDs (first match wins in reverse
 /// lookups). Unknown IDs fall back to [`slugify`] of the chainlist name.
@@ -71,6 +71,15 @@ pub fn short_name(chain_id: u64) -> Option<&'static str> {
 /// `[a-z0-9][a-z0-9_-]*`, and not all digits (digits mean a chain ID).
 pub fn is_valid_chain_name(name: &str) -> bool {
     is_name(name) && !name.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// Why `name` cannot be a chain name, if it cannot (see
+/// [`is_valid_chain_name`]).
+pub fn check_chain_name(name: &str) -> anyhow::Result<()> {
+    if !is_valid_chain_name(name) {
+        anyhow::bail!("chain name '{name}' must match [a-z0-9][a-z0-9_-]* and not be all digits");
+    }
+    Ok(())
 }
 
 /// Whether `name` is a valid endpoint name: `[a-z0-9][a-z0-9_-]*`.
@@ -239,6 +248,9 @@ mod tests {
     fn names_and_slugs() {
         assert!(is_valid_chain_name("base-sepolia"));
         assert!(!is_valid_chain_name("8453"));
+        assert!(check_chain_name("base").is_ok());
+        let err = check_chain_name("8453").unwrap_err().to_string();
+        assert!(err.contains("not be all digits"), "{err}");
         assert!(!is_valid_chain_name("Base"));
         assert_eq!(slugify("OP Mainnet"), "op-mainnet");
         assert_eq!(slugify("zkSync  Era!"), "zksync-era");

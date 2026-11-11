@@ -1,49 +1,22 @@
 //! End-to-end tests for `chainz top --once`.
 //!
-//! Every invocation is sandboxed: `HOME` and all four XDG directories point
-//! into a fresh temp dir and `CHAINZ_DISABLE_KEYRING` is set. The RPC is a
-//! mock on a loopback port; nothing here touches the network.
+//! Every invocation runs in a sandbox (see `common`). The RPC is a mock on
+//! a loopback port; nothing here touches the network.
 
-use assert_cmd::Command;
+mod common;
+
+use common::{MockRpc, Sandbox};
 use serde_json::{Value, json};
-use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::TcpListener;
-use std::sync::{Arc, Mutex};
-use tempfile::TempDir;
 
 const ADDRESS: &str = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
 
-struct Sandbox {
-    root: TempDir,
-}
-
-impl Sandbox {
-    fn new() -> Self {
-        let root = TempDir::new().unwrap();
-        for d in ["home", "config/chainz", "state", "cache", "runtime"] {
-            fs::create_dir_all(root.path().join(d)).unwrap();
-        }
-        Self { root }
-    }
-
-    fn write(&self, name: &str, text: &str) {
-        let path = self.root.path().join("config/chainz").join(name);
-        fs::write(&path, text).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
-        }
-    }
-
-    /// `live` on the mock (through a `${VAR}` in the path), `dead` on a
-    /// closed port, and a keyring signer with a cached address.
-    fn seed(&self, rpc: &str) {
-        self.write(
-            "config.toml",
-            &format!(
-                r#"version = 2
+/// `live` on the mock (through a `${VAR}` in the path), `dead` on a
+/// closed port, and a keyring signer with a cached address.
+fn seed(sb: &Sandbox, rpc: &str) {
+    sb.write(
+        "config.toml",
+        &format!(
+            r#"version = 2
 default = "live"
 
 [chains.live]
@@ -68,32 +41,17 @@ local = "http://127.0.0.1:1"
 backend = "keyring"
 address = "{ADDRESS}"
 "#
-            ),
-        );
-        self.write("secrets.toml", "[vars]\nRPC_KEY = \"s3cr3t-key\"\n");
-    }
-
-    fn top(&self, args: &[&str]) -> Command {
-        let r = self.root.path();
-        let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("chainz"));
-        for name in ["CHAINZ_CHAIN", "ETH_RPC_URL", "RPC_KEY"] {
-            cmd.env_remove(name);
-        }
-        cmd.env("HOME", r.join("home"))
-            .env("XDG_CONFIG_HOME", r.join("config"))
-            .env("XDG_STATE_HOME", r.join("state"))
-            .env("XDG_CACHE_HOME", r.join("cache"))
-            .env("XDG_RUNTIME_DIR", r.join("runtime"))
-            .env("CHAINZ_DISABLE_KEYRING", "1")
-            .env("NO_COLOR", "1")
-            .arg("top")
-            .args(args);
-        cmd
-    }
+        ),
+    );
+    sb.write("secrets.toml", "[vars]\nRPC_KEY = \"s3cr3t-key\"\n");
 }
 
-/// The `(path, method)` of every request a mock received.
-type Seen = Arc<Mutex<Vec<(String, String)>>>;
+/// `chainz top <args>` in the sandbox.
+fn top(sb: &Sandbox, args: &[&str]) -> assert_cmd::Command {
+    let mut cmd = sb.cmd();
+    cmd.arg("top").args(args);
+    cmd
+}
 
 fn word(n: u128) -> String {
     format!("{n:064x}")
@@ -126,88 +84,51 @@ fn aggregate3_targets(calldata: &str) -> Vec<String> {
 }
 
 /// A mock chain 1: head 1,000 with 12 s blocks, and a Multicall3 that
-/// reports 1.5 ETH, 2.5 USDC and nothing of any other token. Returns its
-/// URL and the request paths and methods it saw.
-fn mock_rpc() -> (String, Seen) {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
-    let seen: Seen = Arc::default();
-    let log = seen.clone();
-    std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            let Ok(mut stream) = stream else { continue };
-            let mut reader = BufReader::new(stream.try_clone().unwrap());
-            let mut request_line = String::new();
-            reader.read_line(&mut request_line).unwrap();
-            let mut length = 0;
-            loop {
-                let mut line = String::new();
-                reader.read_line(&mut line).unwrap();
-                if line.trim().is_empty() {
-                    break;
-                }
-                if let Some(v) = line.to_lowercase().strip_prefix("content-length:") {
-                    length = v.trim().parse().unwrap();
-                }
+/// reports 1.5 ETH, 2.5 USDC and nothing of any other token.
+fn mock_rpc() -> MockRpc {
+    MockRpc::start(|request| {
+        Ok(match request.method.as_str() {
+            "eth_getBlockByNumber" => {
+                // The head is always fresh: its time is the request's.
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+                let tag = request.params[0].as_str().unwrap();
+                let number = match tag {
+                    "latest" => 1_000,
+                    hex => u64::from_str_radix(&hex[2..], 16).unwrap(),
+                };
+                json!({
+                    "number": format!("{number:#x}"),
+                    "timestamp": format!("{:#x}", now - (1_000 - number) * 12),
+                    "baseFeePerGas": "0x3b9aca00",
+                })
             }
-            let mut body = vec![0; length];
-            reader.read_exact(&mut body).unwrap();
-            let request: Value = serde_json::from_slice(&body).unwrap();
-            let method = request["method"].as_str().unwrap_or("batch").to_string();
-            let path = request_line.split_whitespace().nth(1).unwrap().to_string();
-            let result = match method.as_str() {
-                "eth_getBlockByNumber" => {
-                    // The head is always fresh: its time is the request's.
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs();
-                    let tag = request["params"][0].as_str().unwrap();
-                    let number = match tag {
-                        "latest" => 1_000,
-                        hex => u64::from_str_radix(&hex[2..], 16).unwrap(),
-                    };
-                    json!({
-                        "number": format!("{number:#x}"),
-                        "timestamp": format!("{:#x}", now - (1_000 - number) * 12),
-                        "baseFeePerGas": "0x3b9aca00",
+            "eth_call" => {
+                let calldata = request.params[0]["data"].as_str().unwrap();
+                let values: Vec<u128> = aggregate3_targets(calldata)
+                    .iter()
+                    .enumerate()
+                    .map(|(i, target)| match (i, target.as_str()) {
+                        (0, _) => 1_500_000_000_000_000_000,
+                        (_, USDC) => 2_500_000,
+                        _ => 0,
                     })
-                }
-                "eth_call" => {
-                    let calldata = request["params"][0]["data"].as_str().unwrap();
-                    let values: Vec<u128> = aggregate3_targets(calldata)
-                        .iter()
-                        .enumerate()
-                        .map(|(i, target)| match (i, target.as_str()) {
-                            (0, _) => 1_500_000_000_000_000_000,
-                            (_, USDC) => 2_500_000,
-                            _ => 0,
-                        })
-                        .collect();
-                    json!(aggregate3_result(&values))
-                }
-                _ => Value::Null,
-            };
-            log.lock().unwrap().push((path, method));
-            let reply = json!({"jsonrpc": "2.0", "id": request["id"], "result": result});
-            let reply = reply.to_string();
-            write!(
-                stream,
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
-                reply.len()
-            )
-            .unwrap();
-        }
-    });
-    (url, seen)
+                    .collect();
+                json!(aggregate3_result(&values))
+            }
+            _ => Value::Null,
+        })
+    })
 }
 
 #[test]
 fn once_json_prints_one_snapshot() {
     let sandbox = Sandbox::new();
-    let (rpc, seen) = mock_rpc();
-    sandbox.seed(&rpc);
-    let output = sandbox.top(&["--once", "--json"]).output().unwrap();
+    let rpc = mock_rpc();
+    seed(&sandbox, &rpc.url());
+    let output = top(&sandbox, &["--once", "--json"]).output().unwrap();
     assert!(
         output.status.success(),
         "{}",
@@ -281,13 +202,10 @@ fn once_json_prints_one_snapshot() {
         !stdout.contains("RPC_KEY}") || stdout.contains("REDACTED"),
         "{stdout}"
     );
-    let seen = seen.lock().unwrap();
-    assert!(
-        seen.iter().all(|(path, _)| path == "/v3/s3cr3t-key"),
-        "{seen:?}"
-    );
+    let seen = rpc.seen();
+    assert!(seen.iter().all(|r| r.path == "/v3/s3cr3t-key"), "{seen:?}");
     // The traffic budget: a head, one look-back block, one multicall.
-    let methods: Vec<&str> = seen.iter().map(|(_, m)| m.as_str()).collect();
+    let methods = rpc.methods();
     assert_eq!(
         methods,
         ["eth_getBlockByNumber", "eth_getBlockByNumber", "eth_call"]
@@ -297,10 +215,10 @@ fn once_json_prints_one_snapshot() {
 #[test]
 fn reveal_controls_url_redaction() {
     let sandbox = Sandbox::new();
-    let (rpc, _seen) = mock_rpc();
-    sandbox.seed(&rpc);
+    let rpc = mock_rpc();
+    seed(&sandbox, &rpc.url());
     let url_of = |args: &[&str], index: usize| -> String {
-        let output = sandbox.top(args).output().unwrap();
+        let output = top(&sandbox, args).output().unwrap();
         assert!(output.status.success());
         let snapshot: Value = serde_json::from_slice(&output.stdout).unwrap();
         snapshot["chains"][0]["endpoints"][index]["url"]
@@ -316,15 +234,15 @@ fn reveal_controls_url_redaction() {
         "wss://live.example.org/ws/hunter2"
     );
     let revealed = url_of(&["--once", "--json", "--reveal"], 0);
-    assert_eq!(revealed, format!("{rpc}/v3/${{RPC_KEY}}"));
+    assert_eq!(revealed, format!("{}/v3/${{RPC_KEY}}", rpc.url()));
 }
 
 #[test]
 fn once_without_json_prints_the_tables() {
     let sandbox = Sandbox::new();
-    let (rpc, _seen) = mock_rpc();
-    sandbox.seed(&rpc);
-    let output = sandbox.top(&["--once"]).output().unwrap();
+    let rpc = mock_rpc();
+    seed(&sandbox, &rpc.url());
+    let output = top(&sandbox, &["--once"]).output().unwrap();
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
     let lines: Vec<&str> = stdout.lines().collect();
@@ -372,28 +290,26 @@ fn once_without_json_prints_the_tables() {
 #[test]
 fn once_with_no_chains_is_an_empty_snapshot() {
     let sandbox = Sandbox::new();
-    let output = sandbox.top(&["--once", "--json"]).output().unwrap();
+    let output = top(&sandbox, &["--once", "--json"]).output().unwrap();
     assert!(output.status.success());
     let snapshot: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(snapshot["chains"], json!([]));
     assert_eq!(snapshot["balances"], json!([]));
-    let text = sandbox.top(&["--once"]).output().unwrap();
+    let text = top(&sandbox, &["--once"]).output().unwrap();
     assert!(String::from_utf8_lossy(&text.stdout).contains("No chains configured yet."));
 }
 
 #[test]
 fn the_live_view_needs_a_terminal_and_json_needs_once() {
     let sandbox = Sandbox::new();
-    sandbox.seed("http://127.0.0.1:1");
+    seed(&sandbox, "http://127.0.0.1:1");
     // Under the test harness stdout is a pipe: refuse, and say what to use.
-    sandbox
-        .top(&[])
+    top(&sandbox, &[])
         .assert()
         .code(1)
         .stderr(predicates::str::contains("needs a terminal"))
         .stderr(predicates::str::contains("chainz top --once --json"));
-    sandbox
-        .top(&["--json"])
+    top(&sandbox, &["--json"])
         .assert()
         .code(1)
         .stderr(predicates::str::contains("`--json` needs `--once`"));

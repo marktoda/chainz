@@ -1,8 +1,9 @@
 //! `chain …`, `ls` and `use`.
 
-use super::{chain_arg, open, pick_chain};
+use super::rpc::{check, extract_secrets, probe_urls, report_moved};
+use super::{chain_arg, edit_until_saved, open, pick_chain};
 use crate::cli::{ChainCommand, ListArgs};
-use crate::prompt::{Prompt, SystemPrompt, is_tty};
+use crate::prompt::{self, is_tty};
 use crate::{net, ui, view};
 use anyhow::{Context, Result, anyhow, bail};
 use chainz_core::edit::{self, NewChain};
@@ -10,7 +11,7 @@ use chainz_core::labels::LabelIndex;
 use chainz_core::model::Endpoint;
 use chainz_core::{names, resolve};
 use chainz_rpc::chainlist::{self, ChainlistEntry};
-use chainz_rpc::{RpcClient, probe_all, rank};
+use chainz_rpc::{ProbeResult, rank};
 
 pub fn run(cmd: ChainCommand) -> Result<i32> {
     match cmd {
@@ -175,7 +176,7 @@ fn add(
                     .iter()
                     .map(|e| format!("{} ({})", e.name, e.chain_id))
                     .collect();
-                all[SystemPrompt.select("Chain to add", &items, 0)?].clone()
+                all[prompt::select("Chain to add", &items, 0)?].clone()
             }
         };
         Some(entry)
@@ -190,9 +191,7 @@ fn add(
         .or_else(|| names::short_name(id).map(str::to_string))
         .or_else(|| entry.as_ref().map(|e| names::slugify(&e.name)))
         .ok_or_else(|| anyhow!("chain {id} has no built-in short name; pass --name"))?;
-    if !names::is_valid_chain_name(&short) {
-        bail!("chain name '{short}' must match [a-z0-9][a-z0-9_-]* and not be all digits");
-    }
+    names::check_chain_name(&short)?;
     if let Some((existing, _)) = chainz.config().chain_by_id(id) {
         bail!("chain ID {id} is already configured as '{existing}'");
     }
@@ -209,10 +208,14 @@ fn add(
         });
         endpoints.push((ep, Endpoint::new(url)));
     };
-    let active;
     if rpcs.is_empty() {
         let entry = entry.as_ref().expect("online path");
-        let public = chainlist::public_rpcs(entry);
+        // Only URLs that make valid endpoints; websockets are kept but not
+        // probed.
+        let public: Vec<String> = chainlist::public_rpcs(entry)
+            .into_iter()
+            .filter(|u| chainz_rpc::Target::new(id, "x", u, &[]).is_ok())
+            .collect();
         let http: Vec<String> = public
             .iter()
             .filter(|u| u.starts_with("http"))
@@ -228,65 +231,22 @@ fn add(
             "{}",
             ui::dim(&format!("probing {} public RPCs…", http.len()))
         );
-        let targets: Vec<_> = http
-            .iter()
-            .enumerate()
-            .filter_map(|(i, u)| chainz_rpc::Target::new(id, format!("rpc{i}"), u, &[]).ok())
-            .collect();
-        let results = net::block_on(async {
-            let mut rx = probe_all(&RpcClient::new(), targets, id);
-            let mut out = vec![None; http.len()];
-            while let Some((i, r)) = rx.recv().await {
-                out[i] = Some(r);
-            }
-            out.into_iter()
-                .map(|r| r.expect("one result per target"))
-                .collect::<Vec<_>>()
-        });
-        let order = rank(&results, &vec![None; results.len()]);
-        if !results[order[0]].is_ok() {
-            bail!("no public RPC for {} answered; pass --rpc URL", entry.name);
-        }
-        let chosen = if is_tty() {
-            let items: Vec<String> = order
-                .iter()
-                .map(|&i| match &results[i] {
-                    r if r.is_ok() => {
-                        format!("{}  {}ms", view_url(&http[i]), r.latency.as_millis())
-                    }
-                    _ => format!("{}  unreachable", view_url(&http[i])),
-                })
-                .collect();
-            order[SystemPrompt.select("Active RPC", &items, 0)?]
-        } else {
-            order[0]
-        };
-        push(&mut endpoints, &http[chosen]);
-        for url in public.iter().filter(|u| **u != http[chosen]) {
+        let probed = probe_urls(id, &http);
+        let chosen = choose_active(&probed, &entry.name)?;
+        push(&mut endpoints, chosen);
+        for url in public.iter().filter(|u| *u != chosen) {
             push(&mut endpoints, url);
         }
-        active = endpoints[0].0.clone();
     } else {
         for url in &rpcs {
             push(&mut endpoints, url);
         }
-        active = endpoints[0].0.clone();
-        if !no_check && !endpoints[0].1.is_websocket() {
-            let (ep_name, endpoint) = &endpoints[0];
-            let chain_stub = chainz_core::model::Chain {
-                id,
-                aliases: vec![],
-                signer: None,
-                explorer: None,
-                rpc: ep_name.clone(),
-                failover: vec![],
-                rpcs: Default::default(),
-            };
-            let target = net::target(&chainz, &short, &chain_stub, ep_name, endpoint)?;
-            net::block_on(RpcClient::new().check_chain_id(&target, id))
-                .map_err(|e| anyhow!("RPC check failed for {}: {e}", view_url(&endpoint.url)))?;
+        let (ep_name, endpoint) = &endpoints[0];
+        if !no_check && !endpoint.is_websocket() {
+            check(&chainz, &short, id, ep_name, endpoint)?;
         }
     }
+    let active = endpoints[0].0.clone();
 
     let aliases: Vec<String> = entry
         .as_ref()
@@ -296,50 +256,49 @@ fn add(
         .filter(|alias| resolve::resolve_configured(chainz.config(), alias).is_err())
         .collect();
     let count = endpoints.len();
-    let new = NewChain {
-        id,
-        aliases,
-        signer,
-        explorer: None,
-        rpc: active.clone(),
-        failover: vec![],
-        rpcs: endpoints,
-    };
-    chainz.transact(|tx| edit::insert_chain(&mut tx.doc, &short, &new))?;
+    let moved = chainz.transact(|tx| {
+        let mut rpcs = endpoints;
+        let moved = extract_secrets(tx, &short, &mut rpcs)?;
+        let new = NewChain {
+            id,
+            aliases,
+            signer,
+            explorer: None,
+            rpc: active.clone(),
+            failover: vec![],
+            rpcs,
+        };
+        edit::insert_chain(&mut tx.doc, &short, &new)?;
+        Ok(moved)
+    })?;
     println!("Added chain '{short}' ({id}) with {count} endpoint(s); active: {active}");
+    report_moved(&moved);
     Ok(0)
+}
+
+/// The probed URL to make active: the fastest healthy one, or the user's
+/// pick from the ranked list on a TTY.
+fn choose_active<'a>(probed: &'a [(String, ProbeResult)], chain: &str) -> Result<&'a str> {
+    let results: Vec<ProbeResult> = probed.iter().map(|(_, r)| r.clone()).collect();
+    let order = rank(&results, &vec![None; results.len()]);
+    let Some(&best) = order.first().filter(|&&i| results[i].is_ok()) else {
+        bail!("no public RPC for {chain} answered; pass --rpc URL");
+    };
+    if !is_tty() {
+        return Ok(&probed[best].0);
+    }
+    let items: Vec<String> = order
+        .iter()
+        .map(|&i| match &probed[i] {
+            (url, r) if r.is_ok() => format!("{}  {}ms", view_url(url), r.latency.as_millis()),
+            (url, _) => format!("{}  unreachable", view_url(url)),
+        })
+        .collect();
+    Ok(&probed[order[prompt::select("Active RPC", &items, 0)?]].0)
 }
 
 fn view_url(url: &str) -> String {
     chainz_core::redact::redact(url)
-}
-
-fn editor() -> String {
-    std::env::var("VISUAL")
-        .or_else(|_| std::env::var("EDITOR"))
-        .unwrap_or_else(|_| "vi".to_string())
-}
-
-/// Open `text` in `$EDITOR` and return the edited text.
-pub fn edit_text(text: &str, suffix: &str) -> Result<String> {
-    let mut file = tempfile::Builder::new()
-        .prefix("chainz-")
-        .suffix(suffix)
-        .tempfile()?;
-    std::io::Write::write_all(&mut file, text.as_bytes())?;
-    let path = file.path().to_path_buf();
-    let editor = editor();
-    let status = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(format!("{editor} \"$1\""))
-        .arg("sh")
-        .arg(&path)
-        .status()
-        .with_context(|| format!("failed to start {editor}"))?;
-    if !status.success() {
-        bail!("{editor} exited with {status}; nothing changed");
-    }
-    Ok(std::fs::read_to_string(&path)?)
 }
 
 fn edit_chain(query: &str) -> Result<i32> {
@@ -347,42 +306,27 @@ fn edit_chain(query: &str) -> Result<i32> {
     let name = chain_arg(&chainz, query)?;
     let text = std::fs::read_to_string(&chainz.paths().config)?;
     let doc: toml_edit::DocumentMut = text.parse()?;
-    let mut snippet = edit::chain_snippet(&doc, &name)?;
-    loop {
-        let edited = edit_text(&snippet, ".toml")?;
-        if edited == snippet {
-            println!("No changes");
-            return Ok(0);
-        }
-        let result = chainz.transact(|tx| {
+    let snippet = edit::chain_snippet(&doc, &name)?;
+    let saved = edit_until_saved(&snippet, |edited| {
+        chainz.transact(|tx| {
             if tx.doc.to_string() != text {
                 bail!("config.toml changed while you were editing; run the command again");
             }
-            edit::replace_chain_from_snippet(&mut tx.doc, &name, &edited)
-        });
-        match result {
-            Ok(()) => {
-                println!("Updated chain '{name}'");
-                return Ok(0);
-            }
-            Err(e) if is_tty() => {
-                eprintln!("{}", ui::fail(&format!("{e:#}")));
-                if !SystemPrompt.confirm("Edit again?", true)? {
-                    return Err(ui::cancelled());
-                }
-                snippet = edited;
-            }
-            Err(e) => return Err(e),
-        }
+            edit::replace_chain_from_snippet(&mut tx.doc, &name, edited)
+        })
+    })?;
+    if saved {
+        println!("Updated chain '{name}'");
+    } else {
+        println!("No changes");
     }
+    Ok(0)
 }
 
 fn rename(query: &str, new: &str) -> Result<i32> {
     let mut chainz = open()?;
     let old = chain_arg(&chainz, query)?;
-    if !names::is_valid_chain_name(new) {
-        bail!("chain name '{new}' must match [a-z0-9][a-z0-9_-]* and not be all digits");
-    }
+    names::check_chain_name(new)?;
     if chainz.config().chains.contains_key(new) {
         bail!("chain '{new}' already exists");
     }
