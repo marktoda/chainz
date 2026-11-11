@@ -3,12 +3,15 @@
 
 use std::io::{self, Stdout, Write};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::mpsc::Receiver;
+use std::thread::ThreadId;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use chainz_core::runtime::Runtime;
 use chainz_core::{Chainz, LoadMode, edit};
+use chainz_rpc::HealthStore;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::cursor::{Hide, Show};
@@ -32,21 +35,38 @@ const POLL: Duration = Duration::from_millis(50);
 /// Redraw at least this often, so ages keep counting.
 const TICK: Duration = Duration::from_secs(1);
 
-/// The alternate screen in raw mode; restored on drop and on panic.
+/// The alternate screen in raw mode; restored on drop and on a panic of
+/// the UI thread.
 struct Screen {
     terminal: Terminal<CrosstermBackend<Stdout>>,
 }
 
+/// Whether the dashboard holds the terminal (raw mode, alternate screen).
+static ON_SCREEN: AtomicBool = AtomicBool::new(false);
+
 fn restore() {
+    ON_SCREEN.store(false, Ordering::SeqCst);
     let _ = disable_raw_mode();
     let _ = execute!(io::stdout(), LeaveAlternateScreen, Show);
 }
 
+/// Whether a panic on `panicking` should give the terminal back: only a
+/// panic of the UI thread, and only while the dashboard holds the screen.
+/// A worker's panic is caught by its runtime and the UI keeps drawing;
+/// restoring under it would leave it drawing on the normal screen.
+fn restores_on_panic(ui: ThreadId, panicking: ThreadId, on_screen: bool) -> bool {
+    panicking == ui && on_screen
+}
+
 impl Screen {
     fn enter() -> Result<Self> {
+        let ui = std::thread::current().id();
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
-            restore();
+            let on_screen = ON_SCREEN.load(Ordering::SeqCst);
+            if restores_on_panic(ui, std::thread::current().id(), on_screen) {
+                restore();
+            }
             previous(info);
         }));
         Ok(Screen {
@@ -62,6 +82,7 @@ impl Screen {
     /// for the answer; nothing here needs that round trip.)
     fn open() -> Result<Terminal<CrosstermBackend<Stdout>>> {
         enable_raw_mode().context("failed to enter raw mode")?;
+        ON_SCREEN.store(true, Ordering::SeqCst);
         execute!(io::stdout(), EnterAlternateScreen, Hide)?;
         Terminal::new(CrosstermBackend::new(io::stdout())).context("failed to open the terminal")
     }
@@ -106,12 +127,78 @@ struct Dashboard {
     state: State,
     app: App,
     engine: Option<Engine>,
+    /// The focus last handed to the engine; `None` when it does not know.
+    focus_sent: Option<Option<String>>,
+    /// The idle flag last handed to the workers.
+    idle: bool,
 }
 
 impl Dashboard {
+    /// The dashboard for `chainz`; its workers start with [`Self::run_engine`].
+    fn new(chainz: Chainz, runtime: Runtime, options: Options, store: HealthStore) -> Result<Self> {
+        let plan = Arc::new(Plan::build(&chainz, options.reveal));
+        let mut state = State::new(&plan, &store);
+        let (sender, updates) = std::sync::mpsc::channel();
+        let shared = Shared::new(
+            store,
+            runtime,
+            chainz.paths().config.clone(),
+            Tuning::default(),
+            sender,
+        );
+        state.gateway = shared.gateway();
+        let mut app = App::default();
+        app.chain.clone_from(&chainz.config().default);
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .thread_name("chainz-top")
+            .enable_all()
+            .build()
+            .context("failed to start the async runtime")?;
+        Ok(Dashboard {
+            engine: None,
+            chainz,
+            options,
+            shared,
+            updates,
+            rt,
+            plan,
+            state,
+            app,
+            focus_sent: None,
+            idle: false,
+        })
+    }
+
+    /// Start the workers on the current plan.
+    fn run_engine(&mut self) {
+        self.engine = Some(Engine::start(self.rt.handle(), &self.shared, &self.plan));
+    }
+
+    /// Tell the workers whether anyone is watching, when that changed.
+    fn set_idle(&mut self, idle: bool) {
+        if idle != self.idle {
+            self.idle = idle;
+            self.shared.set_idle(idle);
+        }
+    }
+
+    /// Hand the engine the chain to probe, when that changed.
+    fn sync_focus(&mut self) {
+        let Some(engine) = &self.engine else {
+            return;
+        };
+        let focus = self.app.focus(&self.state);
+        if self.focus_sent.as_ref() != Some(&focus) {
+            engine.focus(focus.clone());
+            self.focus_sent = Some(focus);
+        }
+    }
+
     /// Stop the workers and forget what they still had queued.
     fn stop(&mut self) {
         self.engine = None;
+        self.focus_sent = None;
         while self.updates.try_recv().is_ok() {}
     }
 
@@ -124,7 +211,7 @@ impl Dashboard {
         self.state = self.state.rebuilt(&self.plan, &self.shared.store());
         match &mut self.engine {
             Some(engine) => engine.replan(&self.plan),
-            None => self.engine = Some(Engine::start(self.rt.handle(), &self.shared, &self.plan)),
+            None => self.run_engine(),
         }
     }
 
@@ -138,6 +225,12 @@ impl Dashboard {
             Err(error) => {
                 let text = format!("config not reloaded: {error:#}");
                 self.app.notify(text, true, now_ms());
+                // Back from the shell nothing runs, and `r` and the config
+                // watcher run with the engine: carry on with the config
+                // loaded last rather than with nothing.
+                if self.engine.is_none() {
+                    self.start();
+                }
             }
         }
     }
@@ -223,51 +316,26 @@ impl Dashboard {
     }
 }
 
-/// Run the interactive dashboard until the user quits.
+/// Run the interactive dashboard until the user quits, or a SIGTERM or
+/// SIGHUP asks it to. Returns the exit code.
 pub(crate) fn run(chainz: Chainz, runtime: Runtime, options: Options) -> Result<i32> {
     let theme = Theme::from_env();
-    let plan = Arc::new(Plan::build(&chainz, options.reveal));
-    let store = load_store();
-    let mut state = State::new(&plan, &store);
-    let (sender, updates) = std::sync::mpsc::channel();
-    let shared = Shared::new(
-        store,
-        runtime,
-        chainz.paths().config.clone(),
-        Tuning::default(),
-        sender,
-    );
-    state.gateway = shared.gateway();
-    let mut app = App::default();
-    app.chain.clone_from(&chainz.config().default);
-
-    // First paint before any worker exists: the frame is on screen while
+    let mut dash = Dashboard::new(chainz, runtime, options, load_store())?;
+    let quit = quit_on_signals(dash.rt.handle())?;
+    // First paint before any worker runs: the frame is on screen while
     // the first requests are still in flight.
     let mut screen = Screen::enter()?;
-    screen.draw(Ctx::now(&app, &state, theme))?;
-
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .thread_name("chainz-top")
-        .enable_all()
-        .build()
-        .context("failed to start the async runtime")?;
-    let mut dash = Dashboard {
-        engine: Some(Engine::start(rt.handle(), &shared, &plan)),
-        chainz,
-        options,
-        shared,
-        updates,
-        rt,
-        plan,
-        state,
-        app,
-    };
+    screen.draw(Ctx::now(&dash.app, &dash.state, theme))?;
+    dash.run_engine();
 
     let mut drawn = Instant::now();
     let mut dirty = false;
     let mut last_key = Instant::now();
-    'ui: loop {
+    let code = 'ui: loop {
+        let signal = quit.load(Ordering::SeqCst);
+        if signal != 0 {
+            break 'ui 128 + signal;
+        }
         if event::poll(POLL)? {
             // Take everything that is already waiting, then draw once.
             loop {
@@ -276,7 +344,7 @@ pub(crate) fn run(chainz: Chainz, runtime: Runtime, options: Options) -> Result<
                         last_key = Instant::now();
                         let action = dash.app.on_key(key, &dash.state, now_ms());
                         if !dash.act(&mut screen, action)? {
-                            break 'ui;
+                            break 'ui 0;
                         }
                         dirty = true;
                     }
@@ -289,7 +357,7 @@ pub(crate) fn run(chainz: Chainz, runtime: Runtime, options: Options) -> Result<
             }
         }
         let idle_after = dash.shared.tuning().idle_after;
-        dash.shared.set_idle(last_key.elapsed() >= idle_after);
+        dash.set_idle(last_key.elapsed() >= idle_after);
         let mut reload = false;
         while let Ok(update) = dash.updates.try_recv() {
             match update {
@@ -301,8 +369,10 @@ pub(crate) fn run(chainz: Chainz, runtime: Runtime, options: Options) -> Result<
         if reload {
             dash.reload();
         }
-        if let Some(engine) = &dash.engine {
-            engine.focus(dash.app.focus(&dash.state));
+        // The focus follows the tab, the selection and the chain list:
+        // keys and updates, both of which mark the frame dirty.
+        if dirty || dash.focus_sent.is_none() {
+            dash.sync_focus();
         }
         dirty |= dash.app.expire(now_ms());
         if dirty || drawn.elapsed() >= TICK {
@@ -310,10 +380,107 @@ pub(crate) fn run(chainz: Chainz, runtime: Runtime, options: Options) -> Result<
             drawn = Instant::now();
             dirty = false;
         }
-    }
+    };
     drop(screen);
     // Do not wait for requests still in flight.
     dash.engine = None;
     dash.rt.shutdown_background();
-    Ok(0)
+    Ok(code)
+}
+
+/// The number of the first SIGTERM or SIGHUP received, 0 until then. The
+/// event loop checks it between key polls and leaves, so the terminal is
+/// restored on the way out instead of left raw on the alternate screen.
+fn quit_on_signals(rt: &tokio::runtime::Handle) -> Result<Arc<AtomicI32>> {
+    use tokio::signal::unix::{SignalKind, signal};
+    let _runtime = rt.enter();
+    let mut term = signal(SignalKind::terminate()).context("failed to watch SIGTERM")?;
+    let mut hup = signal(SignalKind::hangup()).context("failed to watch SIGHUP")?;
+    let quit = Arc::new(AtomicI32::new(0));
+    let flag = quit.clone();
+    rt.spawn(async move {
+        let number = tokio::select! {
+            _ = term.recv() => SignalKind::terminate().as_raw_value(),
+            _ = hup.recv() => SignalKind::hangup().as_raw_value(),
+        };
+        flag.store(number, Ordering::SeqCst);
+    });
+    Ok(quit)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chainz_core::store::StorePaths;
+
+    #[test]
+    fn only_the_ui_thread_panicking_restores_the_terminal() {
+        let ui = std::thread::current().id();
+        let worker = std::thread::spawn(|| std::thread::current().id())
+            .join()
+            .unwrap();
+        assert!(restores_on_panic(ui, ui, true));
+        assert!(!restores_on_panic(ui, worker, true), "a tokio worker");
+        assert!(!restores_on_panic(ui, ui, false), "already restored");
+    }
+
+    fn write_config(paths: &StorePaths, text: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(&paths.dir).unwrap();
+        std::fs::write(&paths.config, text).unwrap();
+        let private = std::fs::Permissions::from_mode(0o600);
+        std::fs::set_permissions(&paths.config, private).unwrap();
+    }
+
+    #[test]
+    fn a_failed_reload_with_nothing_running_restarts_the_workers() {
+        let dir = crate::data::testing::short_tempdir();
+        let paths = StorePaths::in_dir(dir.path().join("config"));
+        write_config(&paths, "version = 2\n");
+        let chainz = Chainz::open_at(paths.clone(), LoadMode::Strict).unwrap();
+        let options = Options {
+            once: false,
+            json: false,
+            reveal: false,
+            shell: None,
+        };
+        let store = HealthStore::load(dir.path()).unwrap();
+        let runtime = Runtime::at(dir.path().join("runtime"));
+        let mut dash = Dashboard::new(chainz, runtime, options, store).unwrap();
+        dash.run_engine();
+
+        // `e`: the workers stop while the shell has the terminal, and the
+        // shell leaves a broken config behind.
+        dash.stop();
+        write_config(&paths, "version = 2\n[chains.eth\n");
+        dash.reload();
+        assert!(dash.engine.is_some(), "the workers run on the old config");
+        let notice = dash.app.notice.as_ref().unwrap();
+        assert!(notice.error && notice.text.starts_with("config not reloaded"));
+        dash.rt.shutdown_background();
+    }
+
+    #[test]
+    fn sigterm_and_sighup_ask_the_loop_to_quit() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let quit = quit_on_signals(rt.handle()).unwrap();
+        assert_eq!(quit.load(Ordering::SeqCst), 0);
+        let pid = std::process::id().to_string();
+        let sent = std::process::Command::new("kill")
+            .args(["-HUP", &pid])
+            .status()
+            .unwrap();
+        assert!(sent.success());
+        rt.block_on(async {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while quit.load(Ordering::SeqCst) == 0 {
+                assert!(Instant::now() < deadline, "no SIGHUP seen");
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        });
+        assert_eq!(quit.load(Ordering::SeqCst), 1, "SIGHUP");
+    }
 }
