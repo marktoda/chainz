@@ -224,8 +224,6 @@ fn stream_commands_are_stubs() {
     let sb = Sandbox::new();
     sb.seed(&[("eth", 1)]);
     for args in [
-        vec!["serve"],
-        vec!["serve", "status"],
         vec!["top"],
         vec!["fork", "eth"],
         vec!["fork", "ls"],
