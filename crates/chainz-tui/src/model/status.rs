@@ -1,9 +1,9 @@
 //! Classification: ok / lag / slow / down for chains, ok / lagging /
 //! failing for endpoints.
 
-use chainz_rpc::{ErrorClass, LAG_THRESHOLD};
+use chainz_rpc::{ErrorClass, HealthSample, LAG_THRESHOLD};
 
-use super::state::ChainState;
+use super::state::{ChainState, EndpointState};
 use super::update::Head;
 
 /// A chain head this many blocks behind the best head seen for its chain
@@ -14,6 +14,9 @@ pub const SLOW_FLOOR_MS: u32 = 200;
 /// An endpoint is slow when its median is this many times the median of
 /// all chains (and above [`SLOW_FLOOR_MS`]).
 pub const SLOW_FACTOR: u32 = 3;
+/// Endpoint probes this much older than the newest one are not compared
+/// with it: about two probe intervals (15 s each).
+pub const PROBE_WINDOW_MS: u64 = 30_000;
 
 /// The health of a chain's active endpoint, as shown in the Chains tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,7 +49,7 @@ impl Status {
 /// The health of one endpoint, as shown in the Endpoints tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EndpointStatus {
-    /// Never probed.
+    /// Never probed, or not within [`PROBE_WINDOW_MS`] of the newest probe.
     Unknown,
     /// Answered within [`LAG_THRESHOLD`] blocks of the best head.
     Ok,
@@ -92,10 +95,23 @@ impl ChainState {
 
     /// Status and lag of every endpoint, in order.
     pub fn endpoint_statuses(&self) -> Vec<(EndpointStatus, Option<u64>)> {
+        // Probes are compared within one round: a sample from long before
+        // the newest says nothing about how far behind its endpoint is now.
+        let newest = self
+            .endpoints
+            .iter()
+            .filter_map(|e| Some(e.latest()?.at_ms))
+            .max()
+            .unwrap_or(0);
+        fn recent(e: &EndpointState, newest: u64) -> Option<&HealthSample> {
+            e.latest()
+                .filter(|s| s.at_ms.saturating_add(PROBE_WINDOW_MS) >= newest)
+        }
+        let current = |e| recent(e, newest);
         let best = self
             .endpoints
             .iter()
-            .filter_map(|e| e.latest().filter(|s| s.error.is_none())?.head)
+            .filter_map(|e| current(e).filter(|s| s.error.is_none())?.head)
             .max();
         self.endpoints
             .iter()
@@ -106,7 +122,7 @@ impl ChainState {
                 if e.websocket {
                     return (EndpointStatus::Websocket, None);
                 }
-                let Some(sample) = e.latest() else {
+                let Some(sample) = current(e) else {
                     return (EndpointStatus::Unknown, None);
                 };
                 if let Some(class) = sample.error {

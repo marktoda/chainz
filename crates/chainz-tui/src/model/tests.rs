@@ -245,6 +245,44 @@ fn endpoints_lag_past_twenty_blocks_behind_the_best() {
 }
 
 #[test]
+fn old_probes_are_not_compared_with_new_ones() {
+    let mut state = state();
+    let statuses = |state: &State| state.chains[0].endpoint_statuses()[..3].to_vec();
+    // Yesterday, `a` was probed far behind where the chain is today.
+    let at = |at_ms: u64, results| match probes(results) {
+        Update::Probes { chain, results, .. } => Update::Probes {
+            chain,
+            at_ms,
+            results,
+        },
+        _ => unreachable!(),
+    };
+    state.apply(at(NOW - 86_400_000, &[("a", Some(1_000), None)]));
+    state.apply(at(
+        NOW - 86_400_000,
+        &[("c", None, Some(ErrorClass::Connect))],
+    ));
+    state.apply(at(NOW, &[("b", Some(51_000), None)]));
+    assert_eq!(
+        statuses(&state),
+        [
+            (EndpointStatus::Unknown, None),
+            (EndpointStatus::Ok, Some(0)),
+            (EndpointStatus::Unknown, None),
+        ]
+    );
+    // Within the window, they are one round.
+    state.apply(at(NOW + 20_000, &[("a", Some(50_990), None)]));
+    assert_eq!(
+        statuses(&state)[..2],
+        [
+            (EndpointStatus::Ok, Some(10)),
+            (EndpointStatus::Ok, Some(0)),
+        ]
+    );
+}
+
+#[test]
 fn a_reloaded_plan_keeps_what_is_still_true() {
     let mut state = state();
     state.apply(polled("eth", 1_000, 50));
