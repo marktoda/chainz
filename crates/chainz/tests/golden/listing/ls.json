@@ -7,7 +7,7 @@
       "mainnet"
     ],
     "rpc": "infura",
-    "rpc_url": "https://redacted.infura.io/REDACTED",
+    "rpc_url": "https://mainnet.infura.io/v3/[REDACTED]",
     "failover": [
       "llama",
       "gw"
@@ -18,21 +18,21 @@
     "endpoints": [
       {
         "name": "infura",
-        "url": "https://redacted.infura.io/REDACTED",
+        "url": "https://mainnet.infura.io/v3/[REDACTED]",
         "active": true,
         "failover": false,
         "websocket": false
       },
       {
         "name": "alchemy",
-        "url": "https://redacted.alchemy.com/REDACTED/${ALCHEMY_KEY}",
+        "url": "https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",
         "active": false,
         "failover": false,
         "websocket": false
       },
       {
         "name": "gw",
-        "url": "https://redacted.example.invalid/REDACTED",
+        "url": "https://gw.example.invalid/rpc/1",
         "headers": [
           [
             "x-api-key",
@@ -40,7 +40,7 @@
           ],
           [
             "x-team",
-            "[REDACTED]"
+            "${TEAM}"
           ]
         ],
         "active": false,
@@ -49,14 +49,14 @@
       },
       {
         "name": "llama",
-        "url": "https://redacted.llamarpc.com/",
+        "url": "https://eth.llamarpc.com/",
         "active": false,
         "failover": true,
         "websocket": false
       },
       {
         "name": "llama-ws",
-        "url": "wss://redacted.llamarpc.com/",
+        "url": "wss://eth.llamarpc.com/",
         "active": false,
         "failover": false,
         "websocket": true
@@ -68,7 +68,7 @@
     "id": 8453,
     "aliases": [],
     "rpc": "public",
-    "rpc_url": "https://redacted.base.org/",
+    "rpc_url": "https://mainnet.base.org/",
     "failover": [],
     "signer": "default",
     "explorer": null,
@@ -76,7 +76,7 @@
     "endpoints": [
       {
         "name": "public",
-        "url": "https://redacted.base.org/",
+        "url": "https://mainnet.base.org/",
         "active": true,
         "failover": false,
         "websocket": false

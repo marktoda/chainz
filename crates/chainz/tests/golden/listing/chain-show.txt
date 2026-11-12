@@ -7,10 +7,10 @@ Chain eth (ethereum, mainnet)
   wallet    0x70997970C51812dc3A010C7d01b50e0d17dc79C8
   labels    @dai @my-safe @myrouter @usdc @usdt @wbtc @weth
   endpoints
-  ● infura           https://redacted.infura.io/REDACTED
-    alchemy          https://redacted.alchemy.com/REDACTED/${ALCHEMY_KEY}
-  ◐ gw               https://redacted.example.invalid/REDACTED
+  ● infura           https://mainnet.infura.io/v3/[REDACTED]
+    alchemy          https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}
+  ◐ gw               https://gw.example.invalid/rpc/1
       x-api-key: [REDACTED]
-      x-team: [REDACTED]
-  ◐ llama            https://redacted.llamarpc.com/
-    llama-ws         wss://redacted.llamarpc.com/
+      x-team: ${TEAM}
+  ◐ llama            https://eth.llamarpc.com/
+    llama-ws         wss://eth.llamarpc.com/

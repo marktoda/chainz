@@ -2,9 +2,10 @@
   {
     "chain": "eth",
     "name": "infura",
-    "url": "https://redacted.infura.io/REDACTED",
+    "url": "https://mainnet.infura.io/v3/[REDACTED]",
     "active": true,
     "failover": false,
+    "websocket": false,
     "latency_ms": 42,
     "head": 19000000,
     "error": null,
@@ -17,9 +18,10 @@
   {
     "chain": "eth",
     "name": "alchemy",
-    "url": "https://redacted.alchemy.com/REDACTED/${ALCHEMY_KEY}",
+    "url": "https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",
     "active": false,
     "failover": false,
+    "websocket": false,
     "latency_ms": null,
     "head": null,
     "error": null,
@@ -28,7 +30,7 @@
   {
     "chain": "eth",
     "name": "gw",
-    "url": "https://redacted.example.invalid/REDACTED",
+    "url": "https://gw.example.invalid/rpc/1",
     "headers": [
       [
         "x-api-key",
@@ -36,11 +38,12 @@
       ],
       [
         "x-team",
-        "[REDACTED]"
+        "${TEAM}"
       ]
     ],
     "active": false,
     "failover": true,
+    "websocket": false,
     "latency_ms": null,
     "head": null,
     "error": "timeout",
@@ -49,9 +52,10 @@
   {
     "chain": "eth",
     "name": "llama",
-    "url": "https://redacted.llamarpc.com/",
+    "url": "https://eth.llamarpc.com/",
     "active": false,
     "failover": true,
+    "websocket": false,
     "latency_ms": null,
     "head": null,
     "error": null,
@@ -60,9 +64,10 @@
   {
     "chain": "eth",
     "name": "llama-ws",
-    "url": "wss://redacted.llamarpc.com/",
+    "url": "wss://eth.llamarpc.com/",
     "active": false,
     "failover": false,
+    "websocket": true,
     "latency_ms": null,
     "head": null,
     "error": null,
