@@ -447,8 +447,9 @@ async fn a_429_waits_on_the_same_endpoint_then_shifts() {
 
     // No Retry-After at all: back off on the same endpoint (250 ms, 500 ms,
     // 1 s), each retry taking a bucket slot, then shift once the next wait
-    // would pass 2 s. On a slow machine the bucket may turn the last retry
-    // away itself (unsent) instead of `a` answering it 429.
+    // would pass 2 s. Bucket waits count toward those 2 s, so on a slow
+    // machine the shift can come one 429 early, or the bucket may turn the
+    // last retry away itself (unsent) instead of `a` answering it 429.
     let a = Mock::start("a", |_| R::Http(429, None)).await;
     let b = Mock::named("b").await;
     let rig = pair(&a, &b).await;
@@ -458,16 +459,22 @@ async fn a_429_waits_on_the_same_endpoint_then_shifts() {
     assert_eq!(reply.json()["result"], "b", "{reply:?}");
     let sent = a.calls().len() as u64;
     assert!((3..=4).contains(&sent), "{sent} tries on `a`");
-    assert!(took >= Duration::from_millis(1700), "{took:?}");
+    // At least the 250 ms and 500 ms backoffs were slept.
+    assert!(took >= Duration::from_millis(750), "{took:?}");
     let metrics = rig.control().metrics().await.unwrap();
     let row = metrics.windows[0]
         .rows
         .iter()
         .find(|r| r.endpoint == "a")
         .unwrap();
-    // Four rate-limit signals either way, one failover; a refusal is no
-    // upstream attempt.
-    assert_eq!((row.rate_limited, row.failovers), (4, 1));
+    // One rate-limit signal per 429, plus one for a refusal, which is no
+    // upstream attempt; exactly one failover.
+    assert!(
+        (sent..=sent + 1).contains(&row.rate_limited),
+        "{} signals for {sent} tries",
+        row.rate_limited
+    );
+    assert_eq!(row.failovers, 1);
     assert_eq!(row.requests, sent);
     assert_eq!(row.errors[&ErrorClass::RateLimited], sent);
 }

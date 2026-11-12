@@ -43,6 +43,8 @@ pub struct Mock {
     probes: Arc<AtomicUsize>,
     head: Arc<AtomicU64>,
     task: JoinHandle<()>,
+    /// Tells the serving task to shut its connections down and return.
+    stop: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 impl Mock {
@@ -70,11 +72,18 @@ impl Mock {
             probes: probes.clone(),
             head: head.clone(),
         };
+        let (stop, mut stopped) = tokio::sync::oneshot::channel::<()>();
         let task = tokio::spawn(async move {
             // Owned here: aborting this task drops every connection.
             let mut connections = tokio::task::JoinSet::new();
             loop {
                 tokio::select! {
+                    _ = &mut stopped => {
+                        // Abort every connection and wait until each one
+                        // is gone, so none can answer after `kill`.
+                        connections.shutdown().await;
+                        return;
+                    }
                     accepted = listener.accept() => {
                         let Ok((stream, _)) = accepted else {
                             // Don't spin on a persistent accept error.
@@ -96,6 +105,7 @@ impl Mock {
             probes,
             head,
             task,
+            stop: Some(stop),
         }
     }
 
@@ -139,7 +149,10 @@ impl Mock {
     /// dropped. `abort` alone only requests cancellation: on a multi-thread
     /// runtime the task can still accept one more call before it stops.
     pub async fn kill(&mut self) {
-        self.task.abort();
+        let stopping = self.stop.take().is_some_and(|stop| stop.send(()).is_ok());
+        if !stopping {
+            self.task.abort();
+        }
         let _ = (&mut self.task).await;
     }
 }
