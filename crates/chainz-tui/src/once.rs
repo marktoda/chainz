@@ -7,8 +7,8 @@ use std::sync::mpsc::channel;
 use anyhow::{Context, Result};
 use chainz_core::Chainz;
 use chainz_core::runtime::Runtime;
-use chainz_rpc::HealthStore;
 use chainz_os::now_ms;
+use chainz_rpc::HealthStore;
 
 use crate::app::{App, Tab};
 use crate::data::{self, Event, Shared, Tuning};

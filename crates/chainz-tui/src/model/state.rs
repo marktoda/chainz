@@ -272,10 +272,7 @@ impl State {
     /// (lower) median of the chains' medians, and never under
     /// [`SLOW_FLOOR_MS`].
     pub fn slow_threshold(&self) -> u32 {
-        let mut medians: Vec<u32> = self.chains.iter().filter_map(ChainState::p50).collect();
-        medians.sort_unstable();
-        let typical = medians.get(medians.len().saturating_sub(1) / 2);
-        typical.map_or(SLOW_FLOOR_MS, |m| {
+        health::median(self.chains.iter().filter_map(ChainState::p50)).map_or(SLOW_FLOOR_MS, |m| {
             m.saturating_mul(SLOW_FACTOR).max(SLOW_FLOOR_MS)
         })
     }
