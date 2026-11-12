@@ -964,7 +964,7 @@ async fn inspector_control_api_and_runtime_files() {
 
     // Reload through the control API; a broken config keeps the old one.
     control.reload().await.unwrap();
-    std::fs::write(Rig::paths(rig.dir.path()).config, "this is not toml [").unwrap();
+    std::fs::write(Rig::paths(rig.dir.path()).config(), "this is not toml [").unwrap();
     assert!(control.reload().await.is_err());
     assert_eq!(
         rig.call("eth", "eth_blockNumber", json!([])).await.status,
@@ -1096,7 +1096,7 @@ async fn a_same_size_config_change_with_the_same_mtime_is_seen() {
     let (a, b) = (Mock::named("a").await, Mock::named("b").await);
     let endpoints = [("a", a.url()), ("b", b.url())];
     let rig = Rig::start(&eth_config("a", &[], &endpoints)).await;
-    let config = Rig::paths(rig.dir.path()).config;
+    let config = Rig::paths(rig.dir.path()).config().to_path_buf();
     let before = std::fs::metadata(&config).unwrap();
     // `chainz rpc use eth b`: the same length, and here the same mtime too
     // (as two writes within one timestamp tick would have).

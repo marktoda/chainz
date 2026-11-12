@@ -72,9 +72,9 @@ struct Fixture {
 fn fixture() -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let paths = StorePaths::in_dir(dir.path().join("config"));
-    std::fs::create_dir_all(&paths.dir).unwrap();
-    std::fs::write(&paths.config, CONFIG).unwrap();
-    std::fs::write(&paths.secrets, SECRETS).unwrap();
+    std::fs::create_dir_all(&paths.dir()).unwrap();
+    std::fs::write(&paths.config(), CONFIG).unwrap();
+    std::fs::write(&paths.secrets(), SECRETS).unwrap();
     let chainz = Chainz::open_at(paths, LoadMode::Strict).unwrap();
     let runtime = Runtime::at(dir.path().join("run"));
     Fixture {

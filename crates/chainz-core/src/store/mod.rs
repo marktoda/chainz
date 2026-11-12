@@ -11,132 +11,49 @@
 //! - **v1 migration** runs under the same lock with a re-check, the first
 //!   time a v1 `config.json` exists and `config.toml` does not.
 
-use crate::migrate;
-use crate::model::{CONFIG_VERSION, Config, Endpoint};
-use crate::paths;
+mod files;
+
+pub use files::{StorePaths, WriteLock, parse_config};
+pub(crate) use files::{new_config_text, redact_parse_error, redact_toml_error};
+
+use crate::migrate::{self, Summary};
+use crate::model::{Config, Endpoint};
 use crate::secrets::{Builtins, Secrets, VarResolver};
 use crate::tx::Tx;
 use crate::validate;
 use anyhow::{Context, Result, anyhow, bail};
-use std::cell::OnceCell;
+use chainz_sys::PermissionWarning;
+use files::{Access, new_config};
+use std::cell::{OnceCell, RefCell};
+use std::fmt;
 use std::path::{Path, PathBuf};
 
-/// Text of a brand-new config file: `header` (comment lines), then the
-/// version.
-pub(crate) fn new_config_text(header: &str) -> String {
-    format!("{header}version = {CONFIG_VERSION}\n")
+/// Something a load or write did that the user should hear about. Core
+/// never prints: notices queue on the [`Chainz`] until the caller takes
+/// them ([`Chainz::take_notices`]) or names a sink
+/// ([`Chainz::set_notice_sink`]). `Display` is one or more lines.
+#[derive(Debug)]
+pub enum Notice {
+    /// A private file has loose permissions that could not be tightened
+    /// to 0600 (it was still read).
+    Permissions(PermissionWarning),
+    /// The v1 config was migrated (on first load, or inside a write).
+    Migrated {
+        /// What the migration did.
+        summary: Summary,
+        /// The `config.toml` it wrote.
+        config: PathBuf,
+    },
 }
 
-/// Text of a brand-new hand-editable config file.
-fn new_config() -> String {
-    new_config_text("# chainz configuration (v2). Hand-editable; secrets live in secrets.toml.\n")
-}
-
-/// Where the config files live.
-#[derive(Debug, Clone)]
-pub struct StorePaths {
-    /// The config directory.
-    pub dir: PathBuf,
-    /// `config.toml`.
-    pub config: PathBuf,
-    /// `secrets.toml`.
-    pub secrets: PathBuf,
-    /// `config.lock`, the cross-process write lock.
-    pub lock: PathBuf,
-    /// v1 `config.json`.
-    pub v1_config: PathBuf,
-    /// v1 pre-0.3 `~/.chainz.json`.
-    pub v1_legacy: Option<PathBuf>,
-}
-
-impl StorePaths {
-    /// The standard XDG locations.
-    pub fn resolve() -> Result<Self> {
-        let dir = paths::config_dir().context("unable to find the config directory")?;
-        let mut paths = Self::in_dir(dir);
-        paths.v1_legacy = paths::legacy_home_config().ok();
-        Ok(paths)
-    }
-
-    /// Paths rooted at `dir` (no legacy home file).
-    pub fn in_dir(dir: PathBuf) -> Self {
-        Self {
-            config: dir.join("config.toml"),
-            secrets: dir.join("secrets.toml"),
-            lock: dir.join("config.lock"),
-            v1_config: dir.join("config.json"),
-            v1_legacy: None,
-            dir,
+impl fmt::Display for Notice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Notice::Permissions(warning) => write!(f, "warning: {warning}"),
+            Notice::Migrated { summary, config } => {
+                f.write_str(&summary.report(Some(config)).join("\n"))
+            }
         }
-    }
-
-    /// The v1 file to migrate from, if one exists.
-    pub fn v1_source(&self) -> Option<PathBuf> {
-        if self.v1_config.exists() {
-            return Some(self.v1_config.clone());
-        }
-        self.v1_legacy.clone().filter(|p| p.exists())
-    }
-}
-
-/// The exclusive cross-process write lock; released on drop.
-pub struct WriteLock(std::fs::File);
-
-impl WriteLock {
-    /// Block until the lock at `paths.lock` is held.
-    pub fn acquire(paths: &StorePaths) -> Result<Self> {
-        chainz_sys::create_private_dir(&paths.dir)
-            .with_context(|| format!("failed to create {}", paths.dir.display()))?;
-        let file = chainz_sys::open_private(&paths.lock)
-            .with_context(|| format!("failed to open {}", paths.lock.display()))?;
-        file.lock()
-            .with_context(|| format!("failed to lock {}", paths.lock.display()))?;
-        Ok(Self(file))
-    }
-}
-
-impl Drop for WriteLock {
-    fn drop(&mut self) {
-        let _ = self.0.unlock();
-    }
-}
-
-/// Parse config text into the typed view.
-pub fn parse_config(text: &str, path: &Path) -> Result<Config> {
-    Config::parse(text).map_err(|e| {
-        anyhow!(
-            "failed to parse {}: {} (fix it with `chainz config edit`)",
-            path.display(),
-            redact_toml_error(&e)
-        )
-    })
-}
-
-fn read_secrets(path: &Path) -> Result<Secrets> {
-    match paths::read_private(path).with_context(|| format!("failed to read {}", path.display()))? {
-        None => Ok(Secrets::default()),
-        Some(text) => Secrets::parse(&text).map_err(|e| {
-            anyhow!(
-                "failed to parse {}: {}",
-                path.display(),
-                redact_toml_error(&e)
-            )
-        }),
-    }
-}
-
-/// TOML parse errors quote the offending line, which may hold a secret
-/// (an inline credential, a variable value): keep only message and position.
-pub fn redact_toml_error(error: &toml::de::Error) -> String {
-    redact_parse_error(error.message(), error.span())
-}
-
-/// [`redact_toml_error`] for any TOML error's message and span (the
-/// `toml_edit` parser and deserializer errors quote the source line too).
-pub(crate) fn redact_parse_error(message: &str, span: Option<std::ops::Range<usize>>) -> String {
-    match span {
-        Some(span) => format!("{message} (at byte {})", span.start),
-        None => message.to_string(),
     }
 }
 
@@ -167,7 +84,10 @@ pub struct Chainz {
     paths: StorePaths,
     config: Config,
     exists: bool,
+    access: Access,
     secrets: OnceCell<Secrets>,
+    notices: RefCell<Vec<Notice>>,
+    sink: Option<fn(&Notice)>,
 }
 
 impl std::fmt::Debug for Chainz {
@@ -186,6 +106,9 @@ pub enum LoadMode {
     Strict,
     /// Parse only, so `doctor` can report invariant violations.
     Lenient,
+    /// Parse only, and change nothing on disk: no v1 migration, no
+    /// permission tightening (shell completion, see [`Chainz::peek`]).
+    Peek,
 }
 
 impl Chainz {
@@ -194,28 +117,41 @@ impl Chainz {
         Self::open_at(StorePaths::resolve()?, LoadMode::Strict)
     }
 
+    /// Load from the standard locations without changing anything on
+    /// disk (see [`LoadMode::Peek`]).
+    pub fn peek() -> Result<Self> {
+        Self::open_at(StorePaths::resolve()?, LoadMode::Peek)
+    }
+
     /// Load from `paths`.
     pub fn open_at(paths: StorePaths, mode: LoadMode) -> Result<Self> {
-        let text = match paths::read_private(&paths.config)
-            .with_context(|| format!("failed to read {}", paths.config.display()))?
-        {
-            Some(text) => Some(text),
-            None if paths.v1_source().is_some() => {
-                migrate::auto_migrate(&paths)?;
-                paths::read_private(&paths.config)?
-            }
-            None => None,
+        let access = match mode {
+            LoadMode::Strict | LoadMode::Lenient => Access::Own,
+            LoadMode::Peek => Access::Peek,
         };
+        let mut notices = Vec::new();
+        let (mut text, warning) = files::read(paths.config(), access)?;
+        notices.extend(warning.map(Notice::Permissions));
+        if text.is_none() && access == Access::Own && paths.v1_source().is_some() {
+            let lock = WriteLock::acquire(&paths)?;
+            if let Some(summary) = migrate::migrate_locked(&lock)? {
+                notices.push(Notice::Migrated {
+                    summary,
+                    config: paths.config().to_path_buf(),
+                });
+            }
+            text = files::read(paths.config(), access)?.0;
+        }
         let exists = text.is_some();
         let config = match &text {
-            Some(text) => parse_config(text, &paths.config)?,
+            Some(text) => parse_config(text, paths.config())?,
             None => Config::empty(),
         };
         if mode == LoadMode::Strict {
             validate::validate(&config, None).with_context(|| {
                 format!(
                     "invalid config at {} (run `chainz doctor`)",
-                    paths.config.display()
+                    paths.config().display()
                 )
             })?;
         }
@@ -223,8 +159,41 @@ impl Chainz {
             paths,
             config,
             exists,
+            access,
             secrets: OnceCell::new(),
+            notices: RefCell::new(notices),
+            sink: None,
         })
+    }
+
+    /// Take the notices queued so far.
+    pub fn take_notices(&self) -> Vec<Notice> {
+        std::mem::take(&mut self.notices.borrow_mut())
+    }
+
+    /// Hand every notice to `sink`: the queued ones now, later ones as they
+    /// happen.
+    pub fn set_notice_sink(&mut self, sink: fn(&Notice)) {
+        for notice in self.take_notices() {
+            sink(&notice);
+        }
+        self.sink = Some(sink);
+    }
+
+    fn notify(&self, notice: Notice) {
+        match self.sink {
+            Some(sink) => sink(&notice),
+            None => self.notices.borrow_mut().push(notice),
+        }
+    }
+
+    /// Read a private file, reporting tightened permissions.
+    fn read(&self, path: &Path) -> Result<Option<String>> {
+        let (text, warning) = files::read(path, self.access)?;
+        if let Some(warning) = warning {
+            self.notify(Notice::Permissions(warning));
+        }
+        Ok(text)
     }
 
     /// The typed config.
@@ -247,7 +216,17 @@ impl Chainz {
         if let Some(secrets) = self.secrets.get() {
             return Ok(secrets);
         }
-        let loaded = read_secrets(&self.paths.secrets)?;
+        let path = self.paths.secrets();
+        let loaded = match self.read(path)? {
+            None => Secrets::default(),
+            Some(text) => Secrets::parse(&text).map_err(|e| {
+                anyhow!(
+                    "failed to parse {}: {}",
+                    path.display(),
+                    redact_toml_error(&e)
+                )
+            })?,
+        };
         Ok(self.secrets.get_or_init(|| loaded))
     }
 
@@ -293,24 +272,65 @@ impl Chainz {
     /// documents; the result is validated and written (secrets first) only
     /// if it changed. On any error nothing is written.
     pub fn transact<T>(&mut self, edit: impl FnOnce(&mut Tx) -> Result<T>) -> Result<T> {
-        let _lock = WriteLock::acquire(&self.paths)?;
-        if !self.paths.config.exists() && self.paths.v1_source().is_some() {
-            migrate::migrate_locked(&self.paths)?;
+        let lock = WriteLock::acquire(&self.paths)?;
+        if let Some(summary) = migrate::migrate_locked(&lock)? {
+            self.notify(Notice::Migrated {
+                summary,
+                config: self.paths.config().to_path_buf(),
+            });
         }
-        let config_text = paths::read_private(&self.paths.config)?;
-        let secrets_text = paths::read_private(&self.paths.secrets)?;
+        let config_text = self.read(self.paths.config())?;
+        let secrets_text = self.read(self.paths.secrets())?;
         let config_orig = config_text.clone().unwrap_or_else(new_config);
-        let secrets_orig = secrets_text.clone().unwrap_or_default();
+        let secrets_orig = secrets_text.unwrap_or_default();
         let mut tx = Tx::parse(
             &config_orig,
-            &self.paths.config,
+            self.paths.config(),
             &secrets_orig,
-            &self.paths.secrets,
+            self.paths.secrets(),
         )?;
         let out = edit(&mut tx)?;
+        let (config, secrets) = self.checked(&tx)?;
         let (new_config, new_secrets) = tx.texts();
-        let config = parse_config(&new_config, &self.paths.config)?;
-        let secrets = Secrets::parse(&new_secrets).map_err(|e| {
+        if new_secrets != secrets_orig {
+            chainz_sys::write_private(self.paths.secrets(), new_secrets.as_bytes())
+                .with_context(|| format!("failed to write {}", self.paths.secrets().display()))?;
+        }
+        // The first write materializes config.toml even when the edit
+        // left the new-file text as it was.
+        if new_config != config_orig || config_text.is_none() {
+            chainz_sys::write_private(self.paths.config(), new_config.as_bytes())
+                .with_context(|| format!("failed to write {}", self.paths.config().display()))?;
+        }
+        drop(lock);
+        self.config = config;
+        self.exists = true;
+        self.secrets = OnceCell::from(secrets);
+        Ok(out)
+    }
+
+    /// Run `edit` like [`transact`](Self::transact) on the files as they
+    /// are now, and check the result, but write nothing: what a
+    /// confirmation prompt or a dry run shows.
+    pub fn preview<T>(&self, edit: impl FnOnce(&mut Tx) -> Result<T>) -> Result<T> {
+        let config_text = self.read(self.paths.config())?.unwrap_or_else(new_config);
+        let secrets_text = self.read(self.paths.secrets())?.unwrap_or_default();
+        let mut tx = Tx::parse(
+            &config_text,
+            self.paths.config(),
+            &secrets_text,
+            self.paths.secrets(),
+        )?;
+        let out = edit(&mut tx)?;
+        self.checked(&tx)?;
+        Ok(out)
+    }
+
+    /// The typed, validated result of `tx`, or why it may not be written.
+    fn checked(&self, tx: &Tx) -> Result<(Config, Secrets)> {
+        let (config_text, secrets_text) = tx.texts();
+        let config = parse_config(&config_text, self.paths.config())?;
+        let secrets = Secrets::parse(&secrets_text).map_err(|e| {
             anyhow!(
                 "refusing to write invalid secrets: {}",
                 redact_toml_error(&e)
@@ -318,27 +338,14 @@ impl Chainz {
         })?;
         validate::validate(&config, Some(&secrets))
             .context("refusing to write an invalid config")?;
-        if new_secrets != secrets_orig {
-            chainz_sys::write_private(&self.paths.secrets, new_secrets.as_bytes())
-                .with_context(|| format!("failed to write {}", self.paths.secrets.display()))?;
-        }
-        if new_config != config_orig || config_text.is_none() {
-            chainz_sys::write_private(&self.paths.config, new_config.as_bytes())
-                .with_context(|| format!("failed to write {}", self.paths.config.display()))?;
-        }
-        self.config = config;
-        self.exists = true;
-        self.secrets = OnceCell::from(secrets);
-        Ok(out)
+        Ok((config, secrets))
     }
 
     /// The text of `config.toml` as it is on disk now (a new file's text
     /// if there is none yet), to edit by hand and hand back to
     /// [`replace_text`](Self::replace_text).
     pub fn config_text(&self) -> Result<String> {
-        Ok(paths::read_private(&self.paths.config)
-            .with_context(|| format!("failed to read {}", self.paths.config.display()))?
-            .unwrap_or_else(new_config))
+        Ok(self.read(self.paths.config())?.unwrap_or_else(new_config))
     }
 
     /// Replace `config.toml` with `new`, an edited copy of `expected` (from
@@ -356,7 +363,7 @@ impl Chainz {
     /// [`replace_chain_snippet`](Self::replace_chain_snippet)).
     pub fn chain_snippet(&self, name: &str) -> Result<ChainSnippet> {
         let config = self.config_text()?;
-        let tx = Tx::parse(&config, &self.paths.config, "", &self.paths.secrets)?;
+        let tx = Tx::parse(&config, self.paths.config(), "", self.paths.secrets())?;
         Ok(ChainSnippet {
             chain: name.to_string(),
             text: tx.chain_snippet(name)?,
@@ -401,9 +408,9 @@ mod tests {
         let mut chainz = Chainz::open_at(paths.clone(), LoadMode::Strict).unwrap();
         assert!(!chainz.exists());
         chainz.transact(|tx| tx.set_var("K", "value")).unwrap();
-        assert!(paths.secrets.exists() && paths.config.exists());
+        assert!(paths.secrets().exists() && paths.config().exists());
         use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(&paths.secrets)
+        let mode = std::fs::metadata(&paths.secrets())
             .unwrap()
             .permissions()
             .mode();
@@ -412,7 +419,7 @@ mod tests {
         assert_eq!(reloaded.secrets().unwrap().vars["K"], "value");
 
         // An invalid edit writes nothing.
-        let before = std::fs::read_to_string(&paths.config).unwrap();
+        let before = std::fs::read_to_string(&paths.config()).unwrap();
         let err = chainz
             .transact(|tx| {
                 tx.set_default(Some("ghost"));
@@ -420,7 +427,7 @@ mod tests {
             })
             .unwrap_err();
         assert!(format!("{err:#}").contains("ghost"), "{err:#}");
-        assert_eq!(std::fs::read_to_string(&paths.config).unwrap(), before);
+        assert_eq!(std::fs::read_to_string(&paths.config()).unwrap(), before);
     }
 
     #[test]
@@ -428,11 +435,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = StorePaths::in_dir(dir.path().to_path_buf());
         std::fs::write(
-            &paths.config,
+            &paths.config(),
             "version = 2\n[chains.eth]\nid = 1\nrpc = \"gw\"\nrpcs.gw = { url = \"https://gw.example/${CHAIN}/${CHAIN_ID}\", headers = { x-key = \"${STORE_TEST_GW}\" } }\nrpcs.bad = \"https://x.example/${STORE_TEST_UNSET}\"\n",
         )
         .unwrap();
-        std::fs::write(&paths.secrets, "[vars]\nSTORE_TEST_GW = \"gw-secret\"\n").unwrap();
+        std::fs::write(&paths.secrets(), "[vars]\nSTORE_TEST_GW = \"gw-secret\"\n").unwrap();
         let chainz = Chainz::open_at(paths, LoadMode::Strict).unwrap();
         let chain = &chainz.config().chains["eth"];
         let gw = chainz
@@ -455,11 +462,13 @@ mod tests {
     fn loose_permissions_are_tightened_on_read() {
         let dir = tempfile::tempdir().unwrap();
         let paths = StorePaths::in_dir(dir.path().to_path_buf());
-        std::fs::write(&paths.config, new_config()).unwrap();
+        std::fs::write(&paths.config(), new_config()).unwrap();
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&paths.config, std::fs::Permissions::from_mode(0o644)).unwrap();
-        Chainz::open_at(paths.clone(), LoadMode::Strict).unwrap();
-        let mode = std::fs::metadata(&paths.config)
+        std::fs::set_permissions(&paths.config(), std::fs::Permissions::from_mode(0o644)).unwrap();
+        let chainz = Chainz::open_at(paths.clone(), LoadMode::Strict).unwrap();
+        // Tightened quietly (only a failed chmod is worth a notice).
+        assert!(chainz.take_notices().is_empty());
+        let mode = std::fs::metadata(&paths.config())
             .unwrap()
             .permissions()
             .mode();
@@ -467,14 +476,44 @@ mod tests {
     }
 
     #[test]
+    fn preview_checks_but_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = StorePaths::in_dir(dir.path().to_path_buf());
+        let chainz = Chainz::open_at(paths.clone(), LoadMode::Strict).unwrap();
+        assert_eq!(chainz.preview(|tx| tx.set_var("K", "v")).ok(), Some(()));
+        assert!(!paths.config().exists() && !paths.secrets().exists());
+        let err = chainz
+            .preview(|tx| {
+                tx.set_default(Some("ghost"));
+                Ok(())
+            })
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("ghost"), "{err:#}");
+    }
+
+    #[test]
+    fn hand_edits_are_refused_when_the_file_changed_meanwhile() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = StorePaths::in_dir(dir.path().to_path_buf());
+        let mut chainz = Chainz::open_at(paths.clone(), LoadMode::Strict).unwrap();
+        let original = chainz.config_text().unwrap();
+        chainz.transact(|tx| tx.set_var("K", "v")).unwrap();
+        let edited = format!("{original}# mine\n");
+        chainz.replace_text(&original, &edited).unwrap();
+        assert_eq!(std::fs::read_to_string(paths.config()).unwrap(), edited);
+        let err = chainz.replace_text(&original, &original).unwrap_err();
+        assert!(err.to_string().contains("changed while you were editing"));
+    }
+
+    #[test]
     fn transaction_parse_errors_do_not_echo_the_source_line() {
         let dir = tempfile::tempdir().unwrap();
         let paths = StorePaths::in_dir(dir.path().to_path_buf());
-        std::fs::write(&paths.config, new_config()).unwrap();
+        std::fs::write(&paths.config(), new_config()).unwrap();
         let mut chainz = Chainz::open_at(paths.clone(), LoadMode::Strict).unwrap();
         // Broken by hand after loading: transact re-reads and re-parses.
         std::fs::write(
-            &paths.config,
+            &paths.config(),
             "version = 2\nx = \"https://rpc.example/v3/super-secret-key\" trailing\n",
         )
         .unwrap();
@@ -482,8 +521,8 @@ mod tests {
         assert!(!err.contains("super-secret-key"), "{err}");
         assert!(err.contains("config.toml"), "{err}");
 
-        std::fs::write(&paths.config, new_config()).unwrap();
-        std::fs::write(&paths.secrets, "K = \"super-secret-var\" trailing\n").unwrap();
+        std::fs::write(&paths.config(), new_config()).unwrap();
+        std::fs::write(&paths.secrets(), "K = \"super-secret-var\" trailing\n").unwrap();
         let err = format!("{:#}", chainz.transact(|_| Ok(())).unwrap_err());
         assert!(!err.contains("super-secret-var"), "{err}");
     }
@@ -492,9 +531,9 @@ mod tests {
     fn secrets_parse_errors_do_not_echo_values() {
         let dir = tempfile::tempdir().unwrap();
         let paths = StorePaths::in_dir(dir.path().to_path_buf());
-        std::fs::write(&paths.config, new_config()).unwrap();
+        std::fs::write(&paths.config(), new_config()).unwrap();
         std::fs::write(
-            &paths.secrets,
+            &paths.secrets(),
             "[vars]\nK = \"super-secret-value\" trailing\n",
         )
         .unwrap();

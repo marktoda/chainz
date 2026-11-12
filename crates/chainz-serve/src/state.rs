@@ -259,7 +259,12 @@ impl Snapshot {
         let health = state_dir.and_then(|dir| HealthStore::load(dir).ok());
         let mut chains = Vec::with_capacity(config.chains.len());
         let mut lookup = HashMap::new();
-        let mut warnings = Vec::new();
+        // Loading may tighten a file's permissions: say so with the rest.
+        let mut warnings: Vec<String> = chainz
+            .take_notices()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
         for (name, chain) in &config.chains {
             // The same chain: same name and same ID. A chain whose ID
             // changed starts afresh (its heads and filters are another

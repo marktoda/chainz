@@ -13,13 +13,12 @@
 //! - Every failure is an empty list; nothing is ever printed to stderr.
 
 use crate::cli::Opt;
+use chainz_core::Chainz;
 use chainz_core::labels::{LabelIndex, LabelSource};
 use chainz_core::model::Config;
 use chainz_core::names::CONTEXT_TOKENS;
 use chainz_core::resolve::{self, ChainRef};
 use chainz_core::runtime::{ForkRecord, Runtime};
-use chainz_core::secrets::Secrets;
-use chainz_core::store::{self, StorePaths};
 use clap::{Command, CommandFactory};
 use clap_complete::engine::{
     ArgValueCompleter, CompletionCandidate, PathCompleter, ValueCompleter,
@@ -215,11 +214,10 @@ fn vars(current: &OsStr) -> Vec<CompletionCandidate> {
         return Vec::new();
     };
     // Names only: values never leave this function.
-    let Some(secrets) = StorePaths::resolve()
-        .ok()
-        .and_then(|paths| std::fs::read_to_string(paths.secrets).ok())
-        .and_then(|text| Secrets::parse(&text).ok())
-    else {
+    let Ok(chainz) = Chainz::peek() else {
+        return Vec::new();
+    };
+    let Ok(secrets) = chainz.secrets() else {
         return Vec::new();
     };
     let mut out = Candidates::new(prefix);
@@ -435,9 +433,10 @@ fn typed_chain_id(config: &Config, words: &[String]) -> Option<u64> {
 /// `config.toml`, parsed but not validated; `None` when absent or broken.
 /// Never migrates v1 and never touches file modes.
 fn load_config() -> Option<Config> {
-    let paths = StorePaths::resolve().ok()?;
-    let text = std::fs::read_to_string(&paths.config).ok()?;
-    store::parse_config(&text, &paths.config).ok()
+    Chainz::peek()
+        .ok()
+        .filter(Chainz::exists)
+        .map(|chainz| chainz.config().clone())
 }
 
 fn all_forks() -> Vec<ForkRecord> {

@@ -291,6 +291,18 @@ and the gateway all use it.
   through `Chainz::config_text` + `replace_text(expected, new)` and
   `Chainz::chain_snippet` + `replace_chain_snippet`, which refuse if the file
   changed meanwhile.
+  `chainz.preview(|tx| …)` runs the same closure on the files as they are
+  and validates the result but writes nothing (dry runs, confirmations).
+  `Chainz::peek()` (`LoadMode::Peek`) is the side-effect-free load for shell
+  completion: no v1 migration, no permission changes, no validation.
+  `migrate::migrate_locked(&WriteLock)` takes the held lock as proof; a
+  migration that runs inside `transact` is reported like one on first load.
+- Notices: core never prints. A load or write that has something to say (a
+  v1 migration, a file whose loose permissions could not be tightened)
+  queues a `store::Notice` on the `Chainz`; take them with `take_notices()`
+  or route them as they happen with `set_notice_sink(fn(&Notice))`. The bin
+  prints each `Display` line as `chainz: …`; serve adds them to the
+  snapshot warnings.
 - Resolver: `resolve::select(config, Some(&runtime), explicit) -> Result<Option<(ChainRef, Source)>>`.
   It checks the explicit argument, then `$CHAINZ_CHAIN`, then the default.
   Management commands use `resolve_configured` (no forks) or `resolve_exact`

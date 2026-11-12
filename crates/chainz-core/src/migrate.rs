@@ -31,7 +31,7 @@ use crate::extract::{self, VarTable};
 use crate::model::{Backend, Chain, Endpoint, Explorer, Signer};
 use crate::names;
 use crate::secrets::{BUILTIN_VARS, SignerSecret};
-use crate::store::{StorePaths, WriteLock};
+use crate::store::WriteLock;
 use crate::template;
 use crate::tx::Tx;
 use anyhow::{Context, Result, anyhow};
@@ -40,8 +40,6 @@ use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
-
-pub use crate::extract::extract_known_key;
 
 /// v1 `config.json`. Chains and keys that do not parse are skipped with a
 /// note rather than failing the whole migration.
@@ -140,7 +138,8 @@ impl Drop for V1KeyKind {
     }
 }
 
-/// What a migration did. `Display` is the one-line summary.
+/// What a migration did. `Display` is the one-line summary;
+/// [`report`](Self::report) the whole report.
 #[derive(Debug, Default, Clone)]
 pub struct Summary {
     /// Chains migrated.
@@ -178,6 +177,31 @@ impl fmt::Display for Summary {
             1 => write!(f, "; 1 item needs attention"),
             n => write!(f, "; {n} items need attention"),
         }
+    }
+}
+
+impl Summary {
+    /// The report, one line each: the summary, what was written (with
+    /// `wrote`, the new `config.toml`; without, a dry run), then every item
+    /// that needs attention.
+    pub fn report(&self, wrote: Option<&Path>) -> Vec<String> {
+        let mut lines = Vec::with_capacity(self.attention.len() + 2);
+        match wrote {
+            None => lines.push(format!("{self} (dry run: nothing written)")),
+            Some(config) => {
+                lines.push(self.to_string());
+                lines.push(match &self.backup {
+                    Some(backup) => format!(
+                        "wrote {} (v1 config kept as {})",
+                        config.display(),
+                        backup.display()
+                    ),
+                    None => format!("wrote {}", config.display()),
+                });
+            }
+        }
+        lines.extend(self.attention.iter().map(|item| format!("  - {item}")));
+        lines
     }
 }
 
@@ -909,10 +933,11 @@ fn backup_path(source: &Path) -> PathBuf {
     }
 }
 
-/// Migrate while already holding the write lock. Returns `None` when there
-/// was nothing to do (config.toml exists, or no v1 file).
-pub fn migrate_locked(paths: &StorePaths) -> Result<Option<Summary>> {
-    if paths.config.exists() {
+/// Migrate under `lock`. Returns `None` when there was nothing to do
+/// (config.toml exists, or no v1 file).
+pub fn migrate_locked(lock: &WriteLock) -> Result<Option<Summary>> {
+    let paths = lock.paths();
+    if paths.config().exists() {
         return Ok(None);
     }
     let Some(source) = paths.v1_source() else {
@@ -922,13 +947,13 @@ pub fn migrate_locked(paths: &StorePaths) -> Result<Option<Summary>> {
         .with_context(|| format!("failed to read {}", source.display()))?;
     let mut plan =
         plan(&text).with_context(|| format!("failed to migrate {}", source.display()))?;
-    chainz_sys::create_private_dir(&paths.dir)?;
+    chainz_sys::create_private_dir(paths.dir())?;
     if !plan.secrets_toml.is_empty() {
-        chainz_sys::write_private(&paths.secrets, plan.secrets_toml.as_bytes())
-            .with_context(|| format!("failed to write {}", paths.secrets.display()))?;
+        chainz_sys::write_private(paths.secrets(), plan.secrets_toml.as_bytes())
+            .with_context(|| format!("failed to write {}", paths.secrets().display()))?;
     }
-    chainz_sys::write_private(&paths.config, plan.config_toml.as_bytes())
-        .with_context(|| format!("failed to write {}", paths.config.display()))?;
+    chainz_sys::write_private(paths.config(), plan.config_toml.as_bytes())
+        .with_context(|| format!("failed to write {}", paths.config().display()))?;
     let backup = backup_path(&source);
     std::fs::rename(&source, &backup).with_context(|| {
         format!(
@@ -939,32 +964,6 @@ pub fn migrate_locked(paths: &StorePaths) -> Result<Option<Summary>> {
     })?;
     plan.summary.backup = Some(backup);
     Ok(Some(plan.summary))
-}
-
-/// Migrate on first run: take the lock, re-check, migrate, and report on
-/// stderr. Safe to call from many processes at once.
-pub(crate) fn auto_migrate(paths: &StorePaths) -> Result<()> {
-    let _lock = WriteLock::acquire(paths)?;
-    if let Some(summary) = migrate_locked(paths)? {
-        report(&summary, paths);
-    }
-    Ok(())
-}
-
-/// Print a migration summary to stderr.
-pub fn report(summary: &Summary, paths: &StorePaths) {
-    eprintln!("chainz: {summary}");
-    match &summary.backup {
-        Some(backup) => eprintln!(
-            "chainz: wrote {} (v1 config kept as {})",
-            paths.config.display(),
-            backup.display()
-        ),
-        None => eprintln!("chainz: wrote {}", paths.config.display()),
-    }
-    for item in &summary.attention {
-        eprintln!("chainz:   - {item}");
-    }
 }
 
 #[cfg(test)]

@@ -87,7 +87,7 @@ fn once(chainz: &Chainz, runtime: Runtime, options: &Options) -> Result<i32> {
     let shared = Shared::new(
         store,
         runtime,
-        chainz.paths().config.clone(),
+        chainz.paths().config().to_path_buf(),
         Tuning::default(),
         updates,
     );

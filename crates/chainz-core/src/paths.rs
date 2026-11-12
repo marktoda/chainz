@@ -70,17 +70,3 @@ pub fn expand_tilde(path: &str) -> PathBuf {
         None => PathBuf::from(path),
     }
 }
-
-/// Read a private file with [`chainz_sys::read_private`], printing its
-/// permission warning to stderr. `Ok(None)` when the file does not exist.
-///
-/// Transitional (plan D2, stream S1): core should return the warning as a
-/// notice for the bin to print instead.
-pub fn read_private(path: &Path) -> io::Result<Option<String>> {
-    Ok(chainz_sys::read_private(path)?.map(|read| {
-        if let Some(warning) = read.warning {
-            eprintln!("chainz: warning: {warning}");
-        }
-        read.text
-    }))
-}

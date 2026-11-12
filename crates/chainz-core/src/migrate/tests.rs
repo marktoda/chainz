@@ -1,7 +1,7 @@
 use super::*;
 use crate::model::Config;
 use crate::secrets::Secrets;
-use crate::store::{Chainz, LoadMode};
+use crate::store::{Chainz, LoadMode, StorePaths};
 
 const FIXTURE: &str = include_str!("../../tests/fixtures/v1-config.json");
 
@@ -174,15 +174,15 @@ fn config_toml_holds_no_extracted_secret() {
 fn migration_writes_once_in_order_and_backs_up_v1() {
     let dir = tempfile::tempdir().unwrap();
     let paths = StorePaths::in_dir(dir.path().join("chainz"));
-    std::fs::create_dir_all(&paths.dir).unwrap();
-    std::fs::write(&paths.v1_config, FIXTURE).unwrap();
+    std::fs::create_dir_all(&paths.dir()).unwrap();
+    std::fs::write(&paths.v1_config(), FIXTURE).unwrap();
 
     let handles: Vec<_> = (0..8)
         .map(|_| {
             let paths = paths.clone();
             std::thread::spawn(move || {
-                let _lock = WriteLock::acquire(&paths).unwrap();
-                migrate_locked(&paths).unwrap().is_some()
+                let lock = WriteLock::acquire(&paths).unwrap();
+                migrate_locked(&lock).unwrap().is_some()
             })
         })
         .collect();
@@ -192,13 +192,14 @@ fn migration_writes_once_in_order_and_backs_up_v1() {
         .filter(|m| *m)
         .count();
     assert_eq!(migrated, 1);
-    assert!(!paths.v1_config.exists());
-    assert!(paths.dir.join("config.v1.json.bak").exists());
+    assert!(!paths.v1_config().exists());
+    assert!(paths.dir().join("config.v1.json.bak").exists());
     let summary = Summary {
-        backup: Some(paths.dir.join("config.v1.json.bak")),
+        backup: Some(paths.dir().join("config.v1.json.bak")),
         ..Summary::default()
     };
-    report(&summary, &paths);
+    let report = summary.report(Some(paths.config()));
+    assert!(report[1].contains(" (v1 config kept as "), "{report:?}");
     let chainz = Chainz::open_at(paths.clone(), LoadMode::Strict).unwrap();
     assert_eq!(chainz.config().chains.len(), 17);
     assert_eq!(chainz.secrets().unwrap().vars.len(), 7);
@@ -208,10 +209,42 @@ fn migration_writes_once_in_order_and_backs_up_v1() {
 fn open_auto_migrates() {
     let dir = tempfile::tempdir().unwrap();
     let paths = StorePaths::in_dir(dir.path().to_path_buf());
-    std::fs::write(&paths.v1_config, FIXTURE).unwrap();
+    std::fs::write(&paths.v1_config(), FIXTURE).unwrap();
     let chainz = Chainz::open_at(paths.clone(), LoadMode::Strict).unwrap();
     assert!(chainz.exists());
     assert_eq!(chainz.config().chains.len(), 17);
+    // Reported, never printed.
+    let notices = chainz.take_notices();
+    assert!(
+        matches!(&notices[..], [crate::store::Notice::Migrated { summary, .. }] if summary.chains == 17),
+        "{notices:?}"
+    );
+}
+
+#[test]
+fn a_migration_inside_a_write_is_reported() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = StorePaths::in_dir(dir.path().to_path_buf());
+    let mut chainz = Chainz::open_at(paths.clone(), LoadMode::Strict).unwrap();
+    // v1 appears after the load (an older chainz ran meanwhile).
+    std::fs::write(paths.v1_config(), FIXTURE).unwrap();
+    chainz.transact(|tx| tx.set_var("K", "v")).unwrap();
+    assert_eq!(chainz.config().chains.len(), 17);
+    let notices = chainz.take_notices();
+    assert!(
+        matches!(&notices[..], [crate::store::Notice::Migrated { .. }]),
+        "{notices:?}"
+    );
+}
+
+#[test]
+fn peek_never_migrates() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = StorePaths::in_dir(dir.path().to_path_buf());
+    std::fs::write(paths.v1_config(), FIXTURE).unwrap();
+    let chainz = Chainz::open_at(paths.clone(), LoadMode::Peek).unwrap();
+    assert!(!chainz.exists() && paths.v1_config().exists());
+    assert!(chainz.take_notices().is_empty());
 }
 
 #[test]
@@ -279,16 +312,16 @@ fn attention(plan: &Plan) -> String {
 #[test]
 fn legacy_home_source_is_backed_up_under_its_own_name() {
     let dir = tempfile::tempdir().unwrap();
-    let mut paths = StorePaths::in_dir(dir.path().join("config/chainz"));
     let legacy = dir.path().join(".chainz.json");
+    let paths = StorePaths::in_dir(dir.path().join("config/chainz")).with_legacy(legacy.clone());
     std::fs::write(&legacy, v1_with(&[("Base", 8453)], "")).unwrap();
-    paths.v1_legacy = Some(legacy.clone());
-    let summary = migrate_locked(&paths).unwrap().unwrap();
+    let lock = WriteLock::acquire(&paths).unwrap();
+    let summary = migrate_locked(&lock).unwrap().unwrap();
     let backup = dir.path().join(".chainz.v1.json.bak");
     assert_eq!(summary.backup.as_deref(), Some(backup.as_path()));
     assert!(backup.exists() && !legacy.exists());
-    assert!(!paths.dir.join("config.v1.json.bak").exists());
-    assert!(paths.config.exists());
+    assert!(!paths.dir().join("config.v1.json.bak").exists());
+    assert!(paths.config().exists());
 }
 
 #[test]

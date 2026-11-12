@@ -78,12 +78,18 @@ fn no_command() -> Result<i32> {
 
 /// Load the config (strict), migrating v1 on first run.
 pub fn open() -> Result<Chainz> {
-    Chainz::open()
+    with_notices(Chainz::open()?)
 }
 
 /// Load leniently (doctor).
 pub fn open_lenient() -> Result<Chainz> {
-    Chainz::open_at(StorePaths::resolve()?, LoadMode::Lenient)
+    with_notices(Chainz::open_at(StorePaths::resolve()?, LoadMode::Lenient)?)
+}
+
+/// Print `chainz`'s notices on stderr as they happen.
+fn with_notices(mut chainz: Chainz) -> Result<Chainz> {
+    chainz.set_notice_sink(ui::notice);
+    Ok(chainz)
 }
 
 /// Interactive picker over configured chains; errors off a TTY.

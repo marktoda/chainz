@@ -86,6 +86,13 @@ pub fn emph(msg: &str) -> String {
     style(msg).yellow().to_string()
 }
 
+/// Print a core notice on stderr, `chainz: ` before each line.
+pub fn notice(notice: &chainz_core::store::Notice) {
+    for line in notice.to_string().lines() {
+        eprintln!("chainz: {line}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

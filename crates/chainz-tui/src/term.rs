@@ -143,7 +143,7 @@ impl Dashboard {
         let shared = Shared::new(
             store,
             runtime,
-            chainz.paths().config.clone(),
+            chainz.paths().config().to_path_buf(),
             Tuning::default(),
             sender,
         );
@@ -425,10 +425,10 @@ mod tests {
 
     fn write_config(paths: &StorePaths, text: &str) {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::create_dir_all(&paths.dir).unwrap();
-        std::fs::write(&paths.config, text).unwrap();
+        std::fs::create_dir_all(&paths.dir()).unwrap();
+        std::fs::write(&paths.config(), text).unwrap();
         let private = std::fs::Permissions::from_mode(0o600);
-        std::fs::set_permissions(&paths.config, private).unwrap();
+        std::fs::set_permissions(&paths.config(), private).unwrap();
     }
 
     #[test]

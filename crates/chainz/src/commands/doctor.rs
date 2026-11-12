@@ -102,11 +102,15 @@ fn mode(path: &std::path::Path) -> Option<u32> {
 fn files(chainz: &Chainz, fix: bool, report: &mut Report) {
     let p = chainz.paths();
     if chainz.exists() {
-        report.ok(&format!("config {}", p.config.display()));
+        report.ok(&format!("config {}", p.config().display()));
     } else {
         report.note("no config.toml yet (add a chain with `chainz chain add`)");
     }
-    for (path, want) in [(&p.dir, 0o700), (&p.secrets, 0o600), (&p.config, 0o600)] {
+    for (path, want) in [
+        (&p.dir(), 0o700),
+        (&p.secrets(), 0o600),
+        (&p.config(), 0o600),
+    ] {
         let Some(m) = mode(path) else { continue };
         if m & 0o077 != 0 {
             let msg = format!("{} is mode {m:o}, expected {want:o}", path.display());
