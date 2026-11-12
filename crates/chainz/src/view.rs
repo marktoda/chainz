@@ -142,9 +142,14 @@ pub fn compact(config: &Config, reveal: bool) -> String {
             } else {
                 " "
             };
+            // The compact column is a terse host label (stricter than
+            // `redact::url`); `chain show` and `rpc ls` show the URL.
             let url = chain
                 .active()
-                .map(|e| redact::url(&e.url, reveal))
+                .map(|e| match reveal {
+                    true => e.url.clone(),
+                    false => redact::summarize(&e.url),
+                })
                 .unwrap_or_default();
             [
                 format!("{marker}{name}"),

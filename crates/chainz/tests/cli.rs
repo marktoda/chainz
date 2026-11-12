@@ -1525,3 +1525,189 @@ fn expose_key_explain_never_unlocks() {
         .assert()
         .failure();
 }
+
+// ------------------------------------------------------- first run and `chain set`
+
+#[test]
+fn first_run_attaches_the_signer_and_the_explorer() {
+    let sb = Sandbox::new();
+    // No chains: the quick start, signer first; `init` off a terminal too.
+    let text = sb.ok(&[]);
+    assert!(text.contains("Quick start:"), "{text}");
+    let signer = text.find("signer add").unwrap();
+    assert!(signer < text.find("chain add").unwrap(), "{text}");
+    assert_eq!(
+        sb.ok(&["init"]),
+        text.replacen("chainz: no chains configured yet.\n", "", 1)
+    );
+
+    // A chain with no signer, then a first signer: it attaches.
+    let url = chain_id_rpc(8453);
+    sb.ok(&["chain", "add", "8453", "--url", &url]);
+    assert!(!sb.config().contains("signer ="), "{}", sb.config());
+    let out = sb
+        .cmd()
+        .args([
+            "signer",
+            "add",
+            "deployer",
+            "--stdin",
+            "--backend",
+            "plaintext",
+        ])
+        .write_stdin(TEST_KEY)
+        .assert()
+        .success();
+    let text = String::from_utf8_lossy(&out.get_output().stdout).to_string();
+    assert!(text.contains("Attached 'deployer' to base"), "{text}");
+    assert!(sb.config().contains("signer = \"deployer\""));
+
+    // The next chain takes the only signer, and etherscan once it exists.
+    sb.cmd()
+        .args(["chain", "set", "base", "--explorer", "etherscan"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("created [explorers.etherscan]"));
+    let url = chain_id_rpc(10);
+    let text = sb.ok(&["chain", "add", "10", "--url", &url]);
+    assert!(text.contains("signer: deployer"), "{text}");
+    assert!(text.contains("explorer: etherscan"), "{text}");
+    let url = chain_id_rpc(42161);
+    let text = sb.ok(&["chain", "add", "42161", "--url", &url, "--no-signer"]);
+    assert!(!text.contains("signer:"), "{text}");
+    let show = sb.ok(&["chain", "show", "arb", "--json"]);
+    assert!(show.contains("\"signer\": null"), "{show}");
+
+    // A second signer attaches nowhere.
+    let text = sb
+        .cmd()
+        .args(["signer", "add", "ops", "--stdin", "--backend", "plaintext"])
+        .write_stdin(TEST_KEY.replace("ac09", "bc09"))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert!(!String::from_utf8_lossy(&text).contains("Attached"));
+}
+
+#[test]
+fn chain_add_without_a_chain_off_a_tty_is_a_usage_error_before_any_fetch() {
+    let sb = Sandbox::new();
+    sb.cmd()
+        .args(["chain", "add"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("usage: chainz chain add"))
+        .stderr(predicate::str::contains("chainlist").not());
+    assert!(!sb.cache_file("chains.json").exists());
+}
+
+#[test]
+fn chain_set_off_a_tty_needs_a_chain_and_flags() {
+    let sb = Sandbox::new();
+    sb.seed(&[("eth", 1)]);
+    for args in [
+        &["chain", "set", "eth"][..],
+        &["update"],
+        &["update", "--no-signer"],
+    ] {
+        sb.cmd()
+            .args(args)
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("usage: chainz chain set"))
+            .stderr(predicate::str::contains("--signer"));
+    }
+}
+
+#[test]
+fn chain_set_applies_every_flag_in_one_write() {
+    let sb = Sandbox::new();
+    sb.seed(&[("eth", 1)]);
+    let url = chain_id_rpc(1);
+    let text = sb
+        .cmd()
+        .args([
+            "chain",
+            "set",
+            "eth",
+            "--rpc",
+            &url,
+            "--header",
+            "x-team: ${TEAM}",
+            "--no-signer",
+            "--failover",
+            "local",
+            "--alias",
+            "l1",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8_lossy(&text);
+    assert!(text.contains("Updated chain 'eth'"), "{text}");
+    assert!(text.contains("signer: none"), "{text}");
+    let show = sb.ok(&["chain", "show", "eth", "--json"]);
+    let show: serde_json::Value = serde_json::from_str(&show).unwrap();
+    assert_eq!(show["failover"], serde_json::json!(["local"]));
+    assert_eq!(show["aliases"], serde_json::json!(["l1"]));
+    assert_eq!(show["signer"], serde_json::Value::Null);
+    assert_ne!(show["rpc"], "local");
+    // A new URL with the wrong chain ID is refused, and nothing is written.
+    let before = sb.config();
+    let wrong = chain_id_rpc(10);
+    sb.cmd()
+        .args(["chain", "set", "eth", "--rpc", &wrong, "--name", "x"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("RPC check failed"));
+    assert_eq!(sb.config(), before);
+    // An API key needs an explorer.
+    sb.cmd()
+        .args(["chain", "set", "eth", "--api-key-stdin"])
+        .write_stdin("KEY")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no explorer"));
+    sb.cmd()
+        .args([
+            "chain",
+            "set",
+            "eth",
+            "--explorer",
+            "etherscan",
+            "--api-key-stdin",
+        ])
+        .write_stdin("KEY")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "explorer key: stored in ${ETHERSCAN_API_KEY}",
+        ));
+    assert!(
+        sb.secrets().contains("ETHERSCAN_API_KEY = \"KEY\""),
+        "{}",
+        sb.secrets()
+    );
+}
+
+#[test]
+fn removed_commands_are_gone() {
+    let sb = Sandbox::new();
+    sb.seed(&[("eth", 1)]);
+    for args in [
+        &["chain", "rename", "eth", "x"][..],
+        &["chain", "alias", "eth", "x"],
+        &["chain", "edit", "eth"],
+        &["rpc", "use", "eth", "local"],
+        &["config", "edit"],
+        &["chain", "add", "1", "--rpc", "http://x.invalid"],
+        &["rpc", "add", "eth", "http://x.invalid", "--use"],
+        &["signer", "rm", "default", "--force"],
+    ] {
+        sb.cmd().args(args).assert().code(2);
+    }
+}
