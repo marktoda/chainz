@@ -28,13 +28,14 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use chainz_rpc::control::{RecordStatus, RequestRecord};
+use chainz_rpc::control::{MetricsSnapshot, MetricsTotals, RecordStatus, RequestRecord};
 use chainz_rpc::error::LIMIT_EXCEEDED;
 use chainz_rpc::upstream::rpc_error_code;
 use chainz_rpc::{ErrorClass, HttpUpstream, RetryPolicy, RpcError};
 use serde_json::Value;
 
 use crate::classify::{self, Kind, Needs, Parsed};
+use crate::control::EventRing;
 use crate::http::Reply;
 use crate::inspector::Inspector;
 use crate::metrics::{Metrics, Sample};
@@ -70,11 +71,15 @@ enum Plan {
 pub struct Router {
     snapshot: RwLock<Arc<Snapshot>>,
     upstream: HttpUpstream,
-    /// Metrics store.
-    pub metrics: Metrics,
-    /// Request inspector.
-    pub inspector: Inspector,
+    metrics: Metrics,
+    inspector: Inspector,
     policy: RetryPolicy,
+}
+
+/// A chain to route to, with the snapshot it came from.
+pub struct ChainHandle {
+    snapshot: Arc<Snapshot>,
+    chain: Arc<ChainState>,
 }
 
 impl std::fmt::Debug for Router {
@@ -110,14 +115,37 @@ impl Router {
         *self.snapshot.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(snapshot);
     }
 
+    /// A chain of the current snapshot by name, alias or ID.
+    pub fn chain(&self, reference: &str) -> Option<ChainHandle> {
+        let snapshot = self.snapshot();
+        let chain = snapshot.chain(reference)?.clone();
+        Some(ChainHandle { snapshot, chain })
+    }
+
+    /// Both metrics windows at unix time `now`.
+    pub fn metrics(&self, now: u64) -> MetricsSnapshot {
+        self.metrics.snapshot(now)
+    }
+
+    /// Totals over the short window at unix time `now`.
+    pub fn summary(&self, now: u64) -> MetricsTotals {
+        self.metrics.summary(now)
+    }
+
+    /// The records behind `/_chainz/events`.
+    pub fn events(&self) -> &EventRing {
+        self.inspector.events()
+    }
+
+    /// Stop the request log; its writer drains and exits.
+    pub fn close_log(&self) {
+        self.inspector.close_log();
+    }
+
     /// Route one request body for `chain`, optionally pinned to an endpoint.
-    pub async fn handle(
-        &self,
-        snapshot: &Snapshot,
-        chain: &Arc<ChainState>,
-        pin: Option<&str>,
-        body: Bytes,
-    ) -> Reply {
+    pub async fn handle(&self, chain: ChainHandle, pin: Option<&str>, body: Bytes) -> Reply {
+        let ChainHandle { snapshot, chain } = chain;
+        let chain = &chain;
         let started = Instant::now();
         let at_ms = now_ms();
         chain.touch(at_ms / 1000);
@@ -126,7 +154,7 @@ impl Router {
             Err((code, message)) => return Reply::error(400, &Value::Null, code, message),
         };
         let method = summary::method_label(&parsed);
-        let mut params_summary = summary::summarize(&parsed, chain.id, &snapshot.labels);
+        let mut params_summary = summary::summarize(&parsed, chain.id(), &snapshot.labels);
         let id = parsed.reply_id();
 
         let candidates = match self.candidates(chain, &parsed, pin) {
@@ -135,10 +163,10 @@ impl Router {
                 self.inspector.push(RequestRecord {
                     id: 0,
                     at_ms,
-                    chain: chain.name.clone(),
+                    chain: chain.name().to_string(),
                     method,
                     params_summary,
-                    upstream: pin.unwrap_or(&chain.active_name).to_string(),
+                    upstream: pin.unwrap_or(chain.active_name()).to_string(),
                     attempts: 0,
                     latency_ms: 0,
                     status: RecordStatus::Error {
@@ -195,7 +223,7 @@ impl Router {
         self.inspector.push(RequestRecord {
             id: 0,
             at_ms,
-            chain: chain.name.clone(),
+            chain: chain.name().to_string(),
             method,
             params_summary,
             upstream: outcome.endpoint,
@@ -214,38 +242,16 @@ impl Router {
         parsed: &Parsed,
         pin: Option<&str>,
     ) -> Result<Vec<Arc<EndpointState>>, String> {
-        let named = |name: &str| match chain.endpoints.get(name) {
-            Some(Ok(endpoint)) => Ok(endpoint.clone()),
-            Some(Err(reason)) => Err(format!(
-                "endpoint '{name}' of chain '{}' can't be routed: {reason}",
-                chain.name
-            )),
-            None => Err(format!("chain '{}' has no endpoint '{name}'", chain.name)),
-        };
         if let Some(pin) = pin {
-            return Ok(vec![named(pin)?]);
+            return Ok(vec![chain.endpoint(pin)?]);
         }
-        let active = || {
-            chain.active.clone().map_err(|reason| {
-                format!(
-                    "active endpoint '{}' of chain '{}' can't be routed: {reason}",
-                    chain.active_name, chain.name
-                )
-            })
-        };
         match plan(chain, parsed)? {
-            Plan::Sticky(name) => Ok(vec![named(&name)?]),
-            Plan::ActiveOnly => Ok(vec![active()?]),
+            Plan::Sticky(name) => Ok(vec![chain.endpoint(&name)?]),
+            Plan::ActiveOnly => Ok(vec![chain.active()?]),
             Plan::Read(needs) => {
-                let active = active()?;
+                let active = chain.active()?;
                 let mut pool = vec![active.clone()];
-                pool.extend(
-                    chain
-                        .failover
-                        .iter()
-                        .filter(|e| chain.head_is_current(e))
-                        .cloned(),
-                );
+                pool.extend(chain.current_failovers().cloned());
                 if needs.any() {
                     // Tagged endpoints only; the active endpoint also
                     // qualifies while its tags are unknown.
@@ -271,7 +277,12 @@ impl Router {
         method: &str,
         body: Bytes,
     ) -> Outcome {
-        let mut attempts = 0;
+        let mut trip = Trip {
+            chain,
+            method,
+            body,
+            attempts: 0,
+        };
         let mut outcome = None;
         for (i, endpoint) in candidates.iter().enumerate() {
             let has_next = i + 1 < candidates.len();
@@ -279,20 +290,12 @@ impl Router {
             // there once.
             let retry_here = idempotent && candidates.len() == 1;
             let (result, shift) = self
-                .try_endpoint(
-                    chain,
-                    endpoint,
-                    has_next,
-                    retry_here,
-                    method,
-                    &body,
-                    &mut attempts,
-                )
+                .try_endpoint(&mut trip, endpoint, has_next, retry_here)
                 .await;
             outcome = Some(Outcome {
                 result,
-                endpoint: endpoint.name.clone(),
-                attempts,
+                endpoint: endpoint.name().to_string(),
+                attempts: trip.attempts,
             });
             if !shift {
                 break;
@@ -301,7 +304,7 @@ impl Router {
         outcome.unwrap_or_else(|| Outcome {
             result: Err(RpcError::Unsupported("no endpoint available".into())),
             endpoint: String::new(),
-            attempts,
+            attempts: trip.attempts,
         })
     }
 
@@ -309,20 +312,22 @@ impl Router {
     /// (up to [`MAX_QUEUE`] in the bucket when there is no next endpoint).
     /// Returns the answer and whether the request should move on to the
     /// next endpoint (only ever true when `has_next`).
-    #[allow(clippy::too_many_arguments)]
     async fn try_endpoint(
         &self,
-        chain: &ChainState,
+        trip: &mut Trip<'_>,
         endpoint: &EndpointState,
         has_next: bool,
         retry_here: bool,
-        method: &str,
-        body: &Bytes,
-        attempts: &mut u32,
     ) -> (Result<Answer, RpcError>, bool) {
+        let Trip {
+            chain,
+            method,
+            ref body,
+            ref mut attempts,
+        } = *trip;
         let record = |sample: Sample| {
             self.metrics
-                .record(now_secs(), &chain.name, &endpoint.name, method, &sample);
+                .record(now_secs(), chain.name(), endpoint.name(), method, &sample);
         };
         // How long this request may wait for a bucket slot in all.
         let allowance = if has_next { MAX_WAIT } else { MAX_QUEUE };
@@ -333,7 +338,7 @@ impl Router {
             // Every send takes a slot, retries included: requests that
             // waited out the same 429 don't all retry at once.
             let budget = allowance.saturating_sub(waited);
-            match endpoint.limiter.try_acquire(Instant::now(), budget) {
+            match endpoint.acquire(Instant::now(), budget) {
                 Ok(wait) => {
                     if !wait.is_zero() {
                         tokio::time::sleep(wait).await;
@@ -346,8 +351,8 @@ impl Router {
                     // so this is no upstream attempt.
                     self.metrics.record_refusal(
                         now_secs(),
-                        &chain.name,
-                        &endpoint.name,
+                        chain.name(),
+                        endpoint.name(),
                         method,
                         has_next,
                     );
@@ -361,7 +366,7 @@ impl Router {
             let sent = Instant::now();
             let result = self
                 .upstream
-                .send(&endpoint.target, body.clone(), &self.policy)
+                .send(endpoint.target(), body.clone(), &self.policy)
                 .await;
             let latency_ms = millis(sent.elapsed());
             match result {
@@ -380,13 +385,13 @@ impl Router {
                         ..Sample::default()
                     });
                     if !limit_exceeded {
-                        endpoint.limiter.on_success();
+                        endpoint.on_success();
                     }
                     let answer = Answer { body, code };
                     return (Ok(answer), shift);
                 }
                 Err(RpcError::RateLimited { retry_after }) => {
-                    endpoint.limiter.on_rate_limited(Instant::now());
+                    endpoint.on_rate_limited(Instant::now());
                     let wait = retry_after.unwrap_or(backoff);
                     let stay = waited + wait <= MAX_WAIT;
                     record(Sample {
@@ -495,6 +500,15 @@ struct Answer {
     code: Option<i64>,
 }
 
+/// One request on its way through its candidate endpoints.
+struct Trip<'a> {
+    chain: &'a ChainState,
+    method: &'a str,
+    body: Bytes,
+    /// Upstream attempts so far, across endpoints.
+    attempts: u32,
+}
+
 /// What [`Router::attempt`] ended with.
 struct Outcome {
     /// The upstream's answer, or the last error.
@@ -544,9 +558,9 @@ fn plan(chain: &ChainState, parsed: &Parsed) -> Result<Plan, String> {
         }
     }
     match sticky {
-        Some(endpoint) if active_only && endpoint != chain.active_name => Err(format!(
+        Some(endpoint) if active_only && endpoint != chain.active_name() => Err(format!(
             "batch mixes a filter created on endpoint '{endpoint}' with calls bound to the active endpoint '{}'",
-            chain.active_name
+            chain.active_name()
         )),
         Some(endpoint) => Ok(Plan::Sticky(endpoint)),
         None if active_only => Ok(Plan::ActiveOnly),

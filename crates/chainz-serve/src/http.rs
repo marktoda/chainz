@@ -10,12 +10,12 @@ use std::time::Duration;
 use bytes::Bytes;
 use chainz_rpc::RpcError;
 use chainz_rpc::error::LIMIT_EXCEEDED;
-use http_body_util::{BodyExt, Full};
+use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::Incoming;
-use hyper::header::{CONTENT_TYPE, HeaderValue, RETRY_AFTER};
+use hyper::header::{ALLOW, CONTENT_TYPE, HOST, HeaderValue, RETRY_AFTER};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
-use hyper::{Request, Response, StatusCode};
+use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::{TokioIo, TokioTimer};
 use hyper_util::server::graceful::GracefulShutdown;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -24,6 +24,8 @@ use tokio::sync::watch;
 use tokio::task::JoinSet;
 
 use serde_json::{Value, json};
+
+use crate::auth;
 
 /// The `Retry-After` sent with a 429 when the upstream named no wait: as
 /// long as the gateway itself waits out rate limits on one endpoint.
@@ -115,8 +117,58 @@ impl Reply {
     }
 }
 
+/// Largest request body either proxy accepts.
+const MAX_REQUEST_BODY: usize = 64 * 1024 * 1024;
+
+/// The checks every proxied request passes, in order: a loopback `Host`
+/// naming `port` (403), `POST` (405), `application/json` (415), then
+/// `authorize(path)` (its own answer, usually 403), then a body of at most
+/// 64 MiB (413). No CORS headers are ever sent.
+pub(crate) async fn guard<T>(
+    request: Request<Incoming>,
+    port: u16,
+    authorize: impl FnOnce(&str) -> Result<T, Refusal>,
+) -> Result<(T, Bytes), Refusal> {
+    let host = request.headers().get(HOST).and_then(|h| h.to_str().ok());
+    if !auth::host_allowed(host, port) {
+        return Err(forbidden());
+    }
+    if request.method() != Method::POST {
+        let mut response = plain(StatusCode::METHOD_NOT_ALLOWED, "POST only\n");
+        response
+            .headers_mut()
+            .insert(ALLOW, HeaderValue::from_static("POST"));
+        return Err(Box::new(response));
+    }
+    if !is_json(request.headers().get(CONTENT_TYPE)) {
+        return Err(Box::new(plain(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "content-type must be application/json\n",
+        )));
+    }
+    let authorized = authorize(request.uri().path())?;
+    match Limited::new(request.into_body(), MAX_REQUEST_BODY)
+        .collect()
+        .await
+    {
+        Ok(body) => Ok((authorized, body.to_bytes())),
+        Err(_) => Err(Box::new(plain(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "request body too large\n",
+        ))),
+    }
+}
+
+/// The answer to a request [`guard`] turned away.
+pub(crate) type Refusal = Box<Response<BoxBody>>;
+
+/// The answer to a request that isn't allowed in.
+pub(crate) fn forbidden() -> Refusal {
+    Box::new(plain(StatusCode::FORBIDDEN, "forbidden\n"))
+}
+
 /// Whether a `Content-Type` is `application/json` (parameters allowed).
-pub(crate) fn is_json(content_type: Option<&HeaderValue>) -> bool {
+fn is_json(content_type: Option<&HeaderValue>) -> bool {
     content_type
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.split(';').next())

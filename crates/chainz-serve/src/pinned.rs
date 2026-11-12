@@ -18,19 +18,15 @@ use std::time::Duration;
 
 use chainz_core::runtime::{GatewayAddr, LOOPBACK};
 use chainz_rpc::{HttpUpstream, RetryPolicy, Target};
-use http_body_util::{BodyExt, Limited};
 use hyper::body::Incoming;
-use hyper::header::{ALLOW, CONTENT_TYPE, HOST, HeaderValue};
-use hyper::{Method, Request, Response, StatusCode};
+use hyper::{Request, Response, StatusCode};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 use crate::auth;
-use crate::http::{self, BoxBody, Reply, is_json, json, plain};
+use crate::http::{self, BoxBody, Reply, json};
 
-/// Largest request body accepted.
-const MAX_REQUEST_BODY: usize = 64 * 1024 * 1024;
 /// How long in-flight requests may take to finish on shutdown.
 const DRAIN: Duration = Duration::from_secs(5);
 
@@ -122,34 +118,19 @@ impl Drop for PinnedProxy {
 
 /// One request: auth, then forwarding.
 async fn handle(state: &State, request: Request<Incoming>) -> Response<BoxBody> {
-    let host = request.headers().get(HOST).and_then(|h| h.to_str().ok());
     // Only `/<token>`: a chain or endpoint segment means nothing here.
-    let token = GatewayAddr::parse_path(request.uri().path())
-        .filter(|path| path.chain.is_none())
-        .map(|path| path.token);
-    let authorized = token.is_some_and(|token| auth::token_matches(token, &state.addr.token));
-    if !auth::host_allowed(host, state.addr.port) || !authorized {
-        return plain(StatusCode::FORBIDDEN, "forbidden\n");
-    }
-    if request.method() != Method::POST {
-        let mut response = plain(StatusCode::METHOD_NOT_ALLOWED, "POST only\n");
-        response
-            .headers_mut()
-            .insert(ALLOW, HeaderValue::from_static("POST"));
-        return response;
-    }
-    if !is_json(request.headers().get(CONTENT_TYPE)) {
-        return plain(
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            "content-type must be application/json\n",
-        );
-    }
-    let body = match Limited::new(request.into_body(), MAX_REQUEST_BODY)
-        .collect()
-        .await
-    {
-        Ok(body) => body.to_bytes(),
-        Err(_) => return plain(StatusCode::PAYLOAD_TOO_LARGE, "request body too large\n"),
+    let authorize = |path: &str| {
+        let token = GatewayAddr::parse_path(path)
+            .filter(|path| path.chain.is_none())
+            .map(|path| path.token);
+        match token.is_some_and(|token| auth::token_matches(token, &state.addr.token)) {
+            true => Ok(()),
+            false => Err(http::forbidden()),
+        }
+    };
+    let body = match http::guard(request, state.addr.port, authorize).await {
+        Ok(((), body)) => body,
+        Err(response) => return *response,
     };
     match state
         .upstream

@@ -9,20 +9,20 @@ use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use chainz_core::labels::LabelIndex;
 use chainz_core::model::{Chain, Endpoint};
 use chainz_core::{Chainz, LoadMode, StorePaths};
+use chainz_rpc::control::ChainStatus;
+use chainz_rpc::health::FAILOVER_LAG;
 use chainz_rpc::{Capabilities, HealthStore, Target};
+use chainz_sys::FileStamp;
 
 use crate::classify::Needs;
 use crate::limiter::AimdLimiter;
 
-/// A failover target must be within this many blocks of the chain's head
-/// high-water mark.
-pub const MAX_HEAD_LAG: u64 = 2;
 /// Probe rounds the high-water mark is taken over. Long enough that one
 /// failed probe of the leading endpoint doesn't drop the mark, short enough
 /// that one bogus head doesn't hold it up for good.
@@ -33,13 +33,13 @@ const MAX_FILTERS: usize = 4096;
 /// One routable (HTTP) endpoint.
 pub struct EndpointState {
     /// Endpoint name.
-    pub name: String,
+    name: String,
     /// Expanded URL and headers.
-    pub target: Target,
+    target: Target,
     /// URL and headers, to detect changes on reload. Secret: never printed.
     fingerprint: String,
     /// Adaptive rate limiter.
-    pub limiter: AimdLimiter,
+    limiter: AimdLimiter,
     /// Last probed head; 0 = unknown or the last probe failed.
     head: AtomicU64,
     caps: Mutex<Option<Capabilities>>,
@@ -55,6 +55,33 @@ impl std::fmt::Debug for EndpointState {
 }
 
 impl EndpointState {
+    /// The endpoint's name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Where requests go.
+    pub fn target(&self) -> &Target {
+        &self.target
+    }
+
+    /// Take a slot in the endpoint's rate limiter, waiting up to `budget`:
+    /// `Ok(wait)` to sleep first, or `Err(wait)` when the wait would be
+    /// longer than that.
+    pub fn acquire(&self, now: Instant, budget: Duration) -> Result<Duration, Duration> {
+        self.limiter.try_acquire(now, budget)
+    }
+
+    /// The endpoint answered: the limiter may speed up.
+    pub fn on_success(&self) {
+        self.limiter.on_success();
+    }
+
+    /// The endpoint answered 429: the limiter slows down.
+    pub fn on_rate_limited(&self, now: Instant) {
+        self.limiter.on_rate_limited(now);
+    }
+
     /// The last probed head, if the last probe succeeded.
     pub fn head(&self) -> Option<u64> {
         match self.head.load(Ordering::Relaxed) {
@@ -115,23 +142,82 @@ struct ChainLive {
 #[derive(Debug)]
 pub struct ChainState {
     /// Short name.
-    pub name: String,
+    name: String,
     /// Chain ID.
-    pub id: u64,
+    id: u64,
     /// Name of the active endpoint.
-    pub active_name: String,
+    active_name: String,
     /// Names of the failover endpoints, in config order.
-    pub failover_names: Vec<String>,
+    failover_names: Vec<String>,
     /// The active endpoint, or why it can't be routed.
-    pub active: Result<Arc<EndpointState>, String>,
+    active: Result<Arc<EndpointState>, String>,
     /// Routable failover endpoints, in config order.
-    pub failover: Vec<Arc<EndpointState>>,
+    failover: Vec<Arc<EndpointState>>,
     /// Every configured endpoint by name, or why it can't be routed.
-    pub endpoints: HashMap<String, Result<Arc<EndpointState>, String>>,
+    endpoints: HashMap<String, Result<Arc<EndpointState>, String>>,
     live: Arc<ChainLive>,
 }
 
 impl ChainState {
+    /// The chain's short name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The chain ID.
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// The active endpoint's name.
+    pub fn active_name(&self) -> &str {
+        &self.active_name
+    }
+
+    /// What the control API reports for this chain.
+    pub fn status(&self) -> ChainStatus {
+        ChainStatus {
+            chain: self.name.clone(),
+            chain_id: self.id,
+            active: self.active_name.clone(),
+            failover: self.failover_names.clone(),
+            head: self.head(),
+        }
+    }
+
+    /// The active endpoint, or why it can't be routed.
+    pub fn active(&self) -> Result<Arc<EndpointState>, String> {
+        self.active.clone().map_err(|reason| {
+            format!(
+                "active endpoint '{}' of chain '{}' can't be routed: {reason}",
+                self.active_name, self.name
+            )
+        })
+    }
+
+    /// The endpoint called `name`, or why it can't be routed.
+    pub fn endpoint(&self, name: &str) -> Result<Arc<EndpointState>, String> {
+        match self.endpoints.get(name) {
+            Some(Ok(endpoint)) => Ok(endpoint.clone()),
+            Some(Err(reason)) => Err(format!(
+                "endpoint '{name}' of chain '{}' can't be routed: {reason}",
+                self.name
+            )),
+            None => Err(format!("chain '{}' has no endpoint '{name}'", self.name)),
+        }
+    }
+
+    /// The failover endpoints that may take a read now, in config order.
+    pub fn current_failovers(&self) -> impl Iterator<Item = &Arc<EndpointState>> {
+        self.failover.iter().filter(|e| self.head_is_current(e))
+    }
+
+    /// The pool whose heads the gateway probes: only failover pools with a
+    /// routable active endpoint need a head high-water mark.
+    pub fn probe_pool(&self) -> Option<Vec<Arc<EndpointState>>> {
+        (!self.failover.is_empty() && self.active.is_ok()).then(|| self.pool())
+    }
+
     /// The head high-water mark, if any probe has succeeded.
     pub fn head(&self) -> Option<u64> {
         match self.live.hwm.load(Ordering::Relaxed) {
@@ -157,7 +243,7 @@ impl ChainState {
     }
 
     /// The active endpoint, then the failover list.
-    pub fn pool(&self) -> Vec<Arc<EndpointState>> {
+    fn pool(&self) -> Vec<Arc<EndpointState>> {
         let mut pool = Vec::with_capacity(1 + self.failover.len());
         pool.extend(self.active.as_ref().ok().cloned());
         pool.extend(self.failover.iter().cloned());
@@ -165,10 +251,10 @@ impl ChainState {
     }
 
     /// Whether `endpoint` may take a read that failed over: its head is
-    /// known and within [`MAX_HEAD_LAG`] of the high-water mark.
-    pub fn head_is_current(&self, endpoint: &EndpointState) -> bool {
+    /// known and within [`FAILOVER_LAG`] of the high-water mark.
+    fn head_is_current(&self, endpoint: &EndpointState) -> bool {
         match (endpoint.head(), self.head()) {
-            (Some(head), Some(hwm)) => head.saturating_add(MAX_HEAD_LAG) >= hwm,
+            (Some(head), Some(hwm)) => head.saturating_add(FAILOVER_LAG) >= hwm,
             _ => false,
         }
     }
@@ -234,6 +320,29 @@ impl ChainState {
     }
 }
 
+/// The files a snapshot was built from, as they were just before it was
+/// read: the watcher reloads when they change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stamps {
+    /// `config.toml`.
+    pub config: Option<FileStamp>,
+    /// `secrets.toml`.
+    pub secrets: Option<FileStamp>,
+    /// `health.json` (capability tags).
+    pub health: Option<FileStamp>,
+}
+
+impl Stamps {
+    /// The files as they are now.
+    pub fn take(paths: &StorePaths, state_dir: Option<&Path>) -> Stamps {
+        Stamps {
+            config: FileStamp::of(&paths.config),
+            secrets: FileStamp::of(&paths.secrets),
+            health: state_dir.and_then(|dir| FileStamp::of(&HealthStore::path(dir))),
+        }
+    }
+}
+
 /// Everything the router needs, built from one read of the config.
 #[derive(Debug)]
 pub struct Snapshot {
@@ -243,8 +352,11 @@ pub struct Snapshot {
     /// Reverse labels for the inspector.
     pub labels: LabelIndex,
     /// Endpoints that can't be routed, as `chain.endpoint: reason`
-    /// (websockets excluded: those are expected).
+    /// (websockets excluded: those are expected), and an unreadable health
+    /// store.
     pub warnings: Vec<String>,
+    /// The files as they were just before they were read.
+    pub stamps: Stamps,
 }
 
 impl Snapshot {
@@ -255,17 +367,24 @@ impl Snapshot {
         state_dir: Option<&Path>,
         previous: Option<&Snapshot>,
     ) -> Result<Snapshot> {
+        // Stamped before the read, so the watcher sees a change made
+        // while it runs.
+        let stamps = Stamps::take(paths, state_dir);
         let chainz = Chainz::open_at(paths.clone(), LoadMode::Strict)?;
         let config = chainz.config();
-        let health = state_dir.and_then(|dir| HealthStore::load(dir).ok());
-        let mut chains = Vec::with_capacity(config.chains.len());
-        let mut lookup = HashMap::new();
         // Loading may tighten a file's permissions: say so with the rest.
         let mut warnings: Vec<String> = chainz
             .take_notices()
             .iter()
             .map(ToString::to_string)
             .collect();
+        let health = state_dir.and_then(|dir| {
+            HealthStore::load(dir)
+                .map_err(|e| warnings.push(format!("capability tags unavailable: {e}")))
+                .ok()
+        });
+        let mut chains = Vec::with_capacity(config.chains.len());
+        let mut lookup = HashMap::new();
         for (name, chain) in &config.chains {
             // The same chain: same name and same ID. A chain whose ID
             // changed starts afresh (its heads and filters are another
@@ -345,6 +464,7 @@ impl Snapshot {
             lookup,
             labels: LabelIndex::new(config),
             warnings,
+            stamps,
         })
     }
 
@@ -358,10 +478,8 @@ impl Snapshot {
     }
 
     /// Re-read capability tags from the health store.
-    pub fn refresh_capabilities(&self, state_dir: &Path) {
-        let Ok(health) = HealthStore::load(state_dir) else {
-            return;
-        };
+    pub fn refresh_capabilities(&self, state_dir: &Path) -> std::io::Result<()> {
+        let health = HealthStore::load(state_dir)?;
         for chain in &self.chains {
             for (name, endpoint) in &chain.endpoints {
                 if let Ok(endpoint) = endpoint {
@@ -369,6 +487,7 @@ impl Snapshot {
                 }
             }
         }
+        Ok(())
     }
 }
 
@@ -456,7 +575,7 @@ rpcs.sock = "ws://127.0.0.1:3"
         eth.remember_filter("0xAB", "main");
         let main = eth.active.clone().unwrap();
         main.set_head(Some(100));
-        main.limiter.on_rate_limited(Instant::now());
+        main.on_rate_limited(Instant::now());
         let backup = eth.failover[0].clone();
         assert!(!eth.head_is_current(&backup), "unknown head");
         backup.set_head(Some(97));
