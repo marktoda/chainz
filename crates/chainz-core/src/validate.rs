@@ -3,7 +3,7 @@
 //! but never echo a URL, header value or secret.
 
 use crate::address::Address;
-use crate::model::{self, Backend, CONFIG_VERSION, Config, Explorer, Need};
+use crate::model::{self, Backend, CONFIG_VERSION, Config, Explorer, Need, SIGNER_FIELDS};
 use crate::names;
 use crate::secrets::Secrets;
 use crate::template;
@@ -132,19 +132,22 @@ pub fn issues(config: &Config, secrets: Option<&Secrets>) -> Vec<String> {
             err(e.to_string());
         }
         let backend = signer.backend;
-        let fields = backend.fields();
-        for (field, value) in signer.optional_fields() {
-            if value.is_some() && !fields.iter().any(|(f, _)| *f == field) {
+        for field in &SIGNER_FIELDS {
+            if field.backend != backend && (field.get)(signer).is_some() {
                 err(format!(
-                    "signer '{name}' field '{field}' does not apply to backend '{backend}'"
+                    "signer '{name}' field '{}' does not apply to backend '{backend}'",
+                    field.name
                 ));
             }
         }
-        for (field, value) in signer.optional_fields() {
-            let required = fields.contains(&(field, Need::Required));
-            if required && !value.is_some_and(|v| !v.trim().is_empty()) {
+        for field in &SIGNER_FIELDS {
+            if field.backend == backend
+                && field.need == Need::Required
+                && !(field.get)(signer).is_some_and(|v| !v.trim().is_empty())
+            {
                 err(format!(
-                    "signer '{name}' (backend '{backend}') needs a non-empty '{field}'"
+                    "signer '{name}' (backend '{backend}') needs a non-empty '{}'",
+                    field.name
                 ));
             }
         }

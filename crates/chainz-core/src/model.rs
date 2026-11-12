@@ -396,7 +396,19 @@ impl Backend {
     /// hold (a keystore file, a 1Password item): chainz never writes,
     /// moves or deletes it.
     pub fn is_reference(self) -> bool {
-        matches!(self, Backend::Keystore | Backend::OnePassword)
+        self.key_material().is_none()
+    }
+
+    /// Where the key material that chainz deletes along with a signer of
+    /// this backend lives, if anywhere (keystore files and 1Password items
+    /// are only [referenced](Self::is_reference), and stay).
+    pub fn key_material(self) -> Option<&'static str> {
+        match self {
+            Backend::Keyring => Some("its OS keyring entry"),
+            Backend::Encrypted => Some("its encrypted key in secrets.toml"),
+            Backend::Plaintext => Some("its key in secrets.toml"),
+            Backend::Keystore | Backend::OnePassword => None,
+        }
     }
 
     /// The config spelling.
@@ -407,20 +419,6 @@ impl Backend {
             Backend::Keystore => "keystore",
             Backend::OnePassword => "1password",
             Backend::Plaintext => "plaintext",
-        }
-    }
-}
-
-impl Backend {
-    /// The optional [`Signer`] fields this backend takes (`backend` and
-    /// `address` apply to all), and whether each is required. Every other
-    /// optional field must be absent.
-    pub(crate) fn fields(self) -> &'static [(&'static str, Need)] {
-        match self {
-            Backend::Keyring => &[("service", Need::Optional), ("username", Need::Optional)],
-            Backend::Keystore => &[("path", Need::Required)],
-            Backend::OnePassword => &[("vault", Need::Required), ("item", Need::Required)],
-            Backend::Encrypted | Backend::Plaintext => &[],
         }
     }
 }
@@ -437,7 +435,7 @@ pub(crate) const KEYRING_SERVICE: &str = "chainz";
 /// A key reference plus its cached public address. Holds no key material.
 ///
 /// A flat record rather than an enum tagged by backend: which optional
-/// fields a backend takes is the one table `Backend::fields`, checked by
+/// fields a backend takes is the one table `SIGNER_FIELDS`, checked by
 /// validation, so a mistake gets a message naming the signer and field
 /// (and `doctor` can still load the file to list every problem).
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -464,6 +462,54 @@ pub struct Signer {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub item: Option<String>,
 }
+
+/// One optional [`Signer`] field: its config name, the one backend that
+/// takes it, whether that backend needs it, and how to read it.
+pub(crate) struct SignerField {
+    /// The config (and serde) name.
+    pub name: &'static str,
+    /// The backend that takes it; every other backend must leave it out.
+    pub backend: Backend,
+    /// Whether that backend needs a non-empty value.
+    pub need: Need,
+    /// The field's value in a signer.
+    pub get: fn(&Signer) -> Option<&str>,
+}
+
+/// Every optional [`Signer`] field (`backend` and `address` apply to all):
+/// the one table validation checks signers against.
+pub(crate) const SIGNER_FIELDS: [SignerField; 5] = [
+    SignerField {
+        name: "service",
+        backend: Backend::Keyring,
+        need: Need::Optional,
+        get: |s| s.service.as_deref(),
+    },
+    SignerField {
+        name: "username",
+        backend: Backend::Keyring,
+        need: Need::Optional,
+        get: |s| s.username.as_deref(),
+    },
+    SignerField {
+        name: "path",
+        backend: Backend::Keystore,
+        need: Need::Required,
+        get: |s| s.path.as_deref(),
+    },
+    SignerField {
+        name: "vault",
+        backend: Backend::OnePassword,
+        need: Need::Required,
+        get: |s| s.vault.as_deref(),
+    },
+    SignerField {
+        name: "item",
+        backend: Backend::OnePassword,
+        need: Need::Required,
+        get: |s| s.item.as_deref(),
+    },
+];
 
 /// Whether a backend needs an optional [`Signer`] field.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -522,29 +568,6 @@ impl Signer {
             item: Some(item),
             ..Self::new(Backend::OnePassword, address)
         }
-    }
-
-    /// Where the key material that chainz deletes along with this signer
-    /// lives, if anywhere (keystore files and 1Password items are only
-    /// referenced, and stay).
-    pub fn key_material(&self) -> Option<&'static str> {
-        match self.backend {
-            Backend::Keyring => Some("its OS keyring entry"),
-            Backend::Encrypted => Some("its encrypted key in secrets.toml"),
-            Backend::Plaintext => Some("its key in secrets.toml"),
-            Backend::Keystore | Backend::OnePassword => None,
-        }
-    }
-
-    /// Every optional field by its config name, set or not.
-    pub(crate) fn optional_fields(&self) -> [(&'static str, Option<&str>); 5] {
-        [
-            ("service", self.service.as_deref()),
-            ("username", self.username.as_deref()),
-            ("path", self.path.as_deref()),
-            ("vault", self.vault.as_deref()),
-            ("item", self.item.as_deref()),
-        ]
     }
 
     /// Keyring service and username for a keyring signer named `name`.
@@ -999,18 +1022,30 @@ address = "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf"
     }
 
     #[test]
-    fn only_backends_holding_key_material_delete_it() {
-        for backend in [Backend::Keyring, Backend::Encrypted, Backend::Plaintext] {
-            assert!(
-                Signer::new(backend, None).key_material().is_some(),
-                "{backend}"
-            );
-        }
-        for backend in [Backend::Keystore, Backend::OnePassword] {
-            assert!(
-                Signer::new(backend, None).key_material().is_none(),
-                "{backend}"
-            );
+    fn signer_fields_table_matches_the_serde_record() {
+        let all = Signer {
+            service: Some("s".into()),
+            username: Some("u".into()),
+            path: Some("p".into()),
+            vault: Some("v".into()),
+            item: Some("i".into()),
+            ..Signer::new(Backend::Keyring, None)
+        };
+        let value = serde_json::to_value(&all).unwrap();
+        let keys: Vec<&str> = value
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        let mut want: Vec<&str> = SIGNER_FIELDS.iter().map(|f| f.name).collect();
+        want.push("backend");
+        let mut keys = keys;
+        keys.sort_unstable();
+        want.sort_unstable();
+        assert_eq!(keys, want);
+        for field in &SIGNER_FIELDS {
+            assert!((field.get)(&all).is_some(), "{}", field.name);
         }
     }
 

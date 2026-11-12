@@ -218,7 +218,7 @@ fn rm(backend: &dyn KeyBackend, args: &SignerRmArgs) -> Result<i32> {
     };
     let removed = chainz.remove_signer(backend, name, users)?;
     if let Err(e) = removed.external {
-        let material = record.key_material().unwrap_or("its key material");
+        let material = record.backend.key_material().unwrap_or("its key material");
         eprintln!(
             "{}",
             ui::warn(&format!(
@@ -247,11 +247,11 @@ fn removal_consent(
     if !users.is_empty() {
         does.push(format!("unassigns it from {users}"));
     }
-    does.push(match record.key_material() {
+    does.push(match record.backend.key_material() {
         Some(material) => format!("deletes {material}, which can't be undone"),
         None => format!("removes signer '{name}' ({} kept)", record.backend),
     });
-    let question = match (users.is_empty(), record.key_material()) {
+    let question = match (users.is_empty(), record.backend.key_material()) {
         (true, Some(material)) => {
             format!("Remove signer '{name}' and delete {material}? This can't be undone")
         }
