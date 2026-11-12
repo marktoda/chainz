@@ -3,7 +3,6 @@ mod common;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use chainz_rpc::upstream::rpc_error_code;
 use chainz_rpc::{HttpUpstream, RetryPolicy, RpcClient, RpcError};
 use common::*;
 use serde_json::json;
@@ -28,12 +27,10 @@ async fn send_with(
     client: RpcClient,
 ) -> Result<Bytes, RpcError> {
     let up = HttpUpstream::new(client);
-    up.send(
-        &server.target(1),
-        Bytes::from_static(BODY.as_bytes()),
-        policy,
-    )
-    .await
+    let target = server.target(1);
+    policy
+        .run(|| up.send(&target, Bytes::from_static(BODY.as_bytes())))
+        .await
 }
 
 fn ok(req: &Req) -> Resp {
@@ -109,39 +106,6 @@ async fn gateway_status_is_retried_then_exhausted() {
 }
 
 #[tokio::test]
-async fn limit_exceeded_is_retried_only_when_enabled() {
-    let server = MockHttp::start(|i, req| {
-        if i == 0 {
-            Resp::rpc_error(req, -32005, "limit exceeded")
-        } else {
-            ok(req)
-        }
-    })
-    .await;
-    let r = send(&server, &fast_policy()).await.unwrap();
-    assert_eq!(server.hits(), 2);
-    assert_eq!(rpc_error_code(&r), None);
-
-    // One attempt: the -32005 body is returned as Ok.
-    let server = MockHttp::start(|_, req| Resp::rpc_error(req, -32005, "limit exceeded")).await;
-    let policy = RetryPolicy {
-        max_attempts: 1,
-        ..fast_policy()
-    };
-    let r = send(&server, &policy).await.unwrap();
-    assert_eq!(server.hits(), 1);
-    assert_eq!(rpc_error_code(&r), Some(-32005));
-
-    // Exhausted: the last -32005 body is returned as Ok, as it was sent.
-    let server = MockHttp::start(|_, req| Resp::rpc_error(req, -32005, "limit exceeded")).await;
-    let r = send(&server, &fast_policy()).await.unwrap();
-    assert_eq!(server.hits(), 3);
-    assert_eq!(rpc_error_code(&r), Some(-32005));
-    let reply: serde_json::Value = serde_json::from_slice(&r).unwrap();
-    assert_eq!(reply["error"]["message"], "limit exceeded");
-}
-
-#[tokio::test]
 async fn non_retryable_status_fails_after_one_attempt() {
     let server = MockHttp::start(|_, _| Resp::status(400)).await;
     let err = send(&server, &fast_policy()).await.unwrap_err();
@@ -187,12 +151,9 @@ async fn timeouts_and_connect_errors_are_retried() {
 
     let up = HttpUpstream::new(RpcClient::new());
     let start = Instant::now();
-    let err = up
-        .send(
-            &dead_target(),
-            Bytes::from_static(BODY.as_bytes()),
-            &fast_policy(),
-        )
+    let target = dead_target();
+    let err = fast_policy()
+        .run(|| up.send(&target, Bytes::from_static(BODY.as_bytes())))
         .await
         .unwrap_err();
     assert_eq!(err, RpcError::Connect);

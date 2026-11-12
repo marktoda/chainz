@@ -2,20 +2,14 @@
 //! loopback.
 mod common;
 
-use chainz_rpc::{HttpUpstream, RetryPolicy, RpcClient, Target};
+use chainz_rpc::{RpcClient, Target};
 use chainz_serve::PinnedProxy;
 use common::{Mock, R, http};
 use serde_json::json;
 
 async fn proxy_to(mock: &Mock) -> PinnedProxy {
     let target = Target::new(1, "pinned", &mock.url(), &[]).unwrap();
-    PinnedProxy::start(
-        HttpUpstream::new(RpcClient::new()),
-        target,
-        RetryPolicy::none(),
-    )
-    .await
-    .unwrap()
+    PinnedProxy::start(RpcClient::new(), target).await.unwrap()
 }
 
 const BODY: &str = r#"{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}"#;
@@ -115,6 +109,45 @@ async fn upstream_failures_are_http_errors_without_the_url() {
     let reply = http(proxy.addr().port, "POST", &path, &headers, BODY).await;
     assert_eq!(reply.status, 403);
     assert_eq!(reply.json()["error"]["code"], json!(-32000));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_limit_exceeded_answer_is_retried_on_the_same_endpoint() {
+    let calls = std::sync::atomic::AtomicUsize::new(0);
+    let a = Mock::start("a", move |_| {
+        match calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+            0 => R::Error(-32005),
+            _ => R::Result(json!("a")),
+        }
+    })
+    .await;
+    let proxy = proxy_to(&a).await;
+    let host = format!("127.0.0.1:{}", proxy.addr().port);
+    let headers = [
+        ("Host", host.as_str()),
+        ("Content-Type", "application/json"),
+    ];
+    let path = proxy.addr().path(None, None);
+    let reply = http(proxy.addr().port, "POST", &path, &headers, BODY).await;
+    assert_eq!(
+        (reply.status, reply.json()["result"].as_str()),
+        (200, Some("a"))
+    );
+    assert_eq!(a.calls().len(), 2);
+
+    // Retries run out: the last -32005 answer, as the endpoint sent it.
+    let b = Mock::start("b", |_| R::Error(-32005)).await;
+    let proxy = proxy_to(&b).await;
+    let host = format!("127.0.0.1:{}", proxy.addr().port);
+    let headers = [
+        ("Host", host.as_str()),
+        ("Content-Type", "application/json"),
+    ];
+    let path = proxy.addr().path(None, None);
+    let reply = http(proxy.addr().port, "POST", &path, &headers, BODY).await;
+    assert_eq!(reply.status, 200);
+    assert_eq!(reply.json()["error"]["message"], json!("mock error"));
+    assert_eq!(b.calls().len(), 3);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

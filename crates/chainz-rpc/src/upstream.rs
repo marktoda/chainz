@@ -1,25 +1,24 @@
-//! Raw JSON-RPC forwarding to one chosen endpoint, and the same-endpoint
-//! retry loop ([`RetryPolicy`]) for callers without a rate-limit bucket:
-//! the pinned fork proxy and `doctor`. The gateway sends one attempt at a
-//! time and retries in its router, where buckets and failover live.
+//! Raw JSON-RPC forwarding to one chosen endpoint ([`HttpUpstream`]), and
+//! the same-endpoint retry loop ([`RetryPolicy`]) for callers without a
+//! rate-limit bucket: the pinned fork proxy and `doctor`. The gateway
+//! retries in its router, where buckets and failover live.
 //!
-//! The gateway and the fork proxy forward through [`HttpUpstream`]. It
-//! never fails over to another endpoint; that decision belongs to the
-//! caller, made from the returned error ([`RpcError::is_transient`],
-//! [`RpcError::is_rate_limited`]).
+//! [`HttpUpstream`] makes one attempt and never fails over; what to do
+//! next is the caller's decision, made from the returned error
+//! ([`RpcError::is_transient`], [`RpcError::is_rate_limited`]) or from a
+//! 2xx answer's [`rpc_error_code`].
 
 use std::future::Future;
-use std::sync::Mutex;
 use std::time::Duration;
 
 use bytes::Bytes;
 
 use crate::client::{RpcClient, check_status};
-use crate::error::{LIMIT_EXCEEDED, RpcError};
+use crate::error::RpcError;
 use crate::target::Target;
 
-/// How [`RetryPolicy::run`] (and so [`HttpUpstream::send`]) retries on the
-/// same endpoint. Per-attempt timeouts are the [`RpcClient`]'s.
+/// How [`RetryPolicy::run`] retries on the same endpoint. Per-attempt
+/// timeouts are the [`RpcClient`]'s.
 ///
 /// What is retried is fixed: every transient failure
 /// ([`RpcError::is_transient`]) and every rate limit
@@ -134,60 +133,33 @@ impl HttpUpstream {
         HttpUpstream { client }
     }
 
-    /// Send `body` to `target`, retrying on that same endpoint per
-    /// `policy` ([`RetryPolicy::run`]), and return the 2xx response body.
-    /// Never fails over to another endpoint.
+    /// Send `body` to `target` once and return the 2xx response body.
     ///
     /// POST with `content-type: application/json` and the target's
     /// headers. A 429 is [`RpcError::RateLimited`], another non-2xx is
     /// [`RpcError::Http`]. A 2xx body is returned as it is, JSON-RPC errors
-    /// included, except that a single response carrying [`LIMIT_EXCEEDED`]
-    /// is retried when the policy retries rate limits (the last one is
-    /// returned as it is).
-    pub async fn send(
-        &self,
-        target: &Target,
-        body: Bytes,
-        policy: &RetryPolicy,
-    ) -> Result<Bytes, RpcError> {
+    /// included.
+    pub async fn send(&self, target: &Target, body: Bytes) -> Result<Bytes, RpcError> {
         target.require_http()?;
-        // Only a policy that retries rate limits looks into the body.
-        let inspect = policy.retries(&limit_exceeded());
-        // The last 2xx body that carried LIMIT_EXCEEDED, as it was sent.
-        let limited: Mutex<Option<Bytes>> = Mutex::new(None);
-        let (client, body, limited_ref) = (&self.client, &body, &limited);
-        let result = policy
-            .run(move || async move {
-                let raw = client.post_raw(target, body.clone()).await?;
-                check_status(&raw)?;
-                if inspect && rpc_error_code(&raw.body) == Some(LIMIT_EXCEEDED) {
-                    *limited_ref.lock().unwrap_or_else(|e| e.into_inner()) = Some(raw.body);
-                    return Err(limit_exceeded());
-                }
-                Ok(raw.body)
-            })
-            .await;
-        match result {
-            Err(error) if error == limit_exceeded() => limited
-                .into_inner()
-                .unwrap_or_else(|e| e.into_inner())
-                .ok_or(error),
-            other => other,
-        }
+        let raw = self.client.post_raw(target, body).await?;
+        check_status(&raw)?;
+        Ok(raw.body)
     }
 }
 
-/// The error a [`LIMIT_EXCEEDED`] answer stands for while it is retried.
-fn limit_exceeded() -> RpcError {
-    RpcError::Rpc {
-        code: LIMIT_EXCEEDED,
-        message: "limit exceeded".into(),
-    }
-}
+/// Answers larger than this are not looked into for an error code: an
+/// error answer is small.
+const MAX_INSPECTED_BODY: usize = 16 * 1024;
 
-/// The JSON-RPC error code of a single-object response body, if any.
-/// Batch (array) bodies and bodies without an error yield `None`.
+/// The JSON-RPC error code of a single-object response body, if any: the
+/// one way chainz tells a 2xx answer that is an error (a
+/// [`LIMIT_EXCEEDED`](crate::error::LIMIT_EXCEEDED) rate limit, say).
+/// Batch (array) bodies, bodies without an error and bodies over 16 KiB
+/// yield `None`.
 pub fn rpc_error_code(body: &[u8]) -> Option<i64> {
+    if body.len() > MAX_INSPECTED_BODY {
+        return None;
+    }
     #[derive(serde::Deserialize)]
     struct Single {
         error: Option<ErrorObj>,
@@ -205,6 +177,7 @@ pub fn rpc_error_code(body: &[u8]) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::LIMIT_EXCEEDED;
     use std::sync::atomic::{AtomicU32, Ordering};
 
     fn quick(max_attempts: u32) -> RetryPolicy {
@@ -302,6 +275,10 @@ mod tests {
         );
         assert_eq!(rpc_error_code(br#"[{"error":{"code":-32005}}]"#), None);
         assert_eq!(rpc_error_code(b"garbage"), None);
+        let mut big = br#"{"error":{"code":-32005},"pad":""#.to_vec();
+        big.resize(MAX_INSPECTED_BODY, b' ');
+        big.extend(br#""}"#);
+        assert_eq!(rpc_error_code(&big), None);
     }
 
     #[test]

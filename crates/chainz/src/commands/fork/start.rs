@@ -16,7 +16,7 @@ use chainz_core::runtime::{
     ForkClaim, ForkRecord, LOOPBACK, PortReservation, Runtime, loopback_url,
 };
 use chainz_os::LogMode;
-use chainz_rpc::{HttpUpstream, RetryPolicy, RpcClient, Target};
+use chainz_rpc::{RpcClient, Target};
 use chainz_serve::PinnedProxy;
 use std::fs::File;
 use std::net::TcpListener;
@@ -351,8 +351,7 @@ async fn start_fork(supervisor: &mut Supervisor, job: &Job<'_>) -> Result<Runnin
     // per-fork token, never the gateway's token or an endpoint secret.
     // Retries stay on that endpoint: mixing nodes would corrupt the fork.
     let (target, route) = endpoint::upstream(chainz, runtime, parent, &endpoint)?;
-    let upstream = HttpUpstream::new(client.clone());
-    let proxy = PinnedProxy::start(upstream, target, RetryPolicy::same_endpoint_transient())
+    let proxy = PinnedProxy::start(client.clone(), target)
         .await
         .context("unable to start the fork proxy")?;
 

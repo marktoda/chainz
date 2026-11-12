@@ -31,7 +31,7 @@ use bytes::Bytes;
 use chainz_rpc::control::{MetricsSnapshot, RecordStatus, RequestRecord};
 use chainz_rpc::error::{LIMIT_EXCEEDED, SERVER_ERROR};
 use chainz_rpc::upstream::rpc_error_code;
-use chainz_rpc::{ErrorClass, HttpUpstream, RetryPolicy, RpcError};
+use chainz_rpc::{ErrorClass, HttpUpstream, RpcError};
 use serde_json::Value;
 
 use crate::classify::{self, Kind, Needs, Params, Parsed};
@@ -54,7 +54,8 @@ pub const MAX_QUEUE: Duration = Duration::from_secs(10);
 const BACKOFF_429: Duration = Duration::from_millis(250);
 /// Wait before the one same-endpoint retry of a read with nowhere to go.
 const RETRY_PAUSE: Duration = Duration::from_millis(100);
-/// Responses larger than this are not inspected for a JSON-RPC error.
+/// Answers larger than this are not parsed for filter IDs and transaction
+/// hashes.
 const MAX_INSPECTED_BODY: usize = 16 * 1024;
 
 /// How one request may be routed.
@@ -357,19 +358,11 @@ impl Router {
             }
             *attempts += 1;
             let sent = Instant::now();
-            let result = self
-                .upstream
-                // One attempt per call: the router owns every retry
-                // decision (rate-limit buckets, backoff, failover).
-                .send(endpoint.target(), body.clone(), &RetryPolicy::none())
-                .await;
+            let result = self.upstream.send(endpoint.target(), body.clone()).await;
             let latency_ms = millis(sent.elapsed());
             match result {
                 Ok(body) => {
-                    // The one parse of the body: the error code, if any.
-                    let code = (body.len() <= MAX_INSPECTED_BODY)
-                        .then(|| rpc_error_code(&body))
-                        .flatten();
+                    let code = rpc_error_code(&body);
                     let limit_exceeded = code == Some(LIMIT_EXCEEDED);
                     let shift = limit_exceeded && has_next;
                     record(Sample {
@@ -493,8 +486,7 @@ impl Router {
 /// An upstream's 2xx answer.
 struct Answer {
     body: Bytes,
-    /// The JSON-RPC error code of a single response (bodies over
-    /// [`MAX_INSPECTED_BODY`] are not inspected).
+    /// The JSON-RPC error code of a single response ([`rpc_error_code`]).
     code: Option<i64>,
 }
 
