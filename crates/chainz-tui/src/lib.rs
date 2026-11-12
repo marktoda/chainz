@@ -4,8 +4,8 @@
 //!
 //! - `plan`: the config resolved into owned, thread-safe targets, and the
 //!   display data (`*Info`) the rest of the crate sees;
-//! - `model`: the shared vocabulary: what workers report ([`model::Update`],
-//!   [`model::Refresh`]), the state it folds into, and the
+//! - `model`: the shared vocabulary: what workers report (`Update`,
+//!   `Refresh`), the state it folds into, and the
 //!   classification rules;
 //! - `gateway`: the one adapter over the control protocol, into model
 //!   types;
