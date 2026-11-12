@@ -151,10 +151,7 @@ pub async fn probe_chains(
         });
     }
     if let Err(e) = health::record(store, out.iter().flat_map(|c| &c.probes)) {
-        eprintln!(
-            "{}",
-            ui::warn(&format!("could not save health history: {e}"))
-        );
+        eprintln!("{}", ui::warn(&format!("health history not saved: {e}")));
     }
     Ok(out)
 }

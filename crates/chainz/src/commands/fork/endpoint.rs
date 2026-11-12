@@ -91,7 +91,9 @@ pub async fn find_archive(
         }
         store.set_capabilities(chain.id, name, capabilities);
     }
-    let _ = store.save();
+    if let Err(e) = store.save() {
+        eprintln!("{}", ui::warn(&format!("health history not saved: {e}")));
+    }
     chosen.ok_or_else(|| {
         anyhow!(
             "--block {block} needs an archive endpoint, and none of the {} HTTP endpoint(s) of '{parent}' serves historical state; add one with `chainz rpc add {parent} URL`",
