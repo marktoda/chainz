@@ -259,10 +259,7 @@ fn merge_entry(into: &mut Entry, ours: &Entry) {
 /// Take `<state_dir>/health.lock` (creating the directory); released
 /// when the returned file closes.
 fn lock(state_dir: &Path) -> io::Result<fs::File> {
-    chainz_os::create_private_dir(state_dir)?;
-    let lock = chainz_os::open_private(&state_dir.join(LOCK_NAME))?;
-    lock.lock()?;
-    Ok(lock)
+    chainz_os::lock_file(&state_dir.join(LOCK_NAME))
 }
 
 /// Move a `health.json` that does not parse to `health.json.corrupt`
