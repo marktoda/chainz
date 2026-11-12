@@ -9,6 +9,7 @@
 //! by the OS or by `chainz fork` itself, never guessed by the test.
 mod common;
 
+use chainz_rpc::abi;
 use common::{Sandbox, send_signal, stderr, stdout};
 use serde_json::{Value, json};
 use std::fs;
@@ -183,7 +184,8 @@ fn balance(port: u16, address: &str) -> String {
 
 /// `balanceOf(holder)` on the test token, as a decimal.
 fn token_balance(port: u16, holder: &str) -> u128 {
-    let data = format!("0x70a08231{:0>64}", holder.trim_start_matches("0x"));
+    let selector: String = abi::BALANCE_OF.iter().map(|b| format!("{b:02x}")).collect();
+    let data = format!("0x{selector}{:0>64}", holder.trim_start_matches("0x"));
     let result = rpc(
         port,
         "eth_call",

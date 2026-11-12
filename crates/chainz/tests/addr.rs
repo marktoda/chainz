@@ -6,6 +6,7 @@
 mod common;
 
 use chainz_core::labels::{BuiltinToken, builtin_token, builtin_tokens};
+use chainz_rpc::abi;
 use common::{MockRpc, Sandbox, TEST_ADDRESS, stdout};
 use predicates::prelude::*;
 use serde_json::{Value, json};
@@ -552,6 +553,12 @@ struct MockToken {
     decimals: u8,
 }
 
+/// A call's data for a bare `selector`.
+fn selector(selector: [u8; 4]) -> String {
+    let hex: String = selector.iter().map(|b| format!("{b:02x}")).collect();
+    format!("0x{hex}")
+}
+
 fn abi_string(s: &str) -> String {
     let mut data = vec![0u8; 64];
     data[31] = 32;
@@ -575,11 +582,18 @@ fn token_rpc(chain_id: u64, tokens: HashMap<String, MockToken>) -> String {
             } else {
                 "0x"
             })),
-            "eth_call" => match (token(&params[0]["to"]), params[0]["data"].as_str()) {
-                (Some(t), Some("0x95d89b41")) => Ok(json!(format!("0x{}", abi_string(&t.symbol)))),
-                (Some(t), Some("0x313ce567")) => Ok(json!(format!("0x{:064x}", t.decimals))),
-                _ => Err("execution reverted".into()),
-            },
+            "eth_call" => {
+                let data = params[0]["data"].as_str().unwrap_or_default();
+                match token(&params[0]["to"]) {
+                    Some(t) if data == selector(abi::SYMBOL) => {
+                        Ok(json!(format!("0x{}", abi_string(&t.symbol))))
+                    }
+                    Some(t) if data == selector(abi::DECIMALS) => {
+                        Ok(json!(format!("0x{:064x}", t.decimals)))
+                    }
+                    _ => Err("execution reverted".into()),
+                }
+            }
             _ => Err("method not found".into()),
         }
     });
