@@ -31,7 +31,7 @@ use crate::extract::{self, VarTable};
 use crate::model::{Backend, Chain, Endpoint, Explorer, Signer};
 use crate::names;
 use crate::secrets::{BUILTIN_VARS, SignerSecret};
-use crate::store::files::{WriteLock, new_config_text, parse_config};
+use crate::store::files::{StorePaths, WriteLock, new_config_text};
 use crate::template;
 use crate::tx::Tx;
 use anyhow::{Context, Result, anyhow};
@@ -333,18 +333,11 @@ pub fn plan(v1_json: &str) -> Result<Plan> {
         tx.set_secrets_header("# chainz secrets (mode 0600). Never share this file.\n");
     }
 
-    let (config_toml, secrets_toml) = tx.texts();
     // The result must load and validate like any hand-written config. Every
     // entry that could fail was skipped above, so a failure here is a bug.
-    let parsed = parse_config(&config_toml, Path::new("config.toml"))?;
-    let parsed_secrets = crate::secrets::Secrets::parse(&secrets_toml).map_err(|e| {
-        anyhow!(
-            "migrated secrets do not parse: {}",
-            crate::redact::toml_error(&e)
-        )
-    })?;
-    crate::validate::validate(&parsed, Some(&parsed_secrets))
+    tx.check(Path::new("config.toml"))
         .context("migrated config is invalid (a chainz bug: please report it; the v1 config was left untouched)")?;
+    let (config_toml, secrets_toml) = tx.texts();
     Ok(Plan {
         config_toml,
         secrets_toml,
@@ -870,27 +863,55 @@ fn backup_path(source: &Path) -> PathBuf {
     }
 }
 
+/// Whether a v1 config is waiting to be migrated.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Status {
+    /// `config.toml` exists: migrated, or never v1.
+    Done,
+    /// No `config.toml` and no v1 file.
+    NoV1,
+    /// The v1 file to migrate.
+    Pending(PathBuf),
+}
+
+/// Where `paths` stand (see [`Status`]).
+pub fn status(paths: &StorePaths) -> Status {
+    if paths.config().exists() {
+        return Status::Done;
+    }
+    match paths.v1_source() {
+        Some(source) => Status::Pending(source),
+        None => Status::NoV1,
+    }
+}
+
+/// The plan [`migrate_locked`] would carry out now, writing nothing (a
+/// dry run): `None` unless [`status`] is [`Status::Pending`].
+pub fn preview(paths: &StorePaths) -> Result<Option<Plan>> {
+    match status(paths) {
+        Status::Pending(source) => plan_file(&source).map(Some),
+        Status::Done | Status::NoV1 => Ok(None),
+    }
+}
+
+/// [`plan`] for the v1 file at `source`.
+fn plan_file(source: &Path) -> Result<Plan> {
+    let text = std::fs::read_to_string(source)
+        .with_context(|| format!("failed to read {}", source.display()))?;
+    plan(&text).with_context(|| format!("failed to migrate {}", source.display()))
+}
+
 /// Migrate under `lock`. Returns `None` when there was nothing to do
 /// (config.toml exists, or no v1 file).
 pub fn migrate_locked(lock: &WriteLock) -> Result<Option<Summary>> {
     let paths = lock.paths();
-    if paths.config().exists() {
-        return Ok(None);
-    }
-    let Some(source) = paths.v1_source() else {
+    let Status::Pending(source) = status(paths) else {
         return Ok(None);
     };
-    let text = std::fs::read_to_string(&source)
-        .with_context(|| format!("failed to read {}", source.display()))?;
-    let mut plan =
-        plan(&text).with_context(|| format!("failed to migrate {}", source.display()))?;
+    let mut plan = plan_file(&source)?;
     chainz_os::create_private_dir(paths.dir())?;
-    if !plan.secrets_toml.is_empty() {
-        chainz_os::write_private(paths.secrets(), plan.secrets_toml.as_bytes())
-            .with_context(|| format!("failed to write {}", paths.secrets().display()))?;
-    }
-    chainz_os::write_private(paths.config(), plan.config_toml.as_bytes())
-        .with_context(|| format!("failed to write {}", paths.config().display()))?;
+    let secrets = (!plan.secrets_toml.is_empty()).then_some(plan.secrets_toml.as_str());
+    crate::store::files::write_pair(paths, Some(&plan.config_toml), secrets)?;
     let backup = backup_path(&source);
     std::fs::rename(&source, &backup).with_context(|| {
         format!(

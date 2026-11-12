@@ -305,18 +305,16 @@ impl Chainz {
             self.paths.secrets(),
         )?;
         let out = edit(&mut tx)?;
-        let (config, secrets) = self.checked(&tx)?;
+        let (config, secrets) = tx.check(self.paths.config())?;
         let (new_config, new_secrets) = tx.texts();
-        if new_secrets != secrets_orig {
-            chainz_os::write_private(self.paths.secrets(), new_secrets.as_bytes())
-                .with_context(|| format!("failed to write {}", self.paths.secrets().display()))?;
-        }
         // The first write materializes config.toml even when the edit
         // left the new-file text as it was.
-        if new_config != config_orig || config_text.is_none() {
-            chainz_os::write_private(self.paths.config(), new_config.as_bytes())
-                .with_context(|| format!("failed to write {}", self.paths.config().display()))?;
-        }
+        let config_changed = new_config != config_orig || config_text.is_none();
+        files::write_pair(
+            &self.paths,
+            config_changed.then_some(new_config.as_str()),
+            (new_secrets != secrets_orig).then_some(new_secrets.as_str()),
+        )?;
         drop(lock);
         self.config = config;
         self.exists = true;
@@ -337,23 +335,8 @@ impl Chainz {
             self.paths.secrets(),
         )?;
         let out = edit(&mut tx)?;
-        self.checked(&tx)?;
+        tx.check(self.paths.config())?;
         Ok(out)
-    }
-
-    /// The typed, validated result of `tx`, or why it may not be written.
-    fn checked(&self, tx: &Tx) -> Result<(Config, Secrets)> {
-        let (config_text, secrets_text) = tx.texts();
-        let config = parse_config(&config_text, self.paths.config())?;
-        let secrets = Secrets::parse(&secrets_text).map_err(|e| {
-            anyhow!(
-                "refusing to write invalid secrets: {}",
-                crate::redact::toml_error(&e)
-            )
-        })?;
-        validate::validate(&config, Some(&secrets))
-            .context("refusing to write an invalid config")?;
-        Ok((config, secrets))
     }
 
     /// The text of `config.toml` as it is on disk now (a new file's text

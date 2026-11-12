@@ -139,6 +139,23 @@ impl Drop for WriteLock {
     }
 }
 
+/// Write the config files that changed: `secrets.toml` first, so a
+/// `config.toml` never names a variable that is not there yet. `None`
+/// leaves a file as it is.
+pub(crate) fn write_pair(
+    paths: &StorePaths,
+    config: Option<&str>,
+    secrets: Option<&str>,
+) -> Result<()> {
+    for (path, text) in [(paths.secrets(), secrets), (paths.config(), config)] {
+        if let Some(text) = text {
+            chainz_os::write_private(path, text.as_bytes())
+                .with_context(|| format!("failed to write {}", path.display()))?;
+        }
+    }
+    Ok(())
+}
+
 /// Parse config text into the typed view.
 pub(crate) fn parse_config(text: &str, path: &Path) -> Result<Config> {
     Config::parse(text).map_err(|e| {

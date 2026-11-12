@@ -175,7 +175,15 @@ fn migration_writes_once_in_order_and_backs_up_v1() {
     let dir = tempfile::tempdir().unwrap();
     let paths = StorePaths::in_dir(dir.path().join("chainz"));
     std::fs::create_dir_all(paths.dir()).unwrap();
+    assert_eq!(status(&paths), Status::NoV1);
     std::fs::write(paths.v1_config(), FIXTURE).unwrap();
+    assert_eq!(
+        status(&paths),
+        Status::Pending(paths.v1_config().to_path_buf())
+    );
+    // A dry run plans the same migration and writes nothing.
+    let planned = preview(&paths).unwrap().unwrap();
+    assert!(!paths.config().exists());
 
     let handles: Vec<_> = (0..8)
         .map(|_| {
@@ -193,6 +201,12 @@ fn migration_writes_once_in_order_and_backs_up_v1() {
         .count();
     assert_eq!(migrated, 1);
     assert!(!paths.v1_config().exists());
+    assert_eq!(status(&paths), Status::Done);
+    assert!(preview(&paths).unwrap().is_none());
+    assert_eq!(
+        std::fs::read_to_string(paths.config()).unwrap(),
+        planned.config_toml
+    );
     assert!(paths.dir().join("config.v1.json.bak").exists());
     let summary = Summary {
         backup: Some(paths.dir().join("config.v1.json.bak")),

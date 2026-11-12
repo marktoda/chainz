@@ -1,8 +1,9 @@
 //! `config path|migrate` (`chainz edit` edits the file).
 
 use crate::cli::{ConfigCommand, ConfigMigrateArgs, ConfigPathArgs};
-use anyhow::{Context, Result};
-use chainz_core::store::WriteLock;
+use crate::ui;
+use anyhow::Result;
+use chainz_core::store::{Notice, WriteLock};
 use chainz_core::{StorePaths, migrate, paths};
 
 pub fn run(cmd: ConfigCommand) -> Result<i32> {
@@ -30,20 +31,22 @@ fn path(args: &ConfigPathArgs) -> Result<i32> {
 }
 
 fn migrate_cmd(args: &ConfigMigrateArgs) -> Result<i32> {
-    let dry_run = args.dry_run;
     let p = StorePaths::resolve()?;
-    if p.config().exists() {
-        println!("Already migrated: {}", p.config().display());
-        return Ok(0);
+    match migrate::status(&p) {
+        migrate::Status::Done => {
+            println!("Already migrated: {}", p.config().display());
+            return Ok(0);
+        }
+        migrate::Status::NoV1 => {
+            println!("No v1 config found; nothing to migrate");
+            return Ok(0);
+        }
+        migrate::Status::Pending(_) => {}
     }
-    let Some(source) = p.v1_source() else {
-        println!("No v1 config found; nothing to migrate");
-        return Ok(0);
-    };
-    if dry_run {
-        let text = std::fs::read_to_string(&source)
-            .with_context(|| format!("failed to read {}", source.display()))?;
-        let plan = migrate::plan(&text)?;
+    if args.dry_run {
+        let Some(plan) = migrate::preview(&p)? else {
+            return Ok(0);
+        };
         print!("{}", plan.config_toml);
         for line in plan.summary.report(None) {
             eprintln!("chainz: {line}");
@@ -55,11 +58,10 @@ fn migrate_cmd(args: &ConfigMigrateArgs) -> Result<i32> {
     }
     let lock = WriteLock::acquire(&p)?;
     match migrate::migrate_locked(&lock)? {
-        Some(summary) => {
-            for line in summary.report(Some(p.config())) {
-                eprintln!("chainz: {line}");
-            }
-        }
+        Some(summary) => ui::notice(&Notice::Migrated {
+            summary,
+            config: p.config().to_path_buf(),
+        }),
         None => println!("Already migrated: {}", p.config().display()),
     }
     Ok(0)

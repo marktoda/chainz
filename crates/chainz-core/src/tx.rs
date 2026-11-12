@@ -18,7 +18,7 @@ use crate::model::{Chain, Config, Endpoint, Explorer, Signer};
 use crate::names;
 use crate::redact;
 use crate::secrets::{Secrets, SignerSecret};
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::Serialize;
 use std::path::Path;
 use toml_edit::{DocumentMut, InlineTable, Item, Key, Table, TableLike, Value, value};
@@ -99,6 +99,23 @@ impl Tx {
     /// Whether `secrets.toml` holds nothing.
     pub(crate) fn secrets_is_empty(&self) -> bool {
         self.secrets.is_empty()
+    }
+
+    /// The typed, validated result, or why it may not be written:
+    /// what every write ([`Chainz::transact`](crate::store::Chainz::transact),
+    /// v1 migration) checks first. `config_path` names the file in errors.
+    pub(crate) fn check(&self, config_path: &Path) -> Result<(Config, Secrets)> {
+        let (config_text, secrets_text) = self.texts();
+        let config = crate::store::files::parse_config(&config_text, config_path)?;
+        let secrets = Secrets::parse(&secrets_text).map_err(|e| {
+            anyhow!(
+                "refusing to write invalid secrets: {}",
+                redact::toml_error(&e)
+            )
+        })?;
+        crate::validate::validate(&config, Some(&secrets))
+            .context("refusing to write an invalid config")?;
+        Ok((config, secrets))
     }
 
     /// The typed view of the config as edited so far.
