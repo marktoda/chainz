@@ -1,7 +1,7 @@
 //! Process plumbing shared by the background servers (`serve`, `fork`):
 //! their private logs, running this program in the background until it
-//! says it is ready ([`launch_detached`], [`detached_ready`]), and
-//! signals.
+//! has started ([`launch_detached`], [`Detached::wait_started`],
+//! [`detached_ready`]), and signals.
 
 use anyhow::{Context, Result};
 use chainz_os::LogMode;
@@ -75,16 +75,50 @@ pub fn launch_detached(log: &Path, mode: LogMode) -> io::Result<Detached> {
     Ok(Detached { child, ready })
 }
 
+/// How a background start ended, from [`Detached::wait_started`].
+#[derive(Debug)]
+pub enum Started {
+    /// Ready and registered: what it printed for the user.
+    Up(String),
+    /// It exited without registering (it was waited for).
+    Failed(ExitStatus),
+    /// Not ready in time (it was killed).
+    TimedOut,
+}
+
 impl Detached {
     /// The background process's ID.
     pub fn pid(&self) -> u32 {
         self.child.id()
     }
 
+    /// Wait up to `timeout` for the child to be ready, then ask
+    /// `registered` whether it registered itself under its PID (in
+    /// `serve.json`, a fork record): a child that got ready without
+    /// registering has failed, and is waited for. An error from
+    /// `registered` leaves the child running.
+    pub fn wait_started(
+        &mut self,
+        timeout: Duration,
+        registered: impl FnOnce(u32) -> Result<bool>,
+    ) -> Result<Started> {
+        let said = match self.wait_ready(Some(timeout)) {
+            Err(e) if e.kind() == io::ErrorKind::TimedOut => {
+                let _ = self.kill();
+                return Ok(Started::TimedOut);
+            }
+            said => said.context("lost the background process")?,
+        };
+        if registered(self.pid())? {
+            return Ok(Started::Up(said));
+        }
+        Ok(Started::Failed(self.child.wait()?))
+    }
+
     /// Wait until the child is ready (it closed its stdout, see
     /// [`detached_ready`]) or has exited, and return what it printed. An
     /// [`io::ErrorKind::TimedOut`] error after `timeout`, if one is given.
-    pub fn wait_ready(&mut self, timeout: Option<Duration>) -> io::Result<String> {
+    fn wait_ready(&mut self, timeout: Option<Duration>) -> io::Result<String> {
         use std::os::fd::AsRawFd;
         let Some(mut pipe) = self.ready.take() else {
             return Ok(String::new());
@@ -131,19 +165,8 @@ impl Detached {
         }
     }
 
-    /// The exit status, if the child has exited.
-    #[cfg(test)]
-    pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
-        self.child.try_wait()
-    }
-
-    /// Wait for the child to exit.
-    pub fn wait(&mut self) -> io::Result<ExitStatus> {
-        self.child.wait()
-    }
-
     /// Kill the child (SIGKILL) and reap it.
-    pub fn kill(&mut self) -> io::Result<()> {
+    fn kill(&mut self) -> io::Result<()> {
         self.child.kill()?;
         self.child.wait().map(drop)
     }
@@ -210,13 +233,13 @@ mod tests {
         let said = up.wait_ready(Some(Duration::from_secs(5))).unwrap();
         assert_eq!(said, "up\n");
         assert!(started.elapsed() < Duration::from_secs(4));
-        assert!(up.try_wait().unwrap().is_none(), "still running");
+        assert!(up.child.try_wait().unwrap().is_none(), "still running");
         up.kill().unwrap();
 
         // Exiting counts too; the caller tells the two apart.
         let mut failed = background("printf 'no'; exit 3");
         assert_eq!(failed.wait_ready(None).unwrap(), "no");
-        assert_eq!(failed.wait().unwrap().code(), Some(3));
+        assert_eq!(failed.child.wait().unwrap().code(), Some(3));
 
         // Never ready: a timeout, and the child is left to the caller.
         let mut stuck = background("sleep 5");

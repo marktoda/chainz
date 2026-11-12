@@ -5,49 +5,48 @@
 use crate::sys::{self, signal};
 use anyhow::{Context as _, Result, anyhow};
 use chainz_core::paths;
-use chainz_core::runtime::{ForkEntry, ForkRecord, Runtime};
+use chainz_core::runtime::{ForkEntry, ForkRecord, Runtime, loopback_url};
+use chainz_rpc::Target;
 use std::fs::File;
 use std::io;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::{Duration, Instant};
+use tokio::signal::unix::{Signal, SignalKind};
 
-/// The stop signal that arrived, or 0.
-static SHUTDOWN: AtomicI32 = AtomicI32::new(0);
-
-extern "C" fn on_signal(signal: libc::c_int) {
-    SHUTDOWN.store(signal, Ordering::SeqCst);
+/// The stop signals a supervisor obeys (SIGINT, SIGTERM, SIGHUP), caught
+/// from creation on.
+pub struct StopSignals {
+    interrupt: Signal,
+    terminate: Signal,
+    hangup: Signal,
 }
 
-/// Turn SIGINT, SIGTERM and SIGHUP into a shutdown request.
-pub fn install_signal_handlers() {
-    let handler = on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
-    for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
-        // SAFETY: the handler only stores to an atomic.
-        unsafe {
-            libc::signal(signal, handler);
-        }
+impl StopSignals {
+    /// Catch the stop signals. Must be called inside the tokio runtime.
+    pub fn new() -> io::Result<Self> {
+        Ok(Self {
+            interrupt: tokio::signal::unix::signal(SignalKind::interrupt())?,
+            terminate: tokio::signal::unix::signal(SignalKind::terminate())?,
+            hangup: tokio::signal::unix::signal(SignalKind::hangup())?,
+        })
+    }
+
+    /// Resolves at the next stop signal with the exit code for it: 128 +
+    /// its number (130 for Ctrl-C).
+    pub async fn recv(&mut self) -> i32 {
+        let number = tokio::select! {
+            _ = self.interrupt.recv() => libc::SIGINT,
+            _ = self.terminate.recv() => libc::SIGTERM,
+            _ = self.hangup.recv() => libc::SIGHUP,
+        };
+        128 + number
     }
 }
 
-/// The exit code for the stop signal that arrived (128 + its number, so
-/// 130 for Ctrl-C), if one did.
-pub fn shutdown_requested() -> Option<i32> {
-    match SHUTDOWN.load(Ordering::SeqCst) {
-        0 => None,
-        signal => Some(128 + signal),
-    }
-}
-
-/// Resolves once a stop signal arrives, with its exit code.
-pub async fn shutdown() -> i32 {
-    loop {
-        if let Some(code) = shutdown_requested() {
-            return code;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+/// The fork's anvil as a JSON-RPC target.
+pub fn anvil_target(chain_id: u64, port: u16) -> Result<Target> {
+    Target::new(chain_id, "anvil", &loopback_url(port), &[]).map_err(|e| anyhow!("{e}"))
 }
 
 /// Whether a process with this PID exists (zombies included).
@@ -142,8 +141,8 @@ pub fn kill_anvil(pid: u32, port: Option<u16>) {
     }
 }
 
-/// How long a supervisor may take to stop on SIGTERM: it notices within
-/// 200 ms, then gives anvil up to 3 s before killing it. Generous, since a
+/// How long a supervisor may take to stop on SIGTERM: it gives anvil up to
+/// 3 s before killing it, then removes the fork's files. Generous, since a
 /// loaded machine is slow at all of it.
 const SUPERVISOR_GRACE: Duration = Duration::from_secs(10);
 
@@ -400,16 +399,9 @@ mod tests {
         // A dead fork (no lock holder) whose record names this test
         // process as its anvil: reaped, and nothing is signalled.
         let record = ForkRecord {
-            format: ForkRecord::FORMAT,
-            name: "gone-fork".into(),
             pid: dead_pid(),
             anvil_pid: std::process::id(),
-            port: 8601,
-            parent: "base".into(),
-            chain_id: 8453,
-            fork_block: None,
-            started_at: 0,
-            ready: true,
+            ..ForkRecord::sample("gone-fork", "base", 8601)
         };
         std::fs::create_dir_all(rt.forks_dir()).unwrap();
         std::fs::write(

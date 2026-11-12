@@ -6,7 +6,8 @@
 
 use crate::cli::{ServeArgs, ServeCommand, ServeLogArgs};
 use crate::load::open;
-use crate::{net, sys, ui, view};
+use crate::sys::{self, Started};
+use crate::{net, ui, view};
 use anyhow::{Context, Result, bail};
 use chainz_core::StorePaths;
 use chainz_core::paths;
@@ -174,37 +175,38 @@ fn detach() -> Result<i32> {
     // out; the child keeps our working directory, so a relative --log holds.
     let mut child =
         sys::launch_detached(&log_path, LogMode::Append).context("failed to start the gateway")?;
-    match child.wait_ready(Some(START_TIMEOUT)) {
-        Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
-            let _ = child.kill();
-            bail!(
-                "the gateway did not come up within {} s; see {}",
-                START_TIMEOUT.as_secs(),
-                log_path.display()
+    let mut port = 0;
+    let started = child.wait_started(START_TIMEOUT, |pid| {
+        Ok(match gateway(&runtime)? {
+            GatewayState::Up(info) if info.pid == pid => {
+                port = info.port;
+                true
+            }
+            _ => false,
+        })
+    })?;
+    match started {
+        Started::Up(_) => {
+            println!(
+                "{}",
+                ui::success(&format!(
+                    "chainz serve: running on {LOOPBACK}:{port} (pid {})",
+                    child.pid()
+                ))
             );
+            println!("{}", ui::dim(&format!("log: {}", log_path.display())));
+            Ok(0)
         }
-        ready => {
-            ready.context("lost the background gateway")?;
-        }
+        Started::Failed(exit) => bail!(
+            "the gateway exited during startup ({exit}); see {}",
+            log_path.display()
+        ),
+        Started::TimedOut => bail!(
+            "the gateway did not come up within {} s; see {}",
+            START_TIMEOUT.as_secs(),
+            log_path.display()
+        ),
     }
-    if let GatewayState::Up(info) = gateway(&runtime)?
-        && info.pid == child.pid()
-    {
-        println!(
-            "{}",
-            ui::success(&format!(
-                "chainz serve: running on {LOOPBACK}:{} (pid {})",
-                info.port, info.pid
-            ))
-        );
-        println!("{}", ui::dim(&format!("log: {}", log_path.display())));
-        return Ok(0);
-    }
-    let exit = child.wait()?;
-    bail!(
-        "the gateway exited during startup ({exit}); see {}",
-        log_path.display()
-    )
 }
 
 fn stop() -> Result<i32> {

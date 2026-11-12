@@ -436,7 +436,7 @@ pub struct ServeLogArgs {
     pub method: Option<String>,
 }
 
-#[derive(Debug, Args)]
+#[derive(Debug, Default, Args)]
 pub struct ForkArgs {
     /// Chain to fork (`ls` and `stop` are subcommands)
     #[arg(required = true, add = ArgValueCompleter::new(complete::configured_chains))]

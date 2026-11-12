@@ -1,7 +1,7 @@
 //! `fork ls` and `fork stop`.
 
 use super::process;
-use super::start::anvil_target;
+use super::process::anvil_target;
 use crate::cli::{ForkStopArgs, JsonArgs, usage_error};
 use crate::{net, ui, view};
 use anyhow::{Context as _, Result, bail};
