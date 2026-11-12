@@ -69,7 +69,7 @@ pub enum BlockId {
 
 impl BlockId {
     /// The JSON-RPC parameter form: a tag string or a hex quantity.
-    pub fn to_param(self) -> Value {
+    pub(crate) fn to_param(self) -> Value {
         Value::String(match self {
             BlockId::Latest => "latest".into(),
             BlockId::Earliest => "earliest".into(),

@@ -316,21 +316,16 @@ saves) or `HealthStore::empty()` (no state dir). `HealthStore::path(dir)`
 names the file. `ErrorClass::phrase()` is the class in a sentence
 ("connection failed", "timed out").
 
-## Loopback auth (`chainz_serve::auth`)
+## Loopback auth (`chainz-serve`)
 
 For any local server that hands a child process a tokenised
-`http://127.0.0.1:<port>/<token>…` URL (the gateway; the fork proxy).
-
-```rust
-pub const TOKEN_BYTES: usize = 32;                         // 256 bits
-pub fn new_token() -> String;                              // 64 lowercase hex digits
-pub fn token_matches(given: &str, expected: &str) -> bool; // constant-time
-pub fn host_allowed(host: Option<&str>, port: u16) -> bool;
-```
-
-`host_allowed` accepts `127.0.0.1` or `localhost` (any case), with `port` or
-no port, and nothing else: not `[::1]` (the servers listen on IPv4 only), and
-not a missing `Host`.
+`http://127.0.0.1:<port>/<token>…` URL (the gateway; the fork proxy). The
+token is 32 random bytes as 64 lowercase hex digits, compared in constant
+time. Both servers run the same checks, in order: a `Host` of `127.0.0.1` or
+`localhost` (any case), with their port or no port, and nothing else: not
+`[::1]` (the servers listen on IPv4 only), and not a missing `Host` (403);
+`POST` (405); `application/json` (415); the token (403); a body of at most
+64 MiB (413). No CORS headers are ever sent.
 
 `chainz_serve::PinnedProxy` is a single-endpoint server built on these
 checks, for a fork's `--fork-url`: every body goes to one `Target` through an
@@ -346,8 +341,7 @@ impl PinnedProxy {
 }
 ```
 
-It accepts only `POST` with `application/json` to `/<token>` (a trailing `/`
-is allowed) from a loopback `Host`, and answers 403/405/415 otherwise. An
+It accepts only `/<token>` (a trailing `/` is allowed). An
 upstream failure maps exactly as in the gateway: 429 with `Retry-After` (the
 upstream's, else 2 s) and JSON-RPC code -32005; 504 for a timeout; another
 upstream 4xx/5xx passed through; else 502; with a JSON-RPC error body that

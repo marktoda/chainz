@@ -10,12 +10,12 @@
 //! [`run`] is the process entry point (its caller presents [`Event`]s);
 //! [`Gateway`] is the embeddable server
 //! (tests start it in-process against mock upstreams). [`PinnedProxy`] is
-//! the single-endpoint variant (for forks), and [`auth`] holds the loopback
-//! token and `Host` checks both use.
+//! the single-endpoint variant (for forks); both use the same loopback
+//! token and `Host` checks.
 
 #![warn(missing_docs)]
 
-pub mod auth;
+mod auth;
 mod classify;
 mod control;
 mod gateway;

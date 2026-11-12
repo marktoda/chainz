@@ -7,7 +7,7 @@
 //! [`RetryPolicy`] given; there is no failover, no rate-limit smoothing and
 //! no inspector.
 //!
-//! The same loopback rules as the gateway apply ([`crate::auth`]): the
+//! The same loopback rules as the gateway apply: the
 //! token, a `Host` naming this server, `POST` with `application/json`, no
 //! CORS headers.
 

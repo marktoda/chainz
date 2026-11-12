@@ -18,8 +18,9 @@ use tokio::task::JoinHandle;
 
 use crate::control::EventRing;
 
-/// Records queued for the log writer before new ones are dropped.
-const LOG_QUEUE: usize = 8192;
+/// Records queued for the log writer before new ones are dropped (a few
+/// in tests, so they can fill it).
+const LOG_QUEUE: usize = if cfg!(test) { 4 } else { 8192 };
 /// How often buffered log lines are flushed (and drops reported).
 const LOG_FLUSH: Duration = Duration::from_secs(1);
 
@@ -46,21 +47,13 @@ impl Inspector {
         log: Option<&Path>,
         notices: broadcast::Sender<String>,
     ) -> std::io::Result<(Self, Option<JoinHandle<()>>)> {
-        Self::with_queue(log, notices, LOG_QUEUE).await
-    }
-
-    async fn with_queue(
-        log: Option<&Path>,
-        notices: broadcast::Sender<String>,
-        queue: usize,
-    ) -> std::io::Result<(Self, Option<JoinHandle<()>>)> {
         let dropped = Arc::new(AtomicU64::new(0));
         let mut writer = None;
         let mut sender = None;
         if let Some(path) = log {
             let file = chainz_sys::open_private_log(path, chainz_sys::LogMode::Append)?;
             let file = tokio::fs::File::from_std(file);
-            let (tx, rx) = mpsc::channel(queue);
+            let (tx, rx) = mpsc::channel(LOG_QUEUE);
             sender = Some(tx);
             writer = Some(tokio::spawn(write_log(file, rx, dropped.clone(), notices)));
         }
@@ -122,10 +115,15 @@ async fn write_log(
             tokio::select! {
                 record = records.recv() => {
                     let Some(record) = record else { break };
-                    let Ok(line) = write_line(&record) else {
-                        continue;
-                    };
-                    out.write_all(&line).await?;
+                    match write_line(&record) {
+                        Ok(line) => out.write_all(&line).await?,
+                        Err(error) => {
+                            let _ = notices.send(format!(
+                                "request log: record {} skipped: {error}",
+                                record.id
+                            ));
+                        }
+                    }
                 }
                 _ = tick.tick() => {
                     out.flush().await?;
@@ -219,9 +217,7 @@ mod tests {
         let path = dir.path().join("requests.jsonl");
         let notices = notices();
         let mut heard = notices.subscribe();
-        let (inspector, writer) = Inspector::with_queue(Some(&path), notices, 4)
-            .await
-            .unwrap();
+        let (inspector, writer) = Inspector::new(Some(&path), notices).await.unwrap();
         // The current-thread test runtime doesn't run the writer until we
         // yield: everything past the queue's 4 slots is dropped.
         for n in 0..10 {

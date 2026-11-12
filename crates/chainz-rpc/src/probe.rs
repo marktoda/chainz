@@ -31,7 +31,7 @@ impl ProbeResult {
     }
 }
 
-/// One batch `[eth_chainId, eth_blockNumber]` under [`PROBE_DEADLINE`]; a
+/// One batch `[eth_chainId, eth_blockNumber]`, given 4 s in all; a
 /// chain-ID mismatch is an error.
 pub async fn probe(client: &RpcClient, target: &Target, expected_chain_id: u64) -> ProbeResult {
     let start = Instant::now();
