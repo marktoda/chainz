@@ -99,33 +99,23 @@ pub fn configured<'c>(
     policy: Policy,
 ) -> Result<(&'c str, &'c Chain)> {
     let found = |name: &'c String, chain: &'c Chain| (name.as_str(), chain);
-    if let Ok(id) = query.parse::<u64>() {
-        if let Some(found) = config.chain_by_id(id) {
+    if policy != Policy::Prefix {
+        if let Some(found) = query.parse().ok().and_then(|id| config.chain_by_id(id)) {
             return Ok(found);
         }
-        if policy == Policy::Prefix {
-            bail!("no chain with ID {id} is configured{}", hint(config));
-        }
+        let exact = match policy {
+            Policy::Exact => config.chains.get_key_value(query),
+            _ => config
+                .chains
+                .iter()
+                .find(|(name, chain)| *name == query || chain.matches_alias(query)),
+        };
+        return exact.map(|(n, c)| found(n, c)).ok_or_else(|| {
+            anyhow!("chain '{query}' not found; this command needs an exact chain name or ID")
+        });
     }
-    if policy == Policy::Exact {
-        return config
-            .chains
-            .get_key_value(query)
-            .map(|(n, c)| found(n, c))
-            .ok_or_else(|| {
-                anyhow!("chain '{query}' not found; this command needs an exact chain name or ID")
-            });
-    }
-    for (name, chain) in &config.chains {
-        if name.eq_ignore_ascii_case(query) || chain.matches_alias(query) {
-            if policy == Policy::ExactOrAlias && !name.eq(query) && !chain.matches_alias(query) {
-                continue;
-            }
-            return Ok(found(name, chain));
-        }
-    }
-    if policy == Policy::ExactOrAlias {
-        bail!("chain '{query}' not found; this command needs an exact chain name or ID");
+    if let Some(found) = exact(config, query)? {
+        return Ok(found);
     }
     let lower = query.to_ascii_lowercase();
     let matches: Vec<(&'c String, &'c Chain)> = config

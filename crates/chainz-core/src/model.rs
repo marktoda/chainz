@@ -277,6 +277,13 @@ pub enum Backend {
 }
 
 impl Backend {
+    /// Whether the signer only references key material chainz does not
+    /// hold (a keystore file, a 1Password item): chainz never writes,
+    /// moves or deletes it.
+    pub fn is_reference(self) -> bool {
+        matches!(self, Backend::Keystore | Backend::OnePassword)
+    }
+
     /// The config spelling.
     pub fn as_str(self) -> &'static str {
         match self {

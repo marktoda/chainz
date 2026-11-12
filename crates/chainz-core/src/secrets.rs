@@ -17,7 +17,7 @@
 //!
 //! Nothing here implements `Display`; `Debug` shows names only.
 
-use crate::contract::{CHAINZ_CHAIN, CONTRACT_VARS, Env};
+use crate::contract::{CONTRACT_VARS, Env};
 use crate::template;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -184,7 +184,7 @@ impl<'a> VarResolver<'a> {
         {
             return Ok(Some(Cow::Borrowed(chain)));
         }
-        let shadowed = CONTRACT_VARS.contains(&name) && self.env.var(CHAINZ_CHAIN).is_some();
+        let shadowed = CONTRACT_VARS.contains(&name) && self.env.chainz_chain().is_some();
         if !shadowed && let Some(value) = self.env.var(name) {
             return Ok(Some(Cow::Owned(value)));
         }

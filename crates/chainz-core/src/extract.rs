@@ -12,8 +12,9 @@
 //! - a literal explorer key.
 //!
 //! What cannot move automatically, [`manual_credential`] finds: user info,
-//! a key-like query value, or a long mixed alphanumeric path segment. The
-//! same shapes are what [`crate::redact`] masks.
+//! a key-like query value, or a long mixed alphanumeric path segment.
+//! Display masks more than these ([`crate::redact`] shows only what looks
+//! public), so everything found here is masked too.
 //!
 //! Variable names: `INFURA_KEY` and `ALCHEMY_KEY` for URL keys,
 //! `<ENDPOINT>_<HEADER>` for headers, `ETHERSCAN_API_KEY` for an
@@ -167,7 +168,8 @@ pub fn manual_credential(url: &str) -> Option<&'static str> {
 pub(crate) fn header_needs_extraction(value: &str) -> bool {
     !value.is_empty()
         && is_literal(value)
-        && (value.len() >= 16 || crate::model::header_value_problem(value).is_some())
+        && (value.len() >= crate::urls::CREDENTIAL_MIN_LEN
+            || crate::model::header_value_problem(value).is_some())
 }
 
 /// Where an extracted secret was.

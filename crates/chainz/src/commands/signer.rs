@@ -315,18 +315,15 @@ fn migrate_one(
     target: Backend,
 ) -> Result<()> {
     let old = chainz.config().signers[name].clone();
-    match old.backend {
-        Backend::Keystore | Backend::OnePassword => {
-            bail!(
-                "signer '{name}' is a {} reference; chainz does not move it",
-                old.backend
-            )
-        }
-        b if b == target => {
-            println!("'{name}' is already {target}");
-            return Ok(());
-        }
-        _ => {}
+    if old.backend.is_reference() {
+        bail!(
+            "signer '{name}' is a {} reference; chainz does not move it",
+            old.backend
+        );
+    }
+    if old.backend == target {
+        println!("'{name}' is already {target}");
+        return Ok(());
     }
     let key = signer::unlock(backend, &Terminal, name, &old, chainz.secrets()?)?;
     let provision = signer::provision(backend, &Terminal, name, &key, target)?;

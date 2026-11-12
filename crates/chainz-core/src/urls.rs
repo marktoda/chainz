@@ -100,10 +100,14 @@ pub(crate) fn is_credential_param(name: &str) -> bool {
     CREDENTIAL_PARAMS.iter().any(|k| name.contains(k))
 }
 
-/// Whether `text` looks like a credential: 16 or more `[A-Za-z0-9_-]`
-/// characters mixing letters and digits, with no template.
+/// How long a literal must be to be taken for a credential (a URL part
+/// here, a header value in `extract`).
+pub(crate) const CREDENTIAL_MIN_LEN: usize = 16;
+
+/// Whether `text` looks like a credential: [`CREDENTIAL_MIN_LEN`] or more
+/// `[A-Za-z0-9_-]` characters mixing letters and digits, with no template.
 pub(crate) fn is_credential_shaped(text: &str) -> bool {
-    text.len() >= 16
+    text.len() >= CREDENTIAL_MIN_LEN
         && !crate::template::has_templates(text)
         && text
             .bytes()
