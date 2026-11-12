@@ -544,14 +544,7 @@ async fn wait_ready(
 }
 
 fn log_contains(path: &Path, from: u64, needle: &str) -> bool {
-    use std::io::{Read, Seek, SeekFrom};
-    let Ok(mut file) = std::fs::File::open(path) else {
-        return false;
-    };
-    let mut bytes = Vec::new();
-    file.seek(SeekFrom::Start(from)).is_ok()
-        && file.read_to_end(&mut bytes).is_ok()
-        && String::from_utf8_lossy(&bytes).contains(needle)
+    process::read_log_from(path, from).is_ok_and(|text| text.contains(needle))
 }
 
 #[cfg(test)]

@@ -198,17 +198,21 @@ pub const ERROR_TAIL_LINES: usize = 12;
 /// own error comes after anvil's.
 pub const DETACHED_TAIL_LINES: usize = 15;
 
-/// The last `lines` lines of the log from byte `from` on (where this
-/// attempt's output starts), indented, for error messages.
-pub fn log_tail(path: &std::path::Path, from: u64, lines: usize) -> String {
+/// The log at `path` from byte `from` on (where this attempt's output
+/// starts), invalid UTF-8 replaced.
+pub fn read_log_from(path: &std::path::Path, from: u64) -> io::Result<String> {
     use std::io::{Read, Seek, SeekFrom};
-    let mut text = String::new();
-    if let Ok(mut file) = File::open(path) {
-        let _ = file.seek(SeekFrom::Start(from));
-        let mut bytes = Vec::new();
-        let _ = file.read_to_end(&mut bytes);
-        text = String::from_utf8_lossy(&bytes).into_owned();
-    }
+    let mut file = File::open(path)?;
+    file.seek(SeekFrom::Start(from))?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// The last `lines` lines of the log from byte `from` on, indented, for
+/// error messages; empty when it can't be read.
+pub fn log_tail(path: &std::path::Path, from: u64, lines: usize) -> String {
+    let text = read_log_from(path, from).unwrap_or_default();
     let kept: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
     kept[kept.len().saturating_sub(lines)..]
         .iter()
