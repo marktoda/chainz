@@ -167,10 +167,17 @@ fn ls(args: &AddrLsArgs) -> Result<i32> {
                 .map(|l| Row::new(config, l, false))
                 .collect()
         }
-        // Everything, in config order; built-in tokens by chain ID.
+        // Everything, in config order; built-in tokens by chain ID, on
+        // configured chains unless --all.
         None => index
             .labels()
-            .filter(|l| builtin || l.source != LabelSource::Token)
+            .filter(|l| match (l.source, l.scope) {
+                (LabelSource::Token, LabelScope::Chain(id)) => {
+                    builtin && (args.all || config.chain_by_id(id).is_some())
+                }
+                (LabelSource::Token, LabelScope::AllChains) => builtin,
+                _ => true,
+            })
             .map(|l| {
                 let shadowed = index.shadowed(&l).is_some();
                 Row::new(config, l, shadowed)
@@ -190,18 +197,22 @@ fn ls(args: &AddrLsArgs) -> Result<i32> {
         println!("No labels. Add one with `chainz addr add <name> <address>`{hint}.");
         return Ok(0);
     }
-    let name_width = rows.iter().map(|r| r.name.len() + 1).max().unwrap_or(0);
-    let scope_width = rows.iter().map(|r| r.scope.len()).max().unwrap_or(0);
-    for r in rows {
-        let note = if r.shadowed { " (shadowed)" } else { "" };
-        println!(
-            "{:<name_width$}  {:<scope_width$}  {}  {}",
-            format!("@{}", r.name),
-            r.scope,
-            r.address,
-            ui::dim(&format!("{}{note}", r.source))
-        );
-    }
+    let cells: Vec<[String; 4]> = rows
+        .iter()
+        .map(|r| {
+            let note = if r.shadowed { " (shadowed)" } else { "" };
+            [
+                format!("@{}", r.name),
+                r.scope.clone(),
+                r.address.to_string(),
+                ui::dim(&format!("{}{note}", r.source)),
+            ]
+        })
+        .collect();
+    print!(
+        "{}",
+        view::table(&["NAME", "CHAIN", "ADDRESS", "SOURCE"], &cells)
+    );
     Ok(0)
 }
 

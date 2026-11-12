@@ -98,6 +98,7 @@ fn addr_add_ls_find_rm_roundtrip() {
     assert_eq!(
         lines,
         vec![
+            vec!["NAME", "CHAIN", "ADDRESS", "SOURCE"],
             vec!["@myrouter", "base", ROUTER, "user"],
             vec!["@myrouter", "eth", ROUTER_ETH, "user"],
             vec!["@my-safe", "*", SAFE, "user"],
@@ -120,9 +121,21 @@ fn addr_add_ls_find_rm_roundtrip() {
         "{base}"
     );
     assert!(!base.contains(USDT_ETH), "{base}");
+    // Built-in tokens on the configured chains only, unless --all.
     let all = sb.ok(&["addr", "ls", "--builtin"]);
     assert!(all.contains(USDC_BASE) && all.contains(USDT_ETH), "{all}");
-    assert!(all.lines().count() >= 4 + builtin_tokens().len(), "{all}");
+    let configured = builtin_tokens()
+        .iter()
+        .filter(|t| [1, 8453].contains(&t.chain_id))
+        .count();
+    assert_eq!(all.lines().count(), 1 + 4 + configured, "{all}");
+    let every = sb.ok(&["addr", "ls", "--builtin", "--all"]);
+    assert_eq!(
+        every.lines().count(),
+        1 + 4 + builtin_tokens().len(),
+        "{every}"
+    );
+    sb.cmd().args(["addr", "ls", "--all"]).assert().code(2);
 
     // find: every label for the address, with its source.
     sb.cmd()

@@ -204,6 +204,9 @@ changed before 2.0.0; they are listed under Removed and Changed.
   (`balances skipped on down chains: arb`, or a count past three). With no
   chains it no longer prints an empty Balances table per signer.
   `--json` is unchanged.
+- `addr ls` has a header row (`NAME CHAIN ADDRESS SOURCE`). `addr ls
+  --builtin` lists the built-in tokens on your configured chains only;
+  `--all` lists every chain's.
 
 - Writes say what changed: `chain set` and `update` print each change as
   a transition (`active endpoint: alchemy → infura`) with its side effects

@@ -119,7 +119,7 @@ chainz signer add NAME [--stdin] [--backend keyring|encrypted|1password|keystore
                   [--path P] [--vault V --item I] [--address A] [--no-attach]
 chainz signer ls [--json] | rm NAME [--unassign] [-y] | migrate [NAME|--all] [--to keyring|encrypted]
 chainz addr add NAME ADDRESS [--chain C | --all-chains]
-chainz addr ls [--chain C] [--builtin] [--json] | rm NAME [--chain C] | find 0x… [--json]
+chainz addr ls [--chain C] [--builtin [--all]] [--json] | rm NAME [--chain C] | find 0x… [--json]
 chainz addr import PATH... [--dry-run] [--prefix P] [--only A,B] [--force] [--json]
 chainz label [--chain C]             # stdin filter: 0x… → name(0x…)
 chainz var set NAME [VALUE | --stdin] | get NAME [--reveal] | ls [-v] [--reveal] [--json] | rm NAME
@@ -349,7 +349,7 @@ The address book holds a name for an address, scoped globally or per chain. It w
 ```
 chainz addr add myrouter 0x… --chain base     # per chain (default: current chain context)
 chainz addr add my-safe 0x5afe… --all-chains  # every chain, explicitly
-chainz addr ls [--chain base] [--builtin]
+chainz addr ls [--chain base] [--builtin [--all]]   # built-in tokens on your chains; --all: every chain
 chainz addr find 0x833589fC…                  # → usdc on base (built-in)
 chainz addr rm myrouter --chain base
 

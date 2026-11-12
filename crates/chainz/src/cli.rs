@@ -736,9 +736,12 @@ pub struct AddrLsArgs {
     /// What @name means on this chain
     #[arg(long, add = ArgValueCompleter::new(complete::chains_and_forks))]
     pub chain: Option<String>,
-    /// Include the built-in tokens
+    /// Include the built-in tokens on your chains
     #[arg(long)]
     pub builtin: bool,
+    /// With --builtin: the built-in tokens on every chain, configured or not
+    #[arg(long, requires = "builtin", conflicts_with = "chain")]
+    pub all: bool,
     /// JSON output
     #[arg(long)]
     pub json: bool,
