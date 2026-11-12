@@ -227,7 +227,7 @@ fn pick_default(config: &Config, ask: &mut dyn Ask) -> Result<Option<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anyhow::bail;
+    use chainz_core::testing::{MemoryKeyBackend, TempStore};
 
     use crate::prompt::script::{Answer::*, Script};
 
@@ -296,51 +296,37 @@ api = "https://blockscout.example/api"
         );
     }
 
-    /// No keyring: the safe default is an encrypted key.
-    struct NoKeyring;
+    /// A store with no chains.
+    fn empty() -> TempStore {
+        TempStore::new("version = 2\n", None)
+    }
 
-    impl KeyBackend for NoKeyring {
-        fn keyring_available(&self) -> bool {
-            false
-        }
-        fn keyring_get(&self, _: &str, _: &str) -> Result<Zeroizing<String>> {
-            bail!("no keyring")
-        }
-        fn keyring_set(&self, _: &str, _: &str, _: &str) -> Result<bool> {
-            bail!("no keyring")
-        }
-        fn keyring_delete(&self, _: &str, _: &str) -> Result<()> {
-            bail!("no keyring")
-        }
-        fn one_password_get(&self, _: &str, _: &str) -> Result<Zeroizing<String>> {
-            bail!("no op")
-        }
+    /// No keyring: the safe default is an encrypted key.
+    fn no_keyring() -> MemoryKeyBackend {
+        MemoryKeyBackend::default()
     }
 
     #[test]
     fn the_signer_step_asks_everything_through_ask() {
-        let dir = tempfile::tempdir().unwrap();
-        let paths = chainz_core::StorePaths::in_dir(dir.path().join("chainz"));
-        let mut chainz = Chainz::open_at(paths, chainz_core::LoadMode::Strict).unwrap();
+        let mut store = empty();
+        let chainz = &mut store.chainz;
         // Name, key, then the encryption password twice: no terminal.
         let key = "0x4c0883a69102937d6231471b5dbb6204fe512961708279f22a82e1d1b1c2f8f2";
         let mut script = Script::new([Yes(true), Text(" ops "), Text(key), Text("pw"), Text("pw")]);
-        add_signer(&mut chainz, &NoKeyring, &mut script).unwrap();
+        add_signer(chainz, &no_keyring(), &mut script).unwrap();
         assert!(script.done(), "unasked answers left");
         assert_eq!(chainz.config().signers["ops"].backend, Backend::Encrypted);
         // Declined: nothing is asked after.
-        let dir = tempfile::tempdir().unwrap();
-        let paths = chainz_core::StorePaths::in_dir(dir.path().join("chainz"));
-        let mut chainz = Chainz::open_at(paths, chainz_core::LoadMode::Strict).unwrap();
-        add_signer(&mut chainz, &NoKeyring, &mut Script::new([Yes(false)])).unwrap();
+        let mut store = empty();
+        let chainz = &mut store.chainz;
+        add_signer(chainz, &no_keyring(), &mut Script::new([Yes(false)])).unwrap();
         assert!(chainz.config().signers.is_empty());
     }
 
     #[test]
     fn a_bad_key_is_asked_again() {
-        let dir = tempfile::tempdir().unwrap();
-        let paths = chainz_core::StorePaths::in_dir(dir.path().join("chainz"));
-        let mut chainz = Chainz::open_at(paths, chainz_core::LoadMode::Strict).unwrap();
+        let mut store = empty();
+        let chainz = &mut store.chainz;
         let key = "0x4c0883a69102937d6231471b5dbb6204fe512961708279f22a82e1d1b1c2f8f2";
         let mut script = Script::new([
             Yes(true),
@@ -352,23 +338,21 @@ api = "https://blockscout.example/api"
             Text("pw"),
             Text("pw"),
         ]);
-        add_signer(&mut chainz, &NoKeyring, &mut script).unwrap();
+        add_signer(chainz, &no_keyring(), &mut script).unwrap();
         assert!(script.done());
         assert!(chainz.config().signers.contains_key("ops"));
         // Declining to retry leaves the wizard going, with no signer.
-        let dir = tempfile::tempdir().unwrap();
-        let paths = chainz_core::StorePaths::in_dir(dir.path().join("chainz"));
-        let mut chainz = Chainz::open_at(paths, chainz_core::LoadMode::Strict).unwrap();
+        let mut store = empty();
+        let chainz = &mut store.chainz;
         let mut script = Script::new([Yes(true), Text("ops"), Text("bad"), Yes(false)]);
-        add_signer(&mut chainz, &NoKeyring, &mut script).unwrap();
+        add_signer(chainz, &no_keyring(), &mut script).unwrap();
         assert!(chainz.config().signers.is_empty());
     }
 
     #[test]
     fn unreachable_chainlist_offers_the_chain_id_and_url() {
-        let dir = tempfile::tempdir().unwrap();
-        let paths = chainz_core::StorePaths::in_dir(dir.path().join("chainz"));
-        let mut chainz = Chainz::open_at(paths, chainz_core::LoadMode::Strict).unwrap();
+        let mut store = empty();
+        let chainz = &mut store.chainz;
         let mut seen: Vec<(Option<String>, Vec<String>)> = Vec::new();
         let mut add = |_: &mut Chainz, args: &AddArgs, _: &mut dyn Ask| -> Result<i32> {
             seen.push((args.chain.clone(), args.urls.clone()));
@@ -384,7 +368,7 @@ api = "https://blockscout.example/api"
             Text("http://127.0.0.1:8545"),
             Yes(false), // no more
         ]);
-        add_chains(&mut chainz, &mut script, &mut add).unwrap();
+        add_chains(chainz, &mut script, &mut add).unwrap();
         assert!(script.done());
         assert_eq!(
             seen,
