@@ -1,23 +1,195 @@
-# Chainz v2: crate contracts
+# Chainz v2: contracts
 
-The seams between the crates: what each one offers the others. The rustdoc
-on each item is the reference; this page is the map. Changing one of these
-means changing every caller in the same commit.
+What chainz promises to the outside (file formats, environment variables,
+the CLI, JSON output, the control protocol) and what each crate offers the
+others. Only public items another crate uses are listed; `pub(crate)` and
+test-only items are not contracts. The rustdoc on each item is the
+reference; this page is the map. Changing one of these means changing
+every caller (and the docs) in the same commit.
 
 ## Crate layout
 
 | Crate | Role | Async / network |
 |---|---|---|
-| `chainz-os` | OS primitives: private dirs and files, atomic writes, `flock`, file stamps, the clock (no chainz dependencies) | none |
-| `chainz-core` | config, secrets, migration, resolver, tokenizer, context, labels, runtime registry | none (sync; no tokio, reqwest or hyper) |
-| `chainz-rpc` | JSON-RPC client, probes, endpoint health and ranking, health history, `HttpUpstream`, control protocol, chainlist | tokio + reqwest (rustls) |
-| `chainz-serve` | gateway: `run(paths, runtime, state_dir, Options, on_event)`, embeddable `Gateway::start(GatewayConfig)` | hyper 1 + tokio (multi-thread) |
-| `chainz-tui` | the `top` dashboard | ratatui + tokio |
-| `chainz` (bin) | clap surface, handlers, pickers, output | builds a current-thread runtime only for network commands (`net::block_on`) |
+| `chainz-os` | OS primitives: private dirs and files, atomic writes, `flock` locks and probes, file stamps, the clock (no chainz dependencies) | none |
+| `chainz-core` | config, secrets, migration, resolver, routes, tokenizer, exec contract, context, labels, display redaction, runtime registry | none (sync; no tokio, reqwest or hyper) |
+| `chainz-rpc` | JSON-RPC client, probes, endpoint health and ranking, health history, `HttpUpstream`, ABI helpers, control protocol, chainlist | tokio + reqwest (rustls) |
+| `chainz-serve` | gateway: `run(paths, runtime, state_dir, Options, on_event)`, embeddable `Gateway::start(GatewayConfig)`, the fork's `PinnedProxy` | hyper 1 + tokio (multi-thread) |
+| `chainz-tui` | the `top` dashboard: `run(chainz, runtime, store, Options)` | ratatui + tokio |
+| `chainz` (bin) | clap surface, handlers, pickers, output, fork supervisor, background launch | builds a current-thread runtime only for network commands (`net::block_on`) |
 
-`chainz-rpc` does not depend on `chainz-core`. Core decides where a chain's
-requests go (`chainz_core::route`), and each consumer turns the answer into
-a `Target` with one line:
+Every crate depends on `chainz-os`. `chainz-rpc` does not depend on
+`chainz-core`; serve, tui and the bin join them. `chainz-tui`'s tests use
+`chainz-serve`'s `testing` feature.
+
+## Files
+
+The config schema (`config.toml`, `secrets.toml`) is in
+[design.md, Config v2](design.md#config-v2). Hand edits are welcome: writes
+keep unchanged keys' text and comments. `secrets.toml` and every file
+below are mode 0600 in 0700 directories.
+
+| File | Written by | Meaning |
+| --- | --- | --- |
+| `$XDG_CONFIG_HOME/chainz/config.lock` | any config write | exclusive `flock` serializing writes (reads take no lock) |
+| `$XDG_STATE_HOME/chainz/health.json` (+ `health.lock`) | probes (`rpc bench`, `doctor`, `top`) | per-endpoint sample ring (`HealthStore::CAPACITY` = 64) and capability tags; a corrupt file is moved aside to `health.json.corrupt` |
+| `$XDG_STATE_HOME/chainz/serve.log`, `forks/<name>.log` | `serve --detach`, fork supervisor | process output (`paths::serve_log`, `paths::fork_log`) |
+| `$XDG_CACHE_HOME/chainz/` | `chain add`, `rpc discover` | the chainlist cache (rebuildable; `--refresh`) |
+| runtime dir: `serve.lock`, `serve.json`, `serve.sock`, `forks/<name>.{lock,json}`, `ports/<port>.lock` | gateway, fork supervisor | see [Runtime registry](#runtime-registry-chainz_coreruntime) |
+
+`config path --all` prints every one of these paths.
+
+## Environment variables
+
+| Variable | Read by | Meaning |
+| --- | --- | --- |
+| `CHAINZ_CHAIN` | resolver, templates | the chain context (`chainz shell`, `eval "$(chainz env …)"`); step 2 of chain selection. Inside a context, the exec contract's own variables are not read from the environment |
+| exec contract (`ETH_RPC_URL`, `CHAIN_ID`, …) | exported by `exec`/`shell`/`env` | the table in [design.md, Exec contract](design.md#exec-contract); every name is a const in `chainz_core::contract`, listed in `CONTRACT_VARS` and unset before a context sets its own |
+| any `${NAME}` | templates | after the built-ins (`CHAIN_ID`, `CHAIN`), before `secrets.toml` |
+| `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME`, `XDG_RUNTIME_DIR`, `HOME` | `chainz_core::paths` | file locations; without `XDG_RUNTIME_DIR` the runtime dir is the state dir |
+| `CHAINZ_DISABLE_KEYRING` | `chainz_core::signer` | set: the OS keyring is unavailable (tests, perf gate) |
+| `CHAINZ_COMPLETE` | bin `complete` | a shell completion request (set by the `completions` loader) |
+| `CHAINZ_DETACHED` | bin `sys` | set in a `--detach` child |
+| `VISUAL`, `EDITOR` | `edit` | the editor, in that order |
+| `SHELL`, `PS1` | `shell`, `env` | the subshell and export syntax |
+| `NO_COLOR` | `top` | no colour (the test sandbox sets it) |
+| `CHAINZ_BLESS`, `CHAINZ_REQUIRE_TOOLS` | tests | `1` rewrites golden files; set, a missing anvil or strace fails the test instead of skipping it |
+
+## CLI
+
+The command tree is [design.md, CLI surface](design.md#cli-surface) and
+`chainz <command> --help`. Removed commands and flags get no hidden aliases;
+v1 spellings that still work are listed in the README. Usage lines in
+errors are rendered from the clap definition.
+
+Exit codes: 0 on success, also when stdout closes early (`chainz … | head`);
+1 for an error (`Error: …` on stderr) or a result the command reports
+itself (`doctor` found problems, `addr find` matched nothing, `serve status`
+found no gateway, a fork's anvil died); 2 for a usage error; 126 and 127
+when `exec`'s command can't run or doesn't exist; 130 when a prompt is
+cancelled; a foreground `fork` exits 130 after SIGINT, 143 after SIGTERM or
+`fork stop`, 129 after SIGHUP.
+
+## JSON output
+
+Every `--json` is pretty-printed JSON on stdout. Secret values are
+redacted ([Display policy](#other-seams)) unless `--reveal`. Golden files
+(`crates/chainz/tests/golden/`, `crates/chainz-tui/tests/golden/`) pin
+these shapes.
+
+| Command | Shape |
+| --- | --- |
+| `ls`, `chain ls` | `[ChainView]`, where `ChainView` is `{name, id, aliases, rpc, rpc_url, failover, signer, explorer, default, endpoints: [{name, url, active, failover, websocket, headers?}]}` |
+| `chain show` | one `ChainView` |
+| `rpc ls` | `[{chain, name, url, active, failover, websocket, headers?, latency_ms, head, error, tags}]` (an endpoint view plus its latest health) |
+| `signer ls` | `[{name, backend, address, chains}]` |
+| `var ls` | `[{name, value, used_by}]` (`value` is `[REDACTED] (N chars)` unless `--reveal`) |
+| `addr ls` | `[{name, scope, chain_id, address, source, shadowed}]` |
+| `addr find` | the same rows, for one address (exit 1 when empty) |
+| `addr import` | `[{chain, chain_id, name, address, action, reason?, previous?, contract, file}]`; `action` is `added`, `unchanged`, `overwritten` or `skipped` |
+| `fork ls` | `[{name, pid, port, parent, chain_id, fork_block, started_at, url, block, uptime_secs}]` (the command's own rows, not the registry format) |
+| `serve status` | `{running, version, pid, port, uptime_secs, chains, last_60s, totals_60s, chain_totals_60s}`: `chains` is `Status.chains`, `last_60s` the 60 s `MetricsRow`s, `totals_60s`/`chain_totals_60s` the window's `MetricsTotals` (absent from a gateway that sends none). Stopped: only `{running: false}`, exit 1 |
+| `top --once --json` | `{at, gateway: {running, port}, chains: [{name, id, aliases, rpc, via_gateway, status, head, block_timestamp, block_age_secs, block_time_secs, base_fee_wei, base_fee_gwei, latency_ms, p50_ms, lag_blocks, error, endpoints: [{name, url, active, websocket, status, tags, latency_ms, p50_ms, head, lag_blocks, error, probed_at_ms}]}], balances: [{signer, address, chains: [{chain, id, via, native, tokens, error}]}], traffic}` |
+
+In `top`'s JSON, `chains[].rpc` and `endpoints[].active` name the endpoint
+the gateway serves the chain from when the head was read through it, else
+the configured active one. `via` is `multicall3` or `batch`. An amount is
+`{symbol, decimals, raw, formatted, saturated}` (`symbol` always present).
+An `error` is `{class, message}` with the `ErrorClass` name as `class`,
+or `internal` for a crashed `--once` task. `traffic` is `null` without a gateway; its window
+totals are `null` from a gateway that sends none.
+
+## Control protocol (`chainz_rpc::control`)
+
+HTTP/1.1 over `serve.sock` in the runtime dir, mode 0600. Paths are
+`ControlRoute::{Status, Metrics, Events, Reload}.path()`, and each route's
+`method()`:
+
+| Path | Method | Body |
+|---|---|---|
+| `/_chainz/status` | GET | `Status { version, pid, port, uptime_secs, chains: Vec<ChainStatus { chain, chain_id, active, failover, head }> }` |
+| `/_chainz/metrics` | GET | `MetricsSnapshot { at_ms, windows: Vec<MetricsWindow { window_secs, rows: Vec<MetricsRow { chain, endpoint, method, requests, errors: BTreeMap<ErrorClass,u64>, p50_ms, p95_ms, rate_limited, failovers, bytes }>, totals?: MetricsTotals, chains?: BTreeMap<chain, MetricsTotals> }> }` with `MetricsTotals { requests, errors, rate_limited, failovers, p50_ms, p95_ms, bytes }` |
+| `/_chainz/events[?backlog=N][&after=ID][&follow=false]` | GET | NDJSON stream of `RequestRecord { id, at_ms, chain, method, params_summary, upstream, attempts, latency_ms, status: RecordStatus::{Ok, Error{class, code}}, response_bytes }`. First the last `N` buffered records with an ID above `after` (default 0; the gateway keeps 10,000), oldest first, then live records above `after`. `follow=false` ends the stream after the backlog. A malformed value is 400. |
+| `/_chainz/reload` | POST | empty → 204; 500 with the cause as plain text when the new config is invalid (the old one stays in force) |
+
+A known path with the wrong method is 405 (with `Allow`); anything else is
+404. Fields marked `?` came after 2.0 and are optional both ways: absent from
+a 2.0 gateway, ignored by a 2.0 client. `totals` and `chains` are the window's
+rows together with true percentiles (not averages of the rows'). Windows are
+named `Window::{Short, Long}` (60 s, 900 s); find one with
+`MetricsSnapshot::window(Window)`. `RecordStatus` displays as `ok`,
+`class(code)` or `class`.
+
+The client is `ControlClient::new(socket)` with async `status()`,
+`metrics()`, `events(EventsOptions { backlog: Backlog::{Last(n), All},
+after_id, follow }) -> mpsc::Receiver<RequestRecord>`, and `reload()` (a
+refused reload's error quotes the gateway's reason). `Backlog::All` goes out
+as the largest count, which a 2.0 gateway reads the same way, and the client
+drops records at or below `after_id` itself, for a 2.0 gateway that ignores
+it. Each call gives up after 5 s, so a wedged gateway can't hang
+`serve status` or the dashboard; only the body of an events stream is
+open-ended. `RequestRecord` never holds params, URLs, or bodies.
+`params_summary` is already redacted. NDJSON lines are framed by
+`write_line(&value)` and `read_line(&mut buf)`; `EventsOptions::from_query`
+parses the events query on the server side.
+
+The server is `chainz-serve`'s: the gateway runs it over its live state. With
+the `testing` cargo feature (enable it in `[dev-dependencies]`),
+`chainz_serve::testing::ControlServer::start(path, status, metrics).await`
+runs the same handler over canned state, with `push_event` (kept for
+`backlog`, IDs as given), `set_metrics`, `reload_count` (every reload
+succeeds), and `event_subscribers`. The dashboard's tests run against it.
+
+What the real gateway puts in these types:
+
+- `MetricsRow` counts upstream **attempts** per (chain, endpoint, method), so
+  a request that failed over shows on both endpoints. `failovers` counts
+  requests that moved on *from* that endpoint. `rate_limited` counts 429s
+  plus requests the endpoint's own bucket turned away unsent (those are not
+  in `requests`). A batch is one attempt under the method `batch(n)`.
+  Windows are 60 s and 900 s, and every window carries `totals` and
+  `chains`, even with no traffic.
+- `RequestRecord` is one per client request. `upstream` is the endpoint that
+  answered (or failed last), `attempts` spans endpoints, and a JSON-RPC
+  error in a single response is `Error { class: Rpc, code }`.
+- `ChainStatus.head` is the head high-water mark: the best head over the
+  last three probe rounds. It is `None` for a chain with no `failover`
+  list: only failover pools are probed.
+
+`SocketPath::new(path)` gives a bindable/connectable path for sockets deeper
+than `sockaddr_un` allows (Linux: via `/proc/self/fd`). The client and the
+server both use it.
+
+## OS primitives (`chainz_os`)
+
+```rust
+pub const PRIVATE_DIR_MODE: u32 = 0o700; pub const PRIVATE_FILE_MODE: u32 = 0o600;
+pub fn is_private_mode(mode: u32) -> bool;                  // no group/other bits
+pub fn create_private_dir(dir: &Path) -> io::Result<()>;
+pub fn write_private(path: &Path, contents: &[u8]) -> io::Result<()>; // atomic, fsynced, 0600
+pub fn read_private(path: &Path) -> io::Result<Option<PrivateText { text, warning }>>; // tightens to 0600
+pub fn open_private(path: &Path) -> io::Result<File>;
+pub fn open_private_log(path: &Path, mode: LogMode) -> io::Result<File>; // LogMode::{Append, Truncate}
+// locks: liveness is "holds the lock"
+pub fn probe_lock(path: &Path) -> io::Result<bool>;          // one shared, non-blocking attempt, released at once
+pub fn try_lock_file(path: &Path, contention: Contention) -> io::Result<Option<File>>; // exclusive; None = held
+pub enum Contention { GiveUp, OutwaitProbes }               // retry for PROBE_GRACE (100 ms) past probes
+pub fn lock_file(path: &Path) -> io::Result<File>;           // exclusive, blocking
+pub fn try_lock(file: &File) -> io::Result<bool>;
+pub struct FileStamp; impl FileStamp { pub fn of(path: &Path) -> Option<FileStamp> } // compare with ==
+pub fn now_ms() -> u64; pub fn now_secs() -> u64;
+```
+
+One lock protocol serves `serve.lock`, the fork locks and the port
+reservations: readers `probe_lock` (two probes never contend), owners
+`try_lock_file(.., OutwaitProbes)`, so a probe landing as an owner starts
+does not make it fail. A probe's I/O error is an error, never "held". The
+config write lock and `health.lock` use `lock_file`.
+
+## Routes (`chainz_core::route`)
+
+Core decides where a chain's requests go, and each consumer turns the
+answer into a `chainz_rpc::Target` with one line:
 
 ```rust
 pub struct RouteOpts { pub endpoint: Option<String>, pub direct: bool }
@@ -33,14 +205,14 @@ impl Route { pub fn via_gateway(info: &ServeInfo, chain: &str, chain_id: u64, en
 impl Chain { pub fn endpoints_by_preference(&self, http_only: bool) -> Vec<(&str, &Endpoint)> } // active, failover, rest
 pub fn uses_gateway(websocket: bool, direct: bool) -> bool;
 
-// bin: the one adapter
-Target::new(route.chain_id, &route.endpoint, &route.url, &route.headers)  // net::to_target
+// the adapter (bin net::to_target, tui plan::target)
+Target::new(route.chain_id, &route.endpoint, &route.url, &route.headers)
 ```
 
 The rule: through a running gateway (pinned to the endpoint when one is
 named) unless `direct` or the endpoint is a websocket; otherwise the
-endpoint itself, `${VAR}`s expanded by `Chainz::expand_endpoint` (the same
-call the gateway and `top` use).
+endpoint itself, `${VAR}`s expanded. `direct_route` is the one public way
+to expand an endpoint; the gateway, `top`, probes and forks all use it.
 
 ## Runtime registry (`chainz_core::runtime`)
 
@@ -72,7 +244,7 @@ impl Runtime {
     pub fn serve_sock_path(&self) -> PathBuf;   // serve.sock
     pub fn forks_dir(&self) -> PathBuf;         // forks/
     // the gateway
-    pub fn gateway(&self) -> io::Result<GatewayState>;  // one flock probe, then serve.json; creates nothing
+    pub fn gateway(&self) -> io::Result<GatewayState>;  // one probe_lock, then serve.json; creates nothing
     pub fn acquire_serve_lock(&self) -> io::Result<Option<ServeLock>>; // None = another gateway holds it
     // forks
     pub fn claim_fork(&self, name: &str) -> io::Result<Option<ForkClaim>>; // None = a live fork has it
@@ -106,10 +278,10 @@ impl PortReservation { pub fn port(&self) -> u16 }
 | File | Written by | Meaning |
 | --- | --- | --- |
 | `serve.lock` | gateway | exclusive `flock` for the gateway's whole life |
-| `serve.json` | gateway | `ServeInfo` (0600), published once both listeners are bound, withdrawn first on shutdown |
+| `serve.json` | gateway | `ServeInfo` (format 1, 0600), published once both listeners are bound, withdrawn first on shutdown |
 | `serve.sock` | gateway | control socket (0600) |
 | `forks/<name>.lock` | fork supervisor | exclusive `flock` for the fork's whole life (`O_CLOEXEC`: anvil never inherits it); holds the supervisor's PID |
-| `forks/<name>.json` | fork supervisor | `ForkRecord`: written when anvil spawns, `ready` once the fork serves |
+| `forks/<name>.json` | fork supervisor | `ForkRecord` (format 1): written when anvil spawns, `ready` once the fork serves |
 | `ports/<port>.lock` | fork supervisor | exclusive `flock` on anvil's port, taken before anvil spawns and held for the fork's whole life: two chainz processes never pick one port |
 
 Records carry a `format`; a reader refuses a format it does not know (an
@@ -124,7 +296,9 @@ claimant checks that the file it locked is still the one at the path.
 URL while `Runtime::gateway()` is `Up`, unless `--direct` is set, the
 chain is a fork, or the endpoint is a websocket. An unreadable `serve.json`
 under a held lock fails `exec` (`--direct` bypasses it). The gateway
-serves `/<token>/<chain>[/<endpoint>]`, parsed by `GatewayAddr::parse_path`.
+serves `/<token>/<chain>[/<endpoint>]`, parsed by `GatewayAddr::parse_path`;
+`<chain>` is an ID, name or alias in any case (`resolve::exact`), never a
+prefix.
 
 **Forks.** The resolver checks configured chains first (exact ID, name,
 alias), then a live, ready fork's exact name, then prefixes. Live forks
@@ -132,9 +306,9 @@ resolve as `ChainRef::Fork(ForkRecord)`, and their context points at anvil
 with no explorer and no `ETH_KEYSTORE`. The name rules are
 `chainz_core::forks`: `check_fork_name` (a valid chain name, not a
 `RESERVED_FORK_NAMES` subcommand, not a configured chain's name or alias),
-`default_fork_name(parent)` (`<parent>-fork`) and `check_forkable`
-(`UNFORKABLE`). A bin test keeps `RESERVED_FORK_NAMES` equal to the `fork`
-subcommands and aliases.
+`default_fork_name(parent)` (`<parent>-fork`) and `check_forkable` (chains
+anvil can't fork). A bin test keeps `RESERVED_FORK_NAMES` equal to the
+`fork` subcommands and aliases.
 
 **Logs.** `paths::serve_log()` (`$XDG_STATE_HOME/chainz/serve.log`) and
 `paths::fork_log(name)` (`…/forks/<name>.log`); `config path --all` lists
@@ -148,18 +322,83 @@ The child prints what the user should see, then calls `detached_ready()`
 `Detached::wait_ready(timeout)` returns what it printed. `serve --detach`
 is ready once `serve.json` is out; `fork --detach` after its summary.
 
-**Gateway process** (`chainz_serve`). `run(StorePaths, Runtime,
-Option<state_dir>, Options { port, log, ticks }, on_event)` resolves
-nothing itself and reports `Event::{Started(&Gateway), Notice, Tick,
-Stopping { drain }}`; the bin presents them. `SHUTDOWN_BUDGET` (drain +
-slack + log writer wait) bounds `Gateway::shutdown`, and `serve stop`'s
-timeout derives from it. `AlreadyRunning` is the one "already running"
-error.
+## Gateway and proxies (`chainz_serve`)
+
+```rust
+pub fn run(paths: StorePaths, runtime: Runtime, state_dir: Option<PathBuf>,
+           options: Options, on_event: impl FnMut(Event<'_>) -> Result<()>) -> Result<()>;
+pub struct Options { pub port: u16, pub log: Option<PathBuf>, pub ticks: bool }
+pub enum Event<'a> { Started(&'a Gateway), Notice(&'a str), Tick(&'a Gateway), Stopping { drain: Duration } }
+pub const SHUTDOWN_BUDGET: Duration;              // drain + slack + log writer wait
+pub struct AlreadyRunning(pub Option<ServeInfo>); // the one "already running" error
+impl Gateway {
+    pub async fn start(config: GatewayConfig) -> Result<Gateway>; // GatewayConfig::new(paths, runtime, state_dir)
+    pub fn addr(&self) -> GatewayAddr; pub fn port(&self) -> u16;
+    pub fn status(&self) -> Status;
+    pub fn summary(&self) -> MetricsTotals;       // the 60 s window's totals
+    pub fn warnings(&self) -> Vec<String>;        // start-up warnings
+    pub fn notices(&self) -> broadcast::Receiver<String>;
+    pub async fn reload(&self) -> Result<()>; pub async fn shutdown(self);
+}
+```
+
+`run` resolves nothing itself (the bin passes the paths, and a state dir it
+already warned about) and reports through `on_event`; the bin presents
+everything. `serve stop`'s timeout derives from `SHUTDOWN_BUDGET`. The
+gateway reloads the config on SIGHUP, a control `reload`, or a change of
+`StorePaths::stamp()`, and refreshes capability tags when `health.json`
+changes.
+
+**Loopback auth.** For any local server that hands a child process a
+tokenised `http://127.0.0.1:<port>/<token>…` URL (the gateway; the fork
+proxy). The token is 32 random bytes as 64 lowercase hex digits, compared
+in constant time. Both servers run the same checks, in order: a `Host` of
+`127.0.0.1` or `localhost` (any case), with their port or no port, and
+nothing else: not `[::1]` (the servers listen on IPv4 only), and not a
+missing `Host` (403); `POST` (405); `application/json` (415); the token
+(403); a body of at most 64 MiB (413). No CORS headers are ever sent.
+
+**Failures.** Both servers answer an upstream failure the same way: 429
+with `Retry-After` (the upstream's, else 2 s) and JSON-RPC code -32005; 504
+for a timeout; another upstream 4xx/5xx passed through; else 502; always
+with a JSON-RPC error body that never names the URL (`chainz serve: …` or
+`chainz proxy: upstream: …`). Both drain in-flight requests for up to 5 s
+on shutdown.
+
+`chainz_serve::PinnedProxy` is a single-endpoint server built on these
+rules, for a fork's `--fork-url`: every body goes to one `Target` through an
+`HttpUpstream` under the given `RetryPolicy`, never anywhere else. It
+accepts only `/<token>` (a trailing `/` is allowed).
+
+```rust
+impl PinnedProxy {
+    pub async fn start(upstream: HttpUpstream, target: Target, policy: RetryPolicy)
+        -> io::Result<PinnedProxy>;      // binds 127.0.0.1:0
+    pub fn url(&self) -> String;         // http://127.0.0.1:<port>/<token>
+    pub fn addr(&self) -> &GatewayAddr;  // port and token
+    pub async fn shutdown(self);         // drains like the gateway; dropping stops at once
+}
+```
+
+## Dashboard (`chainz_tui`)
+
+```rust
+pub fn run(chainz: Chainz, runtime: Runtime, store: HealthStore, options: Options) -> Result<i32>;
+pub struct Options { pub reveal: bool, pub mode: Mode }
+pub enum Mode { Live { shell: Option<ShellFn> }, Once { json: bool, warn: WarnFn } }
+pub type ShellFn = Box<dyn FnMut(&str) -> io::Result<()>>; // `e`: a shell for that chain
+pub type WarnFn = Box<dyn FnMut(&str)>;                    // --once warnings (the bin's ui::warn)
+```
+
+The bin loads the health store (`net::health_store`, which warns about a
+missing state dir or an unreadable history) and hands it in with `Chainz`
+and `Runtime`. `Mode::Live` needs a terminal on stdin and stdout. Live
+warnings and core notices from a reload go to the footer. The config
+watcher compares `StorePaths::stamp()`.
 
 ## Labels (`chainz_core::labels`)
 
 ```rust
-pub const TOKENS_TOML: &str;                 // include_str!("tokens.toml")
 pub struct BuiltinToken { pub chain_id: u64, pub name: String, pub address: Address,
                           pub symbol: String, pub decimals: u8, pub source: String }
 pub fn builtin_tokens() -> &'static [BuiltinToken];
@@ -168,6 +407,7 @@ pub fn builtin_token_at(chain_id: u64, address: &Address) -> Option<&'static Bui
 pub const TOKEN_ORDER: [&str; 6];            // weth, usdc, usdce, usdt, dai, wbtc (display order)
 pub const NATIVE_DECIMALS: u8 = 18;
 pub fn native_symbol(chain_id: u64) -> &'static str; // ETH, BNB, POL, xDAI…
+pub const ALL_CHAINS: &str = "*";
 
 pub enum LabelSource { User, Signer, Token }  // Display: user, signer, built-in
 pub enum LabelScope { Chain(u64), AllChains }
@@ -180,12 +420,12 @@ impl LabelIndex {
     pub fn new(config: &Config) -> Self;
     pub fn resolve(&self, name: &str, chain_id: u64) -> Result<Label, LabelError>;
     pub fn contains(&self, name: &str) -> bool;
-    pub fn reverse(&self, chain_id: u64, address: &Address) -> Option<&Label>;
-    pub fn reverse_all(&self, chain_id: u64, address: &Address) -> Vec<&Label>;
+    pub fn reverse(&self, chain_id: u64, address: &Address) -> Option<&Label>; // only one that resolves back
     pub fn names(&self) -> impl Iterator<Item = &str>;
     pub fn labels(&self) -> impl Iterator<Item = Label> + '_; // every source, every chain
     pub fn labels_on(&self, chain_id: u64) -> Vec<Label>;
-    pub fn shadowed(&self, label: &Label) -> Option<Label>; // the label that wins on its chain
+    pub fn shadowed(&self, label: &Label) -> Option<Label>;   // the label that wins on its chain
+    pub fn shadowed_tokens(&self) -> impl Iterator<Item = (&'static BuiltinToken, Label)> + '_;
 }
 ```
 
@@ -196,20 +436,18 @@ is the chain ID labels resolve on (a fork's own).
 Precedence is: user label for the chain, then user `"*"`, then signer, then
 built-in token. In config, `[addresses]` is `label -> chain name | "*" ->
 address`. For example, `[addresses.myrouter]` with `base = "0x…"`. Label
-names follow `names::check_label_name` and can't use a name from
-`names::TOKENS` (context, deprecated and removed tokens).
+names follow `names::check_label_name(name, signers)` and can't be a
+context, deprecated or removed token (`names::context_tokens()` lists the
+context ones).
 
 The address book (`addr …`, `label`, `doctor --tokens`) is built on:
 
 ```rust
-// chainz_core::labels / names
-pub const ALL_CHAINS: &str = "*";
-pub fn names::check_label_name<'a>(name: &str, signers: impl IntoIterator<Item = &'a str>) -> Result<()>;
-
 // chainz_core::tx::Tx, inside `transact`
 pub enum SetAddress { Added, Unchanged, Replaced(Address) }
 pub enum Overwrite { Refuse, Replace }
 pub fn set_address(&mut self, name: &str, scope: &str, address: &Address, overwrite: Overwrite) -> Result<SetAddress>;
+pub fn write_address(&mut self, write: &broadcast::AddressWrite) -> Result<SetAddress>;
 pub fn remove_address(&mut self, name: &str, scope: Option<&str>) -> Result<Vec<(String, String)>>;
 
 // chainz_core::addrbook
@@ -219,8 +457,7 @@ impl Labeler {
     pub fn for_chain(config: &Config, chain_id: u64) -> Self;
     pub fn any_chain(config: &Config) -> Self;   // "*" labels, signers, names that agree on every chain
     pub fn name(&self, address: &Address) -> Option<&str>;
-    pub fn rewrite(&self, text: &[u8], out: &mut Vec<u8>);    // 0x… → name(0x…)
-    pub fn filter(&self, input: impl BufRead, output: impl Write) -> io::Result<()>;
+    pub fn filter(&self, input: impl BufRead, output: impl Write) -> io::Result<()>; // 0x… → name(0x…)
 }
 ```
 
@@ -230,7 +467,6 @@ chain, so a name it returns always resolves back to the same address.
 `addr import` reads Foundry broadcast output with `chainz_core::broadcast`:
 
 ```rust
-pub fn kebab(contract: &str) -> String;                  // UniversalRouter → universal-router
 pub fn find_runs(paths: &[PathBuf]) -> Result<Vec<PathBuf>>; // files as given; dirs → broadcast/**/run-latest.json
 pub fn read(file: &Path) -> Result<Vec<Run>>;            // one Run per chain (multi-chain runs hold several)
 pub fn parse(text: &str, file: &Path) -> Result<Vec<Run>>;
@@ -248,23 +484,23 @@ pub fn plan(config: &Config, runs: &[Run], options: &Options) -> Vec<Planned>;
 
 `Deployed::problem` covers a failed transaction, a transaction with no receipt
 (when the file has receipts), and a missing name or address. `plan` puts each
-label on `config.chain_by_id(run.chain_id)`. It never uses a fork. It checks
-names with `names::check_label_name`, drops repeats of the same (chain, name,
-address), and suffixes later different addresses with `names::unique_name`.
-The command plans again inside `transact`, under the lock (or `preview` for a
-dry run), and applies every planned write with `tx.write_address(&write)`.
+label on `config.chain_by_id(run.chain_id)`, named in kebab case. It never
+uses a fork. It checks names with `names::check_label_name`, drops repeats
+of the same (chain, name, address), and suffixes later different addresses
+with `names::unique_name`. The command plans again inside `transact`, under
+the lock (or `preview` for a dry run), and applies every planned write with
+`tx.write_address(&write)`.
 
 ## Upstream (`chainz_rpc::upstream`)
 
 ```rust
-pub enum RetryOn { Nothing, Transient }
 pub struct RetryPolicy { pub max_attempts: u32, pub backoff: Duration, pub max_backoff: Duration,
-                         pub max_retry_after: Duration, pub retry_on: RetryOn }
+                         pub max_retry_after: Duration }
 impl RetryPolicy {
     pub fn none() -> Self;                     // one attempt
-    pub fn same_endpoint_transient() -> Self;  // the fork proxy
-    pub fn patient() -> Self;                  // token metadata: 5 attempts, 0.5–4 s
-    pub fn retries(&self, error: &RpcError) -> bool;        // is this error retried?
+    pub fn same_endpoint_transient() -> Self;  // the fork proxy: 3 attempts, 0.1–1 s, Retry-After ≤ 2 s
+    pub fn patient() -> Self;                  // token metadata: 5 attempts, 0.5–4 s, Retry-After ≤ 10 s
+    pub fn retries(&self, error: &RpcError) -> bool;        // max_attempts > 1 and transient or rate-limited
     pub async fn run<T, F, Fut>(&self, call: F) -> Result<T, RpcError>; // backoff + Retry-After
 }
 pub struct HttpUpstream; impl HttpUpstream {
@@ -278,10 +514,11 @@ pub fn rpc_error_code(body: &[u8]) -> Option<i64>;
 `RpcError::is_transient()` (timeout, connect, a body cut off mid-read, HTTP
 502–504) and `RpcError::is_rate_limited()` (HTTP 429, JSON-RPC
 `error::LIMIT_EXCEEDED` = -32005) are the only retry predicates: the gateway
-fails over on exactly these, and `RetryOn::Transient` retries them. A body
-cut off mid-read is `RpcError::BodyRead` (class `invalid`). With
-`RetryOn::Transient`, a 2xx -32005 answer is retried too, and returned as it
-is when the retries run out.
+fails over on exactly these, and a policy with `max_attempts > 1` retries
+them (`max_attempts: 1` is the one "don't retry" switch). A body cut off
+mid-read is `RpcError::BodyRead` (class `invalid`). Such a policy also
+retries a 2xx single response carrying -32005, and returns it as it is when
+the retries run out. `error::SERVER_ERROR` names -32000.
 
 `HttpUpstream` retries on the same endpoint only. Failover to another
 endpoint is the gateway's job. `Target::new(chain_id, name, url, &[(String,
@@ -294,9 +531,11 @@ a target's headers never reach another host.
 
 ```rust
 pub const ENDPOINT_LAG: u64 = 20;  // lagging its peers (ranking, doctor, dashboard)
-pub const CHAIN_LAG: u64 = 3;      // a chain's head is behind (dashboard)
+pub const CHAIN_LAG: u64 = 3;      // a chain's head is this far behind or more (dashboard)
 pub const FAILOVER_LAG: u64 = 2;   // a failover endpoint may take a read (gateway)
-pub const P50_WINDOW: usize = 16;  // samples behind HealthStore::p50
+pub const P50_WINDOW: usize = 16;  // successful samples behind p50
+pub fn p50<'a>(samples: impl IntoIterator<Item = &'a HealthSample>) -> Option<Duration>; // last P50_WINDOW successes
+pub fn median(values: impl IntoIterator<Item = u32>) -> Option<u32>; // the lower median for even counts
 pub trait Observation { fn head(&self) -> Option<u64>; fn error(&self) -> Option<ErrorClass>;
                         fn latency(&self) -> Duration; } // ProbeResult, HealthSample, EndpointProbe
 pub enum Health { Healthy, Lagging { behind: u64 }, Failing(ErrorClass) }
@@ -309,102 +548,15 @@ pub struct EndpointProbe { pub chain_id: u64, pub endpoint: String, pub result: 
 pub fn record(store: &mut HealthStore, probes) -> io::Result<()>; // samples + capabilities, saved
 ```
 
+`p50` and `median` are the one median rule: `rpc bench` ranks with
+`health::p50(&store.samples(..))`, and the dashboard uses both.
+`HealthSample::from_probe` builds the one sample a probe gives.
 `HealthStore::load(dir)` returns an error for an unreadable store; a corrupt
 `health.json` is moved aside to `health.json.corrupt` (never overwritten) and
 reported. Callers warn and go on with `HealthStore::new(dir)` (empty, still
 saves) or `HealthStore::empty()` (no state dir). `HealthStore::path(dir)`
 names the file. `ErrorClass::phrase()` is the class in a sentence
 ("connection failed", "timed out").
-
-## Loopback auth (`chainz-serve`)
-
-For any local server that hands a child process a tokenised
-`http://127.0.0.1:<port>/<token>…` URL (the gateway; the fork proxy). The
-token is 32 random bytes as 64 lowercase hex digits, compared in constant
-time. Both servers run the same checks, in order: a `Host` of `127.0.0.1` or
-`localhost` (any case), with their port or no port, and nothing else: not
-`[::1]` (the servers listen on IPv4 only), and not a missing `Host` (403);
-`POST` (405); `application/json` (415); the token (403); a body of at most
-64 MiB (413). No CORS headers are ever sent.
-
-`chainz_serve::PinnedProxy` is a single-endpoint server built on these
-checks, for a fork's `--fork-url`: every body goes to one `Target` through an
-`HttpUpstream` under the given `RetryPolicy`, never anywhere else.
-
-```rust
-impl PinnedProxy {
-    pub async fn start(upstream: HttpUpstream, target: Target, policy: RetryPolicy)
-        -> io::Result<PinnedProxy>;      // binds 127.0.0.1:0
-    pub fn url(&self) -> String;         // http://127.0.0.1:<port>/<token>
-    pub fn port(&self) -> u16;
-    pub async fn shutdown(self);         // drains up to 5 s; dropping stops at once
-}
-```
-
-It accepts only `/<token>` (a trailing `/` is allowed). An
-upstream failure maps exactly as in the gateway: 429 with `Retry-After` (the
-upstream's, else 2 s) and JSON-RPC code -32005; 504 for a timeout; another
-upstream 4xx/5xx passed through; else 502; with a JSON-RPC error body that
-never names the URL.
-
-## Control protocol (`chainz_rpc::control`, unix only)
-
-The control protocol is HTTP/1.1 over `serve.sock`, mode 0600. Paths are
-`Route::{Status, Metrics, Events, Reload}.path()`:
-
-| Path | Method | Body |
-|---|---|---|
-| `/_chainz/status` | GET | `Status { version, pid, port, uptime_secs, chains: Vec<ChainStatus { chain, chain_id, active, failover, head }> }` |
-| `/_chainz/metrics` | GET | `MetricsSnapshot { at_ms, windows: Vec<MetricsWindow { window_secs, rows: Vec<MetricsRow { chain, endpoint, method, requests, errors: BTreeMap<ErrorClass,u64>, p50_ms, p95_ms, rate_limited, failovers, bytes }>, totals?: MetricsTotals, chains?: BTreeMap<chain, MetricsTotals> }> }` with `MetricsTotals { requests, errors, rate_limited, failovers, p50_ms, p95_ms, bytes }` |
-| `/_chainz/events[?backlog=N][&after=ID][&follow=false]` | GET | NDJSON stream of `RequestRecord { id, at_ms, chain, method, params_summary, upstream, attempts, latency_ms, status: RecordStatus::{Ok, Error{class, code}}, response_bytes }`. First the last `N` buffered records with an ID above `after` (default 0; the gateway keeps 10,000), oldest first, then live records above `after`. `follow=false` ends the stream after the backlog. A malformed value is 400. |
-| `/_chainz/reload` | POST | empty → 204; 500 with the cause as plain text when the new config is invalid (the old one stays in force) |
-
-A known path with the wrong method is 405 (with `Allow`); anything else is
-404. Fields marked `?` came after 2.0 and are optional both ways: absent from
-a 2.0 gateway, ignored by a 2.0 client. `totals` and `chains` are the window's
-rows together with true percentiles (not averages of the rows'). Windows are
-named `Window::{Short, Long}` (60 s, 900 s); find one with
-`MetricsSnapshot::window(Window)`. `RecordStatus` displays as `ok`,
-`class(code)` or `class`.
-
-The client is `ControlClient::new(socket)` with async `status()`,
-`metrics()`, `events(EventsOptions { backlog: Backlog::{Last(n), All},
-after_id, follow }) -> mpsc::Receiver<RequestRecord>`, and `reload()` (a
-refused reload's error quotes the gateway's reason). `Backlog::All` goes out
-as the largest count, which a 2.0 gateway reads the same way, and the client
-drops records at or below `after_id` itself, for a 2.0 gateway that ignores
-it. Each call gives up after 5 s (`.with_timeout(d)` changes it), so a wedged
-gateway can't hang `serve status` or the dashboard; only the body of an events
-stream is open-ended. `RequestRecord` never holds params, URLs, or bodies.
-`params_summary` is already redacted. NDJSON lines are framed by
-`write_line(&value)` and `read_line(&mut buf)`.
-
-The server is `chainz-serve`'s: the gateway runs it over its live state. With
-the `testing` cargo feature (enable it in `[dev-dependencies]`),
-`chainz_serve::testing::ControlServer::start(path, status, metrics).await`
-runs the same handler over canned state, with `push_event` (kept for
-`backlog`, IDs as given), `set_metrics`, `reload_count` (every reload
-succeeds), and `event_subscribers`. The dashboard's tests run against it.
-
-What the real gateway puts in these types:
-
-- `MetricsRow` counts upstream **attempts** per (chain, endpoint, method), so
-  a request that failed over shows on both endpoints. `failovers` counts
-  requests that moved on *from* that endpoint. `rate_limited` counts 429s
-  plus requests the endpoint's own bucket turned away unsent (those are not
-  in `requests`). A batch is one attempt under the method `batch(n)`.
-  Windows are 60 s and 900 s, and every window carries `totals` and
-  `chains`, even with no traffic.
-- `RequestRecord` is one per client request. `upstream` is the endpoint that
-  answered (or failed last), `attempts` spans endpoints, and a JSON-RPC
-  error in a single response is `Error { class: Rpc, code }`.
-- `ChainStatus.head` is the head high-water mark: the best head over the
-  last three probe rounds. It is `None` for a chain with no `failover`
-  list: only failover pools are probed.
-
-`SocketPath::new(path)` gives a bindable/connectable path for sockets deeper
-than `sockaddr_un` allows (Linux: via `/proc/self/fd`). The client and the
-server both use it.
 
 ## Other seams
 
@@ -417,26 +569,40 @@ server both use it.
   are written by serializing the model types (`Chain`, `Endpoint`,
   `Explorer`, `Signer`, `SignerSecret`) and merging them into the existing
   table: unchanged keys keep their exact text and comments, changed values
-  are replaced in place, new keys are appended. `tx.config()` /
-  `tx.secrets()` are the typed views of the edit so far. Hand edits go
-  through `Chainz::config_text` + `replace_text(expected, new)` and
+  are replaced in place, new keys are appended. `tx.config()` is the typed
+  view of the edit so far. Hand edits (`edit [CHAIN]`) go through
+  `Chainz::config_text` + `replace_text(expected, new)` and
   `Chainz::chain_snippet` + `replace_chain_snippet`, which refuse if the file
   changed meanwhile.
   `chainz.preview(|tx| …)` runs the same closure on the files as they are
   and validates the result but writes nothing (dry runs, confirmations).
   `Chainz::peek()` (`LoadMode::Peek`) is the side-effect-free load for shell
   completion: no v1 migration, no permission changes, no validation.
-  `migrate::migrate_locked(&WriteLock)` takes the held lock as proof; a
-  migration that runs inside `transact` is reported like one on first load.
+  `StorePaths::stamp() -> StoreStamp` stamps every file a config is read
+  from; the gateway and the dashboard compare stamps to see a change.
+  `migrate::status(&paths)` and `migrate::preview(&paths)` answer
+  `config migrate`; `migrate::migrate_locked(&WriteLock)` takes the held lock
+  as proof. A migration that runs inside `transact` is reported like one on
+  first load.
+- Endpoints: `tx.add_endpoint_url(chain, name, &endpoint, EndpointRole)` is
+  the one way to add an endpoint from a user's URL (`rpc add`,
+  `rpc discover`, `chain add`, `chain set --rpc URL`): `Chain::new_endpoint`
+  checks the URL (`Endpoint::check_url`: http(s) or ws(s), a host) and names
+  it, refuses a URL the chain already has (`Chain::endpoint_at`, a trailing
+  `/` ignored), and literal secrets move into variables.
 - Chain edits: `tx.edit_chain(name, &ChainEdit) -> Result<EditReport>` applies
   one patch (`chain set` flags or its menu): signer, `rpc` (an endpoint name,
   or a URL: an existing one activates, a new one is added with its secrets
-  extracted and activated), headers and `clear_headers` on that endpoint (or
-  the active one), failover, explorer (`etherscan` creates the built-in
-  `Explorer::etherscan()`: `api = "https://api.etherscan.io/v2/api?chainid=${CHAIN_ID}"`,
+  extracted and activated; `ChainEdit::new_endpoint` says which, so the
+  caller probes exactly that), headers and `clear_headers` on that endpoint
+  (or the active one), failover, explorer (`Explorer::ETHERSCAN` creates the
+  built-in `Explorer::etherscan()`:
+  `api = "https://api.etherscan.io/v2/api?chainid=${CHAIN_ID}"`,
   `key = "${ETHERSCAN_API_KEY}"`, the URL v1 migration writes), `api_key`
-  (stored in the explorer's variable, `ETHERSCAN_API_KEY` or
-  `<EXPLORER>_API_KEY`), aliases, and the rename last. `EditReport` lists the
+  (trimmed, stored in the explorer's variable, `ETHERSCAN_API_KEY` or
+  `<EXPLORER>_API_KEY`), aliases, and the rename last. Each rule shares its
+  check and message with validation (`Config::check_signer`,
+  `Chain::check_failover`, `names::check_alias`). `EditReport` lists the
   changes, the added endpoint, the created explorer, the key variable and
   the moved secrets. Checking a new URL's chain ID is the caller's (network)
   job. `tx.insert_chain(name, &chain, Attach)` checks name, ID and signer and,
@@ -450,23 +616,27 @@ server both use it.
   queues a `store::Notice` on the `Chainz`; take them with `take_notices()`
   or route them as they happen with `set_notice_sink(fn(&Notice))`. The bin
   prints each `Display` line as `chainz: …`; serve adds them to the
-  snapshot warnings.
+  snapshot warnings; the dashboard shows them in its footer.
 - Signers: `signer::provision(&dyn KeyBackend, &dyn Prompter, name, key, backend)`
   stores a key and returns a `Provision` (`Provision::reference(Signer)` for
-  keystore and 1Password references). `Chainz::install_signer` writes the
-  record and key material in one transaction, abandons the provision (deletes
-  the keyring entry it created) if that fails, and deletes a replaced
-  signer's old keyring entry. `Chainz::remove_signer` is the reverse.
-  `KeyBackend` is external storage only; `Prompter` (hidden prompts) is
-  implemented by the binary (`prompt::Terminal`). `CHAINZ_DISABLE_KEYRING`
-  (`signer::DISABLE_KEYRING_VAR`) makes the keyring unavailable for tests and
-  the perf gate.
+  keystore and 1Password references, `Backend::is_reference`).
+  `Chainz::install_signer` writes the record and key material in one
+  transaction, abandons the provision (deletes the keyring entry it created)
+  if that fails, and deletes a replaced signer's old keyring entry.
+  `Chainz::remove_signer` is the reverse (`tx.remove_signer(name,
+  Users::{Keep, Unassign})`; `Unassign` is `signer rm --unassign`). `KeyBackend` is external storage only;
+  `Prompter` (hidden prompts) is implemented by the binary
+  (`prompt::Terminal`, or the init flow's `AskPrompter`).
+  `signer::safe_default(keys)` is the default backend (keyring, else
+  encrypted). `CHAINZ_DISABLE_KEYRING` makes the keyring unavailable.
 - Resolver: `resolve::select(config, Some(&runtime), explicit, chainz.env()) -> Result<Option<(ChainRef, Source)>>`.
-  It checks the explicit argument, then `$CHAINZ_CHAIN`, then the default.
+  It checks the explicit argument, then `$CHAINZ_CHAIN`, then the default;
+  `resolve::NO_CHAINS` is the one "no chains configured" message.
   Management commands use `resolve::configured(config, query, Policy) ->
   Result<(&str, &Chain)>` (no forks): `Policy::Prefix` (name, alias, ID or
   unambiguous prefix), `Policy::Exact` (name or ID: `chain rm`) or
-  `Policy::ExactOrAlias` (`addr rm --chain`).
+  `Policy::ExactOrAlias` (`addr rm --chain`). `resolve::exact` (ID, name or
+  alias, any case) is the gateway's.
 - Context: `context::build(&chainz, &runtime, &ChainRef, &ExecOptions) -> Result<Context>`
   (with `expose_key`, it refuses a fork or a chain without a signer), then
   `Context::unlock_key(&chainz, keys, prompter)` for `--expose-key`,
@@ -476,59 +646,75 @@ server both use it.
   never unlocked). Each `EnvVar` carries its own secrecy (`display()`
   redacts). `Context::explain()` is the safe view `--explain` prints.
   `Expander::new(&chainz, &runtime, &ctx, direct).expand_args(&argv)`.
-  `contract::CONTRACT_VARS` lists every name exec owns (`contract` is a leaf,
-  with `CHAINZ_CHAIN`, `RAW_PRIVATE_KEY` and `ETHERSCAN_API_KEY`).
+  `contract::CONTRACT_VARS` lists every name exec owns, each a const in
+  `contract` (a leaf); tests keep `exports()` and `names`' context tokens
+  tied to their tables.
 - Environment seam: `contract::Env` is where core reads the environment
-  (`Env::process()`, or `Env::from_fn` in tests). `Chainz::with_env` sets it
-  for template resolution and the context; `resolve::select` takes it.
+  (`Env::process()`); `Chainz::env()` gives it to `resolve::select`, and
+  template resolution and the context read it.
 - Variables: `${NAME}` resolves to the built-ins (`CHAIN_ID`, `CHAIN`), then
   the environment, then `secrets.toml [vars]`.
 - Display policy: `redact::url(value, reveal)` and `redact::header(value,
-  reveal)` print templates, hosts and ordinary paths verbatim and mask only
-  credential-shaped parts (user info, key-like query values, long mixed
-  alphanumeric segments, known Infura/Alchemy keys, the fragment) as
-  `redact::REDACTED`; an unparseable URL fails closed. `extract` owns the
-  credential shapes; `extract::manual_credential(url)` is the detector for
-  what only a person can move (migration notes and `doctor`). `redact` and
-  `summarize` stay as the stricter `Debug` and compact views. The bin's
+  reveal)` are the one policy for every view of a URL or header value
+  (`exec --explain`, listings, the dashboard, `Debug`). A URL shows its
+  `${VAR}` templates, hosts and ordinary paths; it masks user info, the
+  fragment, known Infura/Alchemy keys, credential-shaped host labels, and
+  every path segment or query value that is not a known-safe form (empty,
+  a template, a number, a version such as `v2`, or a short lowercase word),
+  as `redact::REDACTED`. An unparseable URL is masked whole. A header value
+  shows only templates and an allow-list of auth schemes and media types;
+  every other word is masked. `redact::summarize` is the terse host label
+  of the compact `ls`. `extract` owns the credential shapes it moves into
+  variables; `extract::manual_credential(url)` is the detector for what
+  only a person can move (migration notes and `doctor`). The bin's
   `view::EndpointView` applies `url`/`header` once for `chain show`, `ls
-  --json` and `rpc ls` (whose JSON rows are an `EndpointView`, so they
-  carry `websocket`, plus health); the compact `ls` column uses `summarize`.
+  --json` and `rpc ls`.
 - Shared helpers, so crates don't keep private copies:
   `chainz_core::fmt::{group, uptime, short_address}` (thousands separators,
   `42s`/`12m05s`/`2h03m`/`3d04h`, `short_address(&Address)` → `0x1234…abcd`);
   `Address::from_bytes` / `as_bytes` (the field is private). Model types are
-  imported from `chainz_core::model` only (no root re-exports).
+  imported from `chainz_core::model` only (no root re-exports; the root
+  re-exports `Address`, `Chainz`, `LoadMode`, `StorePaths`, `StoreStamp`
+  and `Tx`). `chainz_rpc` re-exports its common items at the root (import
+  them from there): `RpcClient`, `BlockHeader`, `BlockId`, `RpcError`,
+  `ErrorClass`, `Target`, `HttpUpstream`, `RetryPolicy`, `Health`,
+  `Ranking`, `EndpointProbe`, `classify`, `HealthSample`, `HealthStore`,
+  `ProbeResult`, `probe`, `probe_all`, `Capabilities`, `probe_capabilities`.
   `chainz_rpc::hex::{encode, decode, parse_quantity, parse_quantity_saturating}`;
   `chainz_rpc::abi` (selectors and `function_name`, `MULTICALL3`,
   `call_with_address`, `word`/`uint`, `encode_aggregate3`/`decode_aggregate3`,
   `decode_string`/`decode_u8`, and exact `units::{check, scale, format_exact}`);
   `RpcClient::get_block(target, BlockId) -> Option<BlockHeader { number,
-  timestamp, base_fee_per_gas }>`;
-  `chainz_rpc::health` for endpoint health, ranking and recording probes.
+  timestamp, base_fee_per_gas }>`; `chainz_rpc::chainlist` (the bin fetches
+  through `net::chainlist`, which warns once about a cache it couldn't
+  write).
 
 ## Bin crate: adding a command handler
 
 1. The clap surface lives in `crates/chainz/src/cli.rs`: one `…Args`
    struct per command, documented positionals, and conversions to core
    options (`From<&ContextArgs> for ExecOptions`, `From<BackendArg> for
-   Backend`) done there once. Declare value completion on the argument
+   Backend`) done there, or in the handler when they need I/O. Declare
+   value completion on the argument
    (`#[arg(add = ArgValueCompleter::new(complete::signers))]`), never by
    command path. Removed commands and flags get no hidden aliases.
-2. Put the handler in a module, for example `commands/serve.rs` with
-   `pub fn run(args: &ServeArgs) -> anyhow::Result<i32>`, and route it in
+2. Put the handler in a module, for example `commands/edit.rs` with
+   `pub fn run(args: &EditArgs) -> anyhow::Result<i32>` (commands with
+   subcommands take their `…Command` enum by value), and route it in
    `commands::dispatch` (that module only dispatches). Shared helpers live
    outside `commands/`: `load` (open the store, notices to stderr),
    `select` (chain picker, `$CHAINZ_CHAIN`/default), `args` (address and
    header parsing), `prompt` (`is_tty`, `confirm_or_yes(yes, msg,
    Consent::{Destructive, Proposal})`, the `Ask` seam that interactive
-   flows take so tests script them), `net` (`block_on`, `join_indexed`),
-   `probe`, `view` (`EndpointView`, `marker`, `table`, `QUICK_START`).
+   flows take so tests script them), `net` (`block_on`, `join_indexed`,
+   `to_target`, `health_store`, `chainlist`), `probe`, `view`
+   (`EndpointView`, `marker`, `table`, `QUICK_START`).
    The return value is the exit code: 0, or the code of a failure the
-   handler reported itself (`doctor`, `addr find`). An `Err` prints
-   `Error: …` and exits 1, or with the code of a `ui::ExitCode` in its
-   chain (exec uses 127/126); `ui::cancelled()` exits 130 and a broken
-   stdout pipe exits 0, all in `main` through `ui::report`/`ui::exit_code`.
+   handler reported itself (`doctor`, `addr find`, `serve status`). An `Err`
+   prints `Error: …` and exits 1, or with the code of a `ui::ExitCode` in
+   its chain (exec uses 127/126) or a clap usage error (2);
+   `ui::cancelled()` exits 130 and a broken stdout pipe exits 0, all in
+   `main` through `ui::report`/`ui::exit_code`.
 3. Network work goes through `net::block_on(async { … })`, which creates a
    current-thread tokio runtime. A long-running server (`serve`, `top`) can
    build a multi-threaded runtime in its own crate. `exec`, `env`, `ls`, and
@@ -542,10 +728,12 @@ server both use it.
    `.seed(&[("eth", 1)])` writes chains on a dead local RPC with a plaintext
    `default` signer; `.run`/`.ok` run the binary. `common::MockRpc::start(handler)`
    is a threaded keep-alive JSON-RPC mock (batches too) that records every
-   request. Never run the binary outside a sandbox, and never guess a free
-   port: use port 0 (`serve --port 0`, `anvil --port 0`) or let `fork`
-   pick, then read the port back. Run `cargo test` with `TMPDIR` pointed at
-   a scratch directory.
+   request. Output that users or scripts read is pinned by golden files
+   (`tests/golden.rs`; `CHAINZ_BLESS=1` rewrites them). Never run the binary
+   outside a sandbox, and never guess a free port: use port 0
+   (`serve --port 0`, `anvil --port 0`) or let `fork` pick, then read the
+   port back. Run `cargo test` with `TMPDIR` pointed at a scratch directory.
 5. Before committing, run `cargo fmt`,
-   `cargo clippy --workspace --all-targets -- -D warnings`, and
+   `cargo clippy --workspace --all-targets -- -D warnings`,
+   `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps`, and
    `cargo test --workspace`. The perf gate is `scripts/perf-gate.sh V1 V2`.
