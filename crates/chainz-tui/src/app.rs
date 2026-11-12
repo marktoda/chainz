@@ -238,7 +238,7 @@ impl App {
         let visible = self.visible(state);
         if let Some(chain) = visible.get(index.min(visible.len().saturating_sub(1))) {
             if self.chain.as_deref() != Some(chain.info.name.as_str()) {
-                self.endpoint = active_index(chain);
+                self.endpoint = serving_index(state, chain);
                 self.scroll(ScrollSlot::Endpoints).set(0);
             }
             self.chain = Some(chain.info.name.clone());
@@ -399,7 +399,7 @@ impl App {
                     return Action::None;
                 };
                 if endpoint.active {
-                    let text = format!("'{}' is already the active RPC", endpoint.info.name);
+                    let text = format!("'{}' is already the configured RPC", endpoint.info.name);
                     self.notify(text, false, now_ms);
                 } else {
                     return Action::SetActive {
@@ -414,11 +414,15 @@ impl App {
     }
 
     /// What `y` copies: the selected endpoint's URL (already redacted
-    /// unless `--reveal`), or the shown signer's address.
+    /// unless `--reveal`; on the Chains tab the serving one), or the shown
+    /// signer's address.
     fn copy(&mut self, state: &State) -> Action {
         let chain = self.selected(state);
         let endpoint = match self.tab {
-            Tab::Chains => chain.and_then(|c| c.endpoints.iter().find(|e| e.active)),
+            Tab::Chains => chain.and_then(|c| {
+                let serving = state.serving(c);
+                c.endpoints.iter().find(|e| e.info.name == serving)
+            }),
             Tab::Endpoints => chain.and_then(|c| c.endpoints.get(self.endpoint)),
             Tab::Balances => {
                 let signer = state.signers.get(self.signer);
@@ -442,8 +446,14 @@ impl App {
     }
 }
 
-fn active_index(chain: &ChainState) -> usize {
-    chain.endpoints.iter().position(|e| e.active).unwrap_or(0)
+/// Where the endpoint serving `chain` is in its list.
+fn serving_index(state: &State, chain: &ChainState) -> usize {
+    let serving = state.serving(chain);
+    chain
+        .endpoints
+        .iter()
+        .position(|e| e.info.name == serving)
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -656,7 +666,7 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .text
-                .contains("already the active RPC")
+                .contains("already the configured RPC")
         );
         assert_eq!(
             press(&mut app, &state, "js"),
@@ -713,6 +723,73 @@ mod tests {
         press(&mut app, &state, "l");
         assert_eq!(app.signer, 0, "wraps around");
         assert_eq!(press(&mut app, &state, "4y"), Action::None);
+    }
+
+    #[test]
+    fn after_a_gateway_failover_every_surface_names_the_serving_endpoint() {
+        use crate::model::{GatewayChain, GatewayInfo, Head, TrafficSnapshot, Update};
+        use crate::plan::Source;
+        let mut state = state();
+        // Configured: llama. The gateway serves eth from publicnode.
+        state.apply(Update::Gateway(Some(GatewayInfo { port: 18545 })));
+        state.apply(Update::Traffic(Ok(TrafficSnapshot {
+            chains: vec![GatewayChain {
+                chain: "eth".into(),
+                active: "publicnode".into(),
+                head: None,
+            }],
+            ..TrafficSnapshot::default()
+        })));
+        state.apply(Update::Head {
+            chain: "eth".into(),
+            source: Source::named("eth"),
+            at_ms: NOW,
+            via_gateway: true,
+            result: Ok(Head {
+                number: 100,
+                timestamp: None,
+                base_fee: None,
+                latency_ms: 5,
+            }),
+            block_time: None,
+        });
+        let eth = &state.chains[0];
+        assert_eq!(state.serving(eth), "publicnode");
+        let rows = crate::view::chain_rows(&state, [eth], NOW);
+        assert_eq!(rows[0].rpc, "publicnode");
+        let marked: Vec<&str> = crate::view::endpoint_rows(&state, eth)
+            .iter()
+            .filter(|r| r.serving)
+            .map(|r| r.endpoint.info.name.as_str())
+            .collect();
+        assert_eq!(marked, ["publicnode"]);
+        let json = serde_json::to_value(crate::snapshot::Snapshot::new(&state, NOW)).unwrap();
+        assert_eq!(json["chains"][0]["rpc"], "publicnode");
+        let active: Vec<&str> = json["chains"][0]["endpoints"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["active"] == true)
+            .map(|e| e["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(active, ["publicnode"]);
+
+        let mut app = App::default();
+        let Action::Copy { what, .. } = press(&mut app, &state, "y") else {
+            panic!("expected a copy");
+        };
+        assert_eq!(what, "eth.publicnode URL");
+        // The Endpoints tab opens on it, and `s` there writes it to the
+        // config, where llama is still the active one.
+        press(&mut app, &state, "jk2");
+        assert_eq!(app.endpoint, 2);
+        assert_eq!(
+            press(&mut app, &state, "s"),
+            Action::SetActive {
+                chain: "eth".into(),
+                endpoint: "publicnode".into(),
+            }
+        );
     }
 
     #[test]

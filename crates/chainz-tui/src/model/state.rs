@@ -21,7 +21,9 @@ pub struct EndpointState {
     /// Name, displayable URL (redacted unless `--reveal`), websocket, and
     /// why it cannot be used.
     pub info: EndpointInfo,
-    /// Whether it is the chain's active endpoint.
+    /// Whether it is the chain's active endpoint in the config (the one
+    /// `s` replaces; not necessarily the one serving, see
+    /// [`State::serving`]).
     pub active: bool,
     /// Cached capability tags.
     pub tags: Vec<String>,
@@ -239,6 +241,21 @@ impl State {
         next.traffic_error = self.traffic_error.clone();
         next.feed = self.feed.clone();
         next
+    }
+
+    /// The endpoint serving `chain`: the one the gateway reports serving
+    /// it from when the last head poll went through the gateway (it may
+    /// have failed over from the configured one), else the configured
+    /// active endpoint. The RPC column, `y`, the Endpoints tab's marker
+    /// and the JSON all name this one.
+    pub fn serving<'a>(&'a self, chain: &'a ChainState) -> &'a str {
+        let from_gateway = chain
+            .via_gateway
+            .then_some(self.traffic.as_ref())
+            .flatten()
+            .and_then(|t| t.chains.iter().find(|c| c.chain == chain.info.name))
+            .map(|c| c.active.as_str());
+        from_gateway.unwrap_or(&chain.info.active)
     }
 
     /// The median latency above which a chain is `slow`: three times the

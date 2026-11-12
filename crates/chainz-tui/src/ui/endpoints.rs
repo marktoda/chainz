@@ -33,6 +33,18 @@ pub(super) fn body(ctx: Ctx) -> Body {
         }
         None => Span::styled("probing…", t.warn()),
     };
+    let serving = ctx.state.serving(chain);
+    let mut active = vec![
+        Span::styled("active ", t.dim()),
+        Span::styled(serving.to_string(), t.text()),
+    ];
+    if serving != chain.info.active {
+        // The gateway failed over from the configured one.
+        active.push(Span::styled(
+            format!(" (config: {})", chain.info.active),
+            t.dim(),
+        ));
+    }
     let context = vec![
         vec![
             Span::styled(chain.info.name.clone(), t.accent()),
@@ -42,14 +54,11 @@ pub(super) fn body(ctx: Ctx) -> Body {
             format!("{} endpoints", chain.endpoints.len()),
             t.dim(),
         )],
-        vec![
-            Span::styled("active ", t.dim()),
-            Span::styled(chain.info.active.clone(), t.text()),
-        ],
+        active,
         vec![probed],
     ];
 
-    let rows = view::endpoint_rows(chain);
+    let rows = view::endpoint_rows(ctx.state, chain);
     let any_error = rows.iter().any(|r| {
         matches!(
             r.status,
@@ -78,7 +87,7 @@ pub(super) fn body(ctx: Ctx) -> Body {
         let fresh = if endpoint.live { t.text() } else { t.dim() };
         let name = endpoint.info.name.clone();
         let mut row = vec![
-            if endpoint.active {
+            if r.serving {
                 Cell::new("● ", t.accent()).then(name, t.text())
             } else {
                 Cell::new("  ", t.text()).then(name, t.text())

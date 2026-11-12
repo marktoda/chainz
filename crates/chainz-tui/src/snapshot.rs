@@ -56,7 +56,10 @@ pub struct Chain {
     pub id: u64,
     /// Aliases.
     pub aliases: Vec<String>,
-    /// Active endpoint name.
+    /// The endpoint serving the chain: the one the gateway reports
+    /// serving it from when the head was read through the gateway (it may
+    /// have failed over), else the configured active endpoint.
+    /// `endpoints[].active` marks the same one.
     pub rpc: String,
     /// Whether the head was read through the gateway.
     pub via_gateway: bool,
@@ -94,7 +97,7 @@ pub struct Endpoint {
     pub name: String,
     /// URL, redacted unless `--reveal`.
     pub url: String,
-    /// Whether it is the active endpoint.
+    /// Whether it serves the chain (see [`Chain::rpc`]).
     pub active: bool,
     /// `ws://` or `wss://`.
     pub websocket: bool,
@@ -190,7 +193,7 @@ impl From<&Fault> for Problem {
     }
 }
 
-fn chain(row: &ChainRow) -> Chain {
+fn chain(state: &State, row: &ChainRow) -> Chain {
     let c = row.chain;
     let head = c.head.as_ref();
     Chain {
@@ -210,12 +213,12 @@ fn chain(row: &ChainRow) -> Chain {
         p50_ms: row.p50_ms,
         lag_blocks: c.lag,
         error: c.fault.as_ref().map(Problem::from),
-        endpoints: view::endpoint_rows(c)
+        endpoints: view::endpoint_rows(state, c)
             .into_iter()
             .map(|r| Endpoint {
                 name: r.endpoint.info.name.clone(),
                 url: r.endpoint.info.url.clone(),
-                active: r.endpoint.active,
+                active: r.serving,
                 websocket: r.endpoint.info.websocket,
                 status: r.status.word(),
                 tags: r.endpoint.tags.clone(),
@@ -389,7 +392,7 @@ impl Snapshot {
             },
             chains: view::chain_rows(state, &state.chains, now_ms)
                 .iter()
-                .map(chain)
+                .map(|row| chain(state, row))
                 .collect(),
             balances: balances(state),
             traffic: state.traffic.as_ref().map(traffic),

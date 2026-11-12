@@ -20,8 +20,7 @@ pub struct ChainRow<'a> {
     pub chain: &'a ChainState,
     /// Its status.
     pub status: Status,
-    /// The endpoint its head is read from: the one the gateway serves
-    /// from when the read went through it, else the active one.
+    /// The endpoint serving it ([`State::serving`]).
     pub rpc: &'a str,
     /// Median latency of the recent head polls.
     pub p50_ms: Option<u32>,
@@ -52,7 +51,7 @@ pub fn chain_rows<'a>(
         .map(|chain| ChainRow {
             chain,
             status: chain.status(slow_ms),
-            rpc: serving_endpoint(state, chain),
+            rpc: state.serving(chain),
             p50_ms: chain.p50(),
             block_age_secs: chain.block_age(now_ms),
             block_time_secs: chain.block_time,
@@ -61,24 +60,13 @@ pub fn chain_rows<'a>(
         .collect()
 }
 
-/// The endpoint `chain`'s head was read from. Through the gateway that is
-/// the endpoint the gateway reports as active (it may have failed over),
-/// not necessarily the configured one.
-fn serving_endpoint<'a>(state: &'a State, chain: &'a ChainState) -> &'a str {
-    let from_gateway = chain
-        .via_gateway
-        .then_some(state.traffic.as_ref())
-        .flatten()
-        .and_then(|t| t.chains.iter().find(|c| c.chain == chain.info.name))
-        .map(|c| c.active.as_str());
-    from_gateway.unwrap_or(&chain.info.active)
-}
-
 /// One endpoint in the Endpoints tab.
 #[derive(Debug, Clone, Copy)]
 pub struct EndpointRow<'a> {
     /// The endpoint.
     pub endpoint: &'a EndpointState,
+    /// Whether it serves the chain ([`State::serving`]).
+    pub serving: bool,
     /// Its status.
     pub status: EndpointStatus,
     /// Blocks behind the best endpoint, when both reported a head.
@@ -92,7 +80,8 @@ pub struct EndpointRow<'a> {
 }
 
 /// The rows of `chain`'s endpoints, in config order.
-pub fn endpoint_rows(chain: &ChainState) -> Vec<EndpointRow<'_>> {
+pub fn endpoint_rows<'a>(state: &'a State, chain: &'a ChainState) -> Vec<EndpointRow<'a>> {
+    let serving = state.serving(chain);
     chain
         .endpoints
         .iter()
@@ -101,6 +90,7 @@ pub fn endpoint_rows(chain: &ChainState) -> Vec<EndpointRow<'_>> {
             let latest = endpoint.latest();
             EndpointRow {
                 endpoint,
+                serving: endpoint.info.name == serving,
                 status,
                 lag,
                 latest,
