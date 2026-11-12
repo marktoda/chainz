@@ -382,7 +382,7 @@ pub enum ChainCommand {
     Show(ChainShowArgs),
     /// Change a chain's settings (also `chainz update`); a menu with no flags
     Set(ChainSetArgs),
-    /// Remove a chain (exact name or ID)
+    /// Remove a chain (exact name or ID) and its labels; asks first unless --yes
     #[command(visible_alias = "remove")]
     Rm(ChainRmArgs),
 }
@@ -430,6 +430,9 @@ pub struct ChainRmArgs {
     /// Exact chain name or ID
     #[arg(add = ArgValueCompleter::new(complete::configured_chains))]
     pub chain: String,
+    /// Remove without asking (required off a terminal)
+    #[arg(long, short)]
+    pub yes: bool,
 }
 
 /// `chain set` / `update`: one patch to one chain, applied at once.
@@ -498,7 +501,7 @@ pub enum RpcCommand {
     Ls(RpcLsArgs),
     /// Add an endpoint
     Add(RpcAddArgs),
-    /// Remove an endpoint
+    /// Remove an endpoint; asks first unless --yes
     #[command(visible_alias = "remove")]
     Rm(RpcRmArgs),
     /// Probe, rank and tag endpoints
@@ -553,6 +556,9 @@ pub struct RpcRmArgs {
     /// Endpoint name
     #[arg(add = ArgValueCompleter::new(complete::endpoints))]
     pub name: String,
+    /// Remove without asking (required off a terminal)
+    #[arg(long, short)]
+    pub yes: bool,
 }
 
 #[derive(Debug, Args)]
@@ -674,7 +680,7 @@ pub struct SignerRmArgs {
     /// Unassign it from the chains that use it
     #[arg(long)]
     pub unassign: bool,
-    /// Delete the key material without asking (required off a TTY)
+    /// Remove without asking (required off a terminal)
     #[arg(long, short)]
     pub yes: bool,
 }
@@ -699,7 +705,7 @@ pub enum AddrCommand {
     /// List labels
     #[command(visible_alias = "list")]
     Ls(AddrLsArgs),
-    /// Remove a label
+    /// Remove a label; asks first unless --yes
     #[command(visible_alias = "remove")]
     Rm(AddrRmArgs),
     /// Reverse-look-up an address
@@ -743,6 +749,9 @@ pub struct AddrRmArgs {
     /// Only on this configured chain (or '*' for the every-chain entry)
     #[arg(long, add = ArgValueCompleter::new(complete::label_scopes))]
     pub chain: Option<String>,
+    /// Remove without asking (required off a terminal)
+    #[arg(long, short)]
+    pub yes: bool,
 }
 
 #[derive(Debug, Args)]
@@ -795,9 +804,9 @@ pub enum VarCommand {
     /// List variables
     #[command(visible_alias = "list")]
     Ls(VarLsArgs),
-    /// Remove a variable
+    /// Remove a variable and its value; asks first unless --yes
     #[command(visible_alias = "remove")]
-    Rm(VarNameArgs),
+    Rm(VarRmArgs),
 }
 
 #[derive(Debug, Args)]
@@ -833,10 +842,13 @@ pub struct VarLsArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct VarNameArgs {
+pub struct VarRmArgs {
     /// Variable name
     #[arg(add = ArgValueCompleter::new(complete::vars))]
     pub name: String,
+    /// Remove without asking (required off a terminal)
+    #[arg(long, short)]
+    pub yes: bool,
 }
 
 #[derive(Debug, Subcommand)]

@@ -282,9 +282,10 @@ that doesn't exist is refused.
 
 `chainz signer migrate` moves plaintext keys into safe storage
 (`--all` for every plaintext signer; a failure doesn't stop the rest).
-`chainz signer rm` deletes the key material too, so it asks first; off a
-terminal pass `--yes`. A signer that chains still use needs `--unassign`,
-which removes it from those chains.
+`chainz signer rm` deletes the key material too. A signer that chains
+still use needs `--unassign`, which removes it from those chains (and says
+which are left without a signer). On a terminal one question covers both;
+off one, pass `--unassign --yes`, and the error names every flag missing.
 
 Pass keys and variable values on stdin (`--stdin`): a secret given as an
 argument works but warns, since it lands in shell history and `ps`.
@@ -339,8 +340,10 @@ them into variables. `chain add --url`, `chain set --rpc URL` and `rpc add` do t
 write a URL with a known key (Infura, Alchemy) or a credential header, and
 say what they moved.
 
-`--yes` (`-y`) always means "accept without asking": `signer rm --yes`
-deletes key material, `rpc bench --fix --yes` also writes the proposed
+`--yes` (`-y`) always means "accept without asking". Every `rm` (`chain rm`,
+`rpc rm`, `addr rm`, `var rm`, `signer rm`) asks first on a terminal and
+needs `--yes` off one; `chain rm` names what goes with the chain (its
+labels, and the default). `rpc bench --fix --yes` also writes the proposed
 failover lists, `rpc discover --yes` adds every endpoint that answered.
 Off a terminal chainz never prompts: it reports and tells you which flag
 to pass. Listing commands take `--json` (`ls`, `chain show`, `rpc ls`,

@@ -130,7 +130,7 @@ chainz completions SHELL
 
 **Renames from v1:** `key` becomes `signer` (it holds keystore and 1Password references, not only raw keys). `list` becomes `ls`, with `list` kept as an alias. `update` is `chain set`: one verb for every chain setting, flag-driven or, with no flags on a TTY, v1's menu (RPC / Signer / Explorer / Name / Aliases / Done), applied in one write. `--show-secrets` and `--show` both become `--reveal`. `init` stays as a TTY wizard; off a TTY it prints the quick start, as `chainz` with no arguments does on an empty config. The first signer attaches to every chain without one, and `chain add` attaches the only signer and the `etherscan` explorer when it exists.
 
-**Interactive vs scripted:** pickers open where the design needs a choice (`exec`/`shell`/`env`/`use` with no chain, `chain add` with no chain, `chain set` with no chain, `addr add` with no chain context); off a TTY those fail with a precise usage message (exit 2 for a usage error). `--yes` means "accept without asking" everywhere. No command ever blocks on a hidden prompt in a pipeline.
+**Interactive vs scripted:** pickers open where the design needs a choice (`exec`/`shell`/`env`/`use` with no chain, `chain add` with no chain, `chain set` with no chain, `addr add` with no chain context); off a TTY those fail with a precise usage message (exit 2 for a usage error). `--yes` means "accept without asking" everywhere. Every `rm` (`chain`, `rpc`, `addr`, `var`, `signer`) goes through one confirmation (`prompt::confirm_removal`): asked on a TTY (default no), `--yes` required off one. No command ever blocks on a hidden prompt in a pipeline.
 
 ## Config v2
 

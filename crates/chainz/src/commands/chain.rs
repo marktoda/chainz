@@ -388,7 +388,36 @@ fn rm(args: &ChainRmArgs) -> Result<i32> {
     let name = resolve::configured(chainz.config(), &args.chain, Policy::Exact)?
         .0
         .to_string();
-    chainz.transact(|tx| tx.remove_chain(&name))?;
+    let going = chainz.preview(|tx| tx.remove_chain(&name))?;
+    let mut with = vec![format!("{} endpoint(s)", going.endpoints)];
+    if !going.labels.is_empty() {
+        with.push(format!("labels {}", at_labels(&going.labels)));
+    }
+    if going.was_default {
+        with.push("it is the default chain".to_string());
+    }
+    crate::prompt::confirm_removal(
+        &mut Tty,
+        args.yes,
+        &format!("chain rm {}", args.chain),
+        &format!("chain '{name}' ({})", with.join("; ")),
+    )?;
+    let removed = chainz.transact(|tx| tx.remove_chain(&name))?;
     println!("Removed chain '{name}'");
+    if !removed.labels.is_empty() {
+        println!("  dropped labels: {}", at_labels(&removed.labels));
+    }
+    if removed.was_default {
+        println!("  default cleared; set one with `chainz use <chain>`");
+    }
     Ok(0)
+}
+
+/// `@a, @b`.
+fn at_labels(labels: &[String]) -> String {
+    labels
+        .iter()
+        .map(|l| format!("@{l}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }

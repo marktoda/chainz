@@ -63,6 +63,18 @@ pub enum EndpointRole {
     Active,
 }
 
+/// What [`Tx::remove_chain`] took with the chain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemovedChain {
+    /// How many endpoints it had.
+    pub endpoints: usize,
+    /// The labels that had an address on it (that entry is gone), in file
+    /// order.
+    pub labels: Vec<String>,
+    /// Whether it was the default chain (`default` is cleared).
+    pub was_default: bool,
+}
+
 /// What [`Tx::remove_signer`] does with chains that use the signer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Users {
@@ -174,7 +186,9 @@ impl Tx {
     }
 
     /// Remove a chain, its default status, and its per-chain label entries.
-    pub fn remove_chain(&mut self, name: &str) -> Result<()> {
+    /// Returns what went with it, for the caller to confirm and report.
+    pub fn remove_chain(&mut self, name: &str) -> Result<RemovedChain> {
+        let endpoints = self.config()?.chains.get(name).map_or(0, |c| c.rpcs.len());
         let doc = &mut self.config;
         let removed = doc
             .get_mut("chains")
@@ -183,21 +197,29 @@ impl Tx {
         if removed.is_none() {
             bail!("chain '{name}' not found");
         }
-        if doc.get("default").and_then(Item::as_str) == Some(name) {
+        let was_default = doc.get("default").and_then(Item::as_str) == Some(name);
+        if was_default {
             doc.remove("default");
         }
+        let mut labels = Vec::new();
         if let Some(addresses) = doc.get_mut("addresses").and_then(Item::as_table_like_mut) {
-            let labels: Vec<String> = addresses.iter().map(|(k, _)| k.to_string()).collect();
-            for label in labels {
-                if let Some(entry) = addresses.get_mut(&label).and_then(Item::as_table_like_mut) {
-                    entry.remove(name);
+            let names: Vec<String> = addresses.iter().map(|(k, _)| k.to_string()).collect();
+            for label in names {
+                if let Some(entry) = addresses.get_mut(&label).and_then(Item::as_table_like_mut)
+                    && entry.remove(name).is_some()
+                {
                     if entry.is_empty() {
                         addresses.remove(&label);
                     }
+                    labels.push(label);
                 }
             }
         }
-        Ok(())
+        Ok(RemovedChain {
+            endpoints,
+            labels,
+            was_default,
+        })
     }
 
     /// Rename a chain key in place, updating `default` and label scopes.
@@ -394,8 +416,8 @@ impl Tx {
     }
 
     /// Remove `[signers.NAME]` and its key material in `secrets.toml`.
-    /// Returns how many chains it was unassigned from.
-    pub fn remove_signer(&mut self, name: &str, users: Users) -> Result<usize> {
+    /// Returns the chains it was unassigned from, in config order.
+    pub fn remove_signer(&mut self, name: &str, users: Users) -> Result<Vec<String>> {
         let removed = self
             .config
             .get_mut("signers")
@@ -405,7 +427,7 @@ impl Tx {
             bail!("signer '{name}' not found");
         }
         self.set_signer_secret(name, None)?;
-        let mut unassigned = 0;
+        let mut unassigned = Vec::new();
         if users == Users::Unassign {
             let config = self.config()?;
             let chains: Vec<String> = config
@@ -413,12 +435,12 @@ impl Tx {
                 .into_iter()
                 .map(String::from)
                 .collect();
-            for chain in &chains {
-                self.update_chain(chain, |c| {
+            for chain in chains {
+                self.update_chain(&chain, |c| {
                     c.signer = None;
                     Ok(())
                 })?;
-                unassigned += 1;
+                unassigned.push(chain);
             }
         }
         Ok(unassigned)

@@ -308,8 +308,9 @@ pub fn provision(
 /// What [`Chainz::remove_signer`] did.
 #[derive(Debug)]
 pub struct Removed {
-    /// How many chains the signer was unassigned from.
-    pub unassigned: usize,
+    /// The chains the signer was unassigned from (they have no signer
+    /// now), in config order.
+    pub unassigned: Vec<String>,
     /// Deleting the signer's external key material, if it has any. The
     /// signer is gone from the config either way.
     pub external: Result<()>,
@@ -694,7 +695,7 @@ mod tests {
         assert!(b.entries.borrow().is_empty());
 
         let removed = chainz.remove_signer(&b, "hot", Users::Keep).unwrap();
-        assert_eq!(removed.unassigned, 0);
+        assert!(removed.unassigned.is_empty());
         assert!(removed.external.is_ok());
         assert!(chainz.config().signers.is_empty());
         assert!(chainz.secrets().unwrap().signers.is_empty());

@@ -291,7 +291,17 @@ fn var_set_get_ls_rm_roundtrip() {
         !sb.config().contains("supersecret"),
         "values live in secrets.toml"
     );
-    sb.cmd().args(["var", "rm", "API_KEY"]).assert().success();
+    sb.cmd()
+        .args(["var", "rm", "API_KEY"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "`chainz var rm API_KEY` removes variable 'API_KEY' (its value is kept nowhere else); pass --yes to confirm",
+        ));
+    sb.cmd()
+        .args(["var", "rm", "API_KEY", "-y"])
+        .assert()
+        .success();
     sb.cmd().args(["var", "get", "API_KEY"]).assert().failure();
 }
 
@@ -582,13 +592,48 @@ fn re_adding_a_url_whose_key_moved_adds_nothing() {
 fn chain_rm_by_name_and_id_requires_exact_match() {
     let sb = Sandbox::new();
     sb.seed(&[("eth", 1), ("base", 8453), ("arb", 42161)]);
-    sb.cmd().args(["chain", "rm", "ba"]).assert().failure();
-    sb.cmd().args(["chain", "rm", "base"]).assert().success();
-    sb.cmd().args(["chain", "rm", "42161"]).assert().success();
-    sb.cmd().args(["chain", "rm", "nope"]).assert().failure();
+    sb.cmd()
+        .args(["chain", "rm", "ba", "-y"])
+        .assert()
+        .failure();
+    sb.cmd()
+        .args(["chain", "rm", "base", "-y"])
+        .assert()
+        .success();
+    sb.cmd()
+        .args(["chain", "rm", "42161", "--yes"])
+        .assert()
+        .success();
+    sb.cmd()
+        .args(["chain", "rm", "nope", "-y"])
+        .assert()
+        .failure();
     let text = sb.config();
     assert!(text.contains("[chains.eth]"));
     assert!(!text.contains("[chains.base]") && !text.contains("[chains.arb]"));
+}
+
+/// `chain rm` asks (off a terminal: needs --yes) and names what goes
+/// with the chain: its labels and the default.
+#[test]
+fn chain_rm_names_its_labels_and_the_default() {
+    let sb = Sandbox::new();
+    sb.seed(&[("eth", 1), ("arb", 42161)]);
+    sb.ok(&["use", "arb"]);
+    sb.ok(&["addr", "add", "myrouter", TEST_ADDRESS_2, "--chain", "arb"]);
+    sb.ok(&["addr", "add", "pool", TEST_ADDRESS, "--chain", "arb"]);
+    let out = sb.run(&["chain", "rm", "arb"]);
+    assert_eq!(out.status.code(), Some(1));
+    let err = stderr(&out);
+    assert!(
+        err.contains("removes chain 'arb' (1 endpoint(s); labels @myrouter, @pool; it is the default chain); pass --yes"),
+        "{err}"
+    );
+    assert!(sb.config().contains("[chains.arb]"));
+    let out = sb.ok(&["chain", "rm", "arb", "--yes"]);
+    assert!(out.contains("Removed chain 'arb'"), "{out}");
+    assert!(out.contains("dropped labels: @myrouter, @pool"), "{out}");
+    assert!(out.contains("default cleared"), "{out}");
 }
 
 #[test]
@@ -710,6 +755,11 @@ fn rpc_add_with_header_activate_and_rm() {
         .success();
     sb.cmd()
         .args(["rpc", "rm", "eth", "priv"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("pass --yes to confirm"));
+    sb.cmd()
+        .args(["rpc", "rm", "eth", "priv", "--yes"])
         .assert()
         .success();
 }
@@ -1524,20 +1574,23 @@ fn signer_migrate_off_a_tty_changes_nothing_and_reports_each_failure() {
 }
 
 #[test]
-fn signer_rm_needs_yes_off_a_tty_but_references_do_not() {
+fn signer_rm_needs_yes_off_a_tty_and_names_every_flag_at_once() {
     let sb = Sandbox::new();
-    sb.seed(&[("eth", 1)]);
-    let out = sb.run(&["signer", "rm", "default", "--unassign"]);
+    sb.seed(&[("eth", 1), ("base", 8453)]);
+    let out = sb.run(&["signer", "rm", "default"]);
     assert!(!out.status.success());
+    let err = stderr(&out);
     assert!(
-        stderr(&out).contains("pass --yes to confirm"),
-        "{}",
-        stderr(&out)
+        err.contains("unassigns it from eth, base and deletes its key in secrets.toml"),
+        "{err}"
     );
+    assert!(err.contains("pass --unassign --yes"), "{err}");
+    let out = sb.run(&["signer", "rm", "default", "--unassign"]);
+    assert!(stderr(&out).contains("; pass --yes"), "{}", stderr(&out));
     assert!(sb.secrets().contains(TEST_KEY), "nothing deleted");
     assert!(sb.config().contains("[signers.default]"));
 
-    // A keystore reference deletes no key material: no confirmation.
+    // A keystore reference deletes no key material, but is a removal too.
     sb.cmd()
         .args([
             "signer",
@@ -1552,8 +1605,21 @@ fn signer_rm_needs_yes_off_a_tty_but_references_do_not() {
         .arg(keystore_file(&sb))
         .assert()
         .success();
-    sb.ok(&["signer", "remove", "ks"]);
-    sb.ok(&["key", "rm", "default", "--unassign", "-y"]);
+    let out = sb.run(&["signer", "remove", "ks"]);
+    assert!(
+        stderr(&out).contains("(keystore kept); pass --yes"),
+        "{}",
+        stderr(&out)
+    );
+    sb.ok(&["signer", "remove", "ks", "--yes"]);
+    // Unassigning says which chains are left without a signer.
+    let out = sb.run(&["key", "rm", "default", "--unassign", "-y"]);
+    assert!(out.status.success());
+    assert!(
+        stderr(&out).contains("eth, base now have no signer; attach one with `chainz chain set"),
+        "{}",
+        stderr(&out)
+    );
     assert!(!sb.secrets().contains(TEST_KEY));
 }
 
@@ -1607,7 +1673,7 @@ fn v1_command_names_still_work() {
         .success();
     assert!(sb.ok(&["var", "list", "--show"]).contains("hunter2"));
     assert_eq!(sb.ok(&["var", "get", "TOKEN", "--show"]), "hunter2\n");
-    sb.ok(&["var", "remove", "TOKEN"]);
+    sb.ok(&["var", "remove", "TOKEN", "-y"]);
     assert!(!sb.ok(&["var", "list"]).contains("TOKEN"));
     sb.cmd()
         .args([
@@ -1630,8 +1696,8 @@ fn v1_command_names_still_work() {
         "{}",
         sb.config()
     );
-    sb.ok(&["key", "remove", "one"]);
-    sb.ok(&["chain", "remove", "eth"]);
+    sb.ok(&["key", "remove", "one", "-y"]);
+    sb.ok(&["chain", "remove", "eth", "-y"]);
 }
 
 #[test]

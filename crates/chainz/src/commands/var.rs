@@ -1,6 +1,6 @@
 //! `var …`: variables referenced as `${NAME}`; values live in secrets.toml.
 
-use crate::cli::{VarCommand, VarGetArgs, VarLsArgs, VarNameArgs, VarSetArgs, usage_error};
+use crate::cli::{VarCommand, VarGetArgs, VarLsArgs, VarRmArgs, VarSetArgs, usage_error};
 use crate::load::open;
 use crate::prompt::{self, StdinTrim, read_stdin_secret};
 use crate::ui;
@@ -124,7 +124,7 @@ fn ls(args: &VarLsArgs) -> Result<i32> {
     Ok(0)
 }
 
-fn rm(args: &VarNameArgs) -> Result<i32> {
+fn rm(args: &VarRmArgs) -> Result<i32> {
     let name = args.name.as_str();
     let mut chainz = open()?;
     let used = references(chainz.config(), name);
@@ -134,6 +134,15 @@ fn rm(args: &VarNameArgs) -> Result<i32> {
             used.join(", ")
         );
     }
+    if !chainz.secrets()?.vars.contains_key(name) {
+        bail!("variable '{name}' is not set");
+    }
+    prompt::confirm_removal(
+        &mut prompt::Tty,
+        args.yes,
+        &format!("var rm {name}"),
+        &format!("variable '{name}' (its value is kept nowhere else)"),
+    )?;
     let removed = chainz.transact(|tx| Ok(tx.remove_var(name)))?;
     if !removed {
         bail!("variable '{name}' is not set");

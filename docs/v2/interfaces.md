@@ -632,7 +632,12 @@ names the file. `ErrorClass::phrase()` is the class in a sentence
   transaction, abandons the provision (deletes the keyring entry it created)
   if that fails, and deletes a replaced signer's old keyring entry.
   `Chainz::remove_signer` is the reverse (`tx.remove_signer(name,
-  Users::{Keep, Unassign})`; `Unassign` is `signer rm --unassign`). `KeyBackend` is external storage only;
+  Users::{Keep, Unassign})`; `Unassign` is `signer rm --unassign`; it
+  returns the chains left without a signer). `signer::keystore_signer_address`
+  is the keystore rule (its `address` field, else `--address`; a missing
+  file or no address at all is an error). `tx.remove_chain(name)` returns
+  `RemovedChain { endpoints, labels, was_default }`, which `chain rm`
+  previews (`Chainz::preview`) to confirm and then reports. `KeyBackend` is external storage only;
   `Prompter` (hidden prompts) is implemented by the binary
   (`prompt::Terminal`, or the init flow's `AskPrompter`).
   `signer::safe_default(keys)` is the default backend (keyring, else

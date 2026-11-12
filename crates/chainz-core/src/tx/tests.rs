@@ -99,7 +99,15 @@ fn insert_rename_remove_chain() {
     assert!(tx.rename_chain("ghost", "x").is_err());
     assert!(tx.rename_chain("mainnet", "Bad Name").is_err());
 
-    tx.remove_chain("mainnet").unwrap();
+    let removed = tx.remove_chain("mainnet").unwrap();
+    assert_eq!(
+        removed,
+        RemovedChain {
+            endpoints: 2,
+            labels: vec!["router".into()],
+            was_default: true,
+        }
+    );
     let out = text(&tx);
     assert!(!out.contains("default") && !out.contains("router"), "{out}");
 }
@@ -229,7 +237,7 @@ fn signer_records_merge_and_remove_with_their_secret() {
         out.contains("# my hot wallet\n[signers.hot]\nbackend = \"plaintext\" # for tests\naddress = \"0x7E5F"),
         "{out}"
     );
-    assert_eq!(tx.remove_signer("hot", Users::Unassign).unwrap(), 1);
+    assert_eq!(tx.remove_signer("hot", Users::Unassign).unwrap(), ["eth"]);
     let (config, secrets) = tx.texts();
     assert!(!config.contains("hot"), "{config}");
     assert!(!secrets.contains("private_key"), "{secrets}");

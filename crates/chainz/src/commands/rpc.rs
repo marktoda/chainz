@@ -145,7 +145,16 @@ fn rm(args: &RpcRmArgs) -> Result<i32> {
             "'{name}' is the active endpoint of '{chain}'; switch first with `chainz chain set {chain} --rpc <name>`"
         );
     }
+    if !c.rpcs.contains_key(name) {
+        bail!("chain '{chain}' has no endpoint '{name}'");
+    }
     let chain = chain.to_string();
+    prompt::confirm_removal(
+        &mut Tty,
+        args.yes,
+        &format!("rpc rm {} {name}", args.chain),
+        &format!("endpoint '{name}' from '{chain}'"),
+    )?;
     chainz.transact(|tx| tx.remove_endpoint(&chain, name))?;
     println!("Removed endpoint '{name}' from '{chain}'");
     Ok(0)

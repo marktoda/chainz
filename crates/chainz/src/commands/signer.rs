@@ -6,7 +6,7 @@ use crate::cli::{
     JsonArgs, SignerAddArgs, SignerCommand, SignerMigrateArgs, SignerRmArgs, usage_error,
 };
 use crate::load::open;
-use crate::prompt::{self, Consent, StdinTrim, Terminal, read_stdin_secret};
+use crate::prompt::{self, StdinTrim, Terminal, read_stdin_secret};
 use crate::{ui, view};
 use anyhow::{Context, Result, anyhow, bail};
 use chainz_core::model::{Backend, Signer};
@@ -200,31 +200,18 @@ fn ls(args: &JsonArgs) -> Result<i32> {
     Ok(0)
 }
 
+/// `signer rm`: one confirmation (or one error off a terminal naming
+/// every flag it needs). On a terminal, accepting also unassigns the
+/// signer from the chains that use it.
 fn rm(backend: &dyn KeyBackend, args: &SignerRmArgs) -> Result<i32> {
     let name = args.name.as_str();
     let mut chainz = open()?;
     let Some(record) = chainz.config().signers.get(name).cloned() else {
         bail!("signer '{name}' not found");
     };
-    let users = chainz.config().chains_using_signer(name);
-    if !users.is_empty() && !args.unassign {
-        bail!(
-            "signer '{name}' is used by {}; pass --unassign to unassign it from them",
-            users.join(", ")
-        );
-    }
-    if let Some(material) = record.key_material() {
-        let hint = format!(
-            "`signer rm {name}` deletes {material}, which can't be undone; pass --yes to confirm"
-        );
-        prompt::confirm_or_yes(
-            &mut prompt::Tty,
-            args.yes,
-            &format!("Remove signer '{name}' and delete {material}? This can't be undone"),
-            Consent::Destructive { hint: &hint },
-        )?;
-    }
-    let users = if args.unassign {
+    let users = chainz.config().chains_using_signer(name).join(", ");
+    let unassign = removal_consent(&mut prompt::Tty, name, &record, &users, args)?;
+    let users = if unassign {
         Users::Unassign
     } else {
         Users::Keep
@@ -239,13 +226,74 @@ fn rm(backend: &dyn KeyBackend, args: &SignerRmArgs) -> Result<i32> {
             ))
         );
     }
-    let suffix = if removed.unassigned > 0 {
-        format!(" (unassigned from {} chain(s))", removed.unassigned)
-    } else {
-        String::new()
-    };
-    println!("Removed signer '{name}'{suffix}");
+    println!("Removed signer '{name}'");
+    if !removed.unassigned.is_empty() {
+        warn_signerless(&removed.unassigned);
+    }
     Ok(0)
+}
+
+/// Whether `signer rm` may go ahead, and whether to unassign: `--yes`
+/// (with `--unassign` when chains use it) goes ahead; on a terminal one
+/// question covers both; off one, one error names every missing flag.
+fn removal_consent(
+    ask: &mut dyn prompt::Ask,
+    name: &str,
+    record: &Signer,
+    users: &str,
+    args: &SignerRmArgs,
+) -> Result<bool> {
+    let mut does = Vec::new();
+    if !users.is_empty() {
+        does.push(format!("unassigns it from {users}"));
+    }
+    does.push(match record.key_material() {
+        Some(material) => format!("deletes {material}, which can't be undone"),
+        None => format!("removes signer '{name}' ({} kept)", record.backend),
+    });
+    let mut missing = Vec::new();
+    if !users.is_empty() && !args.unassign {
+        missing.push("--unassign");
+    }
+    if !args.yes {
+        missing.push("--yes");
+    }
+    if missing.is_empty() {
+        return Ok(!users.is_empty());
+    }
+    if !ask.is_interactive() || args.yes {
+        bail!(
+            "`chainz signer rm {name}` {}; pass {}",
+            does.join(" and "),
+            missing.join(" ")
+        );
+    }
+    let question = match (users.is_empty(), record.key_material()) {
+        (true, Some(material)) => {
+            format!("Remove signer '{name}' and delete {material}? This can't be undone")
+        }
+        (true, None) => format!("Remove signer '{name}'?"),
+        (false, Some(material)) => format!(
+            "'{name}' is used by {users}. Unassign it and delete {material}? This can't be undone"
+        ),
+        (false, None) => format!("'{name}' is used by {users}. Unassign and remove it?"),
+    };
+    if !ask.confirm(&question, false)? {
+        return Err(ui::cancelled());
+    }
+    Ok(!users.is_empty())
+}
+
+/// Say that `chains` have no signer now, and how to attach one.
+pub fn warn_signerless(chains: &[String]) {
+    eprintln!(
+        "{}",
+        ui::warn(&format!(
+            "{} now {} no signer; attach one with `chainz chain set <chain> --signer <name>`",
+            chains.join(", "),
+            if chains.len() == 1 { "has" } else { "have" }
+        ))
+    );
 }
 
 fn migrate(backend: &dyn KeyBackend, args: &SignerMigrateArgs) -> Result<i32> {
@@ -331,4 +379,66 @@ fn migrate_one(
     }
     println!("Moved '{name}' from {} to {target}", old.backend);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::prompt::script::{Answer::Yes, Script};
+
+    fn args(unassign: bool, yes: bool) -> SignerRmArgs {
+        SignerRmArgs {
+            name: "deployer".into(),
+            unassign,
+            yes,
+        }
+    }
+
+    /// Off a terminal one error names every flag; on one, one question
+    /// covers unassigning and deleting.
+    #[test]
+    fn signer_rm_asks_once_or_names_every_flag() {
+        let key = Signer::new(Backend::Plaintext, None);
+        let err = |args: &SignerRmArgs, users: &str| {
+            removal_consent(&mut Script::off_tty(), "deployer", &key, users, args)
+                .unwrap_err()
+                .to_string()
+        };
+        let both = err(&args(false, false), "base, op");
+        assert!(both.ends_with("; pass --unassign --yes"), "{both}");
+        assert!(
+            both.contains("unassigns it from base, op and deletes its key in secrets.toml"),
+            "{both}"
+        );
+        assert!(err(&args(true, false), "base").ends_with("; pass --yes"));
+        assert!(err(&args(false, true), "base").ends_with("; pass --unassign"));
+        assert!(err(&args(false, false), "").ends_with("; pass --yes"));
+        let ok = |args: &SignerRmArgs, users: &str| {
+            removal_consent(&mut Script::off_tty(), "deployer", &key, users, args).unwrap()
+        };
+        assert!(ok(&args(true, true), "base"));
+        assert!(!ok(&args(false, true), ""));
+
+        let mut script = Script::new([Yes(true)]);
+        assert!(
+            removal_consent(
+                &mut script,
+                "deployer",
+                &key,
+                "base, op",
+                &args(false, false)
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            script.asked,
+            [
+                "'deployer' is used by base, op. Unassign it and delete its key in secrets.toml? This can't be undone"
+            ]
+        );
+        let mut script = Script::new([Yes(false)]);
+        let err =
+            removal_consent(&mut script, "deployer", &key, "", &args(false, false)).unwrap_err();
+        assert!(ui::is_cancelled(&err));
+    }
 }

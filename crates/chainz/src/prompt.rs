@@ -68,6 +68,22 @@ pub fn confirm_or_yes(
     }
 }
 
+/// The one confirmation every `rm` goes through (`chain rm`, `rpc rm`,
+/// `addr rm`, `var rm`, `signer rm`): `--yes` removes without asking; on a
+/// terminal, ask "Remove {what}?" (default no; declining cancels); off
+/// one, fail naming `--yes`. `command` is the command as typed after
+/// `chainz`, for that error.
+pub fn confirm_removal(ask: &mut dyn Ask, yes: bool, command: &str, what: &str) -> Result<()> {
+    let hint = format!("`chainz {command}` removes {what}; pass --yes to confirm");
+    confirm_or_yes(
+        ask,
+        yes,
+        &format!("Remove {what}?"),
+        Consent::Destructive { hint: &hint },
+    )
+    .map(drop)
+}
+
 /// What Esc means in a picker ([`Ask::choose`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Esc {
@@ -276,6 +292,26 @@ fn terminal_prompt<T>(result: dialoguer::Result<T>) -> Result<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn removals_ask_or_need_yes() {
+        use script::{Answer::Yes, Script};
+        confirm_removal(&mut Script::off_tty(), true, "var rm X", "variable 'X'").unwrap();
+        let err =
+            confirm_removal(&mut Script::off_tty(), false, "var rm X", "variable 'X'").unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "`chainz var rm X` removes variable 'X'; pass --yes to confirm"
+        );
+        let mut script = Script::new([Yes(true), Yes(false)]);
+        confirm_removal(&mut script, false, "var rm X", "variable 'X'").unwrap();
+        let err = confirm_removal(&mut script, false, "var rm X", "variable 'X'").unwrap_err();
+        assert!(ui::is_cancelled(&err));
+        assert_eq!(
+            script.asked,
+            ["Remove variable 'X'?", "Remove variable 'X'?"]
+        );
+    }
 
     #[test]
     fn stdin_normalization_modes() {

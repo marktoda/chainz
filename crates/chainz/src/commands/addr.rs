@@ -232,6 +232,21 @@ fn rm(args: &AddrRmArgs) -> Result<i32> {
                 .to_string(),
         ),
     };
+    let going = chainz.preview(|tx| tx.remove_address(&name, scope.as_deref()))?;
+    let entries: Vec<String> = going
+        .iter()
+        .map(|(scope, address)| format!("{} ({address})", scope_phrase(scope)))
+        .collect();
+    let mut command = format!("addr rm {}", args.name);
+    if let Some(chain) = &args.chain {
+        command.push_str(&format!(" --chain {chain}"));
+    }
+    crate::prompt::confirm_removal(
+        &mut crate::prompt::Tty,
+        args.yes,
+        &command,
+        &format!("@{name} {}", entries.join(", ")),
+    )?;
     let removed = chainz.transact(|tx| tx.remove_address(&name, scope.as_deref()))?;
     for (scope, address) in removed {
         println!("Removed @{name} {} ({address})", scope_phrase(&scope));

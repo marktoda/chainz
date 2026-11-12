@@ -92,12 +92,17 @@ changed before 2.0.0; they are listed under Removed and Changed.
 - Flags, one meaning each: `chain add --url URL` (was `--rpc`; repeatable,
   the first becomes active), `rpc add --activate` (was `--use`), and
   `signer rm --unassign` (was `--force`) removes the signer from the chains
-  that use it. `--yes` (`-y` on `signer rm`, `rpc bench --fix` and
+  that use it. `--yes` (`-y`, on every `rm`, `rpc bench --fix` and
   `rpc discover`) always means "accept without asking", `--detach` always
   means "run in the background", and `--reveal` is the only flag that shows
   secrets.
-- `signer rm` asks before deleting key material; off a terminal it needs
-  `--yes`. `signer migrate --all` tries every signer and reports each
+- One confirmation policy for every removal: `chain rm`, `rpc rm`,
+  `addr rm`, `var rm` and `signer rm` ask on a terminal and need `--yes`
+  (`-y`) off one. `chain rm` names what goes with the chain (its labels,
+  and the default) and reports it. `signer rm` asks one question (accepting
+  also unassigns it), and off a terminal one error names every flag it
+  needs (`--unassign --yes`); after unassigning it says which chains have
+  no signer now and how to attach one. `signer migrate --all` tries every signer and reports each
   failure. Moving a keyring signer to another backend deletes its old
   keyring entry.
 - `rpc bench --fix --yes` writes the proposed failover lists without asking;

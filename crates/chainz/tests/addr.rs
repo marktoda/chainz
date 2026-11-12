@@ -154,7 +154,7 @@ fn addr_add_ls_find_rm_roundtrip() {
 
     // rm: one chain's entry, then the whole label.
     sb.cmd()
-        .args(["addr", "rm", "myrouter", "--chain", "base"])
+        .args(["addr", "rm", "myrouter", "--chain", "base", "--yes"])
         .assert()
         .success()
         .stdout(format!("Removed @myrouter on base ({ROUTER})\n"));
@@ -164,12 +164,12 @@ fn addr_add_ls_find_rm_roundtrip() {
         "{config}"
     );
     sb.cmd()
-        .args(["addr", "rm", "myrouter"])
+        .args(["addr", "rm", "myrouter", "-y"])
         .assert()
         .success()
         .stdout(format!("Removed @myrouter on eth ({ROUTER_ETH})\n"));
     sb.cmd()
-        .args(["addr", "rm", "my-safe", "--chain", "*"])
+        .args(["addr", "rm", "my-safe", "--chain", "*", "--yes"])
         .assert()
         .success()
         .stdout(format!("Removed @my-safe on every chain ({SAFE})\n"));
@@ -368,7 +368,7 @@ fn exec_expands_user_labels_per_chain_and_for_every_chain() {
     assert_eq!(echo(&sb, "base", &["@my-safe"]), SAFE);
 
     // Removing the label makes the token unknown again.
-    sb.ok(&["addr", "rm", "myrouter"]);
+    sb.ok(&["addr", "rm", "myrouter", "--yes"]);
     sb.cmd()
         .args(["exec", "base", "--", "echo", "@myrouter"])
         .assert()
@@ -779,7 +779,7 @@ fn addr_ls_and_find_json_and_rm_by_chain_alias() {
 
     // --chain takes an alias (exact, like a name or ID; never a prefix).
     sb.cmd()
-        .args(["addr", "remove", "router", "--chain", "basechain"])
+        .args(["addr", "remove", "router", "--chain", "basechain", "-y"])
         .assert()
         .success()
         .stdout(format!("Removed @router on base ({ROUTER})\n"));
