@@ -124,13 +124,41 @@ pub fn builtin_chain_id(name: &str) -> Option<u64> {
         .or_else(|| long_name_id(name))
 }
 
-/// Why `alias` cannot be a chain alias, if it cannot: a number would
-/// mean a chain ID.
-pub fn check_alias(alias: &str) -> anyhow::Result<()> {
-    if is_chain_id_like(alias) {
-        anyhow::bail!("alias '{alias}' is a number; numbers mean chain IDs");
+/// Why a chain alias is refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AliasProblem {
+    /// Empty or whitespace only.
+    Empty,
+    /// Holds a control character (never echoed back).
+    Control,
+    /// All digits: numbers mean chain IDs.
+    Number,
+}
+
+/// Why `alias` cannot be a chain alias, if it cannot: the one alias rule,
+/// shared by validation, `edit` and v1 migration.
+pub(crate) fn alias_problem(alias: &str) -> Option<AliasProblem> {
+    if alias.trim().is_empty() {
+        Some(AliasProblem::Empty)
+    } else if alias.chars().any(char::is_control) {
+        Some(AliasProblem::Control)
+    } else if is_chain_id_like(alias) {
+        Some(AliasProblem::Number)
+    } else {
+        None
     }
-    Ok(())
+}
+
+/// [`alias_problem`] as an error (never echoing a control character).
+pub(crate) fn check_alias(alias: &str) -> anyhow::Result<()> {
+    match alias_problem(alias) {
+        None => Ok(()),
+        Some(AliasProblem::Empty) => anyhow::bail!("alias is empty"),
+        Some(AliasProblem::Control) => anyhow::bail!("alias contains a control character"),
+        Some(AliasProblem::Number) => {
+            anyhow::bail!("alias '{alias}' is a number; numbers mean chain IDs")
+        }
+    }
 }
 
 /// Whether `text` reads as a chain ID: all digits. Numbers always mean

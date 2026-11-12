@@ -9,7 +9,7 @@
 //! keyring, `op`) and the binary's terminal prompter; this crate's tests use
 //! in-memory ones and never touch the developer's keyring.
 
-use crate::address::{Address, check_cached_address};
+use crate::address::{Address, cached_address_problem};
 use crate::envelope::{self, Envelope};
 use crate::model::{Backend, KEYRING_SERVICE, Signer};
 use crate::secrets::{Secrets, SignerSecret};
@@ -23,7 +23,15 @@ use zeroize::Zeroizing;
 
 /// The environment variable that makes the OS keyring unavailable (the
 /// test harness and the perf gate set it).
-pub(crate) const DISABLE_KEYRING_VAR: &str = "CHAINZ_DISABLE_KEYRING";
+pub const DISABLE_KEYRING_VAR: &str = "CHAINZ_DISABLE_KEYRING";
+
+/// The one wording for a signer that has no cached address, which
+/// `@wallet`, `@<signer>`, `ETH_FROM` and `fork --fund` need.
+pub fn no_cached_address(name: &str) -> String {
+    format!(
+        "signer '{name}' has no cached address; re-add it with `chainz signer rm {name}` and `chainz signer add {name}`"
+    )
+}
 
 /// External key storage.
 pub trait KeyBackend {
@@ -424,10 +432,9 @@ pub fn unlock(
             "signer '{name}' is a Foundry keystore; chainz never decrypts it. Foundry reads it via ETH_KEYSTORE"
         ),
     };
-    match check_cached_address(&key, signer.address) {
-        Err(_) => bail!("signer '{name}' holds an invalid private key"),
-        Ok((_, true)) => bail!("signer '{name}' key does not match its cached address"),
-        Ok((_, false)) => Ok(key),
+    match cached_address_problem(name, &key, signer.address) {
+        Some(problem) => bail!("{problem}"),
+        None => Ok(key),
     }
 }
 

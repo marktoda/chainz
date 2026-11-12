@@ -511,7 +511,7 @@ fn unmigratable_keys_are_skipped_with_a_note() {
         "chain 'base' referenced key 'broken', which was not migrated",
         "key 'wallet' became signer 'wallet-signer'",
         "key 'chainname' became signer 'chainname-signer'",
-        "signer 'mismatch' had a cached address that does not match",
+        "signer 'mismatch' cached address does not match its key; the key's own address is used",
     ] {
         assert!(notes.contains(expected), "{expected}\n{notes}");
     }

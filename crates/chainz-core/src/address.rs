@@ -76,15 +76,22 @@ impl Address {
     }
 }
 
-/// The address `private_key` derives, and whether it differs from the
-/// `cached` one (no cached address never differs): the one check behind
+/// Why `private_key` cannot back signer `name` with cached address
+/// `cached`, if it cannot: it is not a key, or it derives another address
+/// (no cached address never differs). The one check and wording behind
 /// validation, unlock and v1 migration.
-pub(crate) fn check_cached_address(
+pub(crate) fn cached_address_problem(
+    name: &str,
     private_key: &str,
     cached: Option<Address>,
-) -> Result<(Address, bool), PrivateKeyError> {
-    let derived = Address::from_private_key(private_key)?;
-    Ok((derived, cached.is_some_and(|cached| cached != derived)))
+) -> Option<String> {
+    match Address::from_private_key(private_key) {
+        Err(_) => Some(format!("signer '{name}' holds an invalid private key")),
+        Ok(derived) if cached.is_some_and(|cached| cached != derived) => Some(format!(
+            "signer '{name}' cached address does not match its key"
+        )),
+        Ok(_) => None,
+    }
 }
 
 fn parse_private_key(input: &str) -> Result<zeroize::Zeroizing<[u8; 32]>, PrivateKeyError> {

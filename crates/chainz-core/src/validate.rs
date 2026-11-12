@@ -36,24 +36,17 @@ pub fn issues(config: &Config, secrets: Option<&Secrets>) -> Vec<String> {
     }
 
     let mut taken: HashMap<String, String> = HashMap::new();
-    let mut ids: HashMap<u64, &str> = HashMap::new();
     for (name, chain) in &config.chains {
         if let Err(e) = names::check_chain_name(name) {
             err(e.to_string());
         }
-        if let Some(other) = ids.insert(chain.id, name) {
-            err(format!(
-                "chain ID {} is used by both '{other}' and '{name}'",
-                chain.id
-            ));
+        if let Err(e) = config.check_chain_id(name, chain.id) {
+            err(format!("chain '{name}': {e}"));
         }
         for n in std::iter::once(name.as_str()).chain(chain.aliases.iter().map(String::as_str)) {
-            if n.trim().is_empty() || n.chars().any(char::is_control) {
-                err(format!("chain '{name}' has an empty or invalid alias"));
-                continue;
-            }
             if let Err(e) = names::check_alias(n) {
                 err(format!("chain '{name}' {e}"));
+                continue;
             }
             if let Some(other) = taken.insert(n.to_ascii_lowercase(), name.clone())
                 && other != *name
@@ -115,11 +108,9 @@ pub fn issues(config: &Config, secrets: Option<&Secrets>) -> Vec<String> {
             }
         }
         if let Some(signer) = &chain.signer
-            && !config.signers.contains_key(signer)
+            && let Err(e) = config.check_signer(signer)
         {
-            err(format!(
-                "chain '{name}' references missing signer '{signer}'"
-            ));
+            err(format!("chain '{name}': {e}"));
         }
         if let Some(explorer) = &chain.explorer
             && !config.explorers.contains_key(explorer)
@@ -164,13 +155,13 @@ pub fn issues(config: &Config, secrets: Option<&Secrets>) -> Vec<String> {
                     None => err(format!(
                         "signer '{name}' (plaintext) has no key in secrets.toml"
                     )),
-                    Some(key) => match crate::address::check_cached_address(key, signer.address) {
-                        Err(_) => err(format!("signer '{name}' has an invalid private key")),
-                        Ok((_, true)) => err(format!(
-                            "signer '{name}' cached address does not match its key"
-                        )),
-                        Ok((_, false)) => {}
-                    },
+                    Some(key) => {
+                        if let Some(problem) =
+                            crate::address::cached_address_problem(name, key, signer.address)
+                        {
+                            err(problem);
+                        }
+                    }
                 },
                 Backend::Encrypted => {
                     if let Err(e) = secret
@@ -252,9 +243,12 @@ rpcs = { a = "https://a.example", b = "https://b.example", c = "wss://c.example"
             "{OK}\n[chains.mainnet]\nid = 1\nrpc = \"x\"\nsigner = \"ghost\"\nrpcs = {{ y = \"https://y\" }}\n"
         ));
         let all = issues(&bad, None).join("\n");
-        assert!(all.contains("chain ID 1 is used by both"), "{all}");
+        assert!(
+            all.contains("chain 'mainnet': chain ID 1 is already configured as 'eth'"),
+            "{all}"
+        );
         assert!(all.contains("active endpoint 'x'"), "{all}");
-        assert!(all.contains("missing signer 'ghost'"), "{all}");
+        assert!(all.contains("signer 'ghost' not found"), "{all}");
     }
 
     #[test]

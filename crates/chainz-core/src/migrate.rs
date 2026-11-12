@@ -397,12 +397,10 @@ fn migrate_key(
             Signer::keyring(name, Some(service), Some(username), None)
         }
         V1KeyKind::PrivateKey { value } => {
-            let (derived, mismatch) = crate::address::check_cached_address(value, address)
+            let derived = Address::from_private_key(value)
                 .map_err(|_| "it holds an invalid private key".to_string())?;
-            if mismatch {
-                attention.push(format!(
-                    "signer '{name}' had a cached address that does not match its key; the key's own address is used"
-                ));
+            if let Some(problem) = crate::address::cached_address_problem(name, value, address) {
+                attention.push(format!("{problem}; the key's own address is used"));
             }
             address = Some(derived);
             let mut s = SignerSecret::default();
@@ -443,14 +441,12 @@ fn migrate_key(
         }
     };
     if address.is_none() {
-        let why = if key.address.is_some() {
-            "an invalid cached address"
-        } else {
-            "no cached address"
-        };
-        attention.push(format!(
-            "signer '{name}' has {why}; @wallet needs one (re-add it or run `chainz signer migrate {name}`)"
-        ));
+        if key.address.is_some() {
+            attention.push(format!(
+                "signer '{name}' had an invalid cached address, which was dropped"
+            ));
+        }
+        attention.push(crate::signer::no_cached_address(name));
     }
     signer.address = address;
     Ok((signer, secret))
@@ -619,19 +615,21 @@ fn migrate_chains(
         let mut aliases: Vec<String> = Vec::new();
         for (raw, _) in &plan.v1_names {
             let alias = raw.trim();
-            if alias.is_empty()
-                || alias.eq_ignore_ascii_case(&plan.name)
-                || names::is_chain_id_like(alias)
+            if alias.eq_ignore_ascii_case(&plan.name)
                 || aliases.iter().any(|a| a.eq_ignore_ascii_case(alias))
             {
                 continue;
             }
-            if alias.chars().any(char::is_control) {
-                summary.attention.push(format!(
-                    "an alias of chain '{}' contains a control character and was dropped",
-                    plan.name
-                ));
-                continue;
+            match names::alias_problem(alias) {
+                None => {}
+                Some(names::AliasProblem::Control) => {
+                    summary.attention.push(format!(
+                        "an alias of chain '{}' contains a control character and was dropped",
+                        plan.name
+                    ));
+                    continue;
+                }
+                Some(_) => continue,
             }
             let key = alias.to_ascii_lowercase();
             if let Some(other) = answers.get(&key)

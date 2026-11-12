@@ -819,12 +819,9 @@ impl<'a> Expander<'a> {
             "chain" => Value::public(chain.to_string()),
             "wallet" => {
                 let signer = scope.signer().ok_or_else(|| anyhow!(no_signer(chain)))?;
-                let address = signer.address.ok_or_else(|| {
-                    anyhow!(
-                        "signer '{}' has no cached address; re-add it with `chainz signer add`",
-                        signer.name
-                    )
-                })?;
+                let address = signer
+                    .address
+                    .ok_or_else(|| anyhow!(crate::signer::no_cached_address(&signer.name)))?;
                 Value::public(address.to_string())
             }
             "explorer" => {
@@ -855,7 +852,7 @@ impl<'a> Expander<'a> {
                 if let Some(signer) = self.chainz.config().signers.get(other) {
                     let address = signer
                         .address
-                        .ok_or_else(|| anyhow!("signer '{other}' has no cached address"))?;
+                        .ok_or_else(|| anyhow!(crate::signer::no_cached_address(other)))?;
                     return Ok(Value::public(address.to_string()));
                 }
                 let chain_id = scope.chain_id();

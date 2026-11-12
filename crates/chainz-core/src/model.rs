@@ -657,13 +657,22 @@ impl Config {
         if self.chains.contains_key(name) {
             anyhow::bail!("chain '{name}' already exists");
         }
-        if let Some((existing, _)) = self.chain_by_id(id) {
-            anyhow::bail!("chain ID {id} is already configured as '{existing}'");
-        }
+        self.check_chain_id(name, id)?;
         match signer {
             Some(signer) => self.check_signer(signer),
             None => Ok(()),
         }
+    }
+
+    /// Why chain `name` cannot have ID `id`, if it cannot: another chain
+    /// listed before it already has that ID.
+    pub(crate) fn check_chain_id(&self, name: &str, id: u64) -> anyhow::Result<()> {
+        if let Some((existing, _)) = self.chain_by_id(id)
+            && existing != name
+        {
+            anyhow::bail!("chain ID {id} is already configured as '{existing}'");
+        }
+        Ok(())
     }
 
     /// Why a chain cannot use signer `signer`, if it cannot: it is not
