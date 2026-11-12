@@ -5,7 +5,7 @@ use chainz_rpc::health::CHAIN_LAG;
 use chainz_rpc::{ErrorClass, Health, HealthSample, classify};
 
 use super::state::ChainState;
-use super::update::Head;
+use super::update::{FaultClass, Head};
 
 /// Never call an endpoint slow below this median latency.
 pub const SLOW_FLOOR_MS: u32 = 200;
@@ -30,7 +30,7 @@ pub enum Status {
     /// Answering, but with a high median latency.
     Slow,
     /// The last poll failed.
-    Down(ErrorClass),
+    Down(FaultClass),
 }
 
 impl Status {

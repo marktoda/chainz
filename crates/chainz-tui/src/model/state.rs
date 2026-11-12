@@ -313,18 +313,12 @@ impl State {
                     return;
                 };
                 c.probed_at_ms = Some(at_ms);
-                for (name, probe) in results {
+                for (name, sample, message) in results {
                     let Some(e) = c.endpoints.iter_mut().find(|e| e.info.name == name) else {
                         continue;
                     };
                     e.live = true;
-                    e.message = probe.error.as_ref().map(|f| f.message.clone());
-                    let sample = HealthSample {
-                        at_ms,
-                        latency_ms: probe.latency_ms,
-                        head: probe.head,
-                        error: probe.error.map(|f| f.class),
-                    };
+                    e.message = message;
                     push_capped(&mut e.samples, sample, HealthStore::CAPACITY);
                 }
             }

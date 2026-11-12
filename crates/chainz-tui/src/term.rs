@@ -28,7 +28,7 @@ use crate::model::State;
 use crate::plan::Plan;
 use crate::ui::theme::Theme;
 use crate::ui::{self, Ctx};
-use crate::{Options, load_store};
+use crate::ShellFn;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use chainz_os::now_ms;
@@ -126,7 +126,10 @@ impl Drop for Screen {
 /// Everything the loop owns.
 struct Dashboard {
     chainz: Chainz,
-    options: Options,
+    /// `--reveal`.
+    reveal: bool,
+    /// For `e`; taken while the shell runs.
+    shell: Option<ShellFn>,
     shared: Arc<Shared>,
     events: Receiver<data::Event>,
     rt: tokio::runtime::Runtime,
@@ -141,9 +144,15 @@ struct Dashboard {
 
 impl Dashboard {
     /// The dashboard for `chainz`; its workers start with [`Self::run_engine`].
-    fn new(chainz: Chainz, runtime: Runtime, options: Options, store: HealthStore) -> Result<Self> {
+    fn new(
+        chainz: Chainz,
+        runtime: Runtime,
+        store: HealthStore,
+        reveal: bool,
+        shell: Option<ShellFn>,
+    ) -> Result<Self> {
         let files = ConfigFiles::new(chainz.paths());
-        let plan = Arc::new(Plan::build(&chainz, options.reveal));
+        let plan = Arc::new(Plan::build(&chainz, reveal));
         let state = State::new(&plan, &store);
         let (sender, events) = std::sync::mpsc::channel();
         let shared = Shared::new(store, runtime, Tuning::default(), sender);
@@ -161,7 +170,8 @@ impl Dashboard {
         let mut dash = Dashboard {
             engine: None,
             chainz,
-            options,
+            reveal,
+            shell,
             shared,
             events,
             rt,
@@ -180,15 +190,15 @@ impl Dashboard {
     /// Fold in everything the workers sent. Returns whether anything came,
     /// and whether the config files changed from what is loaded.
     fn drain(&mut self) -> (bool, bool) {
-        let (mut any, mut changed) = (false, false);
+        let mut any = false;
         while let Ok(event) = self.events.try_recv() {
             any = true;
             match event {
                 data::Event::Update(update) => self.state.apply(update),
-                data::Event::ConfigChanged => changed = true,
                 data::Event::Warning(text) => self.app.notify(text, true, now_ms()),
             }
         }
+        let changed = self.shared.take_config_changed();
         // A change this dashboard made itself (`s`) is already loaded.
         (any, changed && self.files.stamp() != self.loaded)
     }
@@ -217,7 +227,7 @@ impl Dashboard {
     fn start(&mut self) {
         // A chain that reads from where it did keeps its source, so what its
         // workers still have queued applies; the state drops the rest.
-        let mut plan = Plan::build(&self.chainz, self.options.reveal);
+        let mut plan = Plan::build(&self.chainz, self.reveal);
         plan.inherit(&self.plan);
         self.plan = Arc::new(plan);
         self.state = self.state.rebuilt(&self.plan, &self.shared.store());
@@ -269,7 +279,7 @@ impl Dashboard {
 
     /// Hand the terminal to `chainz shell <chain>` and take it back.
     fn shell(&mut self, screen: &mut Screen, chain: &str) -> Result<()> {
-        let Some(mut shell) = self.options.shell.take() else {
+        let Some(mut shell) = self.shell.take() else {
             self.app.notify("no shell available", true, now_ms());
             return Ok(());
         };
@@ -287,7 +297,7 @@ impl Dashboard {
             ];
             shell(chain)
         };
-        self.options.shell = Some(shell);
+        self.shell = Some(shell);
         screen.resume()?;
         // The shell may have changed the config (`chainz chain set <chain> --rpc …`).
         self.reload();
@@ -327,9 +337,15 @@ impl Dashboard {
 
 /// Run the interactive dashboard until the user quits, or a SIGTERM or
 /// SIGHUP asks it to. Returns the exit code.
-pub(crate) fn run(chainz: Chainz, runtime: Runtime, options: Options) -> Result<i32> {
+pub(crate) fn run(
+    chainz: Chainz,
+    runtime: Runtime,
+    store: HealthStore,
+    reveal: bool,
+    shell: Option<ShellFn>,
+) -> Result<i32> {
     let theme = Theme::from_env();
-    let mut dash = Dashboard::new(chainz, runtime, options, load_store())?;
+    let mut dash = Dashboard::new(chainz, runtime, store, reveal, shell)?;
     let quit = quit_on_signals(dash.rt.handle())?;
     // First paint before any worker runs: the frame is on screen while
     // the first requests are still in flight.
@@ -367,7 +383,7 @@ pub(crate) fn run(chainz: Chainz, runtime: Runtime, options: Options) -> Result<
         }
         dash.shared.set_idle(last_key.elapsed() >= IDLE_AFTER);
         let (any, reload) = dash.drain();
-        dirty |= any;
+        dirty |= any || reload;
         if reload {
             dash.reload();
         }
@@ -437,15 +453,9 @@ mod tests {
         let paths = StorePaths::in_dir(dir.path().join("config"));
         write_config(&paths, "version = 2\n");
         let chainz = Chainz::open_at(paths.clone(), LoadMode::Strict).unwrap();
-        let options = Options {
-            once: false,
-            json: false,
-            reveal: false,
-            shell: None,
-        };
         let store = HealthStore::load(dir.path()).unwrap();
         let runtime = Runtime::at(dir.path().join("runtime"));
-        let mut dash = Dashboard::new(chainz, runtime, options, store).unwrap();
+        let mut dash = Dashboard::new(chainz, runtime, store, false, None).unwrap();
         dash.run_engine();
 
         // `e`: the workers stop while the shell has the terminal, and the

@@ -1,9 +1,11 @@
 //! `chainz top`: the live dashboard (`chainz-tui`).
 
+use crate::cli::TopArgs;
 use crate::load::open;
+use crate::{net, ui};
 use anyhow::Result;
 use chainz_core::runtime::Runtime;
-use chainz_tui::Options;
+use chainz_tui::{Mode, Options};
 
 /// `e` in the dashboard: `chainz shell <chain>`, as the user would run it.
 /// A shell that does not exit cleanly is an error, so the dashboard says
@@ -28,19 +30,24 @@ fn exited(status: std::process::ExitStatus) -> std::io::Result<()> {
 }
 
 /// `top [--once [--json]] [--reveal]`.
-pub fn run(once: bool, json: bool, reveal: bool) -> Result<i32> {
+pub fn run(args: &TopArgs) -> Result<i32> {
     let chainz = open()?;
     let runtime = Runtime::resolve()?;
-    chainz_tui::run(
-        chainz,
-        runtime,
-        Options {
-            once,
-            json,
-            reveal,
+    let mode = if args.once {
+        Mode::Once {
+            json: args.json,
+            warn: Box::new(|text| eprintln!("{}", ui::warn(text))),
+        }
+    } else {
+        Mode::Live {
             shell: Some(Box::new(shell)),
-        },
-    )
+        }
+    };
+    let options = Options {
+        reveal: args.reveal,
+        mode,
+    };
+    chainz_tui::run(chainz, runtime, net::health_store(), options)
 }
 
 #[cfg(test)]

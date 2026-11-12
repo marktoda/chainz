@@ -2,16 +2,35 @@
 
 use std::time::Duration;
 
-use chainz_rpc::{ErrorClass, RpcError};
+use chainz_core::runtime::ServeInfo;
+use chainz_rpc::{ErrorClass, HealthSample, RpcError};
 
 use super::traffic::{FeedItem, TrafficSnapshot};
 use crate::plan::Source;
+
+/// What kind of failure a [`Fault`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FaultClass {
+    /// The request failed, or could not be made: its RPC error class.
+    Rpc(ErrorClass),
+    /// The dashboard failed, not the endpoint: a worker crashed.
+    Internal,
+}
+
+impl std::fmt::Display for FaultClass {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FaultClass::Rpc(class) => class.fmt(f),
+            FaultClass::Internal => f.write_str("internal"),
+        }
+    }
+}
 
 /// A failed request: its class and a message that is safe to show.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fault {
     /// Coarse class.
-    pub class: ErrorClass,
+    pub class: FaultClass,
     /// Human-readable text; never a URL or a header value.
     pub message: String,
     /// The JSON-RPC error code, when the endpoint answered with one.
@@ -25,10 +44,21 @@ pub struct Fault {
 }
 
 impl Fault {
-    /// A fault with no code and no retry hint.
+    /// A fault of RPC class `class`, with no code and no retry hint.
     pub fn new(class: ErrorClass, message: impl Into<String>) -> Self {
         Fault {
-            class,
+            class: FaultClass::Rpc(class),
+            message: message.into(),
+            code: None,
+            retry_after: None,
+            rate_limited: false,
+        }
+    }
+
+    /// The dashboard's own failure.
+    pub fn internal(message: impl Into<String>) -> Self {
+        Fault {
+            class: FaultClass::Internal,
             message: message.into(),
             code: None,
             retry_after: None,
@@ -40,7 +70,7 @@ impl Fault {
 impl From<&RpcError> for Fault {
     fn from(error: &RpcError) -> Self {
         Fault {
-            class: error.class(),
+            class: FaultClass::Rpc(error.class()),
             message: error.to_string(),
             code: match error {
                 RpcError::Rpc { code, .. } => Some(*code),
@@ -66,17 +96,6 @@ pub struct Head {
     pub base_fee: Option<u128>,
     /// Round-trip time of the request.
     pub latency_ms: u32,
-}
-
-/// One endpoint probe.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Probe {
-    /// Round-trip time (up to the deadline).
-    pub latency_ms: u32,
-    /// Reported head.
-    pub head: Option<u64>,
-    /// Why it failed.
-    pub error: Option<Fault>,
 }
 
 /// How a balance sheet was read.
@@ -115,6 +134,12 @@ pub struct GatewayInfo {
     pub port: u16,
 }
 
+impl From<&ServeInfo> for GatewayInfo {
+    fn from(info: &ServeInfo) -> Self {
+        GatewayInfo { port: info.port }
+    }
+}
+
 /// A message from a worker to the UI.
 #[derive(Debug, Clone)]
 pub enum Update {
@@ -141,8 +166,9 @@ pub enum Update {
         source: Source,
         /// When, unix milliseconds.
         at_ms: u64,
-        /// Endpoint name and outcome, for every probed endpoint.
-        results: Vec<(String, Probe)>,
+        /// For every probed endpoint: its name, the sample the health
+        /// history records, and why it failed (safe to show), if it did.
+        results: Vec<(String, HealthSample, Option<String>)>,
     },
     /// A chain's balances were read.
     Balances {

@@ -152,10 +152,7 @@ impl EndpointPlan {
         // names the chain and the endpoint.
         let target = route
             .map_err(|e| e.root_cause().to_string())
-            .and_then(|route| {
-                Target::new(route.chain_id, &route.endpoint, &route.url, &route.headers)
-                    .map_err(|e| e.to_string())
-            });
+            .and_then(|route| target(&route));
         EndpointPlan {
             info: EndpointInfo {
                 name: name.to_string(),
@@ -166,6 +163,12 @@ impl EndpointPlan {
             target: target.ok(),
         }
     }
+}
+
+/// The `chainz-rpc` target for a core route, or why there is none.
+pub fn target(route: &Route) -> Result<Target, String> {
+    Target::new(route.chain_id, &route.endpoint, &route.url, &route.headers)
+        .map_err(|e| e.to_string())
 }
 
 /// One signer; only its cached address is ever used.

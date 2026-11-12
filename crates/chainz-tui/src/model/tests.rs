@@ -4,7 +4,7 @@ use super::status::{SLOW_FLOOR_MS, lag_blocks};
 use super::*;
 use crate::data::testing::{chain, plan};
 use crate::plan::Source;
-use chainz_rpc::{ErrorClass, HealthStore};
+use chainz_rpc::{ErrorClass, HealthSample, HealthStore};
 
 const NOW: u64 = 1_700_000_000_000;
 
@@ -96,19 +96,24 @@ fn failed(chain: &str, class: ErrorClass) -> Update {
 }
 
 fn probes(results: &[(&str, Option<u64>, Option<ErrorClass>)]) -> Update {
+    probes_at(NOW, results)
+}
+
+fn probes_at(at_ms: u64, results: &[(&str, Option<u64>, Option<ErrorClass>)]) -> Update {
     Update::Probes {
         chain: "eth".into(),
         source: Source::named("eth"),
-        at_ms: NOW,
+        at_ms,
         results: results
             .iter()
             .map(|(name, head, error)| {
-                let probe = Probe {
+                let sample = HealthSample {
+                    at_ms,
                     latency_ms: 40,
                     head: *head,
-                    error: error.map(|class| Fault::new(class, "failed")),
+                    error: *error,
                 };
-                (name.to_string(), probe)
+                (name.to_string(), sample, error.map(|_| "failed".into()))
             })
             .collect(),
     }
@@ -141,7 +146,7 @@ fn chain_status_is_pending_ok_lag_slow_or_down() {
 
     // A failed poll is down, whatever came before; the head is kept.
     state.apply(failed("eth", ErrorClass::Timeout));
-    assert_eq!(status(&state, 0), Status::Down(ErrorClass::Timeout));
+    assert_eq!(status(&state, 0), Status::Down(FaultClass::Rpc(ErrorClass::Timeout)));
     assert_eq!(state.chains[0].head.as_ref().unwrap().number, 1_003);
     assert_eq!(state.chains[0].samples.back(), Some(&None));
     state.apply(polled("eth", 1_004, 50));
@@ -166,7 +171,7 @@ fn chain_status_is_pending_ok_lag_slow_or_down() {
     }
     assert_eq!(status(&state, 1), Status::Lag(10));
     state.apply(failed("base", ErrorClass::RateLimited));
-    assert_eq!(status(&state, 1), Status::Down(ErrorClass::RateLimited));
+    assert_eq!(status(&state, 1), Status::Down(FaultClass::Rpc(ErrorClass::RateLimited)));
     // An update for a chain that no longer exists is dropped.
     state.apply(polled("gone", 1, 1));
 }
@@ -254,20 +259,7 @@ fn old_probes_are_not_compared_with_new_ones() {
     let mut state = state();
     let statuses = |state: &State| state.chains[0].endpoint_statuses()[..3].to_vec();
     // Yesterday, `a` was probed far behind where the chain is today.
-    let at = |at_ms: u64, results| match probes(results) {
-        Update::Probes {
-            chain,
-            source,
-            results,
-            ..
-        } => Update::Probes {
-            chain,
-            source,
-            at_ms,
-            results,
-        },
-        _ => unreachable!(),
-    };
+    let at = probes_at;
     state.apply(at(NOW - 86_400_000, &[("a", Some(1_000), None)]));
     state.apply(at(
         NOW - 86_400_000,

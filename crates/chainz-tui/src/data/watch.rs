@@ -3,13 +3,14 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use chainz_core::runtime::{GatewayState, Runtime, ServeInfo};
 use chainz_core::store::StorePaths;
 use chainz_os::FileStamp;
 use tokio::sync::watch;
 
-use super::{Event, Shared, Signals, Update, traffic_snapshot};
+use super::{SayOnce, Shared, Signals, Update, traffic_snapshot};
 use crate::model::FEED_CAP;
 
 /// The gateway as last seen, for the workers that route through it and
@@ -18,14 +19,8 @@ use crate::model::FEED_CAP;
 pub(super) struct GatewayWatch {
     runtime: Runtime,
     current: watch::Sender<Option<ServeInfo>>,
-    /// The last error reading the gateway's record, so it is said once.
-    error: std::sync::Mutex<Option<String>>,
-}
-
-/// What one look at the gateway found that is worth saying.
-pub(super) struct Seen {
-    /// A gateway record that can't be read, the first time it fails so.
-    pub(super) warning: Option<String>,
+    /// Errors reading the gateway's record, so each is said once.
+    error: SayOnce,
 }
 
 impl GatewayWatch {
@@ -33,7 +28,7 @@ impl GatewayWatch {
         GatewayWatch {
             runtime,
             current: watch::channel(None).0,
-            error: std::sync::Mutex::new(None),
+            error: SayOnce::default(),
         }
     }
 
@@ -54,25 +49,20 @@ impl GatewayWatch {
 
     /// Look again. On a change `changed` runs first, then the watchers
     /// see it: whoever `changed` tells hears of a gateway before anything
-    /// read from it.
-    pub(super) fn detect(&self, changed: impl FnOnce(Option<&ServeInfo>)) -> Seen {
+    /// read from it. Returns a gateway record that can't be read, the
+    /// first time it fails so.
+    pub(super) fn detect(&self, changed: impl FnOnce(Option<&ServeInfo>)) -> Option<String> {
         let (found, error) = match self.runtime.gateway() {
             Ok(GatewayState::Up(info)) => (Some(info), None),
             Ok(GatewayState::Down | GatewayState::Starting) => (None, None),
             Err(error) => (None, Some(format!("gateway state unreadable: {error}"))),
         };
-        let mut last = super::lock(&self.error);
-        let warning = error
-            .as_ref()
-            .filter(|e| last.as_ref() != Some(*e))
-            .cloned();
-        *last = error;
-        drop(last);
+        let warning = self.error.report(error);
         if *self.current.borrow() != found {
             changed(found.as_ref());
             self.current.send_replace(found);
         }
-        Seen { warning }
+        warning
     }
 }
 
@@ -121,20 +111,19 @@ pub(super) async fn traffic_loop(shared: Arc<Shared>, signals: Arc<Signals>) {
 /// subscribe again when the stream ends. A failed subscription is a
 /// warning, said once until one succeeds.
 async fn follow_feed(shared: Arc<Shared>) {
-    let mut failing: Option<String> = None;
+    let failing = SayOnce::default();
     loop {
         match shared.link().events(FEED_CAP).await {
             Ok(mut events) => {
-                failing = None;
+                failing.report(None);
                 while let Some(item) = events.next().await {
                     shared.send(Update::Feed(item));
                 }
             }
             Err(error) => {
                 let text = format!("gateway request feed unavailable: {error}");
-                if failing.as_ref() != Some(&text) {
-                    shared.warn(text.clone());
-                    failing = Some(text);
+                if let Some(text) = failing.report(Some(text)) {
+                    shared.warn(text);
                 }
             }
         }
@@ -170,8 +159,8 @@ impl ConfigFiles {
     }
 }
 
-/// Say [`Event::ConfigChanged`] whenever `files` differ from what was
-/// seen last, starting from `since`.
+/// Raise [`Shared::take_config_changed`] whenever `files` differ from what
+/// was seen last, starting from `since`.
 pub(super) async fn config_loop(shared: Arc<Shared>, files: ConfigFiles, since: ConfigStamp) {
     let mut seen = since;
     loop {
@@ -179,7 +168,7 @@ pub(super) async fn config_loop(shared: Arc<Shared>, files: ConfigFiles, since: 
         let now = files.stamp();
         if now != seen {
             seen = now;
-            shared.emit(Event::ConfigChanged);
+            shared.config_changed.store(true, Ordering::Relaxed);
         }
     }
 }

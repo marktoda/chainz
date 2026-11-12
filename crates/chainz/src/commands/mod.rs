@@ -32,7 +32,7 @@ pub fn dispatch(opt: Opt) -> Result<i32> {
         Command::Env(args) => exec::env(&args),
         Command::Use(args) => chain::use_default(&args),
         Command::Ls(args) => chain::ls(&args),
-        Command::Top(args) => top::run(args.once, args.json, args.reveal),
+        Command::Top(args) => top::run(&args),
         Command::Serve { cmd, args } => serve::run(cmd, args),
         Command::Fork { cmd, args } => fork::run(cmd, args),
         Command::Init => init::run(),

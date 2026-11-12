@@ -1,7 +1,7 @@
 //! Render tests: every tab, in its normal, empty, error and narrow states,
 //! drawn to ratatui's `TestBackend` from a fixed state and clock.
 
-use chainz_rpc::{ErrorClass, HealthStore};
+use chainz_rpc::{ErrorClass, HealthSample, HealthStore};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -11,7 +11,7 @@ use super::*;
 use crate::app::{App, Tab};
 use crate::data::testing::{chain, invalidate, plan};
 use crate::gateway::testing as gw;
-use crate::model::{Fault, GatewayInfo, Head, Holding, Probe, Sheet, State, Update, Via};
+use crate::model::{Fault, GatewayInfo, Head, Holding, Sheet, State, Update, Via};
 use crate::plan::{Plan, Source};
 
 /// The frame clock: unix milliseconds.
@@ -73,12 +73,25 @@ fn head(chain: &str, number: u64, age_secs: u64, block_time: f64, fee: u128, ms:
     }
 }
 
-fn probe(ms: u32, head: Option<u64>, error: Option<(ErrorClass, &str)>) -> Probe {
-    Probe {
+/// One endpoint's result in a probe round at `at_ms`.
+fn probe(
+    endpoint: &str,
+    at_ms: u64,
+    ms: u32,
+    head: Option<u64>,
+    error: Option<(ErrorClass, &str)>,
+) -> (String, HealthSample, Option<String>) {
+    let sample = HealthSample {
+        at_ms,
         latency_ms: ms,
         head,
-        error: error.map(|(class, message)| Fault::new(class, message)),
-    }
+        error: error.map(|(class, _)| class),
+    };
+    (
+        endpoint.into(),
+        sample,
+        error.map(|(_, message)| message.into()),
+    )
 }
 
 fn sheet(via: Via, default: (u128, u128, u128), funder: (u128, u128, u128)) -> Sheet {
@@ -104,17 +117,16 @@ pub(crate) fn fixture() -> State {
             source: Source::named("eth"),
             at_ms: NOW - 3_000,
             results: vec![
-                ("infura".into(), probe(48, Some(23_481_220), None)),
-                ("llama".into(), probe(131, Some(23_481_186), None)),
-                (
-                    "publicnode".into(),
-                    probe(
-                        52,
-                        None,
-                        Some((ErrorClass::RateLimited, "rate limited (retry after 30s)")),
-                    ),
+                probe("infura", NOW - 3_000, 48, Some(23_481_220), None),
+                probe("llama", NOW - 3_000, 131, Some(23_481_186), None),
+                probe(
+                    "publicnode",
+                    NOW - 3_000,
+                    52,
+                    None,
+                    Some((ErrorClass::RateLimited, "rate limited (retry after 30s)")),
                 ),
-                ("quiknode".into(), probe(1_240, Some(23_481_219), None)),
+                probe("quiknode", NOW - 3_000, 1_240, Some(23_481_219), None),
             ],
         },
         head("eth", 23_481_220, 4, 12.0, 410_000_000, 48),
@@ -129,7 +141,7 @@ pub(crate) fn fixture() -> State {
             chain: "uni".into(),
             source: Source::named("uni"),
             at_ms: NOW - 9_000,
-            results: vec![("infura".into(), probe(55, Some(31_770_016), None))],
+            results: vec![probe("infura", NOW - 9_000, 55, Some(31_770_016), None)],
         },
         head("uni", 31_770_013, 0, 1.0, 400, 55),
         // zora: answering, slowly.

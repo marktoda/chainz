@@ -49,33 +49,46 @@ use chainz_rpc::HealthStore;
 /// dashboard's footer.
 pub type ShellFn = Box<dyn FnMut(&str) -> std::io::Result<()>>;
 
+/// Prints a warning for `--once` (an unreadable gateway record, a health
+/// history that cannot be saved); the live dashboard shows them in its
+/// footer instead.
+pub type WarnFn = Box<dyn FnMut(&str)>;
+
 /// How `chainz top` was invoked.
 pub struct Options {
-    /// Print one snapshot and exit.
-    pub once: bool,
-    /// With `once`: print JSON.
-    pub json: bool,
     /// Show and copy raw endpoint URLs instead of redacted ones.
     pub reveal: bool,
-    /// How to open a shell for a chain; without it, `e` is unavailable.
-    pub shell: Option<ShellFn>,
+    /// Live or one snapshot.
+    pub mode: Mode,
 }
 
-/// Entry point for `chainz top`. Returns the process exit code.
-pub fn run(chainz: Chainz, runtime: Runtime, options: Options) -> Result<i32> {
-    if options.once {
-        return once::run(&chainz, runtime, &options);
-    }
-    if !std::io::stdout().is_terminal() || !std::io::stdin().is_terminal() {
-        bail!("`chainz top` needs a terminal; in a script use `chainz top --once --json`");
-    }
-    term::run(chainz, runtime, options)
+/// The dashboard, or one snapshot.
+pub enum Mode {
+    /// The interactive dashboard.
+    Live {
+        /// How to open a shell for a chain; without it, `e` is unavailable.
+        shell: Option<ShellFn>,
+    },
+    /// Poll every chain once, print, and exit.
+    Once {
+        /// Print JSON instead of text tables.
+        json: bool,
+        /// Where warnings go.
+        warn: WarnFn,
+    },
 }
 
-/// The persisted health history; empty when it cannot be read.
-fn load_store() -> HealthStore {
-    match chainz_core::paths::state_dir() {
-        Ok(dir) => HealthStore::load(&dir).unwrap_or_else(|_| HealthStore::new(&dir)),
-        Err(_) => HealthStore::empty(),
+/// Entry point for `chainz top`, with the persisted health history
+/// (`store`) the dashboard shows and extends. Returns the process exit
+/// code.
+pub fn run(chainz: Chainz, runtime: Runtime, store: HealthStore, options: Options) -> Result<i32> {
+    match options.mode {
+        Mode::Once { json, warn } => once::run(&chainz, runtime, store, options.reveal, json, warn),
+        Mode::Live { shell } => {
+            if !std::io::stdout().is_terminal() || !std::io::stdin().is_terminal() {
+                bail!("`chainz top` needs a terminal; in a script use `chainz top --once --json`");
+            }
+            term::run(chainz, runtime, store, options.reveal, shell)
+        }
     }
 }

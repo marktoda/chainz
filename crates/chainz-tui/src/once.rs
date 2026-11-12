@@ -7,6 +7,7 @@ use std::sync::mpsc::channel;
 use anyhow::{Context, Result};
 use chainz_core::Chainz;
 use chainz_core::runtime::Runtime;
+use chainz_rpc::HealthStore;
 use chainz_os::now_ms;
 use ratatui::text::Line;
 use unicode_width::UnicodeWidthChar;
@@ -17,7 +18,7 @@ use crate::model::State;
 use crate::plan::Plan;
 use crate::ui::theme::Theme;
 use crate::ui::{self, Body, Content, Ctx};
-use crate::{Options, load_store, snapshot};
+use crate::{WarnFn, snapshot};
 
 /// The wait before retrying a rate-limited request (then twice that).
 const RETRY_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
@@ -25,10 +26,16 @@ const RETRY_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 /// The width the text tables are laid out for.
 const WIDTH: u16 = 120;
 
-/// Poll every chain once and print the result.
-pub(crate) fn run(chainz: &Chainz, runtime: Runtime, options: &Options) -> Result<i32> {
-    let plan = Arc::new(Plan::build(chainz, options.reveal));
-    let store = load_store();
+/// Poll every chain once and print the result; warnings go to `warn`.
+pub(crate) fn run(
+    chainz: &Chainz,
+    runtime: Runtime,
+    store: HealthStore,
+    reveal: bool,
+    json: bool,
+    mut warn: WarnFn,
+) -> Result<i32> {
+    let plan = Arc::new(Plan::build(chainz, reveal));
     let mut state = State::new(&plan, &store);
     let (events, received) = channel();
     let shared = Shared::new(store, runtime, Tuning::default(), events);
@@ -36,19 +43,15 @@ pub(crate) fn run(chainz: &Chainz, runtime: Runtime, options: &Options) -> Resul
         .enable_all()
         .build()
         .context("failed to start the async runtime")?;
-    let collected = rt.block_on(data::collect_once(&shared, &plan, RETRY_WAIT));
+    rt.block_on(data::collect_once(&shared, &plan, RETRY_WAIT));
     for event in received.try_iter() {
         match event {
             Event::Update(update) => state.apply(update),
-            Event::Warning(text) => eprintln!("warning: {text}"),
-            Event::ConfigChanged => {}
+            Event::Warning(text) => warn(&text),
         }
     }
-    for update in collected {
-        state.apply(update);
-    }
     let now = now_ms();
-    if options.json {
+    if json {
         let snapshot = snapshot::Snapshot::new(&state, now);
         println!("{}", serde_json::to_string_pretty(&snapshot)?);
     } else {

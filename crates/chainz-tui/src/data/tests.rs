@@ -14,7 +14,7 @@ use super::heads::{BlockClock, MAX_BLOCK_RATE, Pacing, Poller, next_delay, pace}
 use super::testing::*;
 use super::*;
 use crate::gateway::testing as gw;
-use crate::model::{EndpointStatus, Sheet, State, Status, Via};
+use crate::model::{EndpointStatus, FaultClass, Sheet, State, Status, Via};
 
 /// The Multicall3 address as an `eth_call` carries it.
 fn multicall3() -> String {
@@ -120,7 +120,7 @@ async fn a_hostile_endpoint_does_not_stop_the_poller() {
     // A saturated base fee is not printed as if it were exact, on screen
     // either.
     assert_eq!(json["chains"][0]["base_fee_wei"], Value::Null);
-    let row = crate::view::chain_rows(&state, &state.chains, chainz_sys::now_ms())[0];
+    let row = crate::view::chain_rows(&state, &state.chains, chainz_os::now_ms())[0];
     assert_eq!(row.base_fee_gwei(), None);
 }
 
@@ -212,7 +212,7 @@ async fn a_poller_paces_by_the_idle_flag_and_the_last_retry_after() {
     let Update::Head { result, .. } = poller.step().await else {
         panic!("a head update");
     };
-    assert_eq!(result.unwrap_err().class, ErrorClass::RateLimited);
+    assert_eq!(result.unwrap_err().class, FaultClass::Rpc(ErrorClass::RateLimited));
     let pacing = poller.pacing();
     assert_eq!(pacing.failures, 1);
     assert_eq!(pacing.retry_after, Some(Duration::from_secs(7)));
@@ -224,7 +224,7 @@ fn faults_keep_the_code_and_the_retry_after() {
         retry_after: Some(Duration::from_secs(7)),
     };
     let fault = Fault::from(&limited);
-    assert_eq!(fault.class, ErrorClass::RateLimited);
+    assert_eq!(fault.class, FaultClass::Rpc(ErrorClass::RateLimited));
     assert_eq!(fault.retry_after, Some(Duration::from_secs(7)));
     assert_eq!(fault.code, None);
     let rpc = |code: i64, message: &str| {
@@ -384,7 +384,7 @@ async fn a_failing_chain_backs_off_and_recovers() {
         _ => None,
     })
     .await;
-    assert_eq!(first.unwrap_err().class, ErrorClass::RateLimited);
+    assert_eq!(first.unwrap_err().class, FaultClass::Rpc(ErrorClass::RateLimited));
     // The waits between the failures are `next_delay`'s (tested exactly
     // above); here, that the poller keeps going and recovers.
 
@@ -554,14 +554,14 @@ async fn balance_errors_are_reported_without_hammering() {
     let plan_limited = plan(vec![chain("eth", 1, &[("a", &limited.url)])]);
     let (shared, _updates) = shared(dir.path(), fast());
     let fault = read_sheet(&shared, &plan_limited).await.unwrap_err();
-    assert_eq!(fault.class, ErrorClass::RateLimited);
+    assert_eq!(fault.class, FaultClass::Rpc(ErrorClass::RateLimited));
     assert_eq!(limited.hits().len(), 1);
 
     // Nothing works at all: multicall, then the batch, then an error.
     let broken = MockRpc::calls(|_, _| Err(-32000)).await;
     let plan_broken = plan(vec![chain("eth", 1, &[("a", &broken.url)])]);
     let fault = read_sheet(&shared, &plan_broken).await.unwrap_err();
-    assert_eq!(fault.class, ErrorClass::Rpc);
+    assert_eq!(fault.class, FaultClass::Rpc(ErrorClass::Rpc));
     assert_eq!(broken.hits().len(), 2);
 
     // An endpoint whose variables do not resolve never sends anything.
@@ -571,7 +571,7 @@ async fn balance_errors_are_reported_without_hammering() {
         "variable ${INFURA_KEY} is not set",
     );
     let fault = read_sheet(&shared, &plan(vec![invalid])).await.unwrap_err();
-    assert_eq!(fault.class, ErrorClass::Invalid);
+    assert_eq!(fault.class, FaultClass::Rpc(ErrorClass::Invalid));
     assert!(fault.message.contains("INFURA_KEY"));
 }
 
@@ -647,26 +647,29 @@ async fn endpoints_are_probed_only_while_focused_and_lag_is_classified() {
     assert!(near.hits().is_empty() && down.hits().is_empty());
 
     engine.focus(Some("eth".into()));
-    let (chain_name, results) = wait_for(&updates, |u| match u {
-        Update::Probes { chain, results, .. } => Some((chain, results)),
+    let round = wait_for(&updates, |u| match u {
+        Update::Probes { .. } => Some(u),
         other => {
             state.apply(other);
             None
         }
     })
     .await;
-    assert_eq!(chain_name, "eth");
+    let Update::Probes { chain, results, .. } = &round else {
+        unreachable!()
+    };
+    assert_eq!(chain, "eth");
     assert_eq!(
         results.len(),
         5,
         "the websocket endpoint is listed, not probed"
     );
-    state.apply(Update::Probes {
-        source: Source::named(&chain_name),
-        chain: chain_name,
-        at_ms: NOW * 1_000,
-        results,
-    });
+    // What the dashboard shows is what the history keeps.
+    for (endpoint, sample, _) in results {
+        let recorded = || shared.store().samples(1, endpoint).last() == Some(sample);
+        wait_until("the round in the history", recorded).await;
+    }
+    state.apply(round);
 
     let eth = &state.chains[0];
     let statuses: Vec<EndpointStatus> = eth.endpoint_statuses().iter().map(|s| s.0).collect();
@@ -865,11 +868,7 @@ async fn a_config_change_on_disk_is_announced() {
     let mut engine = Engine::start(&Handle::current(), &shared, &plan(vec![]));
     engine.watch_config(files.clone(), files.stamp());
     tokio::time::sleep(Duration::from_millis(300)).await;
-    assert!(
-        !updates
-            .try_iter()
-            .any(|u| matches!(u, Event::ConfigChanged))
-    );
+    assert!(!shared.take_config_changed());
     // A new mtime, even on filesystems with coarse timestamps.
     let later = std::time::SystemTime::now() + Duration::from_secs(5);
     std::fs::File::options()
@@ -878,10 +877,7 @@ async fn a_config_change_on_disk_is_announced() {
         .unwrap()
         .set_modified(later)
         .unwrap();
-    wait_for_event(&updates, |u| {
-        matches!(u, Event::ConfigChanged).then_some(())
-    })
-    .await;
+    wait_until("the config change", || shared.take_config_changed()).await;
     // `secrets.toml` counts too (`var set`), and a rewrite is seen whatever
     // its modification time says.
     std::fs::write(dir.path().join("secrets.tmp"), "[vars]\n").unwrap();
@@ -890,10 +886,8 @@ async fn a_config_change_on_disk_is_announced() {
         dir.path().join("secrets.toml"),
     )
     .unwrap();
-    wait_for_event(&updates, |u| {
-        matches!(u, Event::ConfigChanged).then_some(())
-    })
-    .await;
+    wait_until("the secrets change", || shared.take_config_changed()).await;
+    drop(updates);
 }
 
 #[tokio::test]
@@ -919,16 +913,17 @@ async fn once_collects_every_chain_and_retries_a_rate_limit() {
         chain("limited", 2, &[("a", &limited.url)]),
         chain("down", 3, &[("a", &down.url)]),
     ]);
-    let (shared, _updates) = shared(dir.path(), fast());
+    let (shared, updates) = shared(dir.path(), fast());
     let mut state = State::new(&plan, &shared.store());
-    for update in collect_once(&shared, &plan, Duration::from_millis(50)).await {
+    collect_once(&shared, &plan, Duration::from_millis(50)).await;
+    for update in testing::updates(&updates) {
         state.apply(update);
     }
     // `healthy` serves no blocks: its head is an error, its balances fine.
     let [healthy_chain, limited_chain, down_chain] = &state.chains[..] else {
         panic!("three chains");
     };
-    assert_eq!(healthy_chain.fault.as_ref().unwrap().class, ErrorClass::Rpc);
+    assert_eq!(healthy_chain.fault.as_ref().unwrap().class, FaultClass::Rpc(ErrorClass::Rpc));
     assert_eq!(
         healthy_chain.balances.as_ref().unwrap().holders[0].native,
         Some(3)
@@ -939,10 +934,10 @@ async fn once_collects_every_chain_and_retries_a_rate_limit() {
         limited_chain.balances.as_ref().unwrap().holders[1].tokens,
         [Some(4), Some(4)]
     );
-    assert_eq!(down_chain.fault.as_ref().unwrap().class, ErrorClass::Http);
+    assert_eq!(down_chain.fault.as_ref().unwrap().class, FaultClass::Rpc(ErrorClass::Http));
     assert_eq!(
         down_chain.balance_fault.as_ref().unwrap().class,
-        ErrorClass::Http
+        FaultClass::Rpc(ErrorClass::Http)
     );
     // An HTTP 500 is not retried: one head request, a multicall, a batch.
     assert_eq!(down.hits().len(), 3);
@@ -1034,17 +1029,17 @@ async fn once_does_not_hang_on_a_wedged_gateway() {
     let _socket = std::os::unix::net::UnixListener::bind(runtime.serve_sock_path()).unwrap();
     let mut tuning = fast();
     tuning.request_timeout = Duration::from_millis(300);
-    let (shared, _updates) = shared(dir.path(), tuning);
+    let (shared, updates) = shared(dir.path(), tuning);
     shared.watch_gateway();
     assert!(shared.gateway().is_some());
 
-    let updates = tokio::time::timeout(
+    tokio::time::timeout(
         Duration::from_secs(10),
         collect_once(&shared, &plan(vec![]), Duration::from_millis(50)),
     )
     .await
     .expect("collect_once returns");
-    let traffic = updates.iter().find_map(|u| match u {
+    let traffic = testing::updates(&updates).find_map(|u| match u {
         Update::Traffic(result) => Some(result.clone()),
         _ => None,
     });
@@ -1052,41 +1047,44 @@ async fn once_does_not_hang_on_a_wedged_gateway() {
     assert!(error.contains("timed out"), "{error}");
 }
 
-fn die() -> Vec<Update> {
+fn die() {
     panic!("a chain's task died");
 }
 
 #[tokio::test]
 async fn once_keeps_every_chain_when_one_task_dies() {
+    let dir = short_tempdir();
+    let (shared, events) = shared(dir.path(), fast());
     let mut set = JoinSet::new();
     let mut names = HashMap::new();
     for (name, dies) in [("eth", false), ("base", true), ("arb", false)] {
+        let sender = shared.clone();
         let task = set.spawn(async move {
             if dies {
-                die()
-            } else {
-                vec![Update::Balances {
-                    chain: name.into(),
-                    source: Source::named(name),
-                    at_ms: 0,
-                    result: Err(Fault::new(ErrorClass::Http, "fine")),
-                }]
+                die();
             }
+            sender.send(Update::Balances {
+                chain: name.into(),
+                source: Source::named(name),
+                at_ms: 0,
+                result: Err(Fault::new(ErrorClass::Http, "fine")),
+            });
         });
         names.insert(task.id(), (name.to_string(), Source::named(name)));
     }
-    let updates = gather(set, &names).await;
-    let mut seen: Vec<(String, &str)> = updates
-        .iter()
+    gather(&shared, set, &names).await;
+    let mut seen: Vec<(String, &str)> = testing::updates(&events)
         .map(|u| match u {
-            Update::Balances { chain, .. } => (chain.clone(), "balances"),
+            Update::Balances { chain, .. } => (chain, "balances"),
             Update::Head {
                 chain,
                 result: Err(fault),
                 ..
             } => {
+                // A crash is the dashboard's fault, not the endpoint's.
+                assert_eq!(fault.class, FaultClass::Internal);
                 assert!(fault.message.contains("internal error"), "{fault:?}");
-                (chain.clone(), "failed head")
+                (chain, "failed head")
             }
             other => panic!("unexpected {other:?}"),
         })

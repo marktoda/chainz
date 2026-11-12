@@ -26,14 +26,14 @@ use std::time::{Duration, Instant};
 use chainz_core::names;
 use chainz_core::route::{self, Route};
 use chainz_core::runtime::Runtime;
-use chainz_rpc::{EndpointProbe, ErrorClass, HealthStore, RpcClient, Target, health, probe_all};
+use chainz_rpc::{ErrorClass, HealthSample, HealthStore, RpcClient, Target, probe_all};
 use tokio::runtime::Handle;
 use tokio::sync::{Notify, mpsc, watch as channel};
 use tokio::task::{JoinHandle, JoinSet};
 
 use crate::gateway::GatewayLink;
-use crate::model::{Fault, GatewayInfo, PROBE_EVERY_MS, Probe, Refresh, Update};
-use crate::plan::{ChainPlan, Plan, Source};
+use crate::model::{Fault, GatewayInfo, PROBE_EVERY_MS, Refresh, Update};
+use crate::plan::{self, ChainPlan, Plan, Source};
 use chainz_os::now_ms;
 
 use watch::GatewayWatch;
@@ -44,8 +44,6 @@ pub use watch::{ConfigFiles, ConfigStamp};
 pub enum Event {
     /// Something to fold into the state.
     Update(Update),
-    /// `config.toml` or `secrets.toml` changed on disk.
-    ConfigChanged,
     /// Something the user should know that is not a row's status: an
     /// unreadable gateway record, a health history that cannot be saved.
     Warning(String),
@@ -100,8 +98,8 @@ impl Default for Tuning {
 #[derive(Debug)]
 struct HealthSink {
     store: Mutex<HealthStore>,
-    /// The last save error reported, so a broken state dir is said once.
-    failed: Mutex<Option<String>>,
+    /// Save errors, so a broken state dir is said once.
+    failed: SayOnce,
 }
 
 impl HealthSink {
@@ -109,20 +107,35 @@ impl HealthSink {
         lock(&self.store).clone()
     }
 
-    /// Record a probe round and save the history (blocking: the save
-    /// merges under a file lock). A save error is returned once, not again
-    /// until a save succeeds or fails differently.
-    fn record(&self, probes: &[EndpointProbe]) -> Option<String> {
-        let saved = health::record(&mut lock(&self.store), probes);
-        let error = saved
-            .err()
-            .map(|e| format!("health history not saved: {e}"));
-        let mut failed = lock(&self.failed);
-        let new = error
+    /// Record a probe round of `chain_id`'s endpoints and save the history
+    /// (blocking: the save merges under a file lock). A save error is
+    /// returned once, not again until a save succeeds or fails differently.
+    fn record(&self, chain_id: u64, samples: Vec<(String, HealthSample)>) -> Option<String> {
+        let mut store = lock(&self.store);
+        for (endpoint, sample) in samples {
+            store.record(chain_id, &endpoint, sample);
+        }
+        let saved = store.save();
+        drop(store);
+        let error = saved.err().map(|e| format!("health history not saved: {e}"));
+        self.failed.report(error)
+    }
+}
+
+/// A problem said once, and not again until it changes or clears.
+#[derive(Debug, Default)]
+struct SayOnce(Mutex<Option<String>>);
+
+impl SayOnce {
+    /// `problem` (or `None` when there is none now), unless it is the one
+    /// said last.
+    fn report(&self, problem: Option<String>) -> Option<String> {
+        let mut last = lock(&self.0);
+        let new = problem
             .as_ref()
-            .filter(|e| failed.as_ref() != Some(*e))
+            .filter(|p| last.as_ref() != Some(*p))
             .cloned();
-        *failed = error;
+        *last = problem;
         new
     }
 }
@@ -165,6 +178,9 @@ pub struct Shared {
     /// No key for a while: head pollers slow to the ceiling and probe
     /// rounds are skipped.
     idle: AtomicBool,
+    /// `config.toml` or `secrets.toml` changed on disk since the event
+    /// loop last looked ([`Engine::watch_config`]).
+    config_changed: AtomicBool,
 }
 
 impl std::fmt::Debug for Shared {
@@ -188,13 +204,19 @@ impl Shared {
             events,
             health: HealthSink {
                 store: Mutex::new(store),
-                failed: Mutex::new(None),
+                failed: SayOnce::default(),
             },
             gateway: GatewayWatch::new(runtime),
             multicall: MulticallCache::default(),
             clocks: Mutex::new(HashMap::new()),
             idle: AtomicBool::new(false),
+            config_changed: AtomicBool::new(false),
         })
+    }
+
+    /// Whether the config files changed since the last call.
+    pub fn take_config_changed(&self) -> bool {
+        self.config_changed.swap(false, Ordering::Relaxed)
     }
 
     /// Tell the workers whether anyone is watching. Takes effect at each
@@ -214,9 +236,7 @@ impl Shared {
 
     /// The running gateway, as last seen.
     pub fn gateway(&self) -> Option<GatewayInfo> {
-        self.gateway
-            .info()
-            .map(|info| GatewayInfo { port: info.port })
+        self.gateway.info().as_ref().map(GatewayInfo::from)
     }
 
     /// Look for a gateway now (one non-blocking `flock` and a small file
@@ -224,12 +244,10 @@ impl Shared {
     /// record that can't be read counts as no gateway and is reported as a
     /// warning, once per distinct error.
     pub fn watch_gateway(&self) {
-        let seen = self.gateway.detect(|info| {
-            self.send(Update::Gateway(
-                info.map(|info| GatewayInfo { port: info.port }),
-            ));
+        let warning = self.gateway.detect(|info| {
+            self.send(Update::Gateway(info.map(GatewayInfo::from)));
         });
-        if let Some(warning) = seen.warning {
+        if let Some(warning) = warning {
             self.warn(warning);
         }
     }
@@ -284,11 +302,14 @@ impl Shared {
             .info()
             .filter(|_| route::uses_gateway(active.info.websocket, false))
         {
-            let route =
-                Route::via_gateway(&info, &chain.info.name, chain.info.id, "gateway", false);
-            let target = Target::new(route.chain_id, &route.endpoint, &route.url, &route.headers)
-                .map_err(|e| invalid(e.to_string()));
-            return (target, true);
+            let route = Route::via_gateway(
+                &info,
+                &chain.info.name,
+                chain.info.id,
+                &active.info.name,
+                false,
+            );
+            return (plan::target(&route).map_err(invalid), true);
         }
         let target = active
             .target
@@ -452,15 +473,15 @@ fn provider_slots(plan: &Plan) -> Vec<u32> {
 /// How often `--once` retries a rate-limited request.
 const ONCE_RETRIES: u32 = 2;
 
-/// One round of everything `--once` reports: every chain's head and
-/// balances, and the gateway's metrics when one runs. No endpoint probes.
-/// A rate-limited request is retried after `retry_wait`, then twice that.
-pub async fn collect_once(shared: &Arc<Shared>, plan: &Plan, retry_wait: Duration) -> Vec<Update> {
-    let mut updates = Vec::new();
+/// One round of everything `--once` reports, sent as the live workers
+/// send theirs: every chain's head and balances, and the gateway's metrics
+/// when one runs. No endpoint probes. A rate-limited request is retried
+/// after `retry_wait`, then twice that.
+pub async fn collect_once(shared: &Arc<Shared>, plan: &Plan, retry_wait: Duration) {
+    // Reports a gateway it finds before anything read from it.
     shared.watch_gateway();
-    if let Some(info) = shared.gateway() {
-        updates.push(Update::Gateway(Some(info)));
-        updates.push(Update::Traffic(traffic_snapshot(shared).await));
+    if shared.gateway().is_some() {
+        shared.send(Update::Traffic(traffic_snapshot(shared).await));
     }
     let holders = Arc::new(plan.holders());
     let mut set = JoinSet::new();
@@ -490,7 +511,7 @@ pub async fn collect_once(shared: &Arc<Shared>, plan: &Plan, retry_wait: Duratio
                 tokio::time::sleep(retry_wait * attempt).await;
                 head = poller.step().await;
             }
-            let mut updates = vec![head];
+            shared.send(head);
             if !holders.is_empty() {
                 let read = || balances::read_update(shared.clone(), chain.clone(), holders.clone());
                 let mut balances = read().await;
@@ -505,43 +526,36 @@ pub async fn collect_once(shared: &Arc<Shared>, plan: &Plan, retry_wait: Duratio
                     tokio::time::sleep(retry_wait * attempt).await;
                     balances = read().await;
                 }
-                updates.push(balances);
+                shared.send(balances);
             }
-            updates
         });
         names.insert(task.id(), name);
     }
-    updates.extend(gather(set, &names).await);
-    updates
+    gather(shared, set, &names).await;
 }
 
-/// Every chain's updates from `set`. A chain whose task died is reported
-/// as a failed head, and the other chains' results are kept.
+/// Wait for every chain's task in `set`. A chain whose task died is
+/// reported as a failed head, an internal fault, and the other chains'
+/// results are kept.
 async fn gather(
-    mut set: JoinSet<Vec<Update>>,
+    shared: &Shared,
+    mut set: JoinSet<()>,
     names: &HashMap<tokio::task::Id, (String, Source)>,
-) -> Vec<Update> {
-    let mut updates = Vec::new();
+) {
     while let Some(joined) = set.join_next().await {
-        match joined {
-            Ok(chain_updates) => updates.extend(chain_updates),
-            Err(error) => {
-                let Some((chain, source)) = names.get(&error.id()) else {
-                    continue;
-                };
-                let fault = Fault::new(ErrorClass::Invalid, format!("internal error: {error}"));
-                updates.push(Update::Head {
-                    chain: chain.clone(),
-                    source: *source,
-                    at_ms: now_ms(),
-                    via_gateway: false,
-                    result: Err(fault),
-                    block_time: None,
-                });
-            }
-        }
+        let Err(error) = joined else { continue };
+        let Some((chain, source)) = names.get(&error.id()) else {
+            continue;
+        };
+        shared.send(Update::Head {
+            chain: chain.clone(),
+            source: *source,
+            at_ms: now_ms(),
+            via_gateway: false,
+            result: Err(Fault::internal(format!("internal error: {error}"))),
+            block_time: None,
+        });
     }
-    updates
 }
 
 /// The gateway's status and metrics, within `request_timeout`: a wedged
@@ -603,7 +617,7 @@ async fn probe_loop(
 }
 
 /// One probe round over a chain's HTTP endpoints: report it, and record it
-/// in the health history (as `rpc bench` does).
+/// in the health history (as `rpc bench` does), the same samples both.
 async fn probe_chain(shared: &Arc<Shared>, chain: &ChainPlan) {
     let (names, targets): (Vec<&str>, Vec<Target>) = chain
         .endpoints
@@ -612,26 +626,15 @@ async fn probe_chain(shared: &Arc<Shared>, chain: &ChainPlan) {
         .filter_map(|e| Some((e.info.name.as_str(), e.target.clone()?)))
         .unzip();
     let mut round = probe_all(&shared.client, targets, chain.info.id);
-    let mut probes = Vec::with_capacity(names.len());
+    let mut results = Vec::with_capacity(names.len());
     while let Some((index, result)) = round.recv().await {
-        probes.push(EndpointProbe {
-            chain_id: chain.info.id,
-            endpoint: names[index].to_string(),
-            result,
-            capabilities: None,
-        });
+        let message = result.error.as_ref().map(ToString::to_string);
+        let sample = HealthSample::from_probe(&result);
+        results.push((names[index].to_string(), sample, message));
     }
-    let results = probes
+    let samples = results
         .iter()
-        .map(|probe| {
-            let result = &probe.result;
-            let outcome = Probe {
-                latency_ms: u32::try_from(result.latency.as_millis()).unwrap_or(u32::MAX),
-                head: result.head,
-                error: result.error.as_ref().map(Fault::from),
-            };
-            (probe.endpoint.clone(), outcome)
-        })
+        .map(|(name, sample, _)| (name.clone(), sample.clone()))
         .collect();
     shared.send(Update::Probes {
         chain: chain.info.name.clone(),
@@ -640,8 +643,8 @@ async fn probe_chain(shared: &Arc<Shared>, chain: &ChainPlan) {
         results,
     });
     // Saving merges under a file lock; keep it off the async workers.
-    let sink = shared.clone();
-    let saved = tokio::task::spawn_blocking(move || sink.health.record(&probes));
+    let (sink, chain_id) = (shared.clone(), chain.info.id);
+    let saved = tokio::task::spawn_blocking(move || sink.health.record(chain_id, samples));
     if let Ok(Some(warning)) = saved.await {
         shared.warn(warning);
     }
