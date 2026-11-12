@@ -83,7 +83,7 @@ fn start(args: ServeArgs) -> Result<i32> {
     chainz_serve::run(
         StorePaths::resolve()?,
         Runtime::resolve()?,
-        net::state_dir(),
+        crate::load::state_dir(),
         options,
         |event| foreground.show(event),
     )?;

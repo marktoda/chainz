@@ -416,7 +416,7 @@ A signer is a reference to key material plus its cached public address. Chainz n
 
 ## Architecture
 
-One binary, built from a small workspace with a strict dependency direction: a leaf of OS primitives; a synchronous core that knows nothing about the network; an RPC crate beside it that knows nothing about the config; then the live surfaces, which join the two. The split keeps the hot path (`exec`, `ls`, `env`) honest at compile time. Those commands call only `chainz-core` APIs, so they cannot start the async runtime, open a socket or spawn a thread, and the `strace` test enforces that at runtime.
+One binary, built from a small workspace with a strict dependency direction: a leaf of OS primitives; a synchronous core that knows nothing about the network; an RPC crate beside it that knows nothing about the config; then the live surfaces, which join the two. The split keeps the hot path (`exec`, `ls`, `env`) honest at compile time. Those commands call only `chainz-core` APIs (and `ls` the RPC crate's file-only health store, for the recorded endpoint health it shows), so they cannot start the async runtime, open a socket or spawn a thread, and the `strace` test enforces that at runtime.
 
 ```
                  chainz (bin)

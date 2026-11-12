@@ -2,7 +2,7 @@
 
 use crate::cli::TopArgs;
 use crate::load::open;
-use crate::{net, ui};
+use crate::ui;
 use anyhow::Result;
 use chainz_core::runtime::Runtime;
 use chainz_tui::{Mode, Options};
@@ -48,7 +48,7 @@ pub fn run(args: &TopArgs) -> Result<i32> {
         reveal: args.reveal,
         mode,
     };
-    chainz_tui::run(chainz, runtime, net::health_store(), options)
+    chainz_tui::run(chainz, runtime, crate::load::health_store(), options)
 }
 
 #[cfg(test)]

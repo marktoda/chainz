@@ -1,8 +1,10 @@
 //! The `chainz` binary: clap surface, pickers, output, and dispatch.
 //!
-//! `exec` (and its subshell), `env` and `ls` call only `chainz-core` (synchronous, no
-//! sockets, no threads). Commands that talk to the network build a
-//! single-threaded tokio runtime on demand through [`net::block_on`].
+//! `exec` (and its subshell) and `env` call only `chainz-core`; `ls` adds
+//! the recorded endpoint health ([`load::health_store`], a file read). All
+//! three are synchronous, with no sockets and no threads. Commands that
+//! talk to the network build a single-threaded tokio runtime on demand
+//! through [`net::block_on`].
 
 mod args;
 mod cli;

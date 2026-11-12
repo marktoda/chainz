@@ -5,7 +5,7 @@ mod update;
 pub use update::update;
 
 use crate::cli::{AddArgs, ListArgs, RmArgs, UseArgs};
-use crate::load::open;
+use crate::load::{health_store, open};
 use crate::probe::{check, probe_urls, ranked_urls};
 use crate::prompt::{Ask, Removal, Tty};
 use crate::{net, ui, view};
@@ -33,7 +33,7 @@ pub fn ls(args: &ListArgs) -> Result<i32> {
             serde_json::to_string_pretty(&view::chains(
                 chainz.config(),
                 args.reveal,
-                &net::health_store()
+                &health_store()
             ))?
         );
     } else {
@@ -79,7 +79,7 @@ pub fn use_default(args: &UseArgs) -> Result<i32> {
 fn show(chainz: &Chainz, query: &str, args: &ListArgs) -> Result<i32> {
     let config = chainz.config();
     let (name, chain) = resolve::configured(config, query, Policy::Prefix)?;
-    let v = view::ChainView::new(config, name, chain, args.reveal, &net::health_store());
+    let v = view::ChainView::new(config, name, chain, args.reveal, &health_store());
     if args.json {
         println!("{}", serde_json::to_string_pretty(&v)?);
         return Ok(0);

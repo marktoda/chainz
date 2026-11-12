@@ -105,7 +105,7 @@ pub async fn find_archive(
             Err(e) => eprintln!("{}", ui::warn(&format!("{e:#}"))),
         }
     }
-    let mut store = net::health_store();
+    let mut store = crate::load::health_store();
     for (name, target) in &candidates {
         let cached = store
             .capabilities(chain.id, name)

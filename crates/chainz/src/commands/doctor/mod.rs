@@ -406,7 +406,7 @@ fn rpc_health(chainz: &mut Chainz, fix: bool, report: &mut Report) -> Result<()>
         report.ok("no chains");
         return Ok(());
     }
-    let mut store = net::health_store();
+    let mut store = crate::load::health_store();
     let probed = net::block_on(probe::probe_chains(
         chainz,
         &chains,
@@ -512,7 +512,7 @@ fn endpoints(
     yes: bool,
     report: &mut Report,
 ) -> Result<()> {
-    let mut store = net::health_store();
+    let mut store = crate::load::health_store();
     let probed = net::block_on(probe::probe_chains(
         chainz,
         &[chain.to_string()],
