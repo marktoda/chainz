@@ -7,13 +7,14 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use chainz_core::Address;
+use chainz_rpc::abi;
 use chainz_rpc::{BlockId, RpcError, Target};
 use serde_json::{Value, json};
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 use tokio::time::Instant;
 
-use super::{Shared, Signals, abi, provider_slots, same_source};
+use super::{Shared, Signals, provider_slots, same_source};
 use crate::model::{Fault, Holding, Sheet, Update, Via};
 use crate::plan::{ChainPlan, Plan};
 use chainz_sys::now_ms;
@@ -155,18 +156,23 @@ async fn multicall(
     target: &Target,
     holders: &[(String, Address)],
 ) -> Result<Option<Vec<Option<u128>>>, RpcError> {
-    let multicall3 = abi::multicall3();
     let mut calls = Vec::with_capacity(holders.len() * (1 + chain.tokens.len()));
     for (_, holder) in holders {
-        calls.push((multicall3, abi::get_eth_balance(holder)));
+        let holder = holder.as_bytes();
+        calls.push((
+            abi::MULTICALL3,
+            abi::call_with_address(abi::GET_ETH_BALANCE, holder),
+        ));
         for token in &chain.tokens {
-            calls.push((token.address, abi::balance_of(holder)));
+            let call = abi::call_with_address(abi::BALANCE_OF, holder);
+            calls.push((*token.address.as_bytes(), call));
         }
     }
     let data = abi::encode_aggregate3(&calls);
+    let multicall3 = Address::from_bytes(abi::MULTICALL3).to_lower_hex();
     let returned = shared
         .client
-        .call(target, abi::MULTICALL3, &data, BlockId::Latest)
+        .call(target, &multicall3, &data, BlockId::Latest)
         .await?;
     if returned.is_empty() {
         return Ok(None);
@@ -189,7 +195,7 @@ async fn batch(
         for token in &chain.tokens {
             let call = json!({
                 "to": token.address.to_lower_hex(),
-                "data": chainz_rpc::hex::encode(&abi::balance_of(holder)),
+                "data": chainz_rpc::hex::encode(&abi::call_with_address(abi::BALANCE_OF, holder.as_bytes())),
             });
             calls.push(("eth_call", json!([call, "latest"])));
         }

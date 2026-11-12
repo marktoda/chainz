@@ -38,6 +38,39 @@ pub const FAILOVER_LAG: u64 = 2;
 /// over.
 pub const P50_WINDOW: usize = 16;
 
+/// Median latency over the last [`P50_WINDOW`] successful samples of a
+/// history (oldest first); the lower median for even counts. `None` when
+/// none succeeded.
+pub fn p50<'a, I>(samples: I) -> Option<Duration>
+where
+    I: IntoIterator<Item = &'a HealthSample>,
+    I::IntoIter: DoubleEndedIterator,
+{
+    p50_over(samples, P50_WINDOW)
+}
+
+/// [`p50`] over the last `window` successful samples.
+pub(crate) fn p50_over<'a, I>(samples: I, window: usize) -> Option<Duration>
+where
+    I: IntoIterator<Item = &'a HealthSample>,
+    I::IntoIter: DoubleEndedIterator,
+{
+    let mut latencies: Vec<u32> = samples
+        .into_iter()
+        .rev()
+        .filter(|s| s.error.is_none())
+        .take(window)
+        .map(|s| s.latency_ms)
+        .collect();
+    if latencies.is_empty() {
+        return None;
+    }
+    latencies.sort_unstable();
+    Some(Duration::from_millis(u64::from(
+        latencies[(latencies.len() - 1) / 2],
+    )))
+}
+
 /// One observation of an endpoint: a fresh probe, or a recorded sample.
 pub trait Observation {
     /// The head block it reported, if it answered.

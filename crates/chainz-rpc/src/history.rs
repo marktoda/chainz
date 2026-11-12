@@ -173,20 +173,7 @@ impl HealthStore {
     }
 
     fn p50_over(&self, chain_id: u64, endpoint: &str, window: usize) -> Option<Duration> {
-        let entry = self.entry(chain_id, endpoint)?;
-        let mut lat: Vec<u32> = entry
-            .samples
-            .iter()
-            .rev()
-            .filter(|s| s.error.is_none())
-            .take(window)
-            .map(|s| s.latency_ms)
-            .collect();
-        if lat.is_empty() {
-            return None;
-        }
-        lat.sort_unstable();
-        Some(Duration::from_millis(u64::from(lat[(lat.len() - 1) / 2])))
+        crate::health::p50_over(&self.entry(chain_id, endpoint)?.samples, window)
     }
 
     /// Cached capabilities for an endpoint.

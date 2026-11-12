@@ -3,6 +3,7 @@
 
 use std::collections::VecDeque;
 
+use chainz_rpc::health::{self, P50_WINDOW};
 use chainz_rpc::{HealthSample, HealthStore};
 
 use super::push_capped;
@@ -10,11 +11,6 @@ use super::status::{SLOW_FACTOR, SLOW_FLOOR_MS, lag_blocks, median};
 use super::traffic::{FEED_CAP, FeedItem, TrafficSnapshot};
 use super::update::{Fault, GatewayInfo, Head, Sheet, Update};
 use crate::plan::{ChainPlan, Plan, SignerPlan};
-
-/// Latency samples kept per chain for the sparkline and the median.
-pub const SAMPLE_CAP: usize = 64;
-/// Samples the median latency is taken over.
-pub const P50_WINDOW: usize = 16;
 
 /// One endpoint's live state.
 #[derive(Debug, Clone)]
@@ -47,14 +43,7 @@ impl EndpointState {
 
     /// Median latency over the recent successful probes.
     pub fn p50(&self) -> Option<u32> {
-        median(
-            self.samples
-                .iter()
-                .rev()
-                .filter(|s| s.error.is_none())
-                .take(P50_WINDOW)
-                .map(|s| s.latency_ms),
-        )
+        health::p50(&self.samples).map(|p50| u32::try_from(p50.as_millis()).unwrap_or(u32::MAX))
     }
 }
 
@@ -76,7 +65,8 @@ pub struct ChainState {
     /// Blocks behind the best head known when the last poll landed.
     pub lag: u64,
     /// Latency history of the active endpoint, oldest first; `None` is a
-    /// failure. Seeded from the health store, extended by every poll.
+    /// failure. Seeded from the health store, extended by every poll, and
+    /// as long as the store keeps ([`HealthStore::CAPACITY`]).
     pub samples: VecDeque<Option<u32>>,
     /// Its endpoints, in config order.
     pub endpoints: Vec<EndpointState>,
@@ -143,7 +133,8 @@ impl ChainState {
         }
     }
 
-    /// Median latency of the active endpoint over the recent polls.
+    /// Median latency of the active endpoint over the recent polls (the
+    /// same window as the probes' [`health::p50`]).
     pub fn p50(&self) -> Option<u32> {
         median(
             self.samples
@@ -285,14 +276,14 @@ impl State {
                 }
                 match result {
                     Ok(head) => {
-                        push_capped(&mut c.samples, Some(head.latency_ms), SAMPLE_CAP);
+                        push_capped(&mut c.samples, Some(head.latency_ms), HealthStore::CAPACITY);
                         let best = c.best_probed_head().max(gateway_head);
                         c.lag = lag_blocks(&head, best, c.block_time, at_ms);
                         c.head = Some(head);
                         c.fault = None;
                     }
                     Err(fault) => {
-                        push_capped(&mut c.samples, None, SAMPLE_CAP);
+                        push_capped(&mut c.samples, None, HealthStore::CAPACITY);
                         c.fault = Some(fault);
                     }
                 }

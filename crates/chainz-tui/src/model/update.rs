@@ -18,6 +18,9 @@ pub struct Fault {
     /// How long a rate-limited endpoint asked to be left alone
     /// (`Retry-After`), when it said.
     pub retry_after: Option<Duration>,
+    /// The endpoint asked to slow down
+    /// ([`RpcError::is_rate_limited`]).
+    pub rate_limited: bool,
 }
 
 impl Fault {
@@ -28,6 +31,7 @@ impl Fault {
             message: message.into(),
             code: None,
             retry_after: None,
+            rate_limited: false,
         }
     }
 }
@@ -45,6 +49,7 @@ impl From<&RpcError> for Fault {
                 RpcError::RateLimited { retry_after } => *retry_after,
                 _ => None,
             },
+            rate_limited: error.is_rate_limited(),
         }
     }
 }

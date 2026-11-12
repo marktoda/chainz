@@ -34,10 +34,6 @@ pub fn pace(block_time: Option<f64>, tuning: &Tuning) -> Duration {
     }
 }
 
-/// The longest `Retry-After` a poller honours: past this, a hostile or
-/// confused server could park a chain for good.
-pub const MAX_RETRY_AFTER: Duration = Duration::from_secs(300);
-
 /// What the wait before a chain's next head poll depends on.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct Pacing {
@@ -61,9 +57,10 @@ pub(super) struct Pacing {
 /// - Healthy: [`pace`].
 /// - Failing: `error_pace`, doubling per failure (1×, 2×, 4×), and never
 ///   past the ceiling, which an idle dashboard waits outright. Only the
-///   server can stretch it further: a `Retry-After` (up to
-///   [`MAX_RETRY_AFTER`]) is honoured even past the ceiling, since polling
-///   sooner would only be refused again on the same metered key.
+///   server can stretch it further: a `Retry-After` (which the client caps
+///   at [`chainz_rpc::client::MAX_RETRY_AFTER`]) is honoured even past the
+///   ceiling, since polling sooner would only be refused again on the same
+///   metered key.
 pub(super) fn next_delay(p: Pacing, tuning: &Tuning) -> Duration {
     let ceiling = tuning.max_pace.max(tuning.min_pace);
     if p.failures > 0 {
@@ -76,7 +73,7 @@ pub(super) fn next_delay(p: Pacing, tuning: &Tuning) -> Duration {
                 .saturating_mul(1 << doublings)
                 .min(ceiling)
         };
-        let asked = p.retry_after.unwrap_or_default().min(MAX_RETRY_AFTER);
+        let asked = p.retry_after.unwrap_or_default();
         return backoff.max(asked);
     }
     if p.idle {

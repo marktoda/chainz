@@ -8,7 +8,6 @@
 //! probes only for the chain whose endpoints are on screen, and only while
 //! someone is pressing keys.
 
-pub mod abi;
 mod balances;
 mod heads;
 #[cfg(test)]
@@ -395,13 +394,6 @@ fn provider_slots(plan: &Plan) -> Vec<u32> {
 /// How often `--once` retries a rate-limited request.
 const ONCE_RETRIES: u32 = 2;
 
-/// A 429, or the JSON-RPC "limit exceeded" (-32005) some providers send
-/// instead.
-fn rate_limited(fault: &Fault) -> bool {
-    fault.class == ErrorClass::RateLimited
-        || (fault.class == ErrorClass::Rpc && fault.code == Some(chainz_rpc::error::LIMIT_EXCEEDED))
-}
-
 /// One round of everything `--once` reports: every chain's head and
 /// balances, and the gateway's metrics when one runs. No endpoint probes.
 pub async fn collect_once(shared: &Arc<Shared>, plan: &Plan) -> Vec<Update> {
@@ -428,7 +420,7 @@ pub async fn collect_once(shared: &Arc<Shared>, plan: &Plan) -> Vec<Update> {
                 let again = match &head {
                     Update::Head {
                         result: Err(fault), ..
-                    } => rate_limited(fault),
+                    } => fault.rate_limited,
                     Update::Head { block_time, .. } => block_time.is_none(),
                     _ => false,
                 };
@@ -445,7 +437,7 @@ pub async fn collect_once(shared: &Arc<Shared>, plan: &Plan) -> Vec<Update> {
                 for attempt in 1..=ONCE_RETRIES {
                     let again = matches!(
                         &balances,
-                        Update::Balances { result: Err(fault), .. } if rate_limited(fault)
+                        Update::Balances { result: Err(fault), .. } if fault.rate_limited
                     );
                     if !again {
                         break;

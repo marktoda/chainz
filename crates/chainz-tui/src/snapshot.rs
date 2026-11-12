@@ -10,8 +10,8 @@
 
 use serde::Serialize;
 
-use crate::fmt;
 use crate::model::{ChainState, State, TrafficSnapshot, Via};
+use chainz_rpc::abi::units::format_exact;
 
 /// The whole document.
 #[derive(Debug, Serialize)]
@@ -180,7 +180,7 @@ fn amount(raw: u128, decimals: u8, symbol: Option<&str>) -> Amount {
         symbol: symbol.map(str::to_string),
         decimals,
         raw: raw.map(|r| r.to_string()),
-        formatted: raw.map(|r| fmt::units_exact(r, decimals)),
+        formatted: raw.map(|r| format_exact(r, decimals)),
         saturated: raw.is_none(),
     }
 }

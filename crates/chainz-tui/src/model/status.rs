@@ -1,15 +1,12 @@
 //! Classification: ok / lag / slow / down for chains, ok / lagging /
 //! failing for endpoints.
 
-use chainz_rpc::health::ENDPOINT_LAG;
+use chainz_rpc::health::{CHAIN_LAG, Health, classify};
 use chainz_rpc::{ErrorClass, HealthSample};
 
-use super::state::{ChainState, EndpointState};
+use super::state::ChainState;
 use super::update::Head;
 
-/// A chain head this many blocks behind the best head seen for its chain
-/// is shown as `lag N`.
-pub const CHAIN_LAG_MIN: u64 = 3;
 /// Never call an endpoint slow below this median latency.
 pub const SLOW_FLOOR_MS: u32 = 200;
 /// An endpoint is slow when its median is this many times the median of
@@ -26,7 +23,7 @@ pub enum Status {
     Pending,
     /// Answering, current and fast.
     Ok,
-    /// This many blocks behind.
+    /// This many blocks behind ([`CHAIN_LAG`] or more).
     Lag(u64),
     /// Answering, but with a high median latency.
     Slow,
@@ -47,14 +44,15 @@ impl Status {
     }
 }
 
-/// The health of one endpoint, as shown in the Endpoints tab.
+/// The health of one endpoint, as shown in the Endpoints tab: the
+/// probes' [`Health`], plus what the dashboard knows without probing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EndpointStatus {
     /// Never probed, or not within [`PROBE_WINDOW_MS`] of the newest probe.
     Unknown,
-    /// Answered within [`ENDPOINT_LAG`] blocks of the best head.
+    /// Answered within [`ENDPOINT_LAG`](chainz_rpc::health::ENDPOINT_LAG) blocks of the best head.
     Ok,
-    /// More than [`ENDPOINT_LAG`] blocks behind the best head.
+    /// More than [`ENDPOINT_LAG`](chainz_rpc::health::ENDPOINT_LAG) blocks behind the best head.
     Lagging(u64),
     /// The last probe failed.
     Failing(ErrorClass),
@@ -85,7 +83,7 @@ impl ChainState {
             Status::Down(fault.class)
         } else if self.head.is_none() {
             Status::Pending
-        } else if self.lag >= CHAIN_LAG_MIN {
+        } else if self.lag >= CHAIN_LAG {
             Status::Lag(self.lag)
         } else if self.p50().is_some_and(|p| p >= slow_ms) {
             Status::Slow
@@ -104,37 +102,43 @@ impl ChainState {
             .filter_map(|e| Some(e.latest()?.at_ms))
             .max()
             .unwrap_or(0);
-        fn recent(e: &EndpointState, newest: u64) -> Option<&HealthSample> {
-            e.latest()
-                .filter(|s| s.at_ms.saturating_add(PROBE_WINDOW_MS) >= newest)
-        }
-        let current = |e| recent(e, newest);
-        let best = self
+        let current: Vec<Option<&HealthSample>> = self
             .endpoints
             .iter()
-            .filter_map(|e| current(e).filter(|s| s.error.is_none())?.head)
+            .map(|e| {
+                e.latest()
+                    .filter(|s| s.at_ms.saturating_add(PROBE_WINDOW_MS) >= newest)
+            })
+            .collect();
+        let observed: Vec<&HealthSample> = current.iter().flatten().copied().collect();
+        let mut health = classify(&observed).into_iter();
+        let best = observed
+            .iter()
+            .filter(|s| s.error.is_none())
+            .filter_map(|s| s.head)
             .max();
         self.endpoints
             .iter()
-            .map(|e| {
+            .zip(current)
+            .map(|(e, sample)| {
+                // In step with `observed`: one health per current sample.
+                let health = sample.and_then(|_| health.next());
                 if e.invalid.is_some() {
                     return (EndpointStatus::Invalid, None);
                 }
                 if e.websocket {
                     return (EndpointStatus::Websocket, None);
                 }
-                let Some(sample) = current(e) else {
+                let (Some(sample), Some(health)) = (sample, health) else {
                     return (EndpointStatus::Unknown, None);
                 };
-                if let Some(class) = sample.error {
-                    return (EndpointStatus::Failing(class), None);
-                }
                 let behind = best
                     .zip(sample.head)
                     .map(|(best, head)| best.saturating_sub(head));
-                match behind {
-                    Some(n) if n > ENDPOINT_LAG => (EndpointStatus::Lagging(n), behind),
-                    _ => (EndpointStatus::Ok, behind),
+                match health {
+                    Health::Failing(class) => (EndpointStatus::Failing(class), None),
+                    Health::Lagging { behind: n } => (EndpointStatus::Lagging(n), Some(n)),
+                    Health::Healthy => (EndpointStatus::Ok, behind),
                 }
             })
             .collect()

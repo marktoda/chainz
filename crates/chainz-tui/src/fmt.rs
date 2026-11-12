@@ -84,23 +84,6 @@ pub fn units(raw: u128, decimals: u8) -> String {
     format!("{whole}.{fraction:0width$}", width = FRACTION as usize)
 }
 
-/// The exact decimal string of `raw / 10^decimals` (for JSON).
-pub fn units_exact(raw: u128, decimals: u8) -> String {
-    let digits = raw.to_string();
-    let decimals = usize::from(decimals);
-    if decimals == 0 {
-        return digits;
-    }
-    let padded = format!("{digits:0>width$}", width = decimals + 1);
-    let (whole, fraction) = padded.split_at(padded.len() - decimals);
-    let fraction = fraction.trim_end_matches('0');
-    if fraction.is_empty() {
-        whole.to_string()
-    } else {
-        format!("{whole}.{fraction}")
-    }
-}
-
 /// Display width in terminal cells.
 pub fn width(s: &str) -> usize {
     UnicodeWidthStr::width(s)
@@ -216,10 +199,6 @@ mod tests {
         assert_eq!(units(15, 1), "1.5000");
         assert_eq!(units(7, 0), "7.0000");
         assert_eq!(units(u128::MAX, 18), ">3.4e38");
-        assert_eq!(units_exact(1_234_500_000_000_000_000, 18), "1.2345");
-        assert_eq!(units_exact(1, 18), "0.000000000000000001");
-        assert_eq!(units_exact(5_000_000, 6), "5");
-        assert_eq!(units_exact(42, 0), "42");
     }
 
     #[test]

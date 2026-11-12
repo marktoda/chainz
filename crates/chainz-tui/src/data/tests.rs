@@ -9,11 +9,16 @@ use chainz_rpc::{ErrorClass, RpcError};
 use serde_json::{Value, json};
 use tokio::runtime::Handle;
 
-use super::heads::{BlockClock, MAX_BLOCK_RATE, MAX_RETRY_AFTER, Pacing, Poller, next_delay, pace};
+use super::heads::{BlockClock, MAX_BLOCK_RATE, Pacing, Poller, next_delay, pace};
 use super::testing::*;
 use super::*;
 use crate::gateway::testing as gw;
 use crate::model::{EndpointStatus, Sheet, State, Status, Via};
+
+/// The Multicall3 address as an `eth_call` carries it.
+fn multicall3() -> String {
+    chainz_core::Address::from_bytes(chainz_rpc::abi::MULTICALL3).to_lower_hex()
+}
 
 const NOW: u64 = 1_700_000_000;
 
@@ -186,8 +191,9 @@ fn a_failing_chain_backs_off_within_the_ceiling_unless_the_server_asks() {
     assert_eq!(failing(1, Some(30), false), 30);
     assert_eq!(failing(3, Some(30), true), 30);
     assert_eq!(failing(2, Some(1), false), 8);
-    // ...but a server cannot park a chain for good.
-    assert_eq!(failing(1, Some(86_400), false), MAX_RETRY_AFTER.as_secs());
+    // ...as long as the client let it through: it caps what a server asks.
+    let most = chainz_rpc::client::MAX_RETRY_AFTER.as_secs();
+    assert_eq!(failing(1, Some(most), false), most);
 }
 
 #[tokio::test]
@@ -225,10 +231,10 @@ fn faults_keep_the_code_and_the_retry_after() {
     };
     assert_eq!(rpc(-32005, "limit exceeded").code, Some(-32005));
     // "Limit exceeded" is the code, not a substring of the message.
-    assert!(rate_limited(&rpc(-32005, "limit exceeded")));
-    assert!(rate_limited(&fault));
-    assert!(!rate_limited(&rpc(-32000, "upstream said -32005 earlier")));
-    assert!(!rate_limited(&rpc(-320_050, "some other error")));
+    assert!(rpc(-32005, "limit exceeded").rate_limited);
+    assert!(fault.rate_limited);
+    assert!(!rpc(-32000, "upstream said -32005 earlier").rate_limited);
+    assert!(!rpc(-320_050, "some other error").rate_limited);
 }
 
 #[test]
@@ -398,7 +404,7 @@ async fn balance_rpc(
             let to = params[0]["to"].as_str().unwrap().to_lowercase();
             let data = params[0]["data"].as_str().unwrap();
             let holder_a = data.ends_with(&HOLDER_A[2..].to_lowercase());
-            if to == abi::MULTICALL3.to_lowercase() {
+            if to == multicall3() {
                 multicall()
             } else if to == USDC.to_lowercase() {
                 // 12.5 USDC for A, 0 for B.
@@ -464,10 +470,7 @@ async fn balances_come_from_one_multicall_where_it_is_deployed() {
     let hits = rpc.hits();
     assert_eq!(hits.len(), 1);
     let call = &hits[0].body["params"][0];
-    assert_eq!(
-        call["to"].as_str().unwrap().to_lowercase(),
-        abi::MULTICALL3.to_lowercase()
-    );
+    assert_eq!(call["to"].as_str().unwrap().to_lowercase(), multicall3());
     let data = call["data"].as_str().unwrap();
     assert!(data.starts_with("0x82ad56cb"));
     for needle in [
