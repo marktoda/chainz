@@ -57,14 +57,22 @@ where
     median(latencies).map(|ms| Duration::from_millis(u64::from(ms)))
 }
 
-/// The median of `values`, the lower one for even counts; `None` for none.
+/// The median of `values`, the lower one for even counts (`percentile(_,
+/// 50)`); `None` for none.
 pub fn median(values: impl IntoIterator<Item = u32>) -> Option<u32> {
     let mut values: Vec<u32> = values.into_iter().collect();
-    if values.is_empty() {
-        return None;
+    (!values.is_empty()).then(|| percentile(&mut values, 50))
+}
+
+/// Nearest-rank percentile of `samples` (sorted in place); the default
+/// (zero) for none. Every latency figure chainz reports uses it.
+pub fn percentile<T: Ord + Copy + Default>(samples: &mut [T], pct: usize) -> T {
+    if samples.is_empty() {
+        return T::default();
     }
-    values.sort_unstable();
-    Some(values[(values.len() - 1) / 2])
+    samples.sort_unstable();
+    let rank = (samples.len() * pct).div_ceil(100).max(1);
+    samples[rank - 1]
 }
 
 /// One observation of an endpoint: a fresh probe, or a recorded sample.
@@ -390,6 +398,9 @@ mod tests {
         assert_eq!(median([3, 1, 2]), Some(2));
         assert_eq!(median([4, 1, 3, 2]), Some(2));
         assert_eq!(median([]), None);
+        assert_eq!(percentile::<u32>(&mut [], 50), 0);
+        assert_eq!(percentile(&mut [7], 95), 7);
+        assert_eq!(percentile(&mut [4, 1, 3, 2], 95), 4);
     }
 
     #[test]

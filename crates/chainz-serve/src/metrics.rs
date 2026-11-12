@@ -13,7 +13,7 @@ use std::sync::Mutex;
 use chainz_rpc::ErrorClass;
 use chainz_rpc::control::{MetricsRow, MetricsSnapshot, MetricsTotals, MetricsWindow, Window};
 
-use crate::percentile::percentile;
+use chainz_rpc::health::percentile;
 
 const SHORT_WINDOW: u64 = Window::Short.secs();
 const LONG_WINDOW: u64 = Window::Long.secs();

@@ -24,7 +24,6 @@ mod http;
 mod inspector;
 mod limiter;
 mod metrics;
-mod percentile;
 mod pinned;
 mod router;
 mod state;
