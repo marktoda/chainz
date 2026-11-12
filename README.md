@@ -341,7 +341,8 @@ otherwise only the credential-shaped parts of a URL or header are masked
 parse is masked whole.
 
 Exit codes: 0 on success, 1 for an error, 2 for a usage error (a missing
-argument off a terminal included), 130 for a cancelled prompt.
+argument off a terminal included, such as a chain with no default set),
+130 for a cancelled prompt.
 
 ## Migrating from v1
 

@@ -65,7 +65,9 @@ errors are rendered from the clap definition.
 Exit codes: 0 on success, also when stdout closes early (`chainz … | head`);
 1 for an error (`Error: …` on stderr) or a result the command reports
 itself (`doctor` found problems, `addr find` matched nothing, `serve status`
-found no gateway, a fork's anvil died); 2 for a usage error; 126 and 127
+found no gateway, a fork's anvil died); 2 for a usage error, a missing
+argument off a terminal included (always `cli::usage_error(path, message)`,
+which prints the subcommand's usage line); 126 and 127
 when `exec`'s command can't run or doesn't exist; 130 when a prompt is
 cancelled; a foreground `fork` exits 130 after SIGINT, 143 after SIGTERM or
 `fork stop`, 129 after SIGHUP.

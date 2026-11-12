@@ -1,6 +1,6 @@
 //! `var …`: variables referenced as `${NAME}`; values live in secrets.toml.
 
-use crate::cli::{VarCommand, VarGetArgs, VarLsArgs, VarNameArgs, VarSetArgs};
+use crate::cli::{VarCommand, VarGetArgs, VarLsArgs, VarNameArgs, VarSetArgs, usage_error};
 use crate::load::open;
 use crate::prompt::{self, StdinTrim, read_stdin_secret};
 use crate::ui;
@@ -54,7 +54,10 @@ fn set(args: &VarSetArgs) -> Result<i32> {
         None => {
             let terminal = prompt::Terminal;
             if !terminal.is_interactive() {
-                bail!("no value given: pipe it with --stdin");
+                return Err(usage_error(
+                    &["var", "set"],
+                    "no value given: pipe it with --stdin",
+                ));
             }
             terminal.secret(&format!("Value for {name}: "))?
         }

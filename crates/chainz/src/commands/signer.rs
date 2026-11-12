@@ -2,7 +2,9 @@
 //! read here (add, migrate) and by `exec --expose-key`.
 
 use crate::args::parse_address;
-use crate::cli::{JsonArgs, SignerAddArgs, SignerCommand, SignerMigrateArgs, SignerRmArgs};
+use crate::cli::{
+    JsonArgs, SignerAddArgs, SignerCommand, SignerMigrateArgs, SignerRmArgs, usage_error,
+};
 use crate::load::open;
 use crate::prompt::{self, Consent, StdinTrim, Terminal, read_stdin_secret};
 use crate::{ui, view};
@@ -46,7 +48,10 @@ fn read_key(
         return read_stdin_secret("private key", StdinTrim::Whitespace);
     }
     if !terminal.is_interactive() {
-        bail!("no key given: pipe it with --stdin");
+        return Err(usage_error(
+            &["signer", "add"],
+            "no key given: pipe it with --stdin",
+        ));
     }
     terminal.secret(&format!("Private key for {name}: "))
 }
@@ -82,7 +87,7 @@ pub fn add(
             let path = args
                 .path
                 .clone()
-                .ok_or_else(|| anyhow!("a keystore signer needs --path"))?;
+                .ok_or_else(|| usage_error(&["signer", "add"], "a keystore signer needs --path"))?;
             let derived = match signer::keystore_address(&paths::expand_tilde(&path)) {
                 Ok(derived) => Some(derived),
                 Err(e) => {
@@ -108,7 +113,12 @@ pub fn add(
         Backend::OnePassword => {
             let (vault, item) = match (args.vault.clone(), args.item.clone()) {
                 (Some(v), Some(i)) => (v, i),
-                _ => bail!("a 1password signer needs --vault and --item"),
+                _ => {
+                    return Err(usage_error(
+                        &["signer", "add"],
+                        "a 1password signer needs --vault and --item",
+                    ));
+                }
             };
             let address = match address {
                 Some(a) => a,

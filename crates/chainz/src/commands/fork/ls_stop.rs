@@ -2,7 +2,7 @@
 
 use super::process;
 use super::start::anvil_target;
-use crate::cli::{ForkStopArgs, JsonArgs};
+use crate::cli::{ForkStopArgs, JsonArgs, usage_error};
 use crate::{net, ui, view};
 use anyhow::{Context as _, Result, bail};
 use chainz_core::fmt::{group, uptime};
@@ -125,7 +125,12 @@ pub fn stop(args: &ForkStopArgs) -> Result<i32> {
                 None => bail!("no fork named '{name}' (running: {})", live.join(", ")),
             }
         }
-        (None, false) => bail!("which fork? chainz fork stop NAME, or --all"),
+        (None, false) => {
+            return Err(usage_error(
+                &["fork", "stop"],
+                "which fork? chainz fork stop NAME, or --all",
+            ));
+        }
     };
     if targets.is_empty() {
         println!("no forks running");

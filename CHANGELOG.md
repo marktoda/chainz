@@ -156,8 +156,10 @@ changed before 2.0.0; they are listed under Removed and Changed.
 - Exit codes: 0 on success, also when stdout is closed early (`chainz … |
   head`); 1 for an error, or a result the command reports itself (`doctor`
   problems, `addr find` with no match, `serve status` with no gateway); 2
-  for every usage error (including `chain set` and `chain add` without what
-  they need off a terminal, and removed commands); 126 and 127 from `exec`
+  for every usage error (including a missing chain off a terminal for
+  `exec`, `shell`, `env`, `use`, `addr add`, `chain set` and `chain add`,
+  `fork stop` with no name, `signer add` or `var set` without the key or
+  value off a terminal, and removed commands); 126 and 127 from `exec`
   when the command can't run or doesn't exist; 130 when a prompt is
   cancelled; and for a foreground `fork`, 130 after Ctrl-C, 143 after
   SIGTERM or `fork stop`, 129 after SIGHUP.
