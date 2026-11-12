@@ -56,19 +56,25 @@ pub fn to_target(route: &Route) -> Result<Target> {
         .map_err(|e| anyhow!("chain '{}' endpoint '{}': {e}", route.chain, route.endpoint))
 }
 
-/// The persisted endpoint health store. When it can't be read, that is
-/// said on stderr and an empty store is used (one that still saves, when
-/// there is a state directory).
-pub fn health_store() -> HealthStore {
-    let dir = match paths::state_dir() {
-        Ok(dir) => dir,
-        Err(e) => {
+/// The state directory (endpoint health history, capability tags), or
+/// `None` with a warning on stderr when there is none.
+pub fn state_dir() -> Option<std::path::PathBuf> {
+    paths::state_dir()
+        .map_err(|e| {
             eprintln!(
                 "{}",
                 ui::warn(&format!("no endpoint health history: {e:#}"))
             );
-            return HealthStore::empty();
-        }
+        })
+        .ok()
+}
+
+/// The persisted endpoint health store. When it can't be read, that is
+/// said on stderr and an empty store is used (one that still saves, when
+/// there is a state directory).
+pub fn health_store() -> HealthStore {
+    let Some(dir) = state_dir() else {
+        return HealthStore::empty();
     };
     HealthStore::load(&dir).unwrap_or_else(|e| {
         eprintln!(
