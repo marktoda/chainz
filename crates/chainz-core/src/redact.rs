@@ -97,9 +97,9 @@ pub fn url(value: &str, reveal: bool) -> String {
     out
 }
 
-/// A header value for display: verbatim with `reveal`, else templates and
-/// plain words (`Bearer`, `application/json`) kept and every other literal
-/// word masked.
+/// A header value for display: verbatim with `reveal`, else `${VAR}`
+/// templates and a fixed list of auth schemes and media types kept, and
+/// every other literal word masked (fails closed).
 pub fn header(value: &str, reveal: bool) -> String {
     if reveal {
         return value.to_string();
@@ -135,10 +135,20 @@ pub fn header(value: &str, reveal: bool) -> String {
     out
 }
 
-/// A word a header shows: empty, or short and digit-free (`Bearer`,
-/// `application/json`). Anything else may be a key.
+/// A word a header shows: empty, an auth scheme or a media type. Any
+/// other literal word may be a key.
 fn is_plain_word(word: &str) -> bool {
-    word.is_empty() || (word.len() < 20 && !word.bytes().any(|b| b.is_ascii_digit()))
+    const SHOWN: &[&str] = &[
+        "Bearer",
+        "Basic",
+        "Token",
+        "Digest",
+        "application/json",
+        "text/plain",
+        "gzip",
+        "identity",
+    ];
+    word.is_empty() || SHOWN.iter().any(|w| w.eq_ignore_ascii_case(word))
 }
 
 /// Literal text that is credential-shaped (templates never are).
@@ -370,7 +380,10 @@ mod tests {
         assert_eq!(header("application/json", false), "application/json");
         assert_eq!(header("Bearer abc123", false), "Bearer [REDACTED]");
         assert_eq!(header("sk-live-verylongsecretvalue", false), "[REDACTED]");
-        assert_eq!(header("a, b1", false), "a, [REDACTED]");
+        assert_eq!(header("a, b1", false), "[REDACTED], [REDACTED]");
+        // Letters-only literal keys are masked too.
+        assert_eq!(header("abcdefghijkl", false), "[REDACTED]");
+        assert_eq!(header("basic ${CREDS}", false), "basic ${CREDS}");
         assert_eq!(header("Bearer abc123", true), "Bearer abc123");
     }
 }
