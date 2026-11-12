@@ -596,8 +596,9 @@ names the file. `ErrorClass::phrase()` is the class in a sentence
 - Chain edits: `tx.edit_chain(name, &ChainEdit) -> Result<EditReport>` applies
   one patch (`chain set` flags or its menu): signer, `rpc` (an endpoint name,
   or a URL: an existing one activates, a new one is added with its secrets
-  extracted and activated; `ChainEdit::new_endpoint` says which, so the
-  caller probes exactly that), headers and `clear_headers` on that endpoint
+  extracted and activated; `ChainEdit::rpc_choice` says which,
+  `RpcChoice::{Existing(name), New(name, endpoint)}`, so the caller probes
+  exactly that and the menu shows it), headers and `clear_headers` on that endpoint
   (or the active one), failover, explorer (`Explorer::ETHERSCAN` creates the
   built-in `Explorer::etherscan()`:
   `api = "https://api.etherscan.io/v2/api?chainid=${CHAIN_ID}"`,

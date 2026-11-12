@@ -24,7 +24,7 @@ use std::path::Path;
 use toml_edit::{DocumentMut, InlineTable, Item, Key, Table, TableLike, Value, value};
 
 mod chain_edit;
-pub use chain_edit::{Attach, Attached, ChainEdit, EditReport};
+pub use chain_edit::{Attach, Attached, ChainEdit, EditReport, RpcChoice};
 
 /// The documents being edited inside [`Chainz::transact`](crate::store::Chainz::transact).
 pub struct Tx {

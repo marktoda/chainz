@@ -632,9 +632,27 @@ fn endpoints_from_urls_are_checked_named_and_matched_one_way() {
         rpc: Some("https://new.example".into()),
         ..Default::default()
     };
-    let (name, endpoint) = edit.new_endpoint("eth", &chain).unwrap().unwrap();
+    let Some(RpcChoice::New(name, endpoint)) = edit.rpc_choice("eth", &chain).unwrap() else {
+        panic!("a new URL is a new endpoint");
+    };
     assert_eq!(
         (name.as_str(), endpoint.url.as_str()),
         ("new", "https://new.example")
+    );
+    let by = |rpc: &str| {
+        let edit = ChainEdit {
+            rpc: Some(rpc.into()),
+            ..Default::default()
+        };
+        edit.rpc_choice("eth", &chain)
+    };
+    let existing = Some(RpcChoice::Existing("b".to_string()));
+    assert_eq!(by("b").unwrap(), existing);
+    assert_eq!(by("https://b.example/").unwrap(), existing);
+    assert!(
+        by("nope")
+            .unwrap_err()
+            .to_string()
+            .contains("no endpoint 'nope'")
     );
 }

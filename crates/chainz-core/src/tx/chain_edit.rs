@@ -47,16 +47,20 @@ impl ChainEdit {
         *self == ChainEdit::default()
     }
 
-    /// The endpoint `--rpc` would add to `chain` (named `name`), with the
-    /// edit's headers: `None` when `rpc` is unset or names an endpoint the
-    /// chain has (by name or URL). An error when it is neither an endpoint
-    /// nor a URL [`Tx::edit_chain`] would accept.
-    pub fn new_endpoint(&self, name: &str, chain: &Chain) -> Result<Option<(String, Endpoint)>> {
+    /// What `--rpc` means for `chain` (named `name`): `None` when unset,
+    /// an endpoint the chain has, or a new endpoint to add. An error when
+    /// it is neither an endpoint nor a URL [`Tx::edit_chain`] would accept.
+    /// The one owner of that rule: the edit, the caller's chain-ID probe
+    /// and the `chain set` menu all go by it.
+    pub fn rpc_choice(&self, name: &str, chain: &Chain) -> Result<Option<RpcChoice>> {
         let Some(rpc) = self.rpc.as_deref() else {
             return Ok(None);
         };
-        if chain.rpcs.contains_key(rpc) || chain.endpoint_at(rpc).is_some() {
-            return Ok(None);
+        if chain.rpcs.contains_key(rpc) {
+            return Ok(Some(RpcChoice::Existing(rpc.to_string())));
+        }
+        if let Some(existing) = chain.endpoint_at(rpc) {
+            return Ok(Some(RpcChoice::Existing(existing.to_string())));
         }
         if !rpc.contains("://") {
             bail!(
@@ -80,8 +84,19 @@ impl ChainEdit {
                 .headers
                 .insert(header.to_string(), value.trim().to_string());
         }
-        Ok(Some((ep_name, endpoint)))
+        Ok(Some(RpcChoice::New(ep_name, endpoint)))
     }
+}
+
+/// What `--rpc` means for a chain ([`ChainEdit::rpc_choice`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RpcChoice {
+    /// An endpoint the chain has, named by its name or its URL (a trailing
+    /// `/` ignored): that endpoint's name.
+    Existing(String),
+    /// A URL to add as a new endpoint: its name, and the endpoint with the
+    /// edit's headers.
+    New(String, Endpoint),
 }
 
 /// What [`Tx::edit_chain`] did, for the caller to report.
@@ -258,27 +273,25 @@ impl Tx {
         report: &mut EditReport,
     ) -> Result<()> {
         // A new endpoint is added, with the header flags, and activated.
-        if let Some((ep_name, endpoint)) = edit.new_endpoint(name, chain)? {
-            for (header, _) in &endpoint.headers {
-                report
-                    .changes
-                    .push(format!("header {header} set on {ep_name}"));
-            }
-            let (ep_name, moved) =
-                self.add_endpoint_url(name, Some(&ep_name), &endpoint, EndpointRole::Active)?;
-            report.moved = moved;
-            report.added_endpoint = Some(ep_name.clone());
-            report.changes.push(format!("active endpoint: {ep_name}"));
-            return Ok(());
-        }
         // Else the header flags apply to the `--rpc` endpoint, or the
         // active one.
-        let ep_name = match edit.rpc.as_deref() {
-            None => chain.rpc.as_str(),
-            Some(rpc) if chain.rpcs.contains_key(rpc) => rpc,
-            Some(rpc) => chain.endpoint_at(rpc).unwrap_or(rpc),
-        }
-        .to_string();
+        let ep_name = match edit.rpc_choice(name, chain)? {
+            None => chain.rpc.clone(),
+            Some(RpcChoice::Existing(ep_name)) => ep_name,
+            Some(RpcChoice::New(ep_name, endpoint)) => {
+                for (header, _) in &endpoint.headers {
+                    report
+                        .changes
+                        .push(format!("header {header} set on {ep_name}"));
+                }
+                let (ep_name, moved) =
+                    self.add_endpoint_url(name, Some(&ep_name), &endpoint, EndpointRole::Active)?;
+                report.moved = moved;
+                report.added_endpoint = Some(ep_name.clone());
+                report.changes.push(format!("active endpoint: {ep_name}"));
+                return Ok(());
+            }
+        };
         let Some(mut endpoint) = chain.rpcs.get(&ep_name).cloned() else {
             bail!("chain '{name}' has no active endpoint '{ep_name}'");
         };

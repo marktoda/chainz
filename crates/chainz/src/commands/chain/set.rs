@@ -12,7 +12,7 @@ use crate::view;
 use anyhow::Result;
 use chainz_core::model::{Config, Explorer};
 use chainz_core::resolve::{self, Policy};
-use chainz_core::tx::{ChainEdit, EditReport};
+use chainz_core::tx::{ChainEdit, EditReport, RpcChoice};
 use zeroize::Zeroizing;
 
 /// `chain set`, or `update` (`command` is how it was invoked:
@@ -106,8 +106,8 @@ fn build_edit(
 /// the headers the edit gives it).
 fn check_new_url(chainz: &chainz_core::Chainz, name: &str, edit: &ChainEdit) -> Result<()> {
     let chain = &chainz.config().chains[name];
-    match edit.new_endpoint(name, chain)? {
-        Some((ep, endpoint)) if !endpoint.is_websocket() => {
+    match edit.rpc_choice(name, chain)? {
+        Some(RpcChoice::New(ep, endpoint)) if !endpoint.is_websocket() => {
             check(chainz, name, chain.id, &ep, &endpoint)
         }
         _ => Ok(()),
@@ -268,16 +268,15 @@ impl Shown {
             });
         let aliases = pending_aliases.as_ref().unwrap_or(&chain.aliases);
         Shown {
-            rpc: match edit.new_endpoint(name, chain) {
-                Ok(Some((_, endpoint))) => chainz_core::redact::url(&endpoint.url, false),
-                _ => match edit.rpc.as_deref() {
-                    Some(rpc) if rpc.contains("://") => match chain.endpoint_at(rpc) {
-                        Some(endpoint) => endpoint.to_string(),
-                        None => chainz_core::redact::url(rpc, false),
-                    },
-                    Some(endpoint) => endpoint.to_string(),
-                    None => chain.rpc.clone(),
-                },
+            rpc: match edit.rpc_choice(name, chain) {
+                Ok(None) => chain.rpc.clone(),
+                Ok(Some(RpcChoice::Existing(endpoint))) => endpoint,
+                Ok(Some(RpcChoice::New(_, endpoint))) => {
+                    chainz_core::redact::url(&endpoint.url, false)
+                }
+                // Neither an endpoint nor a usable URL (`Done` reports
+                // why): shown redacted, as it may hold a key.
+                Err(_) => chainz_core::redact::url(edit.rpc.as_deref().unwrap_or_default(), false),
             },
             signer: match &edit.signer {
                 Some(signer) => or_dash(signer.as_deref()),
