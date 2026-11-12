@@ -101,14 +101,14 @@ impl Route {
 impl Chain {
     /// The chain's endpoints in preference order: the active one, then the
     /// failover list, then the rest in config order, each once (names that
-    /// are not defined are skipped). `http_only` leaves out websockets.
+    /// are not defined are skipped). `http_only` keeps only HTTP endpoints.
     pub fn endpoints_by_preference(&self, http_only: bool) -> Vec<(&str, &Endpoint)> {
         let preferred = std::iter::once(&self.rpc).chain(&self.failover);
         let mut order: Vec<(&str, &Endpoint)> = Vec::with_capacity(self.rpcs.len());
         for name in preferred.chain(self.rpcs.keys()) {
             if let Some(endpoint) = self.rpcs.get(name)
                 && !order.iter().any(|(seen, _)| *seen == name.as_str())
-                && !(http_only && endpoint.is_websocket())
+                && (!http_only || endpoint.is_http())
             {
                 order.push((name.as_str(), endpoint));
             }

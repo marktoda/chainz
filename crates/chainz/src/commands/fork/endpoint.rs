@@ -23,7 +23,7 @@ pub async fn pin_active(
         .rpcs
         .get(name)
         .ok_or_else(|| anyhow!("chain '{parent}' has no endpoint '{name}'"))?;
-    if endpoint.is_websocket() {
+    if !endpoint.is_http() {
         bail!(
             "chain '{parent}' is on websocket endpoint '{name}', which a fork can't use; activate an HTTP endpoint with `chainz rpc use {parent} NAME`"
         );

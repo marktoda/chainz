@@ -9,6 +9,7 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use chainz_core::Chainz;
 use chainz_core::fmt::{group, short_address};
 use chainz_core::forks;
+use chainz_core::labels;
 use chainz_core::model::{Chain, Config};
 use chainz_core::runtime::{ForkClaim, ForkRecord, LOOPBACK, Runtime, loopback_url};
 use chainz_rpc::{HttpUpstream, RetryPolicy, RpcClient, Target};
@@ -109,7 +110,7 @@ fn plan_funding(
     Ok(Some(FundPlan {
         signer,
         address,
-        native_symbol: fund::native_symbol(chain.id),
+        native_symbol: labels::native_symbol(chain.id),
         tokens: fund::plan_tokens(config, chain_name, chain.id, options.spec.unwrap_or(""))?,
     }))
 }

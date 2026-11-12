@@ -475,15 +475,19 @@ fn expose_key_needs_a_signer_and_no_fork_and_an_unlocked_key() {
         err.contains("`chainz chain set nosigner --signer NAME`"),
         "{err}"
     );
-    f.runtime
-        .write_fork(&ForkRecord {
+    let claim = f.runtime.claim_fork("eth-fork").unwrap().unwrap();
+    claim
+        .register(&ForkRecord {
+            format: ForkRecord::FORMAT,
             name: "eth-fork".into(),
             pid: 1,
+            anvil_pid: 2,
             port: 8602,
             parent: "eth".into(),
             chain_id: 1,
             fork_block: None,
             started_at: 0,
+            ready: true,
         })
         .unwrap();
     let err = ctx(&f, "eth-fork", &expose).unwrap_err().to_string();

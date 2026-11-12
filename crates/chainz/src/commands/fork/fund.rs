@@ -4,7 +4,7 @@
 
 use anyhow::{Result, anyhow, bail};
 use chainz_core::Address;
-use chainz_core::labels::{LabelIndex, builtin_tokens};
+use chainz_core::labels::{LabelIndex, NATIVE_DECIMALS, builtin_tokens};
 use chainz_core::model::Config;
 use chainz_rpc::erc20;
 use chainz_rpc::{BlockId, RpcClient, Target};
@@ -12,7 +12,6 @@ use serde_json::{Value, json};
 
 /// Native units given to the signer.
 pub const NATIVE_AMOUNT: &str = "1000";
-const NATIVE_DECIMALS: u8 = 18;
 
 /// One `name=amount` pair, resolved before anvil starts.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -165,22 +164,6 @@ fn decimal_to_quantity(digits: &str) -> Option<String> {
         }
     }
     Some(out)
-}
-
-/// The native token's symbol, for display only.
-pub fn native_symbol(chain_id: u64) -> &'static str {
-    match chain_id {
-        56 | 97 => "BNB",
-        100 => "xDAI",
-        137 | 80002 => "POL",
-        196 => "OKB",
-        250 => "FTM",
-        5000 => "MNT",
-        5042 => "USDC",
-        42220 => "CELO",
-        43114 | 43113 => "AVAX",
-        _ => "ETH",
-    }
 }
 
 /// Fund `plan.address` on the fork at `anvil`. A grant that fails is
@@ -367,11 +350,5 @@ base = "0x00000000000000000000000000000000000c0de1"
         assert!(err("udsc=1").contains("did you mean @usdc?"));
         assert!(err("usdc=0.0000001").contains("more than 6 decimal places"));
         assert!(plan_tokens(&config(), "base", 8453, "").unwrap().is_empty());
-    }
-
-    #[test]
-    fn native_symbols() {
-        assert_eq!(native_symbol(8453), "ETH");
-        assert_eq!(native_symbol(137), "POL");
     }
 }
