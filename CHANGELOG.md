@@ -92,7 +92,9 @@ changed before 2.0.0; they are listed under Removed and Changed.
   configured chain, and `… | chainz label` to annotate addresses in any
   output, including the left-padded 32-byte address topics `cast logs`
   prints (`usdc(0x000…a02913)`, the word kept as it came); a terminal on
-  stdin is a usage error instead of a hang. `label import` labels the contracts in Foundry broadcast output
+  stdin is a usage error instead of a hang. "Every chain" is
+  `--all-chains` throughout: `label add`, `label ls --builtin` and
+  `label rm` (where `--chain '*'` still works). `label import` labels the contracts in Foundry broadcast output
   (`run-latest.json`) on the chain each run used, with `--dry-run`,
   `--prefix`, `--only`, `--force` and `--json`.
 - `doctor [CHAIN]`: files (every chainz path), config, credentials,

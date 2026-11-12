@@ -105,7 +105,7 @@ chainz signer ls [--json] | rm NAME [--unassign] [-y] | migrate [NAME|--all] [--
 chainz label [0x…] [--json]          # 0x…: which labels name it, on every chain
 chainz label [--chain C]             # no address: stdin filter, 0x… → name(0x…)
 chainz label add NAME ADDRESS [--chain C | --all-chains]
-chainz label ls [--chain C] [--builtin [--all]] [--json] | rm NAME [--chain C] [-y]
+chainz label ls [--chain C] [--builtin [--all-chains]] [--json] | rm NAME [--chain C|--all-chains] [-y]
 chainz label import PATH... [--dry-run] [--prefix P] [--only A,B] [--force] [--json]
 chainz var set NAME [VALUE | --stdin] | ls [NAME...] [-v] [--reveal] [--json] | rm NAME [-y]
 
@@ -350,7 +350,7 @@ The address book holds a name for an address, scoped globally or per chain. It w
 ```
 chainz label add myrouter 0x… --chain base     # per chain (default: current chain context)
 chainz label add my-safe 0x5afe… --all-chains  # every chain, explicitly
-chainz label ls [--chain base] [--builtin [--all]]   # built-in tokens on your chains; --all: every chain
+chainz label ls [--chain base] [--builtin [--all-chains]]   # built-in tokens on your chains; --all-chains: every chain
 chainz label 0x833589fC…                       # → usdc on base (built-in)
 chainz label rm myrouter --chain base
 

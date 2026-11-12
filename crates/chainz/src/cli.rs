@@ -740,7 +740,7 @@ pub struct LabelLsArgs {
     pub builtin: bool,
     /// With --builtin: the built-in tokens on every chain, configured or not
     #[arg(long, requires = "builtin", conflicts_with = "chain")]
-    pub all: bool,
+    pub all_chains: bool,
     /// JSON output
     #[arg(long)]
     pub json: bool,
@@ -754,6 +754,9 @@ pub struct LabelRmArgs {
     /// Only on this configured chain (or '*' for the every-chain entry)
     #[arg(long, add = ArgValueCompleter::new(complete::label_scopes))]
     pub chain: Option<String>,
+    /// Only the every-chain entry (the same as --chain '*')
+    #[arg(long, conflicts_with = "chain")]
+    pub all_chains: bool,
     /// Remove without asking (required off a terminal)
     #[arg(long, short)]
     pub yes: bool,

@@ -260,7 +260,7 @@ $ chainz fork stop base-fork        # or Ctrl-C, or --all
 chainz label add myrouter 0x… --chain base
 chainz label add my-safe 0x… --all-chains
 chainz label ls --chain base --builtin    # include built-in tokens
-chainz label ls --builtin --all           # …on every chain, not just yours
+chainz label ls --builtin --all-chains    # …on every chain, not just yours
 chainz label 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913   # what is this address?
 chainz label ls --json                    # also `label 0x… --json`
 cast logs … | chainz label --chain base   # 0x… → usdc(0x…), topics too

@@ -122,7 +122,7 @@ fn label_add_ls_find_rm_roundtrip() {
         "{base}"
     );
     assert!(!base.contains(USDT_ETH), "{base}");
-    // Built-in tokens on the configured chains only, unless --all.
+    // Built-in tokens on the configured chains only, unless --all-chains.
     let all = sb.ok(&["label", "ls", "--builtin"]);
     assert!(all.contains(USDC_BASE) && all.contains(USDT_ETH), "{all}");
     let configured = builtin_tokens()
@@ -130,13 +130,16 @@ fn label_add_ls_find_rm_roundtrip() {
         .filter(|t| [1, 8453].contains(&t.chain_id))
         .count();
     assert_eq!(all.lines().count(), 1 + 4 + configured, "{all}");
-    let every = sb.ok(&["label", "ls", "--builtin", "--all"]);
+    let every = sb.ok(&["label", "ls", "--builtin", "--all-chains"]);
     assert_eq!(
         every.lines().count(),
         1 + 4 + builtin_tokens().len(),
         "{every}"
     );
-    sb.cmd().args(["label", "ls", "--all"]).assert().code(2);
+    sb.cmd()
+        .args(["label", "ls", "--all-chains"])
+        .assert()
+        .code(2);
 
     // find: every label for the address, with its source.
     sb.cmd()
@@ -182,6 +185,20 @@ fn label_add_ls_find_rm_roundtrip() {
         .assert()
         .success()
         .stdout(format!("Removed @myrouter on eth ({ROUTER_ETH})\n"));
+    // --all-chains is --chain '*', the stored form.
+    sb.ok(&["label", "add", "other-safe", SAFE, "--all-chains"]);
+    sb.cmd()
+        .args(["label", "rm", "other-safe", "--all-chains"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "`chainz label rm other-safe --all-chains` removes @other-safe on every chain",
+        ));
+    sb.cmd()
+        .args(["label", "rm", "other-safe", "--all-chains", "--yes"])
+        .assert()
+        .success()
+        .stdout(format!("Removed @other-safe on every chain ({SAFE})\n"));
     sb.cmd()
         .args(["label", "rm", "my-safe", "--chain", "*", "--yes"])
         .assert()

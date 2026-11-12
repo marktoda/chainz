@@ -177,7 +177,7 @@ fn ls(args: &LabelLsArgs) -> Result<i32> {
             .labels()
             .filter(|l| match (l.source, l.scope) {
                 (LabelSource::Token, LabelScope::Chain(id)) => {
-                    builtin && (args.all || config.chain_by_id(id).is_some())
+                    builtin && (args.all_chains || config.chain_by_id(id).is_some())
                 }
                 (LabelSource::Token, LabelScope::AllChains) => builtin,
                 _ => true,
@@ -238,7 +238,11 @@ fn rm(args: &LabelRmArgs) -> Result<i32> {
     }
     // Removal is destructive: an exact name, alias or ID, never a prefix
     // (and never a fork: its labels are its parent's).
-    let scope = match args.chain.as_deref() {
+    let chain = match args.all_chains {
+        true => Some(ALL_CHAINS),
+        false => args.chain.as_deref(),
+    };
+    let scope = match chain {
         None => None,
         Some(ALL_CHAINS) => Some(ALL_CHAINS.to_string()),
         Some(query) => Some(
@@ -253,7 +257,9 @@ fn rm(args: &LabelRmArgs) -> Result<i32> {
         .map(|(scope, address)| format!("{} ({address})", scope_phrase(scope)))
         .collect();
     let mut command = format!("label rm {}", args.name);
-    if let Some(chain) = &args.chain {
+    if args.all_chains {
+        command.push_str(" --all-chains");
+    } else if let Some(chain) = &args.chain {
         command.push_str(&format!(" --chain {chain}"));
     }
     crate::prompt::confirm_removal(
