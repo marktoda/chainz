@@ -144,7 +144,10 @@ changed before 2.0.0; they are listed under Removed and Changed.
 - `signer ls` has a header row.
 - Chain resolution: an exact chain ID, name or alias wins over a fork of the
   same name, then a live fork's exact name, then a prefix. A fork resolves
-  only while its supervisor runs.
+  only while its supervisor runs. Well-known long names (`ethereum`,
+  `mainnet`, `arbitrum`, `optimism`, `avalanche`, `unichain`, `bnb`,
+  `worldchain`) are implicit aliases of the configured chain with that ID,
+  after every configured name and alias, so `exec arbitrum` finds `arb`.
 - `serve status` shows the gateway's own totals for the last 60 s, overall
   and per chain, with the true median latency (it used to average the
   per-method medians); `--json` adds `totals_60s` and `chain_totals_60s`.

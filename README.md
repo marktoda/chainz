@@ -55,7 +55,9 @@ Completing never migrates, writes or unlocks anything.
 | **Runtime** | Live processes chainz started: the gateway and forks | `serve`, `fork`, `top` |
 
 Chain references accept a name, an alias, a chain ID, an unambiguous prefix,
-or a live fork name. Destructive commands (`chain rm`) take only an exact
+or a live fork name. Well-known long names (`ethereum`, `arbitrum`,
+`optimism`…) find the configured chain with that ID, so `arbitrum` means
+your `arb`. Destructive commands (`chain rm`) take only an exact
 name or ID.
 
 ## Quick start

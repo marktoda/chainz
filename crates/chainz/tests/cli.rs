@@ -783,6 +783,24 @@ fn chain_set_renames_and_aliases() {
 }
 
 #[test]
+fn long_names_find_the_configured_short_name() {
+    let sb = Sandbox::new();
+    sb.seed(&[("arb", 42161), ("eth", 1)]);
+    for (query, chain) in [("arbitrum", "arb"), ("Ethereum", "eth"), ("mainnet", "eth")] {
+        sb.cmd()
+            .args(["exec", query, "--", "sh", "-c", "echo $CHAINZ_CHAIN"])
+            .assert()
+            .success()
+            .stdout(format!("{chain}\n"));
+    }
+    sb.cmd()
+        .args(["exec", "optimism", "--", "true"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("chain 'optimism' not found"));
+}
+
+#[test]
 fn ls_is_compact_and_json_is_machine_readable() {
     let sb = Sandbox::new();
     sb.seed(&[("eth", 1), ("base", 8453)]);

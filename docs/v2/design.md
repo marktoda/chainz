@@ -73,7 +73,7 @@ Forks are real chains while they run. `base-fork` resolves like any configured c
 3. `default` in the config, set with `chainz use`. Because this default is machine-wide and shared by every terminal, `exec` prints `chainz: base (default)` to stderr whenever the chain came from here.
 4. The interactive picker, but only on a TTY. Otherwise it is an error.
 
-Within step 1, a reference matches in this order: an exact chain ID, an exact name or alias (case-insensitive), a live fork's exact name, then an unambiguous prefix. A configured chain always beats a fork of the same name, and a fork whose supervisor is gone never resolves. Destructive commands (`rm`) accept only an exact name or ID.
+Within step 1, a reference matches in this order: an exact chain ID, an exact name or alias (case-insensitive), a well-known long name as an implicit alias of the configured chain with that ID (`arbitrum` finds `arb`; `names::LONG_NAMES`, kept beside the short-name table, whole names only, never a short name), a live fork's exact name, then an unambiguous prefix. A configured chain always beats a fork of the same name, and a fork whose supervisor is gone never resolves. Destructive commands (`rm`) accept only an exact name or ID.
 
 **How an endpoint is chosen for `exec`:** if `chainz serve` is running, the gateway URL for that chain is used. Otherwise the chain's active endpoint is used. `--direct` skips the gateway, and `--rpc <name>` picks a specific endpoint. `--rpc <url>` uses that URL for this run only, straight and without writing it (a URL the chain already has picks that endpoint), by the same name/URL rule as `chain set --rpc`.
 

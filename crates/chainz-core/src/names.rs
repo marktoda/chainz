@@ -82,6 +82,30 @@ pub const SHORT_NAMES: &[(u64, &str)] = &[
     (11155420, "op-sepolia"),
 ];
 
+/// Long, chainlist-style names for chain IDs in [`SHORT_NAMES`]: implicit
+/// aliases of the configured chain with that ID (`arbitrum` finds `arb`),
+/// tried after every configured name and alias
+/// ([`crate::resolve::implicit_alias`]). Each names one chain, and none is
+/// a short name, so they add no ambiguity.
+pub const LONG_NAMES: &[(u64, &str)] = &[
+    (1, "ethereum"),
+    (1, "mainnet"),
+    (10, "optimism"),
+    (56, "bnb"),
+    (130, "unichain"),
+    (480, "worldchain"),
+    (42161, "arbitrum"),
+    (43114, "avalanche"),
+];
+
+/// The chain ID a [long name](LONG_NAMES) stands for, in any case.
+pub fn long_name_id(name: &str) -> Option<u64> {
+    LONG_NAMES
+        .iter()
+        .find(|(_, long)| long.eq_ignore_ascii_case(name))
+        .map(|(id, _)| *id)
+}
+
 /// The built-in short name for a chain ID.
 pub fn short_name(chain_id: u64) -> Option<&'static str> {
     SHORT_NAMES
@@ -415,6 +439,21 @@ mod tests {
             "infura-3"
         );
         assert_eq!(short_name(42161), Some("arb"));
+    }
+
+    #[test]
+    fn long_names_stand_for_known_chains_and_never_clash() {
+        for (id, long) in LONG_NAMES {
+            assert!(short_name(*id).is_some(), "{long}: {id} has no short name");
+            assert!(is_valid_chain_name(long), "{long}");
+            assert!(
+                SHORT_NAMES.iter().all(|(_, short)| short != long),
+                "{long} is a short name"
+            );
+        }
+        assert_eq!(long_name_id("Arbitrum"), Some(42161));
+        assert_eq!(long_name_id("ethereum"), Some(1));
+        assert_eq!(long_name_id("arb"), None);
     }
 
     #[test]

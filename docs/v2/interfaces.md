@@ -663,7 +663,10 @@ names the file. `ErrorClass::phrase()` is the class in a sentence
   Result<(&str, &Chain)>` (no forks): `Policy::Prefix` (name, alias, ID or
   unambiguous prefix), `Policy::Exact` (name or ID: `chain rm`) or
   `Policy::ExactOrAlias` (`addr rm --chain`). `resolve::exact` (ID, name or
-  alias, any case) is the gateway's.
+  alias, any case) is the gateway's. Every policy but `Exact` then tries
+  `resolve::implicit_alias(config, query)`: a `names::LONG_NAMES` entry
+  (`arbitrum` → 42161) names the configured chain with that ID; fork names
+  may not take one.
 - Context: `context::build(&chainz, &runtime, &ChainRef, &ExecOptions) -> Result<Context>`
   (with `expose_key`, it refuses a fork or a chain without a signer), then
   `Context::unlock_key(&chainz, keys, prompter)` for `--expose-key`,

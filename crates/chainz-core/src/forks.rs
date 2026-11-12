@@ -47,6 +47,11 @@ pub fn check_fork_name(config: &Config, name: &str) -> Result<()> {
             );
         }
     }
+    if let Some((chain_name, _)) = crate::resolve::implicit_alias(config, name) {
+        bail!(
+            "fork name '{name}' already names configured chain '{chain_name}'; pick another with --name"
+        );
+    }
     Ok(())
 }
 
@@ -86,6 +91,13 @@ rpcs.a = "https://a"
         // Configured chain names and aliases, case-insensitively.
         assert!(check("base").unwrap_err().contains("configured chain"));
         assert!(check("mainnet").unwrap_err().contains("alias of"));
+        // Long names that stand for a configured chain.
+        assert!(
+            check("ethereum")
+                .unwrap_err()
+                .contains("names configured chain 'eth'")
+        );
+        assert_eq!(check("arbitrum"), Ok(()), "no arbitrum chain is configured");
         // Shape: a chain ID must never resolve to a fork, and the name is
         // a file name in the registry.
         for bad in ["8453", "", "Base", "a b", "a/b", "../x", "a.b", "-x", "@x"] {

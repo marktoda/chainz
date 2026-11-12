@@ -7,8 +7,9 @@
 //! 4. otherwise the caller opens a picker on a TTY, or fails.
 //!
 //! Within a reference: an exact chain ID, an exact name or alias
-//! (case-insensitive), then a live fork's exact name, then an unambiguous
-//! prefix of a name or alias. Configured chains come first: a fork never
+//! (case-insensitive), then a well-known long name as an implicit alias
+//! ([`implicit_alias`]: `arbitrum` finds the chain with ID 42161), then a
+//! live fork's exact name, then an unambiguous prefix of a name or alias. Configured chains come first: a fork never
 //! shadows one, and a dead fork never resolves. Each command matches under one [`Policy`]; destructive commands
 //! use [`Policy::Exact`]: name or ID only.
 
@@ -86,8 +87,8 @@ pub enum Policy {
     Prefix,
     /// An ID or the exact name: destructive commands (`chain rm`).
     Exact,
-    /// An ID, the exact name, or an alias (any case), never a prefix:
-    /// `addr rm --chain`.
+    /// An ID, the exact name, or an alias (any case, implicit ones too),
+    /// never a prefix: `addr rm --chain`.
     ExactOrAlias,
 }
 
@@ -104,13 +105,15 @@ pub fn configured<'c>(
             return Ok(found);
         }
         let exact = match policy {
-            Policy::Exact => config.chains.get_key_value(query),
+            Policy::Exact => config.chains.get_key_value(query).map(|(n, c)| found(n, c)),
             _ => config
                 .chains
                 .iter()
-                .find(|(name, chain)| *name == query || chain.matches_alias(query)),
+                .find(|(name, chain)| *name == query || chain.matches_alias(query))
+                .map(|(n, c)| found(n, c))
+                .or_else(|| implicit_alias(config, query)),
         };
-        return exact.map(|(n, c)| found(n, c)).ok_or_else(|| {
+        return exact.ok_or_else(|| {
             anyhow!("chain '{query}' not found; this command needs an exact chain name or ID")
         });
     }
@@ -143,8 +146,9 @@ pub fn configured<'c>(
 }
 
 /// [`Policy::Prefix`]'s exact matches only: an ID (an unknown ID is an
-/// error), then a name or alias in any case. The gateway resolves its URL
-/// paths this way, so they name the chains the CLI's references do.
+/// error), then a name or alias in any case, then an [`implicit_alias`].
+/// The gateway resolves its URL paths this way, so they name the chains
+/// the CLI's references do.
 pub fn exact<'c>(config: &'c Config, query: &str) -> Result<Option<(&'c str, &'c Chain)>> {
     if let Ok(id) = query.parse::<u64>() {
         return match config.chain_by_id(id) {
@@ -156,7 +160,16 @@ pub fn exact<'c>(config: &'c Config, query: &str) -> Result<Option<(&'c str, &'c
         .chains
         .iter()
         .find(|(name, chain)| name.eq_ignore_ascii_case(query) || chain.matches_alias(query))
-        .map(|(name, chain)| (name.as_str(), chain)))
+        .map(|(name, chain)| (name.as_str(), chain))
+        .or_else(|| implicit_alias(config, query)))
+}
+
+/// The configured chain a well-known long name stands for
+/// ([`names::LONG_NAMES`](crate::names::LONG_NAMES): `arbitrum`,
+/// `ethereum`), as an implicit alias of the chain with that ID. Callers try
+/// it only after every configured name and alias, so those always win.
+pub fn implicit_alias<'c>(config: &'c Config, query: &str) -> Option<(&'c str, &'c Chain)> {
+    crate::names::long_name_id(query).and_then(|id| config.chain_by_id(id))
 }
 
 /// What a command that needs a chain says when none is configured.
@@ -234,6 +247,43 @@ rpcs.a = "https://a"
         assert!(r("ba").unwrap_err().to_string().contains("ambiguous"));
         assert!(r("999").is_err());
         assert!(r("nope").unwrap_err().to_string().contains("not found"));
+    }
+
+    #[test]
+    fn long_names_are_implicit_aliases_after_configured_ones() {
+        let c = crate::model::Config::parse(
+            r#"
+version = 2
+[chains.arb]
+id = 42161
+rpc = "a"
+rpcs.a = "https://a"
+[chains.eth]
+id = 1
+rpc = "a"
+rpcs.a = "https://a"
+[chains.nova]
+id = 42170
+aliases = ["optimism"]
+rpc = "a"
+rpcs.a = "https://a"
+"#,
+        )
+        .unwrap();
+        let r = |q| resolve(&c, None, q).map(|r| r.name().to_string());
+        assert_eq!(r("arbitrum").unwrap(), "arb");
+        assert_eq!(r("Ethereum").unwrap(), "eth");
+        assert_eq!(r("mainnet").unwrap(), "eth");
+        // A configured alias wins (OP isn't configured, but even if it were).
+        assert_eq!(r("optimism").unwrap(), "nova");
+        // Only whole long names: no new prefixes.
+        assert!(r("arbitr").is_err());
+        // Not configured: nothing.
+        assert!(r("avalanche").is_err());
+        let alias = |q| configured(&c, q, Policy::ExactOrAlias).map(|(n, _)| n);
+        assert_eq!(alias("arbitrum").unwrap(), "arb");
+        assert!(configured(&c, "arbitrum", Policy::Exact).is_err());
+        assert_eq!(exact(&c, "ARBITRUM").unwrap().unwrap().0, "arb");
     }
 
     #[test]
