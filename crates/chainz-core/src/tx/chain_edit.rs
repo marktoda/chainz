@@ -186,11 +186,23 @@ impl ChainEdit {
         chain: &Chain,
         vars: &crate::secrets::Vars,
     ) -> Result<Vec<(String, Endpoint, EndpointRole)>> {
+        let choice = self.rpc_choice(name, chain, vars)?;
+        self.added_with(name, chain, choice.as_ref(), vars)
+    }
+
+    /// [`Self::added_endpoints`] given the `--rpc` choice already made.
+    fn added_with(
+        &self,
+        name: &str,
+        chain: &Chain,
+        choice: Option<&RpcChoice>,
+        vars: &crate::secrets::Vars,
+    ) -> Result<Vec<(String, Endpoint, EndpointRole)>> {
         let mut out = Vec::new();
         let mut chain = chain.clone();
-        if let Some(RpcChoice::New(ep_name, endpoint)) = self.rpc_choice(name, &chain, vars)? {
+        if let Some(RpcChoice::New(ep_name, endpoint)) = choice {
             chain.rpcs.insert(ep_name.clone(), endpoint.clone());
-            out.push((ep_name, endpoint, EndpointRole::Active));
+            out.push((ep_name.clone(), endpoint.clone(), EndpointRole::Active));
         }
         let headers_here = self.headers_on_added()?;
         for (ep_name, url) in &self.add_rpcs {
@@ -451,12 +463,15 @@ impl Tx {
         // flags on the one they name. Else the header flags apply to the
         // `--rpc` endpoint, or the active one.
         let secrets = self.secrets()?;
-        for (ep_name, endpoint, role) in edit.added_endpoints(name, chain, &secrets.vars)? {
+        let choice = edit.rpc_choice(name, chain, &secrets.vars)?;
+        for (ep_name, endpoint, role) in
+            edit.added_with(name, chain, choice.as_ref(), &secrets.vars)?
+        {
             let (ep_name, moved) = self.add_endpoint_url(name, Some(&ep_name), &endpoint, role)?;
             report.moved.extend(moved);
             report.added_endpoints.push(ep_name);
         }
-        match edit.rpc_choice(name, chain, &secrets.vars)? {
+        match choice {
             // Added and activated above, with the header flags.
             Some(RpcChoice::New(..)) => {}
             Some(RpcChoice::Existing(ep_name)) => {
@@ -490,7 +505,7 @@ impl Tx {
         report: &mut EditReport,
     ) -> Result<()> {
         let Some(mut endpoint) = chain.rpcs.get(ep_name).cloned() else {
-            bail!("chain '{name}' has no active endpoint '{ep_name}'");
+            bail!("chain '{name}' has no endpoint '{ep_name}'");
         };
         let mut changed = false;
         if edit.clear_headers && !endpoint.headers.is_empty() {

@@ -17,7 +17,7 @@
 //! Lock files are opened `O_CLOEXEC` (as std always does), so anvil and
 //! any other child never inherit the lock.
 
-use super::{Runtime, loopback_url, read_json, remove_if_exists, write_json};
+use super::{Runtime, loopback_url, read_record, remove_if_exists, write_json};
 use chainz_os::Contention;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
@@ -245,7 +245,10 @@ impl Runtime {
         if !safe_name(name) || !self.fork_live(name)? {
             return Ok(None);
         }
-        Ok(read_record(&self.fork_record_path(name))?.filter(|r| r.ready))
+        Ok(
+            read_record::<ForkRecord>(&self.fork_record_path(name), ForkRecord::FORMAT)?
+                .filter(|r| r.ready),
+        )
     }
 
     /// Every name in the registry, by name, with its liveness. Read-only:
@@ -287,7 +290,7 @@ impl Runtime {
             return Ok(false);
         };
         // Unreadable means nothing to stop; the files go regardless.
-        if let Ok(Some(record)) = read_record(&record_path) {
+        if let Ok(Some(record)) = read_record::<ForkRecord>(&record_path, ForkRecord::FORMAT) {
             stop_orphan(&record);
         }
         drop(claim);
@@ -318,7 +321,8 @@ impl Runtime {
 
     fn fork_entry(&self, name: String) -> io::Result<ForkEntry> {
         let live = self.fork_live(&name)?;
-        let record = read_record(&self.fork_record_path(&name)).map_err(|e| e.to_string());
+        let record = read_record::<ForkRecord>(&self.fork_record_path(&name), ForkRecord::FORMAT)
+            .map_err(|e| e.to_string());
         let supervisor = match &record {
             Ok(Some(record)) => Some(record.pid),
             _ => lock_owner(&self.fork_lock_path(&name)),
@@ -329,25 +333,6 @@ impl Runtime {
             supervisor,
             record,
         })
-    }
-}
-
-/// A fork record, refusing a format this chainz does not know.
-fn read_record(path: &Path) -> io::Result<Option<ForkRecord>> {
-    #[derive(Deserialize)]
-    struct Format {
-        format: Option<u32>,
-    }
-    let Some(format) = read_json::<Format>(path)? else {
-        return Ok(None);
-    };
-    match format.format {
-        Some(ForkRecord::FORMAT) => read_json(path),
-        Some(other) => Err(super::unknown_format(path, other)),
-        None => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("{} has no record format", path.display()),
-        )),
     }
 }
 

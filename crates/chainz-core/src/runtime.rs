@@ -283,12 +283,8 @@ impl Runtime {
             return Ok(GatewayState::Down);
         }
         let path = self.serve_json_path();
-        let info: Option<ServeInfo> = read_json(&path)?;
-        Ok(match info {
+        Ok(match read_record(&path, ServeInfo::FORMAT)? {
             None => GatewayState::Starting,
-            Some(info) if info.format != ServeInfo::FORMAT => {
-                return Err(unknown_format(&path, info.format));
-            }
             Some(info) => GatewayState::Up(info),
         })
     }
@@ -318,15 +314,28 @@ impl Runtime {
     }
 }
 
-fn unknown_format(path: &Path, format: u32) -> io::Error {
-    io::Error::new(
-        io::ErrorKind::InvalidData,
-        format!(
-            "{} has format {format}, which this chainz ({}) does not read",
-            path.display(),
-            env!("CARGO_PKG_VERSION")
-        ),
-    )
+/// A runtime record (`serve.json`, a fork record) of format `expected`,
+/// `None` when the file is missing. The `format` field is read first, so a
+/// record of another format is refused as such, whatever its other fields.
+fn read_record<T: for<'de> Deserialize<'de>>(path: &Path, expected: u32) -> io::Result<Option<T>> {
+    let Some(value) = read_json::<serde_json::Value>(path)? else {
+        return Ok(None);
+    };
+    let invalid = |message: String| io::Error::new(io::ErrorKind::InvalidData, message);
+    match value.get("format").and_then(serde_json::Value::as_u64) {
+        Some(format) if format == u64::from(expected) => {}
+        Some(format) => {
+            return Err(invalid(format!(
+                "{} has format {format}, which this chainz ({}) does not read",
+                path.display(),
+                env!("CARGO_PKG_VERSION")
+            )));
+        }
+        None => return Err(invalid(format!("{} has no record format", path.display()))),
+    }
+    T::deserialize(value)
+        .map(Some)
+        .map_err(|e| invalid(format!("{} is unreadable: {e}", path.display())))
 }
 
 fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> io::Result<Option<T>> {
@@ -443,6 +452,11 @@ mod tests {
             ..info()
         };
         write_json(&rt.serve_json_path(), &newer).unwrap();
+        let err = rt.gateway().unwrap_err().to_string();
+        assert!(err.contains("does not read"), "{err}");
+        // A newer format is refused as such, whatever its fields.
+        let other_fields = serde_json::json!({ "format": ServeInfo::FORMAT + 1 });
+        write_json(&rt.serve_json_path(), &other_fields).unwrap();
         let err = rt.gateway().unwrap_err().to_string();
         assert!(err.contains("does not read"), "{err}");
         drop(lock);
