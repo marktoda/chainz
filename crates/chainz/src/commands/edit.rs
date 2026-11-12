@@ -1,5 +1,5 @@
 //! `edit [CHAIN]`: config.toml, or one chain's table, in `$EDITOR`
-//! (validated on save).
+//! (validated on save). `edit --path` prints config.toml's path.
 
 use crate::cli::EditArgs;
 use crate::load::open_lenient;
@@ -9,6 +9,10 @@ use anyhow::{Context, Result, bail};
 use chainz_core::resolve::{self, Policy};
 
 pub fn run(args: &EditArgs) -> Result<i32> {
+    if args.path {
+        println!("{}", chainz_core::StorePaths::resolve()?.config().display());
+        return Ok(0);
+    }
     // Lenient, so a config that no longer validates can be fixed here;
     // opening also runs any pending v1 migration.
     let mut chainz = open_lenient()?;

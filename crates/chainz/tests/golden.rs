@@ -270,8 +270,9 @@ fn addr_add_keeps_comments_and_order() {
 
 // ---------------------------------------------------------------- migration
 
-/// `config migrate` on the v1 fixture core's migrate tests use: the dry
-/// run, the summary and the files written.
+/// The automatic migration of the v1 fixture core's migrate tests use
+/// (run by the first command, here `ls`): the summary and the files
+/// written.
 #[test]
 fn v1_fixture_migration() {
     let sb = Sandbox::new();
@@ -281,15 +282,8 @@ fn v1_fixture_migration() {
     let root = sb.root().to_str().unwrap().to_string();
     let scrub = |text: String| text.replace(&root, "<root>");
 
-    let dry = sb.run(&["config", "migrate", "--dry-run"]);
-    assert!(dry.status.success(), "{}", stderr(&dry));
-    golden("migrate/dry-run.stdout", &scrub(stdout(&dry)));
-    golden("migrate/dry-run.stderr", &scrub(stderr(&dry)));
-    assert!(!sb.config_path().exists());
-
-    let real = sb.run(&["config", "migrate"]);
+    let real = sb.run(&["ls"]);
     assert!(real.status.success(), "{}", stderr(&real));
-    golden("migrate/migrate.stdout", &scrub(stdout(&real)));
     golden("migrate/migrate.stderr", &scrub(stderr(&real)));
     golden("migrate/config.toml", &sb.config());
     golden("migrate/secrets.toml", &sb.secrets());

@@ -181,9 +181,8 @@ fn migration_writes_once_in_order_and_backs_up_v1() {
         status(&paths),
         Status::Pending(paths.v1_config().to_path_buf())
     );
-    // A dry run plans the same migration and writes nothing.
-    let planned = preview(&paths).unwrap().unwrap();
-    assert!(!paths.config().exists());
+    // The plan is what the migration writes.
+    let planned = plan(FIXTURE).unwrap();
 
     let handles: Vec<_> = (0..8)
         .map(|_| {
@@ -202,7 +201,6 @@ fn migration_writes_once_in_order_and_backs_up_v1() {
     assert_eq!(migrated, 1);
     assert!(!paths.v1_config().exists());
     assert_eq!(status(&paths), Status::Done);
-    assert!(preview(&paths).unwrap().is_none());
     assert_eq!(
         std::fs::read_to_string(paths.config()).unwrap(),
         planned.config_toml
@@ -212,7 +210,7 @@ fn migration_writes_once_in_order_and_backs_up_v1() {
         backup: Some(paths.dir().join("config.v1.json.bak")),
         ..Summary::default()
     };
-    let report = summary.report(Some(paths.config()));
+    let report = summary.report(paths.config());
     assert!(report[1].contains(" (v1 config kept as "), "{report:?}");
     let chainz = Chainz::open_at(paths.clone(), LoadMode::Strict).unwrap();
     assert_eq!(chainz.config().chains.len(), 17);

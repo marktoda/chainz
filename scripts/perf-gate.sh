@@ -26,7 +26,7 @@ export HOME="$root/home" XDG_CONFIG_HOME="$root/config" XDG_STATE_HOME="$root/st
   XDG_CACHE_HOME="$root/cache" XDG_RUNTIME_DIR="$root/runtime" CHAINZ_DISABLE_KEYRING=1
 unset CHAINZ_CHAIN ETH_RPC_URL CHAIN_ID
 cp "$fixture" "$root/config/chainz/config.json"
-"$v2" config migrate >/dev/null 2>&1
+"$v2" ls >/dev/null 2>&1  # migrates the v1 config
 test -f "$root/config/chainz/config.toml"
 cp "$fixture" "$root/config/chainz/config.json"
 

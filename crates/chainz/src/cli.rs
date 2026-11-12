@@ -133,12 +133,6 @@ pub enum Command {
     /// Check config, secrets, references and RPC health
     Doctor(DoctorArgs),
 
-    /// Config file paths and the v1 migration
-    Config {
-        #[command(subcommand)]
-        cmd: ConfigCommand,
-    },
-
     /// Print the shell loader for dynamic completions
     ///
     /// The loader calls back into chainz as you type, so chain names,
@@ -261,6 +255,9 @@ pub struct EditArgs {
     /// whole config.toml)
     #[arg(add = ArgValueCompleter::new(complete::configured_chains))]
     pub chain: Option<String>,
+    /// Print config.toml's path instead (`doctor` lists every chainz path)
+    #[arg(long, conflicts_with = "chain")]
+    pub path: bool,
 }
 
 #[derive(Debug, Args)]
@@ -848,28 +845,6 @@ pub struct VarRmArgs {
     /// Remove without asking (required off a terminal)
     #[arg(long, short)]
     pub yes: bool,
-}
-
-#[derive(Debug, Subcommand)]
-pub enum ConfigCommand {
-    /// Print the config file path
-    Path(ConfigPathArgs),
-    /// Migrate the v1 config.json
-    Migrate(ConfigMigrateArgs),
-}
-
-#[derive(Debug, Args)]
-pub struct ConfigPathArgs {
-    /// Print every chainz path (config, secrets, state, cache, runtime)
-    #[arg(long)]
-    pub all: bool,
-}
-
-#[derive(Debug, Args)]
-pub struct ConfigMigrateArgs {
-    /// Print the resulting config.toml without writing anything
-    #[arg(long)]
-    pub dry_run: bool,
 }
 
 #[cfg(test)]

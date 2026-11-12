@@ -181,25 +181,19 @@ impl fmt::Display for Summary {
 }
 
 impl Summary {
-    /// The report, one line each: the summary, what was written (with
-    /// `wrote`, the new `config.toml`; without, a dry run), then every item
-    /// that needs attention.
-    pub fn report(&self, wrote: Option<&Path>) -> Vec<String> {
+    /// The report, one line each: the summary, what was written (`config`,
+    /// the new `config.toml`), then every item that needs attention.
+    pub fn report(&self, config: &Path) -> Vec<String> {
         let mut lines = Vec::with_capacity(self.attention.len() + 2);
-        match wrote {
-            None => lines.push(format!("{self} (dry run: nothing written)")),
-            Some(config) => {
-                lines.push(self.to_string());
-                lines.push(match &self.backup {
-                    Some(backup) => format!(
-                        "wrote {} (v1 config kept as {})",
-                        config.display(),
-                        backup.display()
-                    ),
-                    None => format!("wrote {}", config.display()),
-                });
-            }
-        }
+        lines.push(self.to_string());
+        lines.push(match &self.backup {
+            Some(backup) => format!(
+                "wrote {} (v1 config kept as {})",
+                config.display(),
+                backup.display()
+            ),
+            None => format!("wrote {}", config.display()),
+        });
         lines.extend(self.attention.iter().map(|item| format!("  - {item}")));
         lines
     }
@@ -879,15 +873,6 @@ pub fn status(paths: &StorePaths) -> Status {
     match paths.v1_source() {
         Some(source) => Status::Pending(source),
         None => Status::NoV1,
-    }
-}
-
-/// The plan [`migrate_locked`] would carry out now, writing nothing (a
-/// dry run): `None` unless [`status`] is [`Status::Pending`].
-pub fn preview(paths: &StorePaths) -> Result<Option<Plan>> {
-    match status(paths) {
-        Status::Pending(source) => plan_file(&source).map(Some),
-        Status::Done | Status::NoV1 => Ok(None),
     }
 }
 

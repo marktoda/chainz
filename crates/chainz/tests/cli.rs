@@ -241,28 +241,6 @@ fn legacy_home_config_is_migrated() {
 }
 
 #[test]
-fn migrate_dry_run_writes_nothing() {
-    let sb = Sandbox::new();
-    fs::create_dir_all(sb.dir()).unwrap();
-    fs::write(sb.dir().join("config.json"), fixture("v1-config.json")).unwrap();
-    let out = sb
-        .cmd()
-        .args(["config", "migrate", "--dry-run"])
-        .assert()
-        .success()
-        .get_output()
-        .clone();
-    assert!(stdout(&out).contains("version = 2"));
-    assert!(stdout(&out).contains("[chains."));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("dry run"));
-    assert!(!sb.config_path().exists());
-    assert!(!sb.secrets_path().exists());
-    assert!(sb.dir().join("config.json").exists());
-    // The fixture's fake keys never reach stdout.
-    assert!(!stdout(&out).contains("private_key"));
-}
-
-#[test]
 fn migrated_config_never_prints_secrets() {
     let sb = Sandbox::new();
     fs::create_dir_all(sb.dir()).unwrap();
@@ -1378,23 +1356,32 @@ fn doctor_says_where_secrets_do_not_parse_without_quoting_them() {
 }
 
 #[test]
-fn config_path_lists_every_location() {
+fn edit_path_and_doctor_list_the_locations() {
     let sb = Sandbox::new();
     sb.cmd()
-        .args(["config", "path"])
+        .args(["edit", "--path"])
         .assert()
         .success()
         .stdout(format!("{}\n", sb.config_path().display()));
-    sb.cmd()
-        .args(["config", "path", "--all"])
-        .assert()
-        .success()
-        .stdout(
-            predicate::str::contains("secrets")
-                .and(predicate::str::contains("runtime"))
-                .and(predicate::str::contains("serve.log"))
-                .and(predicate::str::contains("forks/<name>.log")),
+    sb.cmd().args(["edit", "eth", "--path"]).assert().code(2);
+    sb.cmd().args(["config", "path"]).assert().code(2);
+    sb.cmd().args(["config", "migrate"]).assert().code(2);
+    sb.seed(&[("eth", 1)]);
+    let out = sb.run(&["doctor"]);
+    let text = stdout(&out);
+    for (what, path) in [
+        ("secrets", sb.secrets_path()),
+        ("state", sb.path("state/chainz")),
+        ("cache", sb.path("cache/chainz")),
+        ("runtime", sb.runtime_file("")),
+    ] {
+        let path = path.display().to_string();
+        assert!(
+            text.contains(&format!("{what:<8} {}", path.trim_end_matches('/'))),
+            "{what}: {text}"
         );
+    }
+    assert!(text.contains("serve.log") && text.contains("forks/<name>.log"), "{text}");
 }
 
 #[test]

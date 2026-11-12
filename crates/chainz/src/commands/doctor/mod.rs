@@ -189,6 +189,9 @@ fn files(chainz: &Chainz, fix: bool, report: &mut Report) {
     } else {
         report.note("no config.toml yet (add a chain with `chainz chain add`)");
     }
+    for (what, path) in locations(chainz) {
+        println!("  {}", ui::dim(&format!("{what:<8} {}", path.display())));
+    }
     for (path, want) in [
         (&p.dir(), chainz_os::PRIVATE_DIR_MODE),
         (&p.secrets(), chainz_os::PRIVATE_FILE_MODE),
@@ -217,6 +220,22 @@ fn files(chainz: &Chainz, fix: bool, report: &mut Report) {
             v1.display()
         ));
     }
+}
+
+/// Every other place chainz keeps files, for the `files` section: where
+/// to look, not a check (a directory that can't be resolved is left out).
+fn locations(chainz: &Chainz) -> Vec<(&'static str, std::path::PathBuf)> {
+    let mut out = vec![("secrets", chainz.paths().secrets().to_path_buf())];
+    out.extend(paths::state_dir().ok().map(|d| ("state", d)));
+    out.extend(paths::cache_dir().ok().map(|d| ("cache", d)));
+    out.extend(
+        chainz_core::runtime::Runtime::resolve()
+            .ok()
+            .map(|r| ("runtime", r.dir().to_path_buf())),
+    );
+    out.extend(paths::serve_log().ok().map(|f| ("serve", f)));
+    out.extend(paths::fork_log("<name>").ok().map(|f| ("fork", f)));
+    out
 }
 
 /// Your own labels that hide a built-in token on a configured chain: a

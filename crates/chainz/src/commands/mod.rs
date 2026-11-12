@@ -6,7 +6,6 @@
 
 mod addr;
 mod chain;
-mod config;
 mod doctor;
 mod edit;
 mod exec;
@@ -45,7 +44,6 @@ pub fn dispatch(opt: Opt) -> Result<i32> {
         Command::Label(args) => addr::label(&args),
         Command::Var { cmd } => var::run(cmd),
         Command::Doctor(args) => doctor::run(&args),
-        Command::Config { cmd } => config::run(cmd),
         Command::Completions(args) => {
             crate::complete::write_loader(args.shell, &mut std::io::stdout().lock())?;
             Ok(0)
