@@ -135,8 +135,6 @@ impl Merge {
 }
 
 fn window(w: MetricsWindow) -> TrafficWindow {
-    // A 2.0 gateway sends no totals: they stay unknown. The rows can't
-    // stand in for them (they miss requests the rate limiter turned away).
     let mut out = TrafficWindow {
         window_secs: w.window_secs,
         totals: w.totals,
@@ -266,7 +264,7 @@ pub(crate) mod testing {
         MetricsWindow {
             window_secs,
             rows,
-            totals: Some(totals),
+            totals,
             chains: BTreeMap::new(),
         }
     }
@@ -334,7 +332,7 @@ mod tests {
         // Shortest window first, whatever order the gateway sent.
         let w = &t.windows[0];
         assert_eq!(w.window_secs, 60);
-        let totals = w.totals.unwrap();
+        let totals = w.totals;
         assert_eq!(
             (totals.requests, totals.errors, totals.rate_limited),
             (742, 3, 12)
@@ -351,7 +349,7 @@ mod tests {
     }
 
     #[test]
-    fn window_totals_are_the_gateways_when_it_sends_them() {
+    fn window_totals_are_the_gateways() {
         let mut minute = metrics().windows.remove(1);
         // The gateway counts what the rows cannot show (requests its rate
         // limiter turned away, say): its totals are used as they are.
@@ -364,14 +362,11 @@ mod tests {
             p95_ms: 200,
             bytes: 1_000,
         };
-        minute.totals = Some(totals);
-        let w = window(minute.clone());
-        assert_eq!(w.totals, Some(totals));
+        minute.totals = totals;
+        let w = window(minute);
+        assert_eq!(w.totals, totals);
         // The per-method rows still come from the rows.
         assert_eq!(w.methods[0].requests, 600);
-        // A 2.0 gateway sent none: unknown, not the rows added up.
-        minute.totals = None;
-        assert_eq!(window(minute).totals, None);
     }
 
     #[tokio::test]

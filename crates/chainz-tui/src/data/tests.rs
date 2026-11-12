@@ -849,9 +849,7 @@ async fn traffic_follows_the_gateway_control_socket() {
     server.set_metrics(busier);
     engine.refresh(Refresh::Traffic);
     wait_for(&updates, |u| match u {
-        Update::Traffic(Ok(s)) => {
-            (s.windows[0].totals.map(|t| t.requests) == Some(4_342)).then_some(())
-        }
+        Update::Traffic(Ok(s)) => (s.windows[0].totals.requests == 4_342).then_some(()),
         _ => None,
     })
     .await;

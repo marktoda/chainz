@@ -2,8 +2,7 @@
 //! framing, and a client. The server lives in `chainz-serve`.
 //!
 //! The protocol is stable: the gateway, `chainz serve status|log` and the
-//! dashboard are all built on it. Fields added since 2.0 are optional, so a
-//! newer client reads an older gateway and the reverse.
+//! dashboard are all built on it.
 //!
 //! Protocol: HTTP/1.1 over the unix socket `serve.sock` (mode 0600), one
 //! request per connection (`Connection: close`).
@@ -12,7 +11,7 @@
 //! | --- | --- |
 //! | `GET /_chainz/status` | [`Status`] JSON |
 //! | `GET /_chainz/metrics` | [`MetricsSnapshot`] JSON |
-//! | `GET /_chainz/events[?backlog=N][&after=ID][&follow=false]` | `application/x-ndjson` stream of [`RequestRecord`], one per line: first the last `N` buffered records (default 0, oldest first) with an ID above `after`, then live records until either side closes. With `follow=false` the stream ends after the backlog. A malformed query is `400 Bad Request`. |
+//! | `GET /_chainz/events[?backlog=N\|all][&after=ID][&follow=false]` | `application/x-ndjson` stream of [`RequestRecord`], one per line: first the last `N` buffered records (default 0, `all` for every one, oldest first) with an ID above `after`, then live records until either side closes. With `follow=false` the stream ends after the backlog. A malformed query is `400 Bad Request`. |
 //! | `POST /_chainz/reload` | `204 No Content`; `500` with the cause as text when the new config is invalid (the old one stays in force) |
 //! | anything else | `404 Not Found` (`405` for a known path with the wrong method) |
 //!
@@ -116,14 +115,13 @@ impl Default for EventsOptions {
 }
 
 impl EventsOptions {
-    /// The request path with its query string. [`Backlog::All`] is sent as
-    /// the largest count, which a 2.0 gateway reads the same way.
+    /// The request path with its query string.
     fn path(&self) -> String {
         let mut query = Vec::new();
         match self.backlog {
             Backlog::Last(0) => {}
             Backlog::Last(n) => query.push(format!("backlog={n}")),
-            Backlog::All => query.push(format!("backlog={}", usize::MAX)),
+            Backlog::All => query.push("backlog=all".to_string()),
         }
         if let Some(id) = self.after_id {
             query.push(format!("after={id}"));
@@ -150,11 +148,10 @@ impl EventsOptions {
                     .map_err(|_| format!("`{key}` must be a number, not `{value}`"))
             };
             match key {
+                "backlog" if value == "all" => options.backlog = Backlog::All,
                 "backlog" => {
-                    options.backlog = match usize::try_from(number()?) {
-                        Ok(usize::MAX) | Err(_) => Backlog::All,
-                        Ok(n) => Backlog::Last(n),
-                    }
+                    options.backlog =
+                        Backlog::Last(usize::try_from(number()?).unwrap_or(usize::MAX))
                 }
                 "after" => options.after_id = Some(number()?),
                 "follow" => {
@@ -319,13 +316,9 @@ pub struct MetricsWindow {
     pub window_secs: u64,
     /// One row per (chain, endpoint, method).
     pub rows: Vec<MetricsRow>,
-    /// Every row together, with true percentiles. Absent from a 2.0
-    /// gateway.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub totals: Option<MetricsTotals>,
-    /// Each chain's rows together, with true percentiles. Empty from a 2.0
-    /// gateway.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    /// Every row together, with true percentiles.
+    pub totals: MetricsTotals,
+    /// Each chain's rows together, with true percentiles.
     pub chains: BTreeMap<String, MetricsTotals>,
 }
 
@@ -502,9 +495,7 @@ impl ControlClient {
                 let Ok(Some(chunk)) = chunk else { return };
                 buf.extend_from_slice(&chunk);
                 while let Some(record) = read_line::<RequestRecord>(&mut buf) {
-                    // A 2.0 gateway ignores `after`: filter here too.
                     if let Ok(record) = record
-                        && options.wants(record.id)
                         && tx.send(record).await.is_err()
                     {
                         return;
@@ -766,11 +757,7 @@ mod tests {
         }
         assert_eq!(EventsOptions::default().path(), ControlRoute::Events.path());
         assert_eq!(cases[1].path(), "/_chainz/events?backlog=7&follow=false");
-        // `All` is the largest count, which a 2.0 gateway reads as "all".
-        assert_eq!(
-            cases[2].path(),
-            format!("/_chainz/events?backlog={}&after=41", usize::MAX)
-        );
+        assert_eq!(cases[2].path(), "/_chainz/events?backlog=all&after=41");
         // Unknown keys are ignored; bad values are errors.
         assert_eq!(
             EventsOptions::from_query("x=1&follow=0"),
@@ -804,20 +791,6 @@ mod tests {
         assert_eq!(RecordStatus::Ok.to_string(), "ok");
         assert_eq!(error(Some(3)).to_string(), "rpc(3)");
         assert_eq!(error(None).to_string(), "rpc");
-    }
-
-    #[test]
-    fn windows_by_name_and_optional_totals() {
-        // A 2.0 gateway's snapshot: no totals.
-        let old =
-            r#"{"at_ms":1,"windows":[{"window_secs":900,"rows":[]},{"window_secs":60,"rows":[]}]}"#;
-        let snapshot: MetricsSnapshot = serde_json::from_str(old).unwrap();
-        let short = snapshot.window(Window::Short).unwrap();
-        assert_eq!(short.window_secs, 60);
-        assert!(short.totals.is_none() && short.chains.is_empty());
-        // And without totals, nothing new is written either.
-        assert!(!serde_json::to_string(&snapshot).unwrap().contains("totals"));
-        assert_eq!(snapshot.window(Window::Long).unwrap().window_secs, 900);
     }
 
     #[tokio::test]

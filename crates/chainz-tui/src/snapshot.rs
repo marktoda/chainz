@@ -150,9 +150,8 @@ pub struct ChainBalances {
 /// An amount in raw units and formatted with its decimals.
 #[derive(Debug, Serialize)]
 pub struct Amount {
-    /// Currency symbol. Always present (every chain has a native
-    /// symbol); optional only so older readers keep working.
-    pub symbol: Option<String>,
+    /// Currency symbol.
+    pub symbol: String,
     /// Decimals.
     pub decimals: u8,
     /// Raw units, as a decimal string; `null` when saturated.
@@ -177,7 +176,7 @@ pub struct TokenBalance {
 fn amount(a: view::Amount) -> Amount {
     let raw = a.exact();
     Amount {
-        symbol: Some(a.symbol.to_string()),
+        symbol: a.symbol.to_string(),
         decimals: a.decimals,
         raw: raw.map(|r| r.to_string()),
         formatted: raw.map(|r| format_exact(r, a.decimals)),
@@ -299,17 +298,16 @@ pub struct GatewayChain {
 pub struct TrafficWindow {
     /// Window length.
     pub window_secs: u64,
-    /// Requests in the window (this and the totals below are `null` from a
-    /// 2.0 gateway, which sent none).
-    pub requests: Option<u64>,
+    /// Requests in the window.
+    pub requests: u64,
     /// Errors in the window.
-    pub errors: Option<u64>,
+    pub errors: u64,
     /// 429s in the window.
-    pub rate_limited: Option<u64>,
+    pub rate_limited: u64,
     /// Failovers in the window.
-    pub failovers: Option<u64>,
+    pub failovers: u64,
     /// Response bytes in the window.
-    pub bytes: Option<u64>,
+    pub bytes: u64,
     /// Per method, busiest first.
     pub methods: Vec<TrafficRow>,
     /// Per `chain/endpoint`, busiest first.
@@ -367,11 +365,11 @@ fn traffic(t: &model::TrafficSnapshot) -> Traffic {
             .iter()
             .map(|w| TrafficWindow {
                 window_secs: w.window_secs,
-                requests: w.totals.map(|t| t.requests),
-                errors: w.totals.map(|t| t.errors),
-                rate_limited: w.totals.map(|t| t.rate_limited),
-                failovers: w.totals.map(|t| t.failovers),
-                bytes: w.totals.map(|t| t.bytes),
+                requests: w.totals.requests,
+                errors: w.totals.errors,
+                rate_limited: w.totals.rate_limited,
+                failovers: w.totals.failovers,
+                bytes: w.totals.bytes,
                 methods: rows(&w.methods),
                 endpoints: rows(&w.endpoints),
             })

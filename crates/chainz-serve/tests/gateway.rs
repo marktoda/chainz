@@ -993,7 +993,7 @@ async fn inspector_control_api_and_runtime_files() {
             ("eth", "a", 1)
         );
         assert!(call.bytes > 0 && call.errors.is_empty());
-        let totals = window.totals.unwrap();
+        let totals = window.totals;
         assert_eq!((totals.requests, totals.errors), (6, 0));
         assert_eq!(window.chains["eth"], totals);
     }

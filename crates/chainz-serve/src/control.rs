@@ -228,7 +228,7 @@ mod tests {
                     failovers: 0,
                     bytes: 1024,
                 }],
-                totals: None,
+                totals: MetricsTotals::default(),
                 chains: BTreeMap::new(),
             }],
         }

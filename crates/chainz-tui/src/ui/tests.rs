@@ -714,18 +714,6 @@ fn traffic_tab_connecting_idle_and_error_states() {
         "{text}"
     );
 
-    // A 2.0 gateway sends no totals: `-`, as `serve status` shows them.
-    let mut old = gw::traffic();
-    for window in &mut old.windows {
-        window.totals = None;
-    }
-    state.apply(Update::Traffic(Ok(old)));
-    let text = frame(&app(Tab::Traffic), &state, 140, 16);
-    assert!(
-        text.contains("0.0 req/s · - req/1m · - errors · - × 429 · - failovers"),
-        "{text}"
-    );
-
     // The gateway stops: back to the hint, nothing left over.
     state.apply(Update::Gateway(None));
     assert!(frame(&app(Tab::Traffic), &state, 100, 12).contains("No gateway is running."));

@@ -131,32 +131,20 @@ fn summary(ctx: Ctx, window: Option<&TrafficWindow>) -> Vec<Vec<Span<'static>>> 
     ]];
     if let Some(w) = window {
         let per = fmt::window(w.window_secs);
-        // `-` where a 2.0 gateway sent no totals, as `serve status` shows.
-        let number = |n: Option<u64>| n.map_or_else(|| "-".to_string(), core_fmt::group);
         let totals = w.totals;
         parts.push(vec![
-            Span::styled(number(totals.map(|t| t.requests)), t.text()),
+            Span::styled(core_fmt::group(totals.requests), t.text()),
             Span::styled(format!(" req/{per}"), t.dim()),
         ]);
-        let tally = |n: Option<u64>, one: &str, many: &str, style| {
+        let tally = |n: u64, one: &str, many: &str, style| {
             vec![Span::styled(
-                format!("{} {}", number(n), if n == Some(1) { one } else { many }),
-                if n.unwrap_or(0) == 0 { t.dim() } else { style },
+                format!("{} {}", core_fmt::group(n), if n == 1 { one } else { many }),
+                if n == 0 { t.dim() } else { style },
             )]
         };
-        parts.push(tally(totals.map(|t| t.errors), "error", "errors", t.bad()));
-        parts.push(tally(
-            totals.map(|t| t.rate_limited),
-            "× 429",
-            "× 429",
-            t.warn(),
-        ));
-        parts.push(tally(
-            totals.map(|t| t.failovers),
-            "failover",
-            "failovers",
-            t.warn(),
-        ));
+        parts.push(tally(totals.errors, "error", "errors", t.bad()));
+        parts.push(tally(totals.rate_limited, "× 429", "× 429", t.warn()));
+        parts.push(tally(totals.failovers, "failover", "failovers", t.warn()));
     }
     if let Some(traffic) = &ctx.state.traffic {
         parts.push(vec![Span::styled(

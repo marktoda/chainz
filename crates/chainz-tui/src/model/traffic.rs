@@ -40,9 +40,9 @@ pub struct TrafficRow {
 pub struct TrafficWindow {
     /// Window length.
     pub window_secs: u64,
-    /// The gateway's totals for the window; `None` from a 2.0 gateway,
-    /// which sent none (shown as `-`, as `serve status` does).
-    pub totals: Option<MetricsTotals>,
+    /// The gateway's totals for the window. The rows can't stand in for
+    /// them: they miss requests the rate limiter turned away.
+    pub totals: MetricsTotals,
     /// Per method, busiest first.
     pub methods: Vec<TrafficRow>,
     /// Per `chain/endpoint`, busiest first.

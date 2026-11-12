@@ -383,7 +383,7 @@ impl Gateway {
             .router
             .metrics(now_secs())
             .window(Window::Short)
-            .and_then(|window| window.totals)
+            .map(|window| window.totals)
             .unwrap_or_default()
     }
 

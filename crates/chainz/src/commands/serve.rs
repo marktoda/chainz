@@ -245,7 +245,7 @@ struct StatusJson<'a> {
     /// Upstream metrics over the last 60 s.
     #[serde(skip_serializing_if = "Option::is_none")]
     last_60s: Option<&'a [MetricsRow]>,
-    /// Their totals, overall and per chain (absent from a 2.0 gateway).
+    /// Their totals, overall and per chain.
     #[serde(skip_serializing_if = "Option::is_none")]
     totals_60s: Option<&'a MetricsTotals>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -287,8 +287,8 @@ fn status(json: bool) -> Result<i32> {
             running: true,
             status: Some(&status),
             last_60s: Some(minute.map(|w| w.rows.as_slice()).unwrap_or_default()),
-            totals_60s: minute.and_then(|w| w.totals.as_ref()),
-            chain_totals_60s: minute.filter(|w| w.totals.is_some()).map(|w| &w.chains),
+            totals_60s: minute.map(|w| &w.totals),
+            chain_totals_60s: minute.map(|w| &w.chains),
         };
         println!("{}", serde_json::to_string_pretty(&running)?);
     } else {
@@ -297,12 +297,8 @@ fn status(json: bool) -> Result<i32> {
     Ok(0)
 }
 
-/// One row's numbers: `-` where an older gateway sent no totals, and for
-/// the median of no requests.
-fn totals_cells(totals: Option<MetricsTotals>) -> [String; 4] {
-    let Some(t) = totals else {
-        return ["-", "-", "-", "-"].map(String::from);
-    };
+/// One row's numbers; the median of no requests is `-`.
+fn totals_cells(t: MetricsTotals) -> [String; 4] {
     let p50 = match t.requests {
         0 => "-".to_string(),
         _ => format!("{}ms", t.p50_ms),
@@ -317,7 +313,7 @@ fn totals_cells(totals: Option<MetricsTotals>) -> [String; 4] {
 
 fn render_status(status: &Status, minute: Option<&MetricsWindow>) -> String {
     use std::fmt::Write;
-    let totals = minute.and_then(|w| w.totals);
+    let totals = minute.map(|w| w.totals).unwrap_or_default();
     let mut out = String::new();
     let _ = writeln!(
         out,
@@ -327,15 +323,10 @@ fn render_status(status: &Status, minute: Option<&MetricsWindow>) -> String {
         status.version,
         chainz_core::fmt::uptime(status.uptime_secs)
     );
-    let count =
-        |n: fn(&MetricsTotals) -> u64| totals.map_or("-".to_string(), |t| n(&t).to_string());
     let _ = writeln!(
         out,
         "last 60s: {} upstream requests, {} errors, {} failovers, {} rate-limited",
-        count(|t| t.requests),
-        count(|t| t.errors),
-        count(|t| t.failovers),
-        count(|t| t.rate_limited)
+        totals.requests, totals.errors, totals.failovers, totals.rate_limited
     );
     let header = [
         "CHAIN", "ID", "ACTIVE", "FAILOVER", "HEAD", "REQ", "ERR", "429", "P50",
@@ -343,8 +334,8 @@ fn render_status(status: &Status, minute: Option<&MetricsWindow>) -> String {
     let mut rows: Vec<[String; 9]> = Vec::with_capacity(status.chains.len());
     for chain in &status.chains {
         let chain_totals = minute
-            .filter(|_| totals.is_some())
-            .map(|w| w.chains.get(&chain.chain).copied().unwrap_or_default());
+            .and_then(|w| w.chains.get(&chain.chain).copied())
+            .unwrap_or_default();
         let [requests, errors, rate_limited, p50] = totals_cells(chain_totals);
         let dash = |s: String| if s.is_empty() { "-".to_string() } else { s };
         rows.push([
@@ -556,7 +547,7 @@ mod tests {
         let window = MetricsWindow {
             window_secs: 60,
             rows: vec![],
-            totals: Some(eth),
+            totals: eth,
             chains: BTreeMap::from([("eth".to_string(), eth)]),
         };
         let text = render_status(&status, Some(&window));
@@ -569,20 +560,5 @@ eth    1     infura  llama,publicnode  23481220  4    2    4    40ms
 base   8453  infura  -                 -         0    0    0    -
 ";
         assert_eq!(text, expected);
-        // A 2.0 gateway sends no totals.
-        let old = MetricsWindow {
-            totals: None,
-            chains: BTreeMap::new(),
-            ..window
-        };
-        let text = render_status(&status, Some(&old));
-        assert!(
-            text.contains("last 60s: - upstream requests, - errors"),
-            "{text}"
-        );
-        assert!(
-            text.contains("eth    1     infura  llama,publicnode  23481220  -    -    -    -"),
-            "{text}"
-        );
     }
 }

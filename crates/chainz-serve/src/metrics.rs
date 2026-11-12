@@ -265,7 +265,7 @@ impl Totaller {
         MetricsWindow {
             window_secs: window.secs(),
             rows: self.rows,
-            totals: Some(totals(self.all.unwrap_or_default())),
+            totals: totals(self.all.unwrap_or_default()),
             chains: self
                 .chains
                 .into_iter()
@@ -375,7 +375,7 @@ mod tests {
                 ("eth", "llama", "eth_call")
             ]
         );
-        let s = m.snapshot(10).windows[0].totals.unwrap();
+        let s = m.snapshot(10).windows[0].totals;
         assert_eq!((s.requests, s.errors, s.p50_ms), (3, 0, 5));
     }
 
@@ -417,7 +417,7 @@ mod tests {
         assert_eq!((row.rate_limited, row.failovers), (2, 1));
         assert_eq!((row.p50_ms, row.p95_ms), (40, 40), "no zero latencies");
         assert!(row.errors.is_empty());
-        let s = m.snapshot(10).windows[0].totals.unwrap();
+        let s = m.snapshot(10).windows[0].totals;
         assert_eq!((s.requests, s.rate_limited, s.p50_ms), (1, 2, 40));
     }
 
@@ -432,7 +432,7 @@ mod tests {
         m.record(10, "eth", "b", "eth_getLogs", &ok(70));
         m.record(10, "base", "a", "eth_call", &ok(5));
         let short = m.snapshot(10).windows.remove(0);
-        let all = short.totals.unwrap();
+        let all = short.totals;
         assert_eq!((all.requests, all.p50_ms, all.p95_ms), (5, 10, 70));
         assert_eq!(all.bytes, 50);
         let eth = short.chains["eth"];
@@ -440,7 +440,7 @@ mod tests {
         assert_eq!(short.chains["base"].requests, 1);
         // An idle window still says so.
         let idle = Metrics::default().snapshot(10).windows.remove(0);
-        assert_eq!(idle.totals, Some(MetricsTotals::default()));
+        assert_eq!(idle.totals, MetricsTotals::default());
         assert!(idle.chains.is_empty());
     }
 }
