@@ -101,13 +101,13 @@ pub fn check_alias(alias: &str) -> anyhow::Result<()> {
 
 /// Whether `text` reads as a chain ID: all digits. Numbers always mean
 /// chain IDs, so no chain name or alias may be one.
-pub fn is_chain_id_like(text: &str) -> bool {
+pub(crate) fn is_chain_id_like(text: &str) -> bool {
     text.parse::<u64>().is_ok() || (!text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// Whether `name` is a valid chain name: `[a-z0-9][a-z0-9_-]*`, and not
 /// [all digits](is_chain_id_like).
-pub fn is_valid_chain_name(name: &str) -> bool {
+pub(crate) fn is_valid_chain_name(name: &str) -> bool {
     is_name(name) && !is_chain_id_like(name)
 }
 
@@ -223,7 +223,7 @@ pub fn slugify(input: &str) -> String {
 
 /// What an endpoint's URL names it after.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum UrlName {
+pub(crate) enum UrlName {
     /// The host's registrable label, slugified (`mainnet.infura.io` → `infura`).
     Host(String),
     /// `localhost` or an IP address.

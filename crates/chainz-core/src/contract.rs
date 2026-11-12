@@ -72,7 +72,8 @@ impl Env {
     }
 
     /// An environment answered by `get` (tests).
-    pub fn from_fn(get: fn(&str) -> Option<String>) -> Self {
+    #[cfg(test)]
+    pub(crate) fn from_fn(get: fn(&str) -> Option<String>) -> Self {
         Self { get }
     }
 

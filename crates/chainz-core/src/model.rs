@@ -370,7 +370,7 @@ impl Signer {
 
     /// A keyring signer named `name`; `service` and `username` are kept
     /// only where they differ from the defaults.
-    pub fn keyring(
+    pub(crate) fn keyring(
         name: &str,
         service: Option<&str>,
         username: Option<&str>,
@@ -469,11 +469,6 @@ impl Config {
         endpoints.chain(explorers)
     }
 
-    /// The chain named exactly `name` (primary name, case-sensitive key).
-    pub fn chain(&self, name: &str) -> Option<&Chain> {
-        self.chains.get(name)
-    }
-
     /// The chain with ID `id`.
     pub fn chain_by_id(&self, id: u64) -> Option<(&str, &Chain)> {
         self.chains
@@ -537,7 +532,7 @@ impl Chain {
 
     /// Whether `query` equals one of this chain's aliases, ignoring ASCII
     /// case. The chain's own name (its key) is not checked.
-    pub fn matches_alias(&self, query: &str) -> bool {
+    pub(crate) fn matches_alias(&self, query: &str) -> bool {
         self.aliases.iter().any(|a| a.eq_ignore_ascii_case(query))
     }
 

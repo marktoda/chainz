@@ -60,7 +60,7 @@ impl fmt::Display for Notice {
 /// An endpoint with every `${VAR}` expanded: what is actually sent.
 /// `Debug` shows the redacted URL and header names only.
 #[derive(Clone, PartialEq, Eq)]
-pub struct ExpandedEndpoint {
+pub(crate) struct ExpandedEndpoint {
     /// The URL, secrets expanded.
     pub url: String,
     /// Header names and expanded values, in config order.
@@ -175,7 +175,8 @@ impl Chainz {
     }
 
     /// The same store reading `env` instead of the process environment.
-    pub fn with_env(mut self, env: Env) -> Self {
+    #[cfg(test)]
+    pub(crate) fn with_env(mut self, env: Env) -> Self {
         self.env = env;
         self
     }
@@ -250,7 +251,7 @@ impl Chainz {
     /// (`secrets.toml` is read only if needed). The chain need not be
     /// configured yet (`chain add` checks an endpoint before writing it).
     /// Errors name the chain, endpoint, header and variable, never a value.
-    pub fn expand_endpoint(
+    pub(crate) fn expand_endpoint(
         &self,
         chain_name: &str,
         chain_id: u64,

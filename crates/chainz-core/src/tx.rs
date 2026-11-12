@@ -125,7 +125,7 @@ impl Tx {
     }
 
     /// The typed view of the secrets as edited so far.
-    pub fn secrets(&self) -> Result<Secrets> {
+    pub(crate) fn secrets(&self) -> Result<Secrets> {
         Secrets::parse(&self.secrets.to_string())
             .map_err(|e| anyhow!("edited secrets do not parse: {}", redact::toml_error(&e)))
     }
@@ -334,7 +334,7 @@ impl Tx {
     }
 
     /// One chain's tables as a standalone document, for editing by hand.
-    pub fn chain_snippet(&self, chain: &str) -> Result<String> {
+    pub(crate) fn chain_snippet(&self, chain: &str) -> Result<String> {
         let item = self
             .config
             .get("chains")
@@ -350,7 +350,7 @@ impl Tx {
     }
 
     /// Replace a chain's tables with an edited [`chain_snippet`](Self::chain_snippet).
-    pub fn replace_chain_snippet(&mut self, chain: &str, snippet: &str) -> Result<()> {
+    pub(crate) fn replace_chain_snippet(&mut self, chain: &str, snippet: &str) -> Result<()> {
         let edited = parse_document(snippet, Path::new("the edited text"))?;
         let keys: Vec<&str> = edited.iter().map(|(k, _)| k).collect();
         if keys != ["chains"] {

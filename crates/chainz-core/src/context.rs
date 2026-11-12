@@ -184,7 +184,8 @@ impl EnvVar {
     }
 
     /// Whether the value may hold a secret (shown redacted).
-    pub fn is_secret(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn is_secret(&self) -> bool {
         self.shown != Shown::Plain
     }
 
@@ -271,7 +272,8 @@ fn chain_of<'c>(
         ChainRef::Fork(fork) => (fork.parent.clone(), Some(fork.clone())),
     };
     let chain = config
-        .chain(&chain_name)
+        .chains
+        .get(&chain_name)
         .ok_or_else(|| anyhow!("chain '{chain_name}' is not configured"))?;
     Ok((chain_name, chain, fork))
 }

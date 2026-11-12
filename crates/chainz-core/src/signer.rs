@@ -23,7 +23,7 @@ use zeroize::Zeroizing;
 
 /// The environment variable that makes the OS keyring unavailable (the
 /// test harness and the perf gate set it).
-pub const DISABLE_KEYRING_VAR: &str = "CHAINZ_DISABLE_KEYRING";
+pub(crate) const DISABLE_KEYRING_VAR: &str = "CHAINZ_DISABLE_KEYRING";
 
 /// External key storage.
 pub trait KeyBackend {

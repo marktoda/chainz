@@ -123,7 +123,8 @@ impl Chainz {
     pub fn route(&self, chain_name: &str, opts: &RouteOpts, runtime: &Runtime) -> Result<Route> {
         let chain = self
             .config()
-            .chain(chain_name)
+            .chains
+            .get(chain_name)
             .ok_or_else(|| anyhow!("chain '{chain_name}' is not configured"))?;
         let endpoint_name = opts.endpoint.as_deref().unwrap_or(&chain.rpc);
         let endpoint = chain.rpcs.get(endpoint_name).ok_or_else(|| {

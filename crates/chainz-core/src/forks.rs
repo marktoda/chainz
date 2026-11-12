@@ -11,7 +11,7 @@ use anyhow::{Result, bail};
 pub const RESERVED_FORK_NAMES: [&str; 3] = ["ls", "list", "stop"];
 
 /// Chains anvil can't fork: `(chain ID, display name)`.
-pub const UNFORKABLE: &[(u64, &str)] = &[(324, "zkSync Era"), (300, "zkSync Sepolia")];
+pub(crate) const UNFORKABLE: &[(u64, &str)] = &[(324, "zkSync Era"), (300, "zkSync Sepolia")];
 
 /// The name a fork of `parent` gets without `--name`.
 pub fn default_fork_name(parent: &str) -> String {
