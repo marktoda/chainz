@@ -537,7 +537,7 @@ fn chain_add_with_several_signers_names_the_fix() {
     assert!(out.status.success());
     let err = stderr(&out);
     assert!(
-        err.contains("base has no signer (2 signers to choose from: default, two); attach one with `chainz update base --signer <name>`"),
+        err.contains("base has no signer (2 signers to choose from: default, two); attach one with `chainz update base --signer NAME`"),
         "{err}"
     );
     let out = sb.run(&[
@@ -1216,7 +1216,7 @@ fn use_sets_default_with_stderr_notice() {
         .arg("use")
         .assert()
         .success()
-        .stdout("default: none\nSet one with `chainz use <chain>`\n");
+        .stdout("default: none\nSet one with `chainz use CHAIN`\n");
 }
 
 #[test]
@@ -1438,7 +1438,7 @@ fn edit_path_and_doctor_list_the_locations() {
         );
     }
     assert!(
-        text.contains("serve.log") && text.contains("forks/<name>.log"),
+        text.contains("serve.log") && text.contains("forks/NAME.log"),
         "{text}"
     );
 }
@@ -1963,7 +1963,7 @@ fn signer_rm_needs_yes_off_a_tty_and_names_every_flag_at_once() {
     assert!(out.status.success());
     assert!(
         stderr(&out).contains(
-            "eth, base have no signer ('default' was removed); attach one with `chainz update <chain> --signer <name>`"
+            "eth, base have no signer ('default' was removed); attach one with `chainz update CHAIN --signer NAME`"
         ),
         "{}",
         stderr(&out)

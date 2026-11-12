@@ -254,7 +254,7 @@ fn locations(chainz: &Chainz) -> Vec<(&'static str, std::path::PathBuf)> {
             .map(|r| ("runtime", r.dir().to_path_buf())),
     );
     out.extend(paths::serve_log().ok().map(|f| ("serve", f)));
-    out.extend(paths::fork_log("<name>").ok().map(|f| ("fork", f)));
+    out.extend(paths::fork_log("NAME").ok().map(|f| ("fork", f)));
     out
 }
 

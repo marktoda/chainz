@@ -255,7 +255,7 @@ changed before 2.0.0; they are listed under Removed and Changed.
   CHAIN` lists what changed, a chain ID change included.
 
 - A write that leaves a chain without a signer says so and names the fix
-  (`chainz update CHAIN --signer <name>`): `add` when there are
+  (`chainz update CHAIN --signer NAME`): `add` when there are
   several signers to choose from, and `signer rm --unassign`.
 
 ### Removed

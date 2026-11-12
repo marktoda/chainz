@@ -36,10 +36,10 @@ pub fn no_chains() -> String {
 /// it.
 pub fn default_chain(default: Option<&str>) -> String {
     match default {
-        Some(name) => format!(
-            "default: {name}\nChange it with `chainz use <chain>`, or `chainz use --clear`\n"
-        ),
-        None => "default: none\nSet one with `chainz use <chain>`\n".to_string(),
+        Some(name) => {
+            format!("default: {name}\nChange it with `chainz use CHAIN`, or `chainz use --clear`\n")
+        }
+        None => "default: none\nSet one with `chainz use CHAIN`\n".to_string(),
     }
 }
 

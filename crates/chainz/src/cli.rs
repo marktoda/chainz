@@ -16,7 +16,7 @@ use clap_complete::engine::ArgValueCompleter;
     name = "chainz",
     version,
     about = "A local multichain workbench: chains, endpoints, signers, and exec with context",
-    after_help = "`chainz x base -- cast block-number` is the hot path. `chainz <command> --help` for details."
+    after_help = "`chainz x base -- cast block-number` is the hot path. `chainz COMMAND --help` for details."
 )]
 pub struct Opt {
     #[command(subcommand)]

@@ -528,7 +528,7 @@ impl Tx {
             {
                 if explorer != ETHERSCAN {
                     bail!(
-                        "explorer '{explorer}' not found; `{ETHERSCAN}` is built in, others go in [explorers.<name>] (`chainz edit`)"
+                        "explorer '{explorer}' not found; `{ETHERSCAN}` is built in, others go in [explorers.NAME] (`chainz edit`)"
                     );
                 }
                 self.set_explorer(ETHERSCAN, &Explorer::etherscan())?;

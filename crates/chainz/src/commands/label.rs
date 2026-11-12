@@ -198,7 +198,7 @@ fn ls(args: &LabelLsArgs) -> Result<i32> {
         } else {
             " (--builtin lists the built-in tokens)"
         };
-        println!("No labels. Add one with `chainz label add <name> <address>`{hint}.");
+        println!("No labels. Add one with `chainz label add NAME ADDRESS`{hint}.");
         return Ok(0);
     }
     let cells: Vec<[String; 4]> = rows

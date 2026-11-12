@@ -19,7 +19,7 @@ pub struct Missing<'a> {
 }
 
 /// How the context commands (and `label add`) say how to name a chain.
-pub const NAME_A_CHAIN: &str = "set $CHAINZ_CHAIN, or set a default with `chainz use <chain>`";
+pub const NAME_A_CHAIN: &str = "set $CHAINZ_CHAIN, or set a default with `chainz use CHAIN`";
 
 /// Interactive picker over configured chains. Off a TTY it is a usage
 /// error (exit 2) for `missing.command`: "no chain given: {off_tty}".

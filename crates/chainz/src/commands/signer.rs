@@ -179,7 +179,7 @@ fn ls(args: &JsonArgs) -> Result<i32> {
         return Ok(0);
     }
     if rows.is_empty() {
-        println!("No signers. Add one with `chainz signer add <name>`.");
+        println!("No signers. Add one with `chainz signer add NAME`.");
         return Ok(0);
     }
     let cells: Vec<[String; 4]> = rows
@@ -278,12 +278,12 @@ fn removal_consent(
 pub fn warn_signerless(chains: &[String], why: &str) {
     let target = match chains {
         [one] => one.as_str(),
-        _ => "<chain>",
+        _ => "CHAIN",
     };
     eprintln!(
         "{}",
         ui::warn(&format!(
-            "{} {} no signer ({why}); attach one with `chainz update {target} --signer <name>`",
+            "{} {} no signer ({why}); attach one with `chainz update {target} --signer NAME`",
             chains.join(", "),
             if chains.len() == 1 { "has" } else { "have" }
         ))

@@ -414,7 +414,7 @@ pub fn rm(args: &RmArgs) -> Result<i32> {
         println!("  dropped labels: {}", at_labels(&removed.labels));
     }
     if removed.was_default {
-        println!("  default cleared; set one with `chainz use <chain>`");
+        println!("  default cleared; set one with `chainz use CHAIN`");
     }
     Ok(0)
 }

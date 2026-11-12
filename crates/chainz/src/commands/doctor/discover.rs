@@ -46,7 +46,7 @@ pub fn run(chainz: &mut Chainz, chain: &str, refresh: bool, yes: bool) -> Result
         println!(
             "{}",
             ui::dim(&format!(
-                "add them with `chainz doctor {chain} --discover --yes`, or one with `chainz update {chain} --add-rpc <url>`"
+                "add them with `chainz doctor {chain} --discover --yes`, or one with `chainz update {chain} --add-rpc URL`"
             ))
         );
         return Ok(());

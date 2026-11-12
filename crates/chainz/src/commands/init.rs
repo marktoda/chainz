@@ -65,7 +65,7 @@ pub fn run() -> Result<i32> {
 fn closing(config: &Config) -> String {
     match (config.chains.keys().next(), &config.default) {
         (None, _) => ui::warn(
-            "No chains yet: add one with `chainz add <chain>` (an ID, or a name on chainlist), or run `chainz init` again.",
+            "No chains yet: add one with `chainz add CHAIN` (an ID, or a name on chainlist), or run `chainz init` again.",
         ),
         (Some(_), Some(_)) => {
             ui::success("Done. Try `chainz ls`, or `chainz exec -- cast block-number`.")
@@ -138,7 +138,7 @@ fn add_signer(chainz: &mut Chainz, backend: &dyn KeyBackend, ask: &mut dyn Ask) 
     if !ask.confirm(&format!("Add a signer (a private key, {storage})?"), true)? {
         println!(
             "{}",
-            ui::dim("skipped; later: `chainz signer add <name>` (keystore and 1Password work too)")
+            ui::dim("skipped; later: `chainz signer add NAME` (keystore and 1Password work too)")
         );
         return Ok(());
     }
