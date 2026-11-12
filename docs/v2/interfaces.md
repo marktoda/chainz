@@ -80,8 +80,12 @@ pub struct BuiltinToken { pub chain_id: u64, pub name: String, pub address: Addr
                           pub symbol: String, pub decimals: u8, pub source: String }
 pub fn builtin_tokens() -> &'static [BuiltinToken];
 pub fn builtin_token(chain_id: u64, name: &str) -> Option<&'static BuiltinToken>;
+pub fn builtin_token_at(chain_id: u64, address: &Address) -> Option<&'static BuiltinToken>;
+pub const TOKEN_ORDER: [&str; 6];            // weth, usdc, usdce, usdt, dai, wbtc (display order)
+pub const NATIVE_DECIMALS: u8 = 18;
+pub fn native_symbol(chain_id: u64) -> &'static str; // ETH, BNB, POL, xDAI…
 
-pub enum LabelSource { User, Signer, Token }
+pub enum LabelSource { User, Signer, Token }  // Display: user, signer, built-in
 pub enum LabelScope { Chain(u64), AllChains }
 pub struct Label { pub name: String, pub address: Address, pub source: LabelSource, pub scope: LabelScope }
 pub enum LabelError { Unknown { name: String, suggestion: Option<String> },
@@ -97,14 +101,19 @@ impl LabelIndex {
     pub fn names(&self) -> impl Iterator<Item = &str>;
     pub fn labels(&self) -> impl Iterator<Item = Label> + '_; // every source, every chain
     pub fn labels_on(&self, chain_id: u64) -> Vec<Label>;
+    pub fn shadowed(&self, label: &Label) -> Option<Label>; // the label that wins on its chain
 }
 ```
+
+`Config::chain_display(id)` names a chain in output: configured name, else
+the well-known short name, else `chain <id>`. `ChainRef::chain_id(&config)`
+is the chain ID labels resolve on (a fork's own).
 
 Precedence is: user label for the chain, then user `"*"`, then signer, then
 built-in token. In config, `[addresses]` is `label -> chain name | "*" ->
 address`. For example, `[addresses.myrouter]` with `base = "0x…"`. Label
-names follow `names::is_valid_label_name` and can't use a `CONTEXT_TOKENS`
-name.
+names follow `names::check_label_name` and can't use a name from
+`names::TOKENS` (context, deprecated and removed tokens).
 
 The address book (`addr …`, `label`, `doctor --tokens`) is built on:
 
@@ -144,7 +153,9 @@ pub fn parse(text: &str, file: &Path) -> Result<Vec<Run>>;
 pub struct Run { pub file: PathBuf, pub chain_id: u64, pub contracts: Vec<Deployed> }
 pub struct Deployed { pub contract: Option<String>, pub address: Option<Address>, pub problem: Option<String> }
 pub struct Options { pub prefix: String, pub only: Vec<String>, pub force: bool }
-pub enum Action { Add, Unchanged, Overwrite(Address), Skip(String) }
+pub struct AddressWrite { pub name: String, pub chain: String, pub address: Address }
+pub enum Action { Add(AddressWrite), Unchanged, Overwrite(AddressWrite, Address), Skip(String) }
+impl Action { pub fn write(&self) -> Option<&AddressWrite>; pub fn as_str(&self) -> &'static str; }
 pub struct Planned { pub file: PathBuf, pub chain_id: u64, pub chain: Option<String>,
                      pub contract: Option<String>, pub name: Option<String>,
                      pub address: Option<Address>, pub action: Action }
@@ -156,8 +167,8 @@ pub fn plan(config: &Config, runs: &[Run], options: &Options) -> Vec<Planned>;
 label on `config.chain_by_id(run.chain_id)`. It never uses a fork. It checks
 names with `names::check_label_name`, drops repeats of the same (chain, name,
 address), and suffixes later different addresses with `names::unique_name`.
-The command plans again inside `transact`, under the lock, and applies every
-`Add`/`Overwrite` with `tx.set_address(…, Overwrite::Replace)`.
+The command plans again inside `transact`, under the lock (or `preview` for a
+dry run), and applies every planned write with `tx.write_address(&write)`.
 
 ## Upstream (`chainz_rpc::upstream`)
 
@@ -315,8 +326,10 @@ and the gateway all use it.
   the perf gate.
 - Resolver: `resolve::select(config, Some(&runtime), explicit, chainz.env()) -> Result<Option<(ChainRef, Source)>>`.
   It checks the explicit argument, then `$CHAINZ_CHAIN`, then the default.
-  Management commands use `resolve_configured` (no forks) or `resolve_exact`
-  (rm).
+  Management commands use `resolve::configured(config, query, Policy) ->
+  Result<(&str, &Chain)>` (no forks): `Policy::Prefix` (name, alias, ID or
+  unambiguous prefix), `Policy::Exact` (name or ID: `chain rm`) or
+  `Policy::ExactOrAlias` (`addr rm --chain`).
 - Context: `context::build(&chainz, &runtime, &ChainRef, &ExecOptions) -> Result<Context>`
   (with `expose_key`, it refuses a fork or a chain without a signer), then
   `Context::unlock_key(&chainz, keys, prompter)` for `--expose-key`,

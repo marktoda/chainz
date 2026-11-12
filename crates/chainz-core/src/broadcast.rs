@@ -299,15 +299,28 @@ pub struct Options {
     pub force: bool,
 }
 
+/// A label the plan writes: `[addresses.<name>] <chain> = <address>`.
+/// [`Tx::write_address`](crate::tx::Tx::write_address) applies it; the plan
+/// already decided whether it may replace what the label held.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddressWrite {
+    /// The label name.
+    pub name: String,
+    /// The configured chain it goes on.
+    pub chain: String,
+    /// The address.
+    pub address: Address,
+}
+
 /// What importing one deployment does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     /// A new label entry.
-    Add,
+    Add(AddressWrite),
     /// The label already holds this address on the chain.
     Unchanged,
     /// The label held this other address (with `force`).
-    Overwrite(Address),
+    Overwrite(AddressWrite, Address),
     /// Not imported, and why.
     Skip(String),
 }
@@ -316,16 +329,19 @@ impl Action {
     /// `added`, `unchanged`, `overwritten` or `skipped`.
     pub fn as_str(&self) -> &'static str {
         match self {
-            Action::Add => "added",
+            Action::Add(_) => "added",
             Action::Unchanged => "unchanged",
-            Action::Overwrite(_) => "overwritten",
+            Action::Overwrite(..) => "overwritten",
             Action::Skip(_) => "skipped",
         }
     }
 
-    /// Whether this changes the config.
-    pub fn writes(&self) -> bool {
-        matches!(self, Action::Add | Action::Overwrite(_))
+    /// The write this action makes, if it changes the config.
+    pub fn write(&self) -> Option<&AddressWrite> {
+        match self {
+            Action::Add(write) | Action::Overwrite(write, _) => Some(write),
+            Action::Unchanged | Action::Skip(_) => None,
+        }
     }
 }
 
@@ -385,18 +401,21 @@ pub fn plan(config: &Config, runs: &[Run], options: &Options) -> Vec<Planned> {
                 contract: deployed.contract.clone(),
                 name: base.as_ref().map(|b| format!("{prefix}{b}")),
                 address: deployed.address,
-                action: Action::Add,
+                action: Action::Unchanged,
             };
             let skip = |mut entry: Planned, why: String| {
                 entry.action = Action::Skip(why);
                 entry
             };
-            if let Some(problem) = &deployed.problem {
-                out.push(skip(entry, problem.clone()));
+            let (None, Some(name), Some(address)) =
+                (&deployed.problem, entry.name.clone(), deployed.address)
+            else {
+                let why = deployed
+                    .problem
+                    .clone()
+                    .unwrap_or_else(|| "no contract name or address".to_string());
+                out.push(skip(entry, why));
                 continue;
-            }
-            let (Some(name), Some(address)) = (entry.name.clone(), deployed.address) else {
-                unreachable!("a deployment without a problem has a name and an address");
             };
             let Some(chain) = &chain else {
                 let why = format!("chain {} is not configured", run.chain_id);
@@ -417,11 +436,16 @@ pub fn plan(config: &Config, runs: &[Run], options: &Options) -> Vec<Planned> {
             names.push((address, name.clone()));
             entry.name = Some(name.clone());
             let existing = config.addresses.get(&name).and_then(|e| e.get(chain));
+            let write = || AddressWrite {
+                name: name.clone(),
+                chain: chain.clone(),
+                address,
+            };
             entry.action = match existing {
-                None => Action::Add,
+                None => Action::Add(write()),
                 Some(held) => match held.parse::<Address>() {
                     Ok(held) if held == address => Action::Unchanged,
-                    Ok(held) if options.force => Action::Overwrite(held),
+                    Ok(held) if options.force => Action::Overwrite(write(), held),
                     Ok(held) => Action::Skip(format!(
                         "@{name} is already {held} on {chain} (--force replaces it)"
                     )),
@@ -718,8 +742,13 @@ base = "{C}"
                 ..Options::default()
             },
         );
-        assert_eq!(forced[1].action, Action::Overwrite(addr(C)));
-        assert!(forced[1].action.writes() && !forced[0].action.writes());
+        let write = AddressWrite {
+            name: "my-hook".into(),
+            chain: "base".into(),
+            address: forced[1].address.unwrap(),
+        };
+        assert_eq!(forced[1].action, Action::Overwrite(write, addr(C)));
+        assert!(forced[1].action.write().is_some() && forced[0].action.write().is_none());
     }
 
     #[test]

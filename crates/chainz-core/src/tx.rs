@@ -470,6 +470,17 @@ impl Tx {
         Ok(outcome)
     }
 
+    /// Apply a label write an import planned (it already decided the
+    /// write may replace what the label held).
+    pub fn write_address(&mut self, write: &crate::broadcast::AddressWrite) -> Result<SetAddress> {
+        self.set_address(
+            &write.name,
+            &write.chain,
+            &write.address,
+            Overwrite::Replace,
+        )
+    }
+
     /// Remove a label: one entry (`scope` is a chain name or
     /// [`ALL_CHAINS`]) or, with `None`, the whole label. Returns the
     /// removed scopes with their stored addresses, in file order.

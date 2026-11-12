@@ -92,6 +92,36 @@ pub fn builtin_token(chain_id: u64, name: &str) -> Option<&'static BuiltinToken>
         .find(|t| t.chain_id == chain_id && t.name.eq_ignore_ascii_case(name))
 }
 
+/// The built-in token at `address` on `chain_id`, if the registry has it.
+pub fn builtin_token_at(chain_id: u64, address: &Address) -> Option<&'static BuiltinToken> {
+    builtin_tokens()
+        .iter()
+        .find(|t| t.chain_id == chain_id && t.address == *address)
+}
+
+/// The registry's token names in display order: the wrapped native token
+/// first (it sits next to the native balance), then the majors.
+pub const TOKEN_ORDER: [&str; 6] = ["weth", "usdc", "usdce", "usdt", "dai", "wbtc"];
+
+/// Decimals of every EVM chain's native token.
+pub const NATIVE_DECIMALS: u8 = 18;
+
+/// The native token's symbol on `chain_id`, for display.
+pub fn native_symbol(chain_id: u64) -> &'static str {
+    match chain_id {
+        56 | 97 => "BNB",
+        100 => "xDAI",
+        137 | 80002 => "POL",
+        196 => "OKB",
+        250 => "FTM",
+        5000 => "MNT",
+        5042 => "USDC",
+        42220 => "CELO",
+        43114 | 43113 => "AVAX",
+        _ => "ETH",
+    }
+}
+
 /// Where a label came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum LabelSource {
@@ -101,6 +131,18 @@ pub enum LabelSource {
     Signer,
     /// The compiled-in token registry.
     Token,
+}
+
+impl std::fmt::Display for LabelSource {
+    /// `user`, `signer` or `built-in`: the one vocabulary for listings,
+    /// JSON and completion.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            LabelSource::User => "user",
+            LabelSource::Signer => "signer",
+            LabelSource::Token => "built-in",
+        })
+    }
 }
 
 /// Which chains a label applies to.
@@ -329,6 +371,19 @@ impl LabelIndex {
         out
     }
 
+    /// The label that wins over `label` on its chain, if another one does:
+    /// a user label or signer hiding a built-in token, or a per-chain
+    /// entry hiding an every-chain one. `None` for an every-chain label
+    /// (which chain would it be shadowed on?) and for the winner itself.
+    pub fn shadowed(&self, label: &Label) -> Option<Label> {
+        let LabelScope::Chain(chain_id) = label.scope else {
+            return None;
+        };
+        self.resolve(&label.name, chain_id)
+            .ok()
+            .filter(|winner| (winner.source, winner.address) != (label.source, label.address))
+    }
+
     /// Every known label name (deduplicated, sorted).
     pub fn names(&self) -> impl Iterator<Item = &str> {
         let mut all: Vec<&str> = self
@@ -483,5 +538,32 @@ eth = "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf"
             .unwrap();
         assert_eq!(index.reverse(8453, &one).unwrap().name, "myrouter");
         assert_eq!(index.reverse(1, &one).unwrap().name, "usdc");
+    }
+
+    #[test]
+    fn shadowing_sources_and_registry_lookups() {
+        let config = config();
+        let index = LabelIndex::new(&config);
+        let eth_usdc = builtin_token(1, "usdc").unwrap();
+        let token = token_label(eth_usdc);
+        let winner = index.shadowed(&token).unwrap();
+        assert_eq!(winner.source, LabelSource::User);
+        let base_usdc = token_label(builtin_token(8453, "usdc").unwrap());
+        assert_eq!(index.shadowed(&base_usdc), None, "nothing hides base usdc");
+        let user = index.resolve("usdc", 1).unwrap();
+        assert_eq!(index.shadowed(&user), None, "the winner is not shadowed");
+        assert_eq!(LabelSource::Token.to_string(), "built-in");
+        assert_eq!(builtin_token_at(1, &eth_usdc.address), Some(eth_usdc));
+        assert_eq!(builtin_token_at(8453, &eth_usdc.address), None);
+        assert_eq!(native_symbol(56), "BNB");
+        assert_eq!(native_symbol(8453), "ETH");
+        assert!(
+            builtin_tokens()
+                .iter()
+                .all(|t| TOKEN_ORDER.contains(&t.name.as_str()))
+        );
+        assert_eq!(config.chain_display(8453), "base");
+        assert_eq!(config.chain_display(10), "op");
+        assert_eq!(config.chain_display(424242), "chain 424242");
     }
 }

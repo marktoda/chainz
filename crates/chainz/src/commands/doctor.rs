@@ -6,7 +6,7 @@ use super::rpc::{health_label, probe_chains};
 use crate::{net, ui};
 use anyhow::Result;
 use chainz_core::extract::{self, Location};
-use chainz_core::labels::{LabelIndex, LabelSource, builtin_tokens};
+use chainz_core::labels::{Label, LabelIndex, LabelScope, LabelSource, builtin_tokens};
 use chainz_core::model::{Backend, Config};
 use chainz_core::{Chainz, migrate, paths, validate};
 use chainz_rpc::{Health, classify, rank};
@@ -138,9 +138,14 @@ fn files(chainz: &Chainz, fix: bool, report: &mut Report) {
 fn shadowed_tokens(config: &Config, report: &Report) {
     let index = LabelIndex::new(config);
     for token in builtin_tokens() {
+        let token_label = Label {
+            name: token.name.clone(),
+            address: token.address,
+            source: LabelSource::Token,
+            scope: LabelScope::Chain(token.chain_id),
+        };
         if let Some((chain, _)) = config.chain_by_id(token.chain_id)
-            && let Ok(label) = index.resolve(&token.name, token.chain_id)
-            && label.source != LabelSource::Token
+            && let Some(label) = index.shadowed(&token_label)
             && label.address != token.address
         {
             report.note(&format!(

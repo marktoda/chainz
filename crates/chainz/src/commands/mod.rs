@@ -19,7 +19,7 @@ use crate::cli::{Command, Opt};
 use crate::prompt::{self, is_tty};
 use crate::ui;
 use anyhow::{Context, Result, anyhow, bail};
-use chainz_core::resolve::{self, ChainRef, Source};
+use chainz_core::resolve::{self, ChainRef, Policy, Source};
 use chainz_core::runtime::Runtime;
 use chainz_core::{Address, Chainz, LoadMode, StorePaths};
 use clap::CommandFactory;
@@ -134,7 +134,7 @@ pub fn select_target(
 
 /// Resolve a configured chain (no forks) for management commands.
 pub fn chain_arg(chainz: &Chainz, query: &str) -> Result<String> {
-    resolve::resolve_configured(chainz.config(), query)
+    resolve::configured(chainz.config(), query, Policy::Prefix).map(|(name, _)| name.to_string())
 }
 
 /// Say on stderr that the default chain applies (the user didn't name one).

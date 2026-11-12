@@ -4,12 +4,12 @@
 use super::{note_default, open, parse_address, runtime, select_target};
 use crate::cli::AddrCommand;
 use crate::{ui, view};
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use chainz_core::addrbook::{self, Labeler};
 use chainz_core::broadcast::{self, Action, Planned};
 use chainz_core::labels::{ALL_CHAINS, Label, LabelIndex, LabelScope, LabelSource, builtin_tokens};
 use chainz_core::model::Config;
-use chainz_core::resolve::{self, ChainRef, Source};
+use chainz_core::resolve::{self, ChainRef, Policy, Source};
 use chainz_core::tx::{Overwrite, SetAddress};
 use chainz_core::{Address, names};
 use serde::Serialize;
@@ -57,36 +57,18 @@ fn label_name(input: &str) -> String {
         .to_ascii_lowercase()
 }
 
-/// What to call chain `id`: its configured name, else its well-known
-/// short name, else the bare ID.
-fn chain_label(config: &Config, id: u64) -> String {
-    match config.chain_by_id(id) {
-        Some((name, _)) => name.to_string(),
-        None => names::short_name(id).map_or_else(|| format!("chain {id}"), str::to_string),
-    }
-}
-
 fn scope_label(config: &Config, scope: LabelScope) -> String {
     match scope {
         LabelScope::AllChains => ALL_CHAINS.to_string(),
-        LabelScope::Chain(id) => chain_label(config, id),
-    }
-}
-
-fn source_label(source: LabelSource) -> &'static str {
-    match source {
-        LabelSource::User => "user",
-        LabelSource::Signer => "signer",
-        LabelSource::Token => "built-in",
+        LabelScope::Chain(id) => config.chain_display(id),
     }
 }
 
 /// The chain ID labels resolve on for a chain reference.
-fn chain_id(config: &Config, target: &ChainRef) -> u64 {
-    match target {
-        ChainRef::Configured(name) => config.chains[name].id,
-        ChainRef::Fork(fork) => fork.chain_id,
-    }
+fn chain_id(config: &Config, target: &ChainRef) -> Result<u64> {
+    target
+        .chain_id(config)
+        .ok_or_else(|| anyhow!("chain '{}' is not configured", target.name()))
 }
 
 fn add(name: &str, address: &str, chain: Option<&str>, all_chains: bool) -> Result<i32> {
@@ -146,7 +128,7 @@ fn add(name: &str, address: &str, chain: Option<&str>, all_chains: bool) -> Resu
             Some(chain) => chain.id == t.chain_id,
             None => chainz.config().chain_by_id(t.chain_id).is_some(),
         })
-        .map(|t| chain_label(chainz.config(), t.chain_id))
+        .map(|t| chainz.config().chain_display(t.chain_id))
         .collect();
     if !shadowed.is_empty() {
         eprintln!(
@@ -167,7 +149,7 @@ struct Row {
     scope: String,
     chain_id: Option<u64>,
     address: Address,
-    source: &'static str,
+    source: String,
     /// A built-in token hidden by your own label of the same name.
     shadowed: bool,
 }
@@ -180,7 +162,7 @@ impl Row {
                 LabelScope::Chain(id) => Some(id),
                 LabelScope::AllChains => None,
             },
-            source: source_label(label.source),
+            source: label.source.to_string(),
             name: label.name,
             address: label.address,
             shadowed,
@@ -197,7 +179,7 @@ fn ls(chain: Option<&str>, builtin: bool, json: bool) -> Result<i32> {
         Some(query) => {
             let target = resolve::resolve(config, Some(&runtime()?), query)?;
             index
-                .labels_on(chain_id(config, &target))
+                .labels_on(chain_id(config, &target)?)
                 .into_iter()
                 .filter(|l| builtin || l.source != LabelSource::Token)
                 .map(|l| Row::new(config, l, false))
@@ -208,12 +190,7 @@ fn ls(chain: Option<&str>, builtin: bool, json: bool) -> Result<i32> {
             .labels()
             .filter(|l| builtin || l.source != LabelSource::Token)
             .map(|l| {
-                let shadowed = match l.scope {
-                    LabelScope::Chain(id) if l.source == LabelSource::Token => index
-                        .resolve(&l.name, id)
-                        .is_ok_and(|r| r.source != LabelSource::Token),
-                    _ => false,
-                };
+                let shadowed = index.shadowed(&l).is_some();
                 Row::new(config, l, shadowed)
             })
             .collect(),
@@ -267,7 +244,11 @@ fn rm(name: &str, chain: Option<&str>) -> Result<i32> {
     let scope = match chain {
         None => None,
         Some(ALL_CHAINS) => Some(ALL_CHAINS.to_string()),
-        Some(query) => Some(exact_chain(config, query)?),
+        Some(query) => Some(
+            resolve::configured(config, query, Policy::ExactOrAlias)?
+                .0
+                .to_string(),
+        ),
     };
     let removed = chainz.transact(|tx| tx.remove_address(&name, scope.as_deref()))?;
     for (scope, address) in removed {
@@ -289,12 +270,9 @@ fn find(address: &str, json: bool) -> Result<i32> {
     let rows: Vec<Row> = addrbook::find(config, &address)
         .into_iter()
         .map(|label| {
-            let shadowed = match label.scope {
-                LabelScope::AllChains => false,
-                LabelScope::Chain(id) => index
-                    .resolve(&label.name, id)
-                    .is_ok_and(|r| r.address != address),
-            };
+            let shadowed = index
+                .shadowed(&label)
+                .is_some_and(|winner| winner.address != label.address);
             Row::new(config, label, shadowed)
         })
         .collect();
@@ -344,14 +322,14 @@ impl ImportRow {
     fn new(config: &Config, p: Planned) -> Self {
         let (reason, previous) = match &p.action {
             Action::Skip(why) => (Some(why.clone()), None),
-            Action::Overwrite(old) => (None, Some(*old)),
-            Action::Add | Action::Unchanged => (None, None),
+            Action::Overwrite(_, old) => (None, Some(*old)),
+            Action::Add(_) | Action::Unchanged => (None, None),
         };
         ImportRow {
             chain: p
                 .chain
                 .clone()
-                .unwrap_or_else(|| chain_label(config, p.chain_id)),
+                .unwrap_or_else(|| config.chain_display(p.chain_id)),
             chain_id: p.chain_id,
             name: p.name,
             address: p.address,
@@ -378,20 +356,22 @@ fn import(
     for file in &files {
         runs.extend(broadcast::read(file)?);
     }
-    let mut planned = broadcast::plan(chainz.config(), &runs, options);
-    if !dry_run && planned.iter().any(|p| p.action.writes()) {
-        planned = chainz.transact(|tx| {
-            let planned = broadcast::plan(&tx.config()?, &runs, options);
-            for p in planned.iter().filter(|p| p.action.writes()) {
-                let (Some(name), Some(chain), Some(address)) = (&p.name, &p.chain, &p.address)
-                else {
-                    unreachable!("a planned write has a name, chain and address");
-                };
-                tx.set_address(name, chain, address, Overwrite::Replace)?;
-            }
-            Ok(planned)
-        })?;
-    }
+    // One path for both: a dry run previews the same transaction.
+    let apply = |tx: &mut chainz_core::Tx| {
+        let planned = broadcast::plan(&tx.config()?, &runs, options);
+        for write in planned.iter().filter_map(|p| p.action.write()) {
+            tx.write_address(write)?;
+        }
+        Ok(planned)
+    };
+    let planned = broadcast::plan(chainz.config(), &runs, options);
+    let planned = if !planned.iter().any(|p| p.action.write().is_some()) {
+        planned
+    } else if dry_run {
+        chainz.preview(apply)?
+    } else {
+        chainz.transact(apply)?
+    };
     let config = chainz.config();
     if json {
         let rows: Vec<ImportRow> = planned
@@ -409,33 +389,28 @@ fn import(
         println!("No contracts to import in {runs}.");
         return Ok(0);
     }
-    let count = |action: &str| {
-        planned
-            .iter()
-            .filter(|p| p.action.as_str() == action)
-            .count()
-    };
+    let count = |f: fn(&Action) -> bool| planned.iter().filter(|p| f(&p.action)).count();
     let (added, unchanged, overwritten, skipped) = (
-        count("added"),
-        count("unchanged"),
-        count("overwritten"),
-        count("skipped"),
+        count(|a| matches!(a, Action::Add(_))),
+        count(|a| matches!(a, Action::Unchanged)),
+        count(|a| matches!(a, Action::Overwrite(..))),
+        count(|a| matches!(a, Action::Skip(_))),
     );
     let rows: Vec<[String; 4]> = planned
         .iter()
         .map(|p| {
             let result = match &p.action {
-                Action::Add if dry_run => "add".to_string(),
-                Action::Add => "added".to_string(),
+                Action::Add(_) if dry_run => "add".to_string(),
+                Action::Add(_) => "added".to_string(),
                 Action::Unchanged => ui::dim("unchanged"),
-                Action::Overwrite(old) if dry_run => format!("overwrite (was {old})"),
-                Action::Overwrite(old) => format!("overwritten (was {old})"),
+                Action::Overwrite(_, old) if dry_run => format!("overwrite (was {old})"),
+                Action::Overwrite(_, old) => format!("overwritten (was {old})"),
                 Action::Skip(why) => ui::emph(&format!("skipped: {why}")),
             };
             [
                 p.chain
                     .clone()
-                    .unwrap_or_else(|| chain_label(config, p.chain_id)),
+                    .unwrap_or_else(|| config.chain_display(p.chain_id)),
                 p.name
                     .as_ref()
                     .map_or_else(|| "-".to_string(), |n| format!("@{n}")),
@@ -478,13 +453,13 @@ fn import(
     }
     let shadowed: Vec<String> = planned
         .iter()
-        .filter(|p| p.action.writes())
+        .filter(|p| p.action.write().is_some())
         .filter_map(|p| {
             let name = p.name.as_deref()?;
             builtin_tokens()
                 .iter()
                 .any(|t| t.name == name && t.chain_id == p.chain_id && Some(t.address) != p.address)
-                .then(|| format!("@{name} on {}", chain_label(config, p.chain_id)))
+                .then(|| format!("@{name} on {}", config.chain_display(p.chain_id)))
         })
         .collect();
     if !shadowed.is_empty() {
@@ -504,30 +479,19 @@ fn import(
     Ok(0)
 }
 
-/// A configured chain by exact name, alias (any case) or ID.
-fn exact_chain(config: &Config, query: &str) -> Result<String> {
-    resolve::resolve_exact(config, query).or_else(|error| {
-        config
-            .chains
-            .iter()
-            .find(|(_, chain)| chain.aliases.iter().any(|a| a.eq_ignore_ascii_case(query)))
-            .map(|(name, _)| name.clone())
-            .ok_or(error)
-    })
-}
-
 /// `chainz label [--chain C]`: stdin to stdout, addresses rewritten as
 /// `name(0x…)`. With no chain context, only names that hold on every
 /// chain are used.
 pub fn label(chain: Option<String>) -> Result<i32> {
     let chainz = open()?;
     let config = chainz.config();
-    let labeler = match resolve::select(config, Some(&runtime()?), chain.as_deref(), chainz.env())? {
+    let labeler = match resolve::select(config, Some(&runtime()?), chain.as_deref(), chainz.env())?
+    {
         Some((target, source)) => {
             if source == Source::Default {
                 note_default(target.name());
             }
-            Labeler::for_chain(config, chain_id(config, &target))
+            Labeler::for_chain(config, chain_id(config, &target)?)
         }
         None => Labeler::any_chain(config),
     };

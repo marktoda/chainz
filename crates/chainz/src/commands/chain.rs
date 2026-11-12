@@ -8,6 +8,7 @@ use crate::{net, ui, view};
 use anyhow::{Context, Result, anyhow, bail};
 use chainz_core::labels::LabelIndex;
 use chainz_core::model::{Chain, Endpoint};
+use chainz_core::resolve::Policy;
 use chainz_core::{names, resolve};
 use chainz_rpc::chainlist::{self, ChainlistEntry};
 use chainz_rpc::{ProbeResult, rank};
@@ -246,7 +247,7 @@ fn add(
         .map(|e| e.name.clone())
         .filter(|n| !n.eq_ignore_ascii_case(&short))
         .into_iter()
-        .filter(|alias| resolve::resolve_configured(chainz.config(), alias).is_err())
+        .filter(|alias| resolve::configured(chainz.config(), alias, Policy::Prefix).is_err())
         .collect();
     let count = endpoints.len();
     let moved = chainz.transact(|tx| {
@@ -348,7 +349,9 @@ fn alias(query: &str, aliases: Vec<String>, remove: bool) -> Result<i32> {
 
 fn rm(query: &str) -> Result<i32> {
     let mut chainz = open()?;
-    let name = resolve::resolve_exact(chainz.config(), query)?;
+    let name = resolve::configured(chainz.config(), query, Policy::Exact)?
+        .0
+        .to_string();
     chainz.transact(|tx| tx.remove_chain(&name))?;
     println!("Removed chain '{name}'");
     Ok(0)

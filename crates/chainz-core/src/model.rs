@@ -485,6 +485,17 @@ impl Config {
             .map(|(name, chain)| (name.as_str(), chain))
     }
 
+    /// What to call chain `id` in output: its configured name, else its
+    /// well-known short name, else `chain <id>`.
+    pub fn chain_display(&self, id: u64) -> String {
+        match self.chain_by_id(id) {
+            Some((name, _)) => name.to_string(),
+            None => {
+                crate::names::short_name(id).map_or_else(|| format!("chain {id}"), str::to_string)
+            }
+        }
+    }
+
     /// Why chain `name` with ID `id` (and signer `signer`) cannot be
     /// added, if it cannot: an invalid or taken name, a configured ID, or
     /// a missing signer.

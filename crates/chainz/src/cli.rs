@@ -607,7 +607,10 @@ mod tests {
             assert!(help.contains(name), "exec help misses {name}");
         }
         for token in chainz_core::names::context_tokens() {
-            assert!(help.contains(&format!("@{token}")), "exec help misses @{token}");
+            assert!(
+                help.contains(&format!("@{token}")),
+                "exec help misses @{token}"
+            );
         }
     }
 }

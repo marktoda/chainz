@@ -20,7 +20,6 @@
 
 use crate::address::Address;
 use crate::contract::{CHAINZ_CHAIN, CONTRACT_VARS, ETHERSCAN_API_KEY, RAW_PRIVATE_KEY};
-use crate::signer::{KeyBackend, Prompter};
 use crate::grammar::{self, Piece};
 use crate::labels::{LabelError, LabelIndex};
 use crate::model::{Backend, Chain, Config};
@@ -29,6 +28,7 @@ use crate::redact::redact;
 use crate::resolve::{self, ChainRef};
 use crate::runtime::{ForkRecord, Runtime};
 use crate::secrets::{Builtins, VarResolver};
+use crate::signer::{KeyBackend, Prompter};
 use crate::store::Chainz;
 use anyhow::{Context as _, Result, anyhow, bail};
 use std::cell::{OnceCell, RefCell};

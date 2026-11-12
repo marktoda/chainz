@@ -15,7 +15,7 @@
 use crate::cli::Opt;
 use chainz_core::Chainz;
 use chainz_core::contract::Env;
-use chainz_core::labels::{LabelIndex, LabelSource};
+use chainz_core::labels::LabelIndex;
 use chainz_core::model::Config;
 use chainz_core::resolve::{self, ChainRef};
 use chainz_core::runtime::{ForkRecord, Runtime};
@@ -329,12 +329,7 @@ fn label_chains(config: &Config, index: &LabelIndex, name: &str) -> Vec<(String,
 }
 
 fn describe(label: &chainz_core::labels::Label) -> String {
-    let kind = match label.source {
-        LabelSource::User => "label",
-        LabelSource::Signer => "signer",
-        LabelSource::Token => "token",
-    };
-    format!("{kind} {}", label.address)
+    format!("{} {}", label.source, label.address)
 }
 
 // ---------------------------------------------------------------------------
@@ -424,10 +419,9 @@ fn typed_chain(words: &[String]) -> Option<String> {
 fn typed_chain_id(config: &Config, words: &[String]) -> Option<u64> {
     let typed = typed_chain(words);
     let runtime = Runtime::resolve().ok();
-    match resolve::select(config, runtime.as_ref(), typed.as_deref(), Env::process()).ok()?? {
-        (ChainRef::Configured(name), _) => config.chains.get(&name).map(|c| c.id),
-        (ChainRef::Fork(fork), _) => Some(fork.chain_id),
-    }
+    let (target, _) =
+        resolve::select(config, runtime.as_ref(), typed.as_deref(), Env::process()).ok()??;
+    target.chain_id(config)
 }
 
 /// `config.toml`, parsed but not validated; `None` when absent or broken.

@@ -8,10 +8,11 @@
 //!
 //! Within a reference: a live fork name, an exact chain ID, an exact name
 //! or alias (case-insensitive), then an unambiguous prefix of a name or
-//! alias. Destructive commands use [`resolve_exact`]: name or ID only.
+//! alias. Each command matches under one [`Policy`]; destructive commands
+//! use [`Policy::Exact`]: name or ID only.
 
 use crate::contract::Env;
-use crate::model::Config;
+use crate::model::{Chain, Config};
 use crate::runtime::{ForkRecord, Runtime};
 use anyhow::{Result, anyhow, bail};
 
@@ -25,6 +26,15 @@ pub enum ChainRef {
 }
 
 impl ChainRef {
+    /// The chain ID labels and tools use: the fork's, or the configured
+    /// chain's (`None` if `config` no longer has it).
+    pub fn chain_id(&self, config: &Config) -> Option<u64> {
+        match self {
+            ChainRef::Configured(name) => config.chains.get(name).map(|c| c.id),
+            ChainRef::Fork(fork) => Some(fork.chain_id),
+        }
+    }
+
     /// The name exported as `CHAINZ_CHAIN`.
     pub fn name(&self) -> &str {
         match self {
@@ -57,24 +67,62 @@ pub fn resolve(config: &Config, runtime: Option<&Runtime>, query: &str) -> Resul
     {
         return Ok(ChainRef::Fork(fork));
     }
-    resolve_configured(config, query).map(ChainRef::Configured)
+    configured(config, query, Policy::Prefix)
+        .map(|(name, _)| ChainRef::Configured(name.to_string()))
 }
 
-/// Resolve to a configured chain's short name (no forks).
-pub fn resolve_configured(config: &Config, query: &str) -> Result<String> {
+/// How strictly a command matches a configured chain. Each command keeps
+/// one policy; the matching rules live here only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Policy {
+    /// An ID, an exact name or alias (any case), then an unambiguous prefix
+    /// of a name or alias: management commands.
+    Prefix,
+    /// An ID or the exact name: destructive commands (`chain rm`).
+    Exact,
+    /// An ID, the exact name, or an alias (any case), never a prefix:
+    /// `addr rm --chain`.
+    ExactOrAlias,
+}
+
+/// The configured chain (no forks) `query` names under `policy`: its short
+/// name and the chain.
+pub fn configured<'c>(
+    config: &'c Config,
+    query: &str,
+    policy: Policy,
+) -> Result<(&'c str, &'c Chain)> {
+    let found = |name: &'c String, chain: &'c Chain| (name.as_str(), chain);
     if let Ok(id) = query.parse::<u64>() {
-        if let Some((name, _)) = config.chain_by_id(id) {
-            return Ok(name.to_string());
+        if let Some(found) = config.chain_by_id(id) {
+            return Ok(found);
         }
-        bail!("no chain with ID {id} is configured{}", hint(config));
+        if policy == Policy::Prefix {
+            bail!("no chain with ID {id} is configured{}", hint(config));
+        }
+    }
+    if policy == Policy::Exact {
+        return config
+            .chains
+            .get_key_value(query)
+            .map(|(n, c)| found(n, c))
+            .ok_or_else(|| {
+                anyhow!("chain '{query}' not found; this command needs an exact chain name or ID")
+            });
     }
     for (name, chain) in &config.chains {
         if name.eq_ignore_ascii_case(query) || chain.matches_alias(query) {
-            return Ok(name.clone());
+            if policy == Policy::ExactOrAlias && !name.eq(query) && !chain.matches_alias(query) {
+                continue;
+            }
+            return Ok(found(name, chain));
         }
     }
+    if policy == Policy::ExactOrAlias {
+        bail!("chain '{query}' not found; this command needs an exact chain name or ID");
+    }
     let lower = query.to_ascii_lowercase();
-    let matches: Vec<&str> = config
+    let matches: Vec<(&'c String, &'c Chain)> = config
         .chains
         .iter()
         .filter(|(name, chain)| {
@@ -84,33 +132,18 @@ pub fn resolve_configured(config: &Config, query: &str) -> Result<String> {
                     .iter()
                     .any(|a| a.to_ascii_lowercase().starts_with(&lower))
         })
-        .map(|(name, _)| name.as_str())
         .collect();
     match matches.as_slice() {
-        [one] => Ok(one.to_string()),
+        [(name, chain)] => Ok(found(name, chain)),
         [] => Err(anyhow!("chain '{query}' not found{}", hint(config))),
         many => Err(anyhow!(
             "chain '{query}' is ambiguous: matches {}",
-            many.join(", ")
+            many.iter()
+                .map(|(n, _)| n.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         )),
     }
-}
-
-/// Exact name or ID only, for destructive commands.
-pub fn resolve_exact(config: &Config, query: &str) -> Result<String> {
-    if let Ok(id) = query.parse::<u64>()
-        && let Some((name, _)) = config.chain_by_id(id)
-    {
-        return Ok(name.to_string());
-    }
-    config
-        .chains
-        .keys()
-        .find(|name| name.as_str() == query)
-        .cloned()
-        .ok_or_else(|| {
-            anyhow!("chain '{query}' not found; this command needs an exact chain name or ID")
-        })
 }
 
 fn hint(config: &Config) -> String {
@@ -189,9 +222,19 @@ rpcs.a = "https://a"
     #[test]
     fn exact_only_for_destructive_commands() {
         let c = config();
-        assert_eq!(resolve_exact(&c, "8453").unwrap(), "base");
-        assert!(resolve_exact(&c, "mainnet").is_err());
-        assert!(resolve_exact(&c, "bas").is_err());
+        let exact = |q| configured(&c, q, Policy::Exact).map(|(n, _)| n);
+        assert_eq!(exact("8453").unwrap(), "base");
+        assert!(exact("mainnet").is_err());
+        assert!(exact("bas").is_err());
+        assert!(exact("BASE").is_err());
+        let alias = |q| configured(&c, q, Policy::ExactOrAlias).map(|(n, _)| n);
+        assert_eq!(alias("1").unwrap(), "eth");
+        assert_eq!(alias("MAINNET").unwrap(), "eth");
+        assert_eq!(alias("base").unwrap(), "base");
+        assert!(alias("BASE").is_err());
+        assert!(alias("main").is_err());
+        let (name, chain) = configured(&c, "base-s", Policy::Prefix).unwrap();
+        assert_eq!((name, chain.id), ("base-sepolia", 84532));
     }
 
     #[test]
