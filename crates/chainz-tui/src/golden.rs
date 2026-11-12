@@ -165,7 +165,7 @@ fn registry_state() -> State {
         ("eth", ether / 4),
         ("base", ether * 3),
         ("gnosis", ether * 12),
-        ("polygon", u128::MAX),
+        ("polygon", crate::view::SATURATED),
         ("celo", 0),
     ] {
         state.apply(sheet(chain, native, tokens(chain)));

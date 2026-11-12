@@ -46,9 +46,8 @@ pub fn latency(ms: u32) -> String {
 
 /// A base fee in gwei with magnitude-adaptive precision: `31`, `4.2`,
 /// `0.41`, `0.002`, `<0.001`.
-pub fn gwei(wei: u128) -> String {
-    let g = wei as f64 / 1e9;
-    if wei == 0 {
+pub fn gwei(g: f64) -> String {
+    if g == 0.0 {
         "0".into()
     } else if g >= 100.0 {
         format!("{g:.0}")
@@ -70,9 +69,6 @@ pub fn units(raw: u128, decimals: u8) -> String {
     const FRACTION: u32 = 4;
     if raw == 0 {
         return "0".into();
-    }
-    if raw == u128::MAX {
-        return ">3.4e38".into();
     }
     let decimals = u32::from(decimals);
     let Some(scale) = 10u128.checked_pow(decimals) else {
@@ -167,13 +163,13 @@ mod tests {
 
     #[test]
     fn gwei_precision_follows_magnitude() {
-        assert_eq!(gwei(0), "0");
-        assert_eq!(gwei(410_000_000), "0.410");
-        assert_eq!(gwei(2_000_000), "0.002");
-        assert_eq!(gwei(7), "<0.001");
-        assert_eq!(gwei(4_230_000_000), "4.23");
-        assert_eq!(gwei(31_400_000_000), "31.4");
-        assert_eq!(gwei(131_400_000_000), "131");
+        assert_eq!(gwei(0.0), "0");
+        assert_eq!(gwei(0.41), "0.410");
+        assert_eq!(gwei(0.002), "0.002");
+        assert_eq!(gwei(7e-9), "<0.001");
+        assert_eq!(gwei(4.23), "4.23");
+        assert_eq!(gwei(31.4), "31.4");
+        assert_eq!(gwei(131.4), "131");
     }
 
     #[test]
@@ -185,7 +181,6 @@ mod tests {
         assert_eq!(units(1, 18), "<0.0001");
         assert_eq!(units(15, 1), "1.5000");
         assert_eq!(units(7, 0), "7.0000");
-        assert_eq!(units(u128::MAX, 18), ">3.4e38");
     }
 
     #[test]

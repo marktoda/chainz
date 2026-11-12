@@ -159,11 +159,6 @@ pub struct Amount {
     pub saturated: bool,
 }
 
-/// `value`, unless it is the `u128::MAX` a saturating decode stands for.
-fn exact(value: u128) -> Option<u128> {
-    (value != u128::MAX).then_some(value)
-}
-
 /// One token balance.
 #[derive(Debug, Serialize)]
 pub struct TokenBalance {
@@ -198,7 +193,6 @@ impl From<&Fault> for Problem {
 fn chain(row: &ChainRow) -> Chain {
     let c = row.chain;
     let head = c.head.as_ref();
-    let base_fee = head.and_then(|h| h.base_fee).and_then(exact);
     Chain {
         name: c.info.name.clone(),
         id: c.info.id,
@@ -209,9 +203,9 @@ fn chain(row: &ChainRow) -> Chain {
         head: head.map(|h| h.number),
         block_timestamp: head.and_then(|h| h.timestamp),
         block_age_secs: row.block_age_secs,
-        block_time_secs: c.block_time,
-        base_fee_wei: base_fee.map(|f| f.to_string()),
-        base_fee_gwei: base_fee.map(|f| f as f64 / 1e9),
+        block_time_secs: row.block_time_secs,
+        base_fee_wei: row.base_fee_wei.map(|f| f.to_string()),
+        base_fee_gwei: row.base_fee_gwei(),
         latency_ms: head.map(|h| h.latency_ms),
         p50_ms: row.p50_ms,
         lag_blocks: c.lag,
@@ -422,10 +416,10 @@ mod tests {
                 "formatted": "1.5", "saturated": false,
             })
         );
-        let huge = serde_json::to_value(amount(usdc(u128::MAX))).unwrap();
+        let huge = serde_json::to_value(amount(usdc(view::SATURATED))).unwrap();
         assert_eq!(huge["raw"], serde_json::Value::Null);
         assert_eq!(huge["formatted"], serde_json::Value::Null);
         assert_eq!(huge["saturated"], true);
-        assert_eq!(exact(u128::MAX - 1), Some(u128::MAX - 1));
+        assert_eq!(view::exact(u128::MAX - 1), Some(u128::MAX - 1));
     }
 }

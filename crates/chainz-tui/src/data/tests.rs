@@ -111,14 +111,17 @@ async fn a_hostile_endpoint_does_not_stop_the_poller() {
     }
     let chain = &state.chains[0];
     assert_eq!(chain.block_time, None);
-    assert_eq!(chain.head.as_ref().unwrap().base_fee, Some(u128::MAX));
+    assert_eq!(chain.head.as_ref().unwrap().base_fee, Some(crate::view::SATURATED));
     // Rendering and the snapshot survive it too.
     let _ = chain.status(state.slow_threshold());
     let _ = chain.block_age(chainz_os::now_ms());
     let snapshot = crate::snapshot::Snapshot::new(&state, chainz_os::now_ms());
     let json = serde_json::to_value(&snapshot).unwrap();
-    // A saturated base fee is not printed as if it were exact.
+    // A saturated base fee is not printed as if it were exact, on screen
+    // either.
     assert_eq!(json["chains"][0]["base_fee_wei"], Value::Null);
+    let row = crate::view::chain_rows(&state, &state.chains, chainz_sys::now_ms())[0];
+    assert_eq!(row.base_fee_gwei(), None);
 }
 
 fn pacing() -> Pacing {

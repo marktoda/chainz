@@ -64,11 +64,10 @@ fn row(r: &ChainRow, t: Theme) -> Vec<Cell> {
             };
             Cell::new(fmt::age(age), style)
         }),
-        chain
-            .block_time
+        r.block_time_secs
             .map_or_else(blank, |secs| Cell::new(fmt::block_time(secs), t.dim())),
-        head.and_then(|h| h.base_fee).map_or_else(blank, |fee| {
-            Cell::new(fmt::gwei(fee), live).then(" gwei", t.faint())
+        r.base_fee_gwei().map_or_else(blank, |gwei| {
+            Cell::new(fmt::gwei(gwei), live).then(" gwei", t.faint())
         }),
         Cell::new(r.rpc, t.text()),
         r.p50_ms.map_or_else(blank, |ms| {

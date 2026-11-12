@@ -27,6 +27,17 @@ pub struct ChainRow<'a> {
     pub p50_ms: Option<u32>,
     /// Seconds since the head block.
     pub block_age_secs: Option<u64>,
+    /// Average block time, seconds.
+    pub block_time_secs: Option<f64>,
+    /// The head's base fee in wei; `None` when unknown or [`SATURATED`].
+    pub base_fee_wei: Option<u128>,
+}
+
+impl ChainRow<'_> {
+    /// The base fee in gwei.
+    pub fn base_fee_gwei(&self) -> Option<f64> {
+        self.base_fee_wei.map(|wei| wei as f64 / 1e9)
+    }
 }
 
 /// The rows for `chains` (a subset of `state`'s, in order) at `now_ms`.
@@ -44,6 +55,8 @@ pub fn chain_rows<'a>(
             rpc: serving_endpoint(state, chain),
             p50_ms: chain.p50(),
             block_age_secs: chain.block_age(now_ms),
+            block_time_secs: chain.block_time,
+            base_fee_wei: chain.head.as_ref().and_then(|h| h.base_fee).and_then(exact),
         })
         .collect()
 }
@@ -98,10 +111,19 @@ pub fn endpoint_rows(chain: &ChainState) -> Vec<EndpointRow<'_>> {
         .collect()
 }
 
+/// What a saturating decode reads for 2^128 - 1 or more, which only a
+/// broken or hostile endpoint reports: not a figure to show or trust.
+pub const SATURATED: u128 = u128::MAX;
+
+/// `raw`, unless it is [`SATURATED`].
+pub fn exact(raw: u128) -> Option<u128> {
+    (raw != SATURATED).then_some(raw)
+}
+
 /// An amount in raw units.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Amount<'a> {
-    /// Raw units; `u128::MAX` when the read saturated (see [`Amount::exact`]).
+    /// Raw units; [`SATURATED`] when the read saturated (see [`Amount::exact`]).
     pub raw: u128,
     /// Decimals.
     pub decimals: u8,
@@ -110,11 +132,9 @@ pub struct Amount<'a> {
 }
 
 impl Amount<'_> {
-    /// The raw value, unless it is the `u128::MAX` a saturating decode
-    /// stands for (2^128 - 1 or more, which only a broken or hostile
-    /// endpoint reports).
+    /// The raw value, unless it is [`SATURATED`].
     pub fn exact(&self) -> Option<u128> {
-        (self.raw != u128::MAX).then_some(self.raw)
+        exact(self.raw)
     }
 }
 
