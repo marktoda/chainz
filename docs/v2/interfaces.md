@@ -592,8 +592,11 @@ names the file. `ErrorClass::phrase()` is the class in a sentence
   `rpc discover`, `chain add`, `chain set --rpc URL`): `Chain::new_endpoint`
   checks the URL (`Endpoint::check_url`: http(s) or ws(s), a host) and names
   it, refuses a URL the chain already has (`Chain::endpoint_at`,
-  `Endpoint::same_url`: a trailing `/` ignored; `chain add` dedupes its
-  URLs by the same rule), and literal secrets move into variables.
+  `Endpoint::same_url(a, b, &vars)`: a trailing `/` ignored, and every
+  `${NAME}` that `secrets.toml`'s `[vars]` holds expanded on both sides, so a
+  pasted URL matches the stored one whose key moved into a variable;
+  `ChainEdit::rpc_choice` and `chain add`'s own dedupe use the same rule), and
+  literal secrets move into variables.
 - Chain edits: `tx.edit_chain(name, &ChainEdit) -> Result<EditReport>` applies
   one patch (`chain set` flags or its menu): signer, `rpc` (an endpoint name,
   or a URL: an existing one activates, a new one is added with its secrets

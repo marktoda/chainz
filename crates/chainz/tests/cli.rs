@@ -522,6 +522,30 @@ fn rpc_failure_never_leaks_the_url() {
         .stderr(predicate::str::contains("topsecretkey").not());
 }
 
+/// Pasting the same Alchemy URL again names the endpoint its key moved
+/// into a variable for, instead of adding `alchemy-2`.
+#[test]
+fn re_adding_a_url_whose_key_moved_adds_nothing() {
+    let sb = Sandbox::new();
+    sb.seed(&[("base", 8453)]);
+    let url = "https://base-mainnet.g.alchemy.com/v2/abcdef0123456789abcdef0123455678";
+    let out = sb.ok(&["chain", "set", "base", "--rpc", url, "--no-check"]);
+    assert!(out.contains("added endpoint 'alchemy'"), "{out}");
+    let out = sb.ok(&["chain", "set", "base", "--rpc", "local"]);
+    assert!(out.contains("active endpoint"), "{out}");
+    // `chain set --rpc` with the URL again activates `alchemy`.
+    let out = sb.ok(&["chain", "set", "base", "--rpc", url, "--no-check"]);
+    assert!(!out.contains("added endpoint"), "{out}");
+    assert!(sb.config().contains("rpc = \"alchemy\""));
+    // `rpc add` refuses it by name.
+    sb.cmd()
+        .args(["rpc", "add", "base", url, "--no-check"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("as endpoint 'alchemy'"));
+    assert!(!sb.config().contains("alchemy-2"));
+}
+
 #[test]
 fn chain_rm_by_name_and_id_requires_exact_match() {
     let sb = Sandbox::new();

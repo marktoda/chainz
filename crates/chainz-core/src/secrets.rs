@@ -25,13 +25,16 @@ use std::borrow::Cow;
 use std::fmt;
 use zeroize::Zeroize;
 
+/// Variable values by name (`secrets.toml`'s `[vars]`).
+pub type Vars = IndexMap<String, String>;
+
 /// Parsed `secrets.toml`.
 #[derive(Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Secrets {
     /// Variable values, referenced as `${NAME}`.
     #[serde(default)]
-    pub vars: IndexMap<String, String>,
+    pub vars: Vars,
     /// Key material by signer name.
     #[serde(default)]
     pub signers: IndexMap<String, SignerSecret>,

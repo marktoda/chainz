@@ -48,18 +48,25 @@ impl ChainEdit {
     }
 
     /// What `--rpc` means for `chain` (named `name`): `None` when unset,
-    /// an endpoint the chain has, or a new endpoint to add. An error when
+    /// an endpoint the chain has (by name, or by URL through
+    /// [`Chain::endpoint_at`] with `vars`, `secrets.toml`'s `[vars]`), or a
+    /// new endpoint to add. An error when
     /// it is neither an endpoint nor a URL [`Tx::edit_chain`] would accept.
     /// The one owner of that rule: the edit, the caller's chain-ID probe
     /// and the `chain set` menu all go by it.
-    pub fn rpc_choice(&self, name: &str, chain: &Chain) -> Result<Option<RpcChoice>> {
+    pub fn rpc_choice(
+        &self,
+        name: &str,
+        chain: &Chain,
+        vars: &crate::secrets::Vars,
+    ) -> Result<Option<RpcChoice>> {
         let Some(rpc) = self.rpc.as_deref() else {
             return Ok(None);
         };
         if chain.rpcs.contains_key(rpc) {
             return Ok(Some(RpcChoice::Existing(rpc.to_string())));
         }
-        if let Some(existing) = chain.endpoint_at(rpc) {
+        if let Some(existing) = chain.endpoint_at(rpc, vars) {
             return Ok(Some(RpcChoice::Existing(existing.to_string())));
         }
         if !rpc.contains("://") {
@@ -73,7 +80,7 @@ impl ChainEdit {
                     .join(", ")
             );
         }
-        let ep_name = chain.new_endpoint(name, rpc, None)?;
+        let ep_name = chain.new_endpoint(name, rpc, None, vars)?;
         let mut endpoint = Endpoint::new(rpc);
         for (header, value) in &self.headers {
             let header = header.trim();
@@ -91,8 +98,8 @@ impl ChainEdit {
 /// What `--rpc` means for a chain ([`ChainEdit::rpc_choice`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RpcChoice {
-    /// An endpoint the chain has, named by its name or its URL (a trailing
-    /// `/` ignored): that endpoint's name.
+    /// An endpoint the chain has, named by its name or its URL
+    /// ([`Endpoint::same_url`]): that endpoint's name.
     Existing(String),
     /// A URL to add as a new endpoint: its name, and the endpoint with the
     /// edit's headers.
@@ -275,7 +282,8 @@ impl Tx {
         // A new endpoint is added, with the header flags, and activated.
         // Else the header flags apply to the `--rpc` endpoint, or the
         // active one.
-        let ep_name = match edit.rpc_choice(name, chain)? {
+        let secrets = self.secrets()?;
+        let ep_name = match edit.rpc_choice(name, chain, &secrets.vars)? {
             None => chain.rpc.clone(),
             Some(RpcChoice::Existing(ep_name)) => ep_name,
             Some(RpcChoice::New(ep_name, endpoint)) => {

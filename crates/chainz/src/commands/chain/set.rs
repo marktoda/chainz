@@ -12,6 +12,7 @@ use crate::{ui, view};
 use anyhow::Result;
 use chainz_core::model::{Config, Explorer};
 use chainz_core::resolve::{self, Policy};
+use chainz_core::secrets::Vars;
 use chainz_core::tx::{ChainEdit, EditReport, RpcChoice};
 use zeroize::Zeroizing;
 
@@ -44,7 +45,7 @@ pub fn set(args: &ChainSetArgs, command: &[&str]) -> Result<i32> {
     };
     flags.api_key = api_key(args)?;
     let edit = if menu_wanted {
-        menu(&mut Tty, chainz.config(), &name)?
+        menu(&mut Tty, chainz.config(), &chainz.secrets()?.vars, &name)?
     } else {
         flags
     };
@@ -106,7 +107,7 @@ fn build_edit(
 /// the headers the edit gives it).
 fn check_new_url(chainz: &chainz_core::Chainz, name: &str, edit: &ChainEdit) -> Result<()> {
     let chain = &chainz.config().chains[name];
-    match edit.rpc_choice(name, chain)? {
+    match edit.rpc_choice(name, chain, &chainz.secrets()?.vars)? {
         Some(RpcChoice::New(ep, endpoint)) if !endpoint.is_websocket() => {
             check(chainz, name, chain.id, &ep, &endpoint)
         }
@@ -143,12 +144,18 @@ const DONE: usize = MENU.len() - 1;
 /// Enter keeps it. Esc in a picker goes back to the menu with that field
 /// unchanged; Esc in the menu leaves it, after asking when edits are
 /// pending. After an edit the cursor is on `Done`.
-pub(super) fn menu(ask: &mut dyn Ask, config: &Config, name: &str) -> Result<ChainEdit> {
+/// `vars` (`secrets.toml`'s `[vars]`) match a typed URL to an endpoint.
+pub(super) fn menu(
+    ask: &mut dyn Ask,
+    config: &Config,
+    vars: &Vars,
+    name: &str,
+) -> Result<ChainEdit> {
     let chain = &config.chains[name];
     let mut edit = ChainEdit::default();
     let mut cursor = 0;
     loop {
-        let shown = Shown::of(config, name, &edit);
+        let shown = Shown::of(config, vars, name, &edit);
         let items: Vec<String> = MENU
             .iter()
             .zip([
@@ -196,7 +203,7 @@ pub(super) fn menu(ask: &mut dyn Ask, config: &Config, name: &str) -> Result<Cha
                     })
                     .collect();
                 options.push("Enter a URL…".to_string());
-                let current = match edit.rpc_choice(name, chain) {
+                let current = match edit.rpc_choice(name, chain, vars) {
                     Ok(Some(RpcChoice::Existing(ep))) => chain.rpcs.get_index_of(&ep),
                     Ok(Some(RpcChoice::New(..))) => Some(chain.rpcs.len()),
                     _ => chain.rpcs.get_index_of(&chain.rpc),
@@ -302,7 +309,10 @@ fn pending_fields(edit: &ChainEdit) -> Vec<&'static str> {
     [
         ("RPC", edit.rpc.is_some()),
         ("signer", edit.signer.is_some()),
-        ("explorer", edit.explorer.is_some() || edit.api_key.is_some()),
+        (
+            "explorer",
+            edit.explorer.is_some() || edit.api_key.is_some(),
+        ),
         ("name", edit.name.is_some()),
         (
             "aliases",
@@ -326,7 +336,7 @@ struct Shown {
 }
 
 impl Shown {
-    fn of(config: &Config, name: &str, edit: &ChainEdit) -> Self {
+    fn of(config: &Config, vars: &Vars, name: &str, edit: &ChainEdit) -> Self {
         let chain = &config.chains[name];
         let or_dash = |v: Option<&str>| v.unwrap_or("-").to_string();
         let pending_aliases = (!edit.add_aliases.is_empty() || !edit.remove_aliases.is_empty())
@@ -341,7 +351,7 @@ impl Shown {
             });
         let aliases = pending_aliases.as_ref().unwrap_or(&chain.aliases);
         Shown {
-            rpc: match edit.rpc_choice(name, chain) {
+            rpc: match edit.rpc_choice(name, chain, vars) {
                 Ok(None) => chain.rpc.clone(),
                 Ok(Some(RpcChoice::Existing(endpoint))) => endpoint,
                 Ok(Some(RpcChoice::New(_, endpoint))) => {
@@ -408,7 +418,7 @@ path = "/o"
 
     #[test]
     fn done_right_away_changes_nothing() {
-        let edit = menu(&mut Script::new([Pick(5)]), &config(), "eth").unwrap();
+        let edit = menu(&mut Script::new([Pick(5)]), &config(), &Vars::new(), "eth").unwrap();
         assert!(edit.is_empty());
     }
 
@@ -429,7 +439,7 @@ path = "/o"
             Text("main, l1"), // mainnet dropped, two added
             Pick(5),          // Done
         ]);
-        let edit = menu(&mut script, &config(), "eth").unwrap();
+        let edit = menu(&mut script, &config(), &Vars::new(), "eth").unwrap();
         assert_eq!(edit.rpc.as_deref(), Some("infura"));
         assert_eq!(edit.signer, Some(Some("ops".to_string())));
         assert_eq!(edit.explorer, Some(Some("etherscan".to_string())));
@@ -453,7 +463,11 @@ path = "/o"
             Text("mainnet"),
             Pick(5),
         ]);
-        assert!(menu(&mut script, &config(), "eth").unwrap().is_empty());
+        assert!(
+            menu(&mut script, &config(), &Vars::new(), "eth")
+                .unwrap()
+                .is_empty()
+        );
     }
 
     /// The picker defaults are the current values: Enter in each changes
@@ -492,7 +506,11 @@ path = "/o"
             Yes(false),    // no API key
             Pick(5),
         ]);
-        assert!(menu(&mut script, &config, "eth").unwrap().is_empty());
+        assert!(
+            menu(&mut script, &config, &Vars::new(), "eth")
+                .unwrap()
+                .is_empty()
+        );
         // Menu, RPC (infura), menu, Signer (ops), menu, Explorer
         // (blockscout), menu.
         assert_eq!(script.defaults, [0, 1, 0, 1, 1, 0, 2]);
@@ -502,7 +520,11 @@ path = "/o"
         let eth = bare.chains.get_mut("eth").unwrap();
         eth.signer = None;
         eth.explorer = None;
-        assert!(menu(&mut script, &bare, "eth").unwrap().is_empty());
+        assert!(
+            menu(&mut script, &bare, &Vars::new(), "eth")
+                .unwrap()
+                .is_empty()
+        );
         // (etherscan is offered after blockscout.)
         assert_eq!(script.defaults, [0, 2, 1, 2, 2]);
     }
@@ -515,10 +537,10 @@ path = "/o"
             Pick(1),
             Answer::Esc, // Signer: back
             Pick(0),
-            Pick(1), // infura
+            Pick(1),       // infura
             Answer::Enter, // the cursor is on Done
         ]);
-        let edit = menu(&mut script, &config(), "eth").unwrap();
+        let edit = menu(&mut script, &config(), &Vars::new(), "eth").unwrap();
         assert_eq!(edit.name.as_deref(), Some("ethereum"));
         assert_eq!(edit.rpc.as_deref(), Some("infura"));
         assert_eq!(edit.signer, None);
@@ -530,22 +552,22 @@ path = "/o"
     #[test]
     fn esc_in_the_menu_asks_before_discarding() {
         // Nothing pending: Esc leaves at once.
-        let err = menu(&mut Script::new([Answer::Esc]), &config(), "eth").unwrap_err();
+        let err = menu(
+            &mut Script::new([Answer::Esc]),
+            &config(),
+            &Vars::new(),
+            "eth",
+        )
+        .unwrap_err();
         assert!(ui::is_cancelled(&err));
         // Pending: asked; declining goes back to the menu.
-        let mut script = Script::new([
-            Pick(3),
-            Text("ethereum"),
-            Answer::Esc,
-            Yes(false),
-            Pick(5),
-        ]);
-        let edit = menu(&mut script, &config(), "eth").unwrap();
+        let mut script = Script::new([Pick(3), Text("ethereum"), Answer::Esc, Yes(false), Pick(5)]);
+        let edit = menu(&mut script, &config(), &Vars::new(), "eth").unwrap();
         assert_eq!(edit.name.as_deref(), Some("ethereum"));
         assert_eq!(script.asked[3], "Discard 1 pending change (name)?");
         // Accepting discards them.
         let mut script = Script::new([Pick(3), Text("ethereum"), Answer::Esc, Yes(true)]);
-        let err = menu(&mut script, &config(), "eth").unwrap_err();
+        let err = menu(&mut script, &config(), &Vars::new(), "eth").unwrap_err();
         assert!(ui::is_cancelled(&err));
     }
 
@@ -559,7 +581,7 @@ path = "/o"
             Pick(2), // No signer
             Pick(5),
         ]);
-        let edit = menu(&mut script, &config(), "eth").unwrap();
+        let edit = menu(&mut script, &config(), &Vars::new(), "eth").unwrap();
         assert_eq!(edit.rpc.as_deref(), Some("https://rpc.example.org"));
         assert_eq!(edit.signer, Some(None));
     }

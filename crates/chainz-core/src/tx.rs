@@ -282,9 +282,10 @@ impl Tx {
     /// Add an endpoint from a user's URL to chain `chain`: the one way
     /// `rpc add`, `rpc discover`, `chain add` and `chain set --rpc URL` do
     /// it. The URL and name are checked by [`Chain::new_endpoint`] (which
-    /// also names it when `name` is `None`), and literal secrets in the URL
-    /// and headers move into variables. Returns the endpoint's name and
-    /// what moved.
+    /// also names it when `name` is `None`, and refuses a URL the chain
+    /// has, by [`Endpoint::same_url`] over `secrets.toml`'s variables), and
+    /// literal secrets in the URL and headers move into variables. Returns
+    /// the endpoint's name and what moved.
     pub fn add_endpoint_url(
         &mut self,
         chain: &str,
@@ -292,12 +293,13 @@ impl Tx {
         endpoint: &Endpoint,
         role: EndpointRole,
     ) -> Result<(String, Vec<Moved>)> {
+        let secrets = self.secrets()?;
         let name = self
             .config()?
             .chains
             .get(chain)
             .ok_or_else(|| anyhow!("chain '{chain}' not found"))?
-            .new_endpoint(chain, &endpoint.url, name)?;
+            .new_endpoint(chain, &endpoint.url, name, &secrets.vars)?;
         let mut endpoints = [(name.clone(), endpoint.clone())];
         let moved = self.extract_secrets(chain, &mut endpoints)?;
         let [(_, endpoint)] = &endpoints;

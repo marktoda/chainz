@@ -243,8 +243,9 @@ pub fn add(chainz: &mut Chainz, args: &ChainAddArgs, ask: &mut dyn Ask) -> Resul
 
     // The URLs, active first; a URL listed twice is added once.
     let mut urls: Vec<String> = Vec::new();
+    let vars = &chainz.secrets()?.vars;
     let push = |urls: &mut Vec<String>, url: &str| {
-        if !urls.iter().any(|u| Endpoint::same_url(u, url)) {
+        if !urls.iter().any(|u| Endpoint::same_url(u, url, vars)) {
             urls.push(url.to_string());
         }
     };

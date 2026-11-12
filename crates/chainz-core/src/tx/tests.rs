@@ -627,12 +627,14 @@ fn endpoints_from_urls_are_checked_named_and_matched_one_way() {
     assert!(err("ftp://x.example", None).contains("http(s)://"));
     assert!(err("https://c.example", Some("a")).contains("named 'a'"));
     // `chain set --rpc` sees the same match: it activates `b`.
-    assert_eq!(chain.endpoint_at("https://b.example/"), Some("b"));
+    let no_vars = IndexMap::new();
+    assert_eq!(chain.endpoint_at("https://b.example/", &no_vars), Some("b"));
     let edit = ChainEdit {
         rpc: Some("https://new.example".into()),
         ..Default::default()
     };
-    let Some(RpcChoice::New(name, endpoint)) = edit.rpc_choice("eth", &chain).unwrap() else {
+    let Some(RpcChoice::New(name, endpoint)) = edit.rpc_choice("eth", &chain, &no_vars).unwrap()
+    else {
         panic!("a new URL is a new endpoint");
     };
     assert_eq!(
@@ -644,7 +646,7 @@ fn endpoints_from_urls_are_checked_named_and_matched_one_way() {
             rpc: Some(rpc.into()),
             ..Default::default()
         };
-        edit.rpc_choice("eth", &chain)
+        edit.rpc_choice("eth", &chain, &no_vars)
     };
     let existing = Some(RpcChoice::Existing("b".to_string()));
     assert_eq!(by("b").unwrap(), existing);
@@ -655,4 +657,64 @@ fn endpoints_from_urls_are_checked_named_and_matched_one_way() {
             .to_string()
             .contains("no endpoint 'nope'")
     );
+}
+
+/// Re-adding a URL whose key an earlier write moved into a variable is the
+/// same endpoint (it used to add `alchemy-2`, `alchemy-3`…), for `rpc add`
+/// and `chain set --rpc` alike.
+#[test]
+fn a_url_whose_key_moved_is_still_the_same_endpoint() {
+    let url = "https://base-mainnet.g.alchemy.com/v2/abcdef0123456789abcdef0123455678";
+    let mut doc = tx(DOC);
+    let (name, moved) = doc
+        .add_endpoint_url("eth", None, &Endpoint::new(url), EndpointRole::Spare)
+        .unwrap();
+    assert_eq!((name.as_str(), moved.len()), ("alchemy", 1));
+    let stored = doc.config().unwrap().chains["eth"].rpcs["alchemy"]
+        .url
+        .clone();
+    assert!(stored.ends_with("/v2/${ALCHEMY_KEY}"), "{stored}");
+
+    // The pasted URL again, with or without a trailing slash: refused.
+    for again in [url.to_string(), format!("{url}/")] {
+        let err = doc
+            .add_endpoint_url("eth", None, &Endpoint::new(again), EndpointRole::Spare)
+            .unwrap_err();
+        assert!(err.to_string().contains("as endpoint 'alchemy'"), "{err}");
+    }
+    // `chain set --rpc URL` activates it instead of adding one.
+    let edit = ChainEdit {
+        rpc: Some(url.into()),
+        ..Default::default()
+    };
+    let report = doc.edit_chain("eth", &edit).unwrap();
+    assert_eq!(report.added_endpoint, None);
+    let chain = doc.config().unwrap().chains["eth"].clone();
+    assert_eq!(chain.rpc, "alchemy");
+    assert_eq!(chain.rpcs.len(), 3);
+
+    // The rule: references the variables hold are expanded on both sides;
+    // others compare as written.
+    let mut vars = IndexMap::new();
+    vars.insert("K".to_string(), "secret".to_string());
+    assert!(Endpoint::same_url(
+        "https://x/${K}",
+        "https://x/secret/",
+        &vars
+    ));
+    assert!(Endpoint::same_url(
+        "https://x/${U}",
+        "https://x/${U}",
+        &vars
+    ));
+    assert!(!Endpoint::same_url(
+        "https://x/${U}",
+        "https://x/secret",
+        &vars
+    ));
+    assert!(!Endpoint::same_url(
+        "https://x/${K}",
+        "https://x/other",
+        &vars
+    ));
 }

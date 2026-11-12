@@ -110,7 +110,12 @@ fn add(args: &RpcAddArgs) -> Result<i32> {
         url: args.url.clone(),
         headers: parse_headers(&args.headers)?.into_iter().collect(),
     };
-    let ep = c.new_endpoint(&chain, &args.url, args.name.as_deref())?;
+    let ep = c.new_endpoint(
+        &chain,
+        &args.url,
+        args.name.as_deref(),
+        &chainz.secrets()?.vars,
+    )?;
     if !args.no_check && !endpoint.is_websocket() {
         check(&chainz, &chain, c.id, &ep, &endpoint)?;
     }
@@ -221,9 +226,10 @@ fn discover(args: &DiscoverArgs) -> Result<i32> {
     let (chain, c) = (chain.to_string(), c.clone());
     let registry = net::chainlist(&chainz_core::paths::cache_dir()?, args.refresh)?;
     let entry = registry.find(c.id)?;
+    let vars = &chainz.secrets()?.vars;
     let fresh: Vec<String> = chainlist::public_rpcs(entry)
         .into_iter()
-        .filter(|u| Endpoint::new(u.as_str()).is_http() && c.endpoint_at(u).is_none())
+        .filter(|u| Endpoint::new(u.as_str()).is_http() && c.endpoint_at(u, vars).is_none())
         .collect();
     if fresh.is_empty() {
         println!("Every public chainlist RPC for '{chain}' is already configured");

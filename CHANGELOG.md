@@ -186,6 +186,10 @@ changed before 2.0.0; they are listed under Removed and Changed.
 
 ### Fixed
 
+- Re-adding a URL whose key an earlier write moved into a variable (an
+  Alchemy or Infura URL) no longer adds `alchemy-2`, `alchemy-3`…: endpoint
+  URLs are compared with the variables expanded, so `rpc add` refuses it by
+  name and `chain set --rpc URL` activates the endpoint that has it.
 - The `chain set`/`update` menu: every picker starts on the current value
   (it started on the first item, so Enter switched the RPC or signer); Esc
   in a picker goes back to the menu with the pending edits kept (it

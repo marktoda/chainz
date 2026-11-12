@@ -189,8 +189,23 @@ impl Endpoint {
 
 impl Endpoint {
     /// Whether two endpoint URLs are the same endpoint: equal up to a
-    /// trailing `/`.
-    pub fn same_url(a: &str, b: &str) -> bool {
+    /// trailing `/`, once every `${NAME}` that `vars` (`secrets.toml`'s
+    /// `[vars]`) holds is expanded on both sides. So a pasted URL whose key
+    /// an earlier write moved into `${ALCHEMY_KEY}` is the endpoint holding
+    /// that template, and re-adding it adds nothing. A reference `vars`
+    /// doesn't hold compares as written. The one URL-identity rule:
+    /// [`Chain::endpoint_at`] and every write go by it.
+    pub fn same_url(a: &str, b: &str, vars: &crate::secrets::Vars) -> bool {
+        let expanded = |url: &str| -> String {
+            crate::template::expand(url, |name| {
+                Ok::<_, crate::template::TemplateError>(Some(match vars.get(name) {
+                    Some(value) => std::borrow::Cow::Borrowed(value.as_str()),
+                    None => std::borrow::Cow::Owned(format!("${{{name}}}")),
+                }))
+            })
+            .map_or_else(|_| url.to_string(), std::borrow::Cow::into_owned)
+        };
+        let (a, b) = (expanded(a), expanded(b));
         a.trim_end_matches('/') == b.trim_end_matches('/')
     }
 
@@ -584,11 +599,11 @@ impl Chain {
     }
 
     /// The endpoint at `url`, if this chain has one
-    /// ([`Endpoint::same_url`]).
-    pub fn endpoint_at(&self, url: &str) -> Option<&str> {
+    /// ([`Endpoint::same_url`] with `vars`, `secrets.toml`'s `[vars]`).
+    pub fn endpoint_at(&self, url: &str, vars: &crate::secrets::Vars) -> Option<&str> {
         self.rpcs
             .iter()
-            .find(|(_, e)| Endpoint::same_url(&e.url, url))
+            .find(|(_, e)| Endpoint::same_url(&e.url, url, vars))
             .map(|(name, _)| name.as_str())
     }
 
@@ -596,16 +611,18 @@ impl Chain {
     /// for messages) and return its name: `name`, or the URL's
     /// [endpoint name](crate::names::endpoint_name_for_url) made unique
     /// among the chain's endpoints. The URL must pass
-    /// [`Endpoint::check_url`] and be new to the chain; a given name must
+    /// [`Endpoint::check_url`] and be new to the chain (by
+    /// [`endpoint_at`](Self::endpoint_at) with `vars`); a given name must
     /// be free.
     pub fn new_endpoint(
         &self,
         chain: &str,
         url: &str,
         name: Option<&str>,
+        vars: &crate::secrets::Vars,
     ) -> anyhow::Result<String> {
         Endpoint::check_url(url)?;
-        if let Some(existing) = self.endpoint_at(url) {
+        if let Some(existing) = self.endpoint_at(url, vars) {
             anyhow::bail!(
                 "chain '{chain}' already has this URL as endpoint '{existing}'; activate it with `chainz chain set {chain} --rpc {existing}`"
             );
