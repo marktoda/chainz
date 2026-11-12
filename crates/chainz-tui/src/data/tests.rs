@@ -815,7 +815,7 @@ async fn traffic_follows_the_gateway_control_socket() {
     })
     .await;
     assert_eq!(state.feed[0].summary, "@usdc.balanceOf(@wallet)");
-    assert_eq!(state.feed[1].error, Some((ErrorClass::RateLimited, None)));
+    assert_eq!(state.feed[1].error.as_deref(), Some("rate_limited"));
     assert_eq!(state.feed_rate(NOW * 1_000 + 600, 10), 0.2);
 
     // Metrics are polled: a change shows up, and `r` asks at once.

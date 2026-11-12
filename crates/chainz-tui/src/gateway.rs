@@ -8,8 +8,8 @@ use std::io;
 use std::path::PathBuf;
 
 use chainz_rpc::control::{
-    Backlog, ControlClient, EventsOptions, MetricsRow, MetricsSnapshot, MetricsWindow,
-    RecordStatus, RequestRecord, Status,
+    Backlog, ControlClient, EventsOptions, MetricsRow, MetricsSnapshot, MetricsTotals,
+    MetricsWindow, RecordStatus, RequestRecord, Status,
 };
 use tokio::sync::mpsc;
 
@@ -79,7 +79,7 @@ fn feed_item(record: RequestRecord) -> FeedItem {
         latency_ms: record.latency_ms,
         error: match record.status {
             RecordStatus::Ok => None,
-            RecordStatus::Error { class, code } => Some((class, code)),
+            failed => Some(failed.to_string()),
         },
     }
 }
@@ -104,7 +104,10 @@ fn snapshot(status: Status, metrics: MetricsSnapshot) -> TrafficSnapshot {
     }
 }
 
-/// A row being merged: totals plus the request-weighted p50 sum.
+/// Rows of one method or one endpoint being merged: totals plus the
+/// request-weighted p50 sum. (The gateway sends true percentiles per
+/// window and per chain only; per method and per endpoint the dashboard
+/// weights the rows' medians.)
 #[derive(Default)]
 struct Merge {
     row: TrafficRow,
@@ -132,18 +135,30 @@ impl Merge {
 }
 
 fn window(w: MetricsWindow) -> TrafficWindow {
+    // A 2.0 gateway sends no totals: add the rows up.
+    let totals = w.totals.unwrap_or_else(|| {
+        let mut sum = MetricsTotals::default();
+        for row in &w.rows {
+            sum.requests += row.requests;
+            sum.errors += row.errors.values().sum::<u64>();
+            sum.rate_limited += row.rate_limited;
+            sum.failovers += row.failovers;
+            sum.bytes += row.bytes;
+        }
+        sum
+    });
     let mut out = TrafficWindow {
         window_secs: w.window_secs,
+        requests: totals.requests,
+        errors: totals.errors,
+        rate_limited: totals.rate_limited,
+        failovers: totals.failovers,
+        bytes: totals.bytes,
         ..TrafficWindow::default()
     };
     let mut methods: BTreeMap<String, Merge> = BTreeMap::new();
     let mut endpoints: BTreeMap<String, Merge> = BTreeMap::new();
     for row in &w.rows {
-        out.requests += row.requests;
-        out.errors += row.errors.values().sum::<u64>();
-        out.rate_limited += row.rate_limited;
-        out.failovers += row.failovers;
-        out.bytes += row.bytes;
         methods.entry(row.method.clone()).or_default().add(row);
         endpoints
             .entry(format!("{}/{}", row.chain, row.endpoint))
@@ -329,6 +344,31 @@ mod tests {
         assert_eq!(w.endpoints[2].errors, 3);
     }
 
+    #[test]
+    fn window_totals_are_the_gateways_when_it_sends_them() {
+        let mut minute = metrics().windows.remove(1);
+        // A 2.0 gateway: the rows added up.
+        assert_eq!(window(minute.clone()).requests, 742);
+        // A newer one counts what the rows cannot show (requests its rate
+        // limiter turned away, say): its totals win.
+        minute.totals = Some(MetricsTotals {
+            requests: 750,
+            errors: 4,
+            rate_limited: 13,
+            failovers: 2,
+            p50_ms: 45,
+            p95_ms: 200,
+            bytes: 1_000,
+        });
+        let w = window(minute);
+        assert_eq!(
+            (w.requests, w.errors, w.rate_limited, w.failovers, w.bytes),
+            (750, 4, 13, 2, 1_000)
+        );
+        // The per-method rows still come from the rows.
+        assert_eq!(w.methods[0].requests, 600);
+    }
+
     #[tokio::test]
     async fn reads_status_metrics_events_and_reloads_over_the_socket() {
         let dir = crate::data::testing::short_tempdir();
@@ -369,10 +409,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(
-            second.error,
-            Some((chainz_rpc::ErrorClass::RateLimited, None))
-        );
+        assert_eq!(second.error.as_deref(), Some("rate_limited"));
 
         link.reload().await.unwrap();
         assert_eq!(server.reload_count(), 1);

@@ -60,8 +60,7 @@ fn feed_grid(ctx: Ctx, rows: usize) -> Grid {
     for item in feed.iter().skip(feed.len().saturating_sub(rows)) {
         let status = match &item.error {
             None => Cell::new("ok", t.ok()),
-            Some((class, Some(code))) => Cell::new(format!("{class} {code}"), t.bad()),
-            Some((class, None)) => Cell::new(class.to_string(), t.bad()),
+            Some(error) => Cell::new(error.clone(), t.bad()),
         };
         grid.rows.push(vec![
             Cell::new(

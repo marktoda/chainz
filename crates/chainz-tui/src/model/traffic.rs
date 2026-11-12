@@ -1,7 +1,5 @@
 //! The gateway's traffic, in the dashboard's own shape.
 
-use chainz_rpc::ErrorClass;
-
 /// Request records kept for the Traffic feed.
 pub const FEED_CAP: usize = 500;
 
@@ -90,6 +88,7 @@ pub struct FeedItem {
     pub attempts: u32,
     /// Total latency.
     pub latency_ms: u32,
-    /// Error class and JSON-RPC code, when it failed.
-    pub error: Option<(ErrorClass, Option<i64>)>,
+    /// How it failed, as `serve log` shows it (`timeout`,
+    /// `rpc(-32000)`); `None` when it succeeded.
+    pub error: Option<String>,
 }
