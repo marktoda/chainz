@@ -59,6 +59,25 @@ impl ForkRecord {
     pub fn rpc_url(&self) -> String {
         loopback_url(self.port)
     }
+
+    /// A ready fork record for tests: fork `name` of `parent` (its chain
+    /// ID that of the built-in short name `parent`, else 1) on `port`,
+    /// supervised by this process. Override fields with struct update.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn sample(name: &str, parent: &str, port: u16) -> ForkRecord {
+        ForkRecord {
+            format: ForkRecord::FORMAT,
+            name: name.to_string(),
+            pid: std::process::id(),
+            anvil_pid: 0,
+            port,
+            parent: parent.to_string(),
+            chain_id: crate::names::builtin_chain_id(parent).unwrap_or(1),
+            fork_block: None,
+            started_at: 0,
+            ready: true,
+        }
+    }
 }
 
 /// One name in the registry, from [`Runtime::forks`].
@@ -349,16 +368,9 @@ mod tests {
 
     fn record(name: &str, ready: bool) -> ForkRecord {
         ForkRecord {
-            format: ForkRecord::FORMAT,
-            name: name.into(),
-            pid: std::process::id(),
-            anvil_pid: 0,
-            port: 8601,
-            parent: "base".into(),
-            chain_id: 8453,
             fork_block: Some(1),
-            started_at: 0,
             ready,
+            ..ForkRecord::sample(name, "base", 8601)
         }
     }
 

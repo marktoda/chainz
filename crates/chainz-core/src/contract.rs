@@ -72,7 +72,7 @@ impl Env {
     }
 
     /// An environment answered by `get` (tests).
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     pub(crate) fn from_fn(get: fn(&str) -> Option<String>) -> Self {
         Self { get }
     }

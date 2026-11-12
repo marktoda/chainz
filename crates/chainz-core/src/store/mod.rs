@@ -174,7 +174,7 @@ impl Chainz {
     }
 
     /// The same store reading `env` instead of the process environment.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     pub(crate) fn with_env(mut self, env: Env) -> Self {
         self.env = env;
         self

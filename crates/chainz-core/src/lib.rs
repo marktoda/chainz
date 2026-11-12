@@ -29,6 +29,8 @@ pub mod secrets;
 pub mod signer;
 pub mod store;
 pub mod template;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 pub mod tx;
 mod urls;
 pub mod validate;

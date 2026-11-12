@@ -135,7 +135,7 @@ impl SystemKeyBackend {
 
 /// In-memory key storage and scripted prompts for tests: never touches the
 /// OS keyring, `op` or the terminal.
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 #[derive(Default)]
 pub struct MemoryKeyBackend {
     /// Keyring entries by (service, username).
@@ -150,7 +150,7 @@ pub struct MemoryKeyBackend {
     pub fail_set: bool,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 impl Prompter for MemoryKeyBackend {
     fn is_interactive(&self) -> bool {
         self.interactive
@@ -164,7 +164,7 @@ impl Prompter for MemoryKeyBackend {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 impl KeyBackend for MemoryKeyBackend {
     fn keyring_available(&self) -> bool {
         self.keyring

@@ -307,18 +307,7 @@ rpcs.a = "https://a"
     fn fork(rt: &Runtime, name: &str) -> crate::runtime::ForkClaim {
         let claim = rt.claim_fork(name).unwrap().unwrap();
         claim
-            .register(&ForkRecord {
-                format: ForkRecord::FORMAT,
-                name: name.into(),
-                pid: std::process::id(),
-                anvil_pid: 0,
-                port: 8601,
-                parent: "base".into(),
-                chain_id: 8453,
-                fork_block: None,
-                started_at: 0,
-                ready: true,
-            })
+            .register(&ForkRecord::sample(name, "base", 8601))
             .unwrap();
         claim
     }

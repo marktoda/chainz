@@ -1,6 +1,6 @@
 use super::*;
 use crate::runtime::{GatewayAddr, ServeInfo};
-use crate::store::{LoadMode, StorePaths};
+use crate::testing::TempStore;
 
 const CONFIG: &str = r#"
 version = 2
@@ -63,32 +63,11 @@ bare = "0x6813Eb9362372EEF6200f3b1dbC3f819671cBA69"
 
 const SECRETS: &str = "[vars]\nCTX_TEST_ETHERSCAN = \"es-key\"\nCTX_TEST_INFURA = \"inf-key\"\nCTX_TEST_GW = \"gw-secret\"\n";
 
-struct Fixture {
-    _dir: tempfile::TempDir,
-    chainz: Chainz,
-    runtime: Runtime,
+fn fixture() -> TempStore {
+    TempStore::new(CONFIG, Some(SECRETS))
 }
 
-fn fixture() -> Fixture {
-    let dir = tempfile::tempdir().unwrap();
-    let paths = StorePaths::in_dir(dir.path().join("config"));
-    std::fs::create_dir_all(paths.dir()).unwrap();
-    std::fs::write(paths.config(), CONFIG).unwrap();
-    std::fs::write(paths.secrets(), SECRETS).unwrap();
-    // A fixed, empty environment: the developer's shell (an enclosing
-    // an `exec` subshell, an exported variable) never changes these tests.
-    let chainz = Chainz::open_at(paths, LoadMode::Strict)
-        .unwrap()
-        .with_env(crate::contract::Env::from_fn(|_| None));
-    let runtime = Runtime::at(dir.path().join("run"));
-    Fixture {
-        _dir: dir,
-        chainz,
-        runtime,
-    }
-}
-
-fn ctx(f: &Fixture, chain: &str, opts: &ExecOptions) -> Result<Context> {
+fn ctx(f: &TempStore, chain: &str, opts: &ExecOptions) -> Result<Context> {
     let target = resolve::resolve(f.chainz.config(), Some(&f.runtime), chain)?;
     build(&f.chainz, &f.runtime, &target, opts)
 }
@@ -267,18 +246,7 @@ fn forks_use_anvil_and_never_export_keystore() {
     let f = fixture();
     let claim = f.runtime.claim_fork("celo-fork").unwrap().unwrap();
     claim
-        .register(&ForkRecord {
-            format: ForkRecord::FORMAT,
-            name: "celo-fork".into(),
-            pid: 1,
-            anvil_pid: 2,
-            port: 8601,
-            parent: "celo".into(),
-            chain_id: 42220,
-            fork_block: None,
-            started_at: 0,
-            ready: true,
-        })
+        .register(&ForkRecord::sample("celo-fork", "celo", 8601))
         .unwrap();
     let c = ctx(&f, "celo-fork", &ExecOptions::default()).unwrap();
     let env = env_map(&c);
@@ -291,7 +259,7 @@ fn forks_use_anvil_and_never_export_keystore() {
     );
 }
 
-fn expand(f: &Fixture, chain: &str, args: &[&str]) -> Result<Vec<String>> {
+fn expand(f: &TempStore, chain: &str, args: &[&str]) -> Result<Vec<String>> {
     let opts = ExecOptions::default();
     let c = ctx(f, chain, &opts)?;
     let e = Expander::new(&f.chainz, &f.runtime, &c, opts.direct);
@@ -532,18 +500,7 @@ fn expose_key_needs_a_signer_and_no_fork_and_an_unlocked_key() {
     );
     let claim = f.runtime.claim_fork("eth-fork").unwrap().unwrap();
     claim
-        .register(&ForkRecord {
-            format: ForkRecord::FORMAT,
-            name: "eth-fork".into(),
-            pid: 1,
-            anvil_pid: 2,
-            port: 8602,
-            parent: "eth".into(),
-            chain_id: 1,
-            fork_block: None,
-            started_at: 0,
-            ready: true,
-        })
+        .register(&ForkRecord::sample("eth-fork", "eth", 8602))
         .unwrap();
     let err = ctx(&f, "eth-fork", &expose).unwrap_err().to_string();
     assert!(err.contains("refused on a fork"), "{err}");

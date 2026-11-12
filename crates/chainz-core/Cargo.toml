@@ -27,6 +27,12 @@ argon2 = "0.5"
 base64.workspace = true
 rand.workspace = true
 keyring = { version = "3", features = ["apple-native", "sync-secret-service", "vendored"] }
+tempfile = { workspace = true, optional = true }
+
+[features]
+# `testing`: helpers for other crates' tests (`MemoryKeyBackend`,
+# `ForkRecord::sample`, `TempStore`). Never enabled by a release build.
+testing = ["dep:tempfile"]
 
 [dev-dependencies]
 libc.workspace = true
