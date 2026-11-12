@@ -503,7 +503,11 @@ server both use it.
   `Address::from_bytes` / `as_bytes` (the field is private). Model types are
   imported from `chainz_core::model` only (no root re-exports).
   `chainz_rpc::hex::{encode, decode, parse_quantity, parse_quantity_saturating}`;
-  `chainz_rpc::erc20::{SYMBOL, DECIMALS, decode_string, decode_u8}`;
+  `chainz_rpc::abi` (selectors and `function_name`, `MULTICALL3`,
+  `call_with_address`, `word`/`uint`, `encode_aggregate3`/`decode_aggregate3`,
+  `decode_string`/`decode_u8`, and exact `units::{check, scale, format_exact}`);
+  `RpcClient::get_block(target, BlockId) -> Option<BlockHeader { number,
+  timestamp, base_fee_per_gas }>`;
   `chainz_rpc::health` for endpoint health, ranking and recording probes.
 
 ## Bin crate: adding a command handler

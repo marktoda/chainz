@@ -16,7 +16,8 @@ pub const TOKEN_BYTES: usize = 32;
 /// A fresh token: [`TOKEN_BYTES`] random bytes as lowercase hex (64
 /// characters).
 pub fn new_token() -> String {
-    hex::encode(rand::random::<[u8; TOKEN_BYTES]>())
+    let hex = chainz_rpc::hex::encode(&rand::random::<[u8; TOKEN_BYTES]>());
+    hex.strip_prefix("0x").unwrap_or(&hex).to_string()
 }
 
 /// Whether `given` equals `expected`, in time that does not depend on

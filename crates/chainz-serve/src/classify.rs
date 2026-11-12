@@ -86,26 +86,86 @@ pub enum Kind {
     FilterUse,
 }
 
-/// Classify one method.
+/// What the gateway knows about one JSON-RPC method. Methods not listed
+/// are classified by prefix ([`kind`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Method {
+    /// The method name.
+    pub name: &'static str,
+    /// How it may be routed.
+    pub kind: Kind,
+    /// The position of its block parameter, if it takes one.
+    pub block_param: Option<usize>,
+    /// It sends a signed raw transaction (`eth_sendRawTransaction`, and
+    /// `…Sync`, which answers with the receipt).
+    pub raw_tx: bool,
+    /// It uninstalls a filter (`eth_uninstallFilter`).
+    pub uninstalls_filter: bool,
+}
+
+const fn method(name: &'static str, kind: Kind, block_param: Option<usize>) -> Method {
+    Method {
+        name,
+        kind,
+        block_param,
+        raw_tx: false,
+        uninstalls_filter: false,
+    }
+}
+
+/// Every method the gateway treats specially, in one place.
+pub const METHODS: &[Method] = &[
+    method("eth_newFilter", Kind::FilterCreate, None),
+    method("eth_newBlockFilter", Kind::FilterCreate, None),
+    method("eth_newPendingTransactionFilter", Kind::FilterCreate, None),
+    method("eth_getFilterChanges", Kind::FilterUse, None),
+    method("eth_getFilterLogs", Kind::FilterUse, None),
+    Method {
+        uninstalls_filter: true,
+        ..method("eth_uninstallFilter", Kind::FilterUse, None)
+    },
+    method("eth_call", Kind::Read, Some(1)),
+    method("eth_callMany", Kind::Read, None),
+    method("eth_simulateV1", Kind::Read, None),
+    method("eth_estimateGas", Kind::Read, Some(1)),
+    method("eth_createAccessList", Kind::Read, Some(1)),
+    method("eth_getBalance", Kind::Read, Some(1)),
+    method("eth_getCode", Kind::Read, Some(1)),
+    method("eth_getTransactionCount", Kind::Read, Some(1)),
+    method("eth_getStorageAt", Kind::Read, Some(2)),
+    method("eth_getProof", Kind::Read, Some(2)),
+    method("eth_blockNumber", Kind::Read, None),
+    method("eth_chainId", Kind::Read, None),
+    method("eth_gasPrice", Kind::Read, None),
+    method("eth_maxPriorityFeePerGas", Kind::Read, None),
+    method("eth_feeHistory", Kind::Read, None),
+    method("eth_blobBaseFee", Kind::Read, None),
+    method("eth_syncing", Kind::Read, None),
+    method("eth_protocolVersion", Kind::Read, None),
+    // Shown with the block it names; never sent anywhere but the active
+    // endpoint.
+    method("eth_sendTransaction", Kind::ActiveOnly, Some(1)),
+    Method {
+        raw_tx: true,
+        ..method("eth_sendRawTransaction", Kind::ActiveOnly, None)
+    },
+    Method {
+        raw_tx: true,
+        ..method("eth_sendRawTransactionSync", Kind::ActiveOnly, None)
+    },
+];
+
+/// What the gateway knows about `name`, if it is listed in [`METHODS`].
+pub fn lookup(name: &str) -> Option<&'static Method> {
+    METHODS.iter().find(|m| m.name == name)
+}
+
+/// Classify one method: [`METHODS`] first, then by prefix.
 pub fn kind(method: &str) -> Kind {
+    if let Some(known) = lookup(method) {
+        return known.kind;
+    }
     match method {
-        "eth_newFilter" | "eth_newBlockFilter" | "eth_newPendingTransactionFilter" => {
-            Kind::FilterCreate
-        }
-        "eth_getFilterChanges" | "eth_getFilterLogs" | "eth_uninstallFilter" => Kind::FilterUse,
-        "eth_call"
-        | "eth_callMany"
-        | "eth_simulateV1"
-        | "eth_estimateGas"
-        | "eth_createAccessList"
-        | "eth_blockNumber"
-        | "eth_chainId"
-        | "eth_gasPrice"
-        | "eth_maxPriorityFeePerGas"
-        | "eth_feeHistory"
-        | "eth_blobBaseFee"
-        | "eth_syncing"
-        | "eth_protocolVersion" => Kind::Read,
         m if m.starts_with("eth_get") => Kind::Read,
         m if m.starts_with("net_") || m.starts_with("web3_") => Kind::Read,
         m if m.starts_with("debug_trace") || m.starts_with("debug_get") => Kind::Read,
@@ -158,17 +218,7 @@ pub fn needs(call: &Call, head: Option<u64>) -> Needs {
 
 /// The block number a state read is pinned to, when it names one.
 fn state_block(call: &Call) -> Option<u64> {
-    let index = match call.method.as_str() {
-        "eth_call"
-        | "eth_estimateGas"
-        | "eth_createAccessList"
-        | "eth_getBalance"
-        | "eth_getCode"
-        | "eth_getTransactionCount" => 1,
-        "eth_getStorageAt" | "eth_getProof" => 2,
-        _ => return None,
-    };
-    let param = call.params.get(index)?;
+    let param = block_param(call)?;
     let text = match param {
         Value::String(s) => s.as_str(),
         Value::Object(obj) => obj.get("blockNumber")?.as_str()?,
@@ -177,7 +227,12 @@ fn state_block(call: &Call) -> Option<u64> {
     if text == "earliest" {
         return Some(0);
     }
-    u64::from_str_radix(text.strip_prefix("0x")?, 16).ok()
+    u64::try_from(chainz_rpc::hex::parse_quantity(text).ok()?).ok()
+}
+
+/// A call's block parameter, when its method takes one and it was given.
+pub fn block_param(call: &Call) -> Option<&Value> {
+    call.params.get(lookup(&call.method)?.block_param?)
 }
 
 /// The filter ID a [`Kind::FilterUse`] call refers to, normalised.
@@ -284,6 +339,29 @@ mod tests {
             )
             .trace
         );
+    }
+
+    #[test]
+    fn the_table_has_one_entry_per_method() {
+        for (i, m) in METHODS.iter().enumerate() {
+            assert!(
+                METHODS[i + 1..].iter().all(|other| other.name != m.name),
+                "{} twice",
+                m.name
+            );
+        }
+        let raw: Vec<&str> = METHODS
+            .iter()
+            .filter(|m| m.raw_tx)
+            .map(|m| m.name)
+            .collect();
+        assert_eq!(
+            raw,
+            ["eth_sendRawTransaction", "eth_sendRawTransactionSync"]
+        );
+        // Strict hex: a sign is not a digit.
+        let plus = single(json!({"id":1,"method":"eth_call","params":[{}, "0x+f"]}));
+        assert!(!needs(&plus, Some(1_000)).any());
     }
 
     #[test]

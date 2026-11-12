@@ -6,42 +6,16 @@
 
 use chainz_core::Address;
 use chainz_core::labels::LabelIndex;
+use chainz_rpc::{abi, hex};
 use serde_json::Value;
 use sha3::{Digest, Keccak256};
 
-use crate::classify::{Call, Parsed};
+use crate::classify::{self, Call, Parsed};
 
 /// Longest summary kept.
 const MAX_LEN: usize = 96;
 /// Longest method name kept in records and metrics.
 pub const MAX_METHOD_LEN: usize = 48;
-
-/// Well-known 4-byte selectors.
-const SELECTORS: &[(&str, &str)] = &[
-    ("70a08231", "balanceOf"),
-    ("a9059cbb", "transfer"),
-    ("23b872dd", "transferFrom"),
-    ("095ea7b3", "approve"),
-    ("dd62ed3e", "allowance"),
-    ("18160ddd", "totalSupply"),
-    ("313ce567", "decimals"),
-    ("95d89b41", "symbol"),
-    ("06fdde03", "name"),
-    ("8da5cb5b", "owner"),
-    ("d0e30db0", "deposit"),
-    ("2e1a7d4d", "withdraw"),
-    ("82ad56cb", "aggregate3"),
-    ("252dba42", "aggregate"),
-    ("bce38bd7", "tryAggregate"),
-    ("399542e9", "tryBlockAndAggregate"),
-    ("4d2301cc", "getEthBalance"),
-    ("3850c7bd", "slot0"),
-    ("0902f1ac", "getReserves"),
-    ("6352211e", "ownerOf"),
-    ("01ffc9a7", "supportsInterface"),
-    ("3644e515", "DOMAIN_SEPARATOR"),
-    ("7ecebe00", "nonces"),
-];
 
 /// The method shown for a request: the method itself, or `batch(n)`.
 pub fn method_label(parsed: &Parsed) -> String {
@@ -107,6 +81,13 @@ fn clip(text: String) -> String {
 fn summarize_call(call: &Call, chain_id: u64, labels: &LabelIndex) -> String {
     let p = &call.params;
     let addr = |v: Option<&Value>| address(v, chain_id, labels);
+    let block = classify::block_param(call);
+    if classify::lookup(&call.method).is_some_and(|m| m.raw_tx) {
+        return match p.get(0).and_then(Value::as_str).and_then(raw_tx_hash) {
+            Some(hash) => format!("tx {hash}"),
+            None => "tx (undecodable)".to_string(),
+        };
+    }
     match call.method.as_str() {
         "eth_call" | "eth_estimateGas" | "eth_createAccessList" | "eth_sendTransaction" => {
             let tx = p.get(0);
@@ -119,30 +100,19 @@ fn summarize_call(call: &Call, chain_id: u64, labels: &LabelIndex) -> String {
             } else {
                 addr(to)
             };
-            let mut out = match data.and_then(selector) {
+            let out = match data.and_then(selector) {
                 Some(function) => format!("{target}.{function}"),
                 None => target,
             };
-            if let Some(block) = p.get(1).and_then(block_tag) {
-                out.push(' ');
-                out.push_str(&block);
-            }
-            out
+            with_block(out, block)
         }
-        "eth_sendRawTransaction" | "eth_sendRawTransactionSync" => {
-            match p.get(0).and_then(Value::as_str).and_then(raw_tx_hash) {
-                Some(hash) => format!("tx {hash}"),
-                None => "tx (undecodable)".to_string(),
-            }
-        }
-        "eth_getBalance" | "eth_getCode" | "eth_getTransactionCount" => {
-            with_block(addr(p.get(0)), p.get(1))
+        "eth_getBalance" | "eth_getCode" | "eth_getTransactionCount" | "eth_getProof" => {
+            with_block(addr(p.get(0)), block)
         }
         "eth_getStorageAt" => with_block(
             format!("{} slot {}", addr(p.get(0)), short(p.get(1))),
-            p.get(2),
+            block,
         ),
-        "eth_getProof" => with_block(addr(p.get(0)), p.get(2)),
         "eth_getLogs" | "eth_newFilter" => {
             let filter = p.get(0);
             let mut parts = Vec::new();
@@ -229,18 +199,12 @@ fn address(value: Option<&Value>, chain_id: u64, labels: &LabelIndex) -> String 
 
 /// The function name for calldata, or its `0x` selector.
 fn selector(data: &str) -> Option<String> {
-    let hex = data.strip_prefix("0x").unwrap_or(data);
-    let sel = hex.get(..8)?.to_ascii_lowercase();
-    if !sel.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return None;
-    }
-    Some(
-        SELECTORS
-            .iter()
-            .find(|(s, _)| *s == sel)
-            .map(|(_, name)| (*name).to_string())
-            .unwrap_or_else(|| format!("0x{sel}")),
-    )
+    let digits = data.strip_prefix("0x").unwrap_or(data);
+    let selector: [u8; 4] = hex::decode(digits.get(..8)?).ok()?.try_into().ok()?;
+    Some(match abi::function_name(selector) {
+        Some(name) => name.to_string(),
+        None => hex::encode(&selector),
+    })
 }
 
 /// A block tag or number, bounded and cleaned.
@@ -256,8 +220,9 @@ fn block_tag(value: &Value) -> Option<String> {
         }
         _ => return None,
     };
-    if let Some(hex) = text.strip_prefix("0x")
-        && let Ok(n) = u64::from_str_radix(hex, 16)
+    if let Some(n) = hex::parse_quantity(text)
+        .ok()
+        .and_then(|n| u64::try_from(n).ok())
     {
         return Some(n.to_string());
     }
@@ -286,11 +251,11 @@ fn clean(text: &str, max: usize) -> String {
 
 /// keccak256 of the raw transaction bytes: the transaction hash.
 pub fn raw_tx_hash(raw: &str) -> Option<String> {
-    let bytes = hex::decode(raw.strip_prefix("0x").unwrap_or(raw)).ok()?;
+    let bytes = hex::decode(raw).ok()?;
     if bytes.is_empty() {
         return None;
     }
-    Some(format!("0x{}", hex::encode(Keccak256::digest(&bytes))))
+    Some(hex::encode(&Keccak256::digest(&bytes)))
 }
 
 #[cfg(test)]

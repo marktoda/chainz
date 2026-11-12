@@ -15,6 +15,41 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Connect timeout used by every [`RpcClient`].
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// The fields of a block chainz reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlockHeader {
+    /// Block number.
+    pub number: u64,
+    /// Unix seconds, when the node sent one.
+    pub timestamp: Option<u64>,
+    /// EIP-1559 base fee in wei, on chains that have one.
+    pub base_fee_per_gas: Option<u128>,
+}
+
+impl BlockHeader {
+    /// Read a block as JSON: `None` for `null`, an error for anything
+    /// without a block number. Quantities past `u64` (or `u128`) saturate.
+    fn from_json(value: &Value) -> Result<Option<BlockHeader>, RpcError> {
+        if value.is_null() {
+            return Ok(None);
+        }
+        let quantity = |name: &str| {
+            value
+                .get(name)
+                .and_then(Value::as_str)
+                .and_then(|s| hex::parse_quantity_saturating(s).ok())
+        };
+        let saturate = |n: u128| u64::try_from(n).unwrap_or(u64::MAX);
+        let number = quantity("number")
+            .ok_or_else(|| RpcError::InvalidResponse("block without a number".into()))?;
+        Ok(Some(BlockHeader {
+            number: saturate(number),
+            timestamp: quantity("timestamp").map(saturate),
+            base_fee_per_gas: quantity("baseFeePerGas"),
+        }))
+    }
+}
+
 /// A block selector for block-scoped calls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockId {
@@ -214,15 +249,17 @@ impl RpcClient {
         hex::value_u64(&v)
     }
 
-    /// `eth_getBlockByNumber`; `None` when the node has no such block.
+    /// `eth_getBlockByNumber` without transactions; `None` when the node
+    /// has no such block.
     pub async fn get_block(
         &self,
         t: &Target,
         block: BlockId,
-        full: bool,
-    ) -> Result<Option<Value>, RpcError> {
-        self.request(t, "eth_getBlockByNumber", json!([block.to_param(), full]))
-            .await
+    ) -> Result<Option<BlockHeader>, RpcError> {
+        let v: Value = self
+            .request(t, "eth_getBlockByNumber", json!([block.to_param(), false]))
+            .await?;
+        BlockHeader::from_json(&v)
     }
 
     /// `eth_getBalance` in wei.

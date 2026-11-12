@@ -788,6 +788,41 @@ async fn only_the_enumerated_errors_fail_over() {
     }
 }
 
+/// `eth_sendRawTransactionSync` answers with the receipt: the inspector
+/// shows the hash the node reports, as for `eth_sendRawTransaction`.
+#[tokio::test]
+async fn a_sync_send_is_recorded_with_the_nodes_hash() {
+    let a = Mock::start("a", |call| match call["method"].as_str().unwrap() {
+        "eth_sendRawTransactionSync" => R::Result(json!({
+            "transactionHash": format!("0x{}", "CD".repeat(32)),
+            "status": "0x1",
+        })),
+        _ => R::Result(json!("0x01")),
+    })
+    .await;
+    let b = Mock::named("b").await;
+    let rig = pair(&a, &b).await;
+    let reply = rig
+        .call("eth", "eth_sendRawTransactionSync", json!([RAW_TX]))
+        .await;
+    assert_eq!(reply.status, 200, "{reply:?}");
+    let mut events = rig
+        .control()
+        .events(EventsOptions {
+            backlog: Backlog::All,
+            after_id: None,
+            follow: false,
+        })
+        .await
+        .unwrap();
+    let record = events.recv().await.unwrap();
+    assert_eq!(record.params_summary, format!("tx 0x{}", "cd".repeat(32)));
+    assert!(
+        b.calls().is_empty(),
+        "a send never leaves the active endpoint"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn inspector_control_api_and_runtime_files() {
     use std::os::unix::fs::PermissionsExt;

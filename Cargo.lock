@@ -352,7 +352,6 @@ dependencies = [
  "chainz-core",
  "chainz-rpc",
  "chainz-sys",
- "hex",
  "http-body-util",
  "hyper",
  "hyper-util",

@@ -9,7 +9,7 @@ use chainz_core::Chainz;
 use chainz_core::labels::{BuiltinToken, builtin_tokens};
 use chainz_core::model::Chain;
 use chainz_core::names;
-use chainz_rpc::erc20::{self, DECIMALS, SYMBOL};
+use chainz_rpc::abi::{self, DECIMALS, SYMBOL};
 use chainz_rpc::{BlockId, RetryPolicy, RpcClient, Target};
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -228,7 +228,7 @@ async fn check_token(
 /// Compare raw `symbol()` and `decimals()` return data with the registry.
 fn compare(token: &BuiltinToken, symbol: &[u8], decimals: &[u8]) -> Result<(), String> {
     let mut wrong = Vec::new();
-    match erc20::decode_string(symbol) {
+    match abi::decode_string(symbol) {
         Some(s) if s == token.symbol => {}
         Some(s) => wrong.push(format!(
             "symbol() is {s:?}, the registry says {:?}",
@@ -236,7 +236,7 @@ fn compare(token: &BuiltinToken, symbol: &[u8], decimals: &[u8]) -> Result<(), S
         )),
         None => wrong.push("symbol() returned no string".to_string()),
     }
-    match erc20::decode_u8(decimals) {
+    match abi::decode_u8(decimals) {
         Some(d) if d == token.decimals => {}
         Some(d) => wrong.push(format!(
             "decimals() is {d}, the registry says {}",

@@ -14,11 +14,11 @@
 
 #![warn(missing_docs)]
 
+pub mod abi;
 pub mod capabilities;
 pub mod chainlist;
 pub mod client;
 pub mod control;
-pub mod erc20;
 pub mod error;
 pub mod health;
 pub mod hex;
@@ -28,7 +28,7 @@ pub mod target;
 pub mod upstream;
 
 pub use capabilities::{Capabilities, probe_capabilities};
-pub use client::{BlockId, RpcClient};
+pub use client::{BlockHeader, BlockId, RpcClient};
 pub use error::{ErrorClass, RpcError};
 pub use health::{EndpointProbe, Health, Ranking, classify};
 pub use history::{HealthSample, HealthStore};

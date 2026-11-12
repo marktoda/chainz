@@ -236,14 +236,9 @@ async fn typed_helpers() {
             .unwrap(),
         vec![0x00, 0xff]
     );
+    assert!(c.get_block(&t, BlockId::Finalized).await.unwrap().is_some());
     assert!(
-        c.get_block(&t, BlockId::Finalized, false)
-            .await
-            .unwrap()
-            .is_some()
-    );
-    assert!(
-        c.get_block(&t, BlockId::Number(99), true)
+        c.get_block(&t, BlockId::Number(99))
             .await
             .unwrap()
             .is_none()

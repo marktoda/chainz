@@ -6,7 +6,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chainz_rpc::{BlockId, RpcClient, RpcError, Target};
-use serde_json::Value;
 
 use super::{Shared, Signals, Tuning};
 use crate::model::{Fault, Head, Update};
@@ -299,36 +298,26 @@ impl Poller {
         }
         self.anchor_tries -= 1;
         let number = head.saturating_sub(self.shared.tuning.block_span);
-        let block = client.get_block(target, BlockId::Number(number), false);
+        let block = client.get_block(target, BlockId::Number(number));
         if let Ok(Ok(Some(block))) = tokio::time::timeout(deadline, block).await
-            && let Some(timestamp) = field(&block, "timestamp")
+            && let Some(timestamp) = block.timestamp
         {
-            self.clock
-                .anchor(number, u64::try_from(timestamp).unwrap_or(u64::MAX));
+            self.clock.anchor(number, timestamp);
             self.anchor_tries = 0;
         }
     }
 }
 
-fn field(block: &Value, name: &str) -> Option<u128> {
-    chainz_rpc::hex::parse_quantity_saturating(block.get(name)?.as_str()?).ok()
-}
-
 /// The head, from one `eth_getBlockByNumber("latest")`.
 async fn poll_head(client: &RpcClient, target: &Target) -> Result<Head, RpcError> {
     let start = Instant::now();
-    let block = client.get_block(target, BlockId::Latest, false).await?;
+    let block = client.get_block(target, BlockId::Latest).await?;
     let latency_ms = u32::try_from(start.elapsed().as_millis()).unwrap_or(u32::MAX);
-    let as_u64 = |n: u128| u64::try_from(n).unwrap_or(u64::MAX);
-    let block = block.filter(Value::is_object);
-    match block.as_ref().and_then(|b| field(b, "number")) {
-        Some(number) => Ok(Head {
-            number: as_u64(number),
-            timestamp: block
-                .as_ref()
-                .and_then(|b| field(b, "timestamp"))
-                .map(as_u64),
-            base_fee: block.as_ref().and_then(|b| field(b, "baseFeePerGas")),
+    match block {
+        Some(block) => Ok(Head {
+            number: block.number,
+            timestamp: block.timestamp,
+            base_fee: block.base_fee_per_gas,
             latency_ms,
         }),
         None => Err(RpcError::InvalidResponse("no head in response".into())),

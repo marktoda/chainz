@@ -444,10 +444,10 @@ impl Router {
         params_summary: &mut String,
     ) {
         let calls = parsed.calls();
+        let known = |call: &classify::Call| classify::lookup(&call.method);
         let interesting = calls.iter().any(|c| {
-            matches!(classify::kind(&c.method), Kind::FilterCreate)
-                || c.method == "eth_uninstallFilter"
-                || c.method == "eth_sendRawTransaction"
+            classify::kind(&c.method) == Kind::FilterCreate
+                || known(c).is_some_and(|m| m.uninstalls_filter || m.raw_tx)
         });
         if !interesting || body.len() > MAX_INSPECTED_BODY {
             return;
@@ -467,24 +467,25 @@ impl Router {
             else {
                 continue;
             };
-            match classify::kind(&call.method) {
-                Kind::FilterCreate => {
-                    if let Some(filter) = result.as_str() {
-                        chain.remember_filter(filter, endpoint);
-                    }
+            let method = known(call);
+            if classify::kind(&call.method) == Kind::FilterCreate {
+                if let Some(filter) = result.as_str() {
+                    chain.remember_filter(filter, endpoint);
                 }
-                Kind::FilterUse if call.method == "eth_uninstallFilter" => {
-                    if let Some(filter) = classify::filter_id(call) {
-                        chain.forget_filter(&filter);
-                    }
-                }
-                _ => {}
+            } else if method.is_some_and(|m| m.uninstalls_filter)
+                && let Some(filter) = classify::filter_id(call)
+            {
+                chain.forget_filter(&filter);
             }
             // The node's hash is authoritative (blob transactions hash
-            // differently from their network encoding).
+            // differently from their network encoding). The `…Sync` form
+            // answers with the receipt.
             if matches!(parsed, Parsed::Single(_))
-                && call.method == "eth_sendRawTransaction"
-                && let Some(hash) = result.as_str().and_then(tx_hash)
+                && method.is_some_and(|m| m.raw_tx)
+                && let Some(hash) = result
+                    .as_str()
+                    .or_else(|| result.get("transactionHash")?.as_str())
+                    .and_then(tx_hash)
             {
                 *params_summary = format!("tx {hash}");
             }
