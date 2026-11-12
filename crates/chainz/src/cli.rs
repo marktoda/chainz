@@ -255,7 +255,7 @@ pub struct ExecArgs {
     /// Print the context, exported names and rewritten argv, then exit
     #[arg(long)]
     pub explain: bool,
-    /// The command to run (after --); none opens a subshell
+    /// The command to run (after --); none opens a subshell on a terminal
     #[arg(last = true, value_name = "CMD", add = ArgValueCompleter::new(complete::exec_words))]
     pub command: Vec<String>,
 }

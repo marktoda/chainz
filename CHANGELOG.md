@@ -275,7 +275,8 @@ changed before 2.0.0; they are listed under Removed and Changed.
   - the `config` group: `config path` (`edit --path`; `doctor` lists every
     path), `config migrate` (migration stays automatic) and `config edit`
     (`edit`);
-  - `shell CHAIN` (`exec CHAIN` with no command) and `var get` (`var ls
+  - `shell CHAIN` (`exec CHAIN` with no command, on a terminal; off one
+    it is a usage error) and `var get` (`var ls
     NAME`);
   - the `list` and `remove` aliases, and `doctor --tokens` from help (it
     still runs).

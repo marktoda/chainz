@@ -1187,18 +1187,43 @@ fn use_sets_default_with_stderr_notice() {
 }
 
 #[test]
-fn exec_without_a_command_opens_a_subshell_and_passes_its_exit_code() {
+fn exec_without_a_command_opens_a_subshell_only_on_a_terminal() {
     let sb = Sandbox::new();
     sb.seed(&[("eth", 1)]);
+    // Off a terminal, stdin was never meant for a shell: a usage error,
+    // and the shell never reads it.
     for exec in ["exec", "x"] {
         sb.cmd()
             .env("SHELL", "sh")
             .args([exec, "eth"])
-            .write_stdin("echo $CHAIN_ID $CHAINZ_CHAIN; exit 3\n")
+            .write_stdin("echo ran\n")
             .assert()
-            .code(3)
-            .stdout("1 eth\n")
-            .stderr(predicate::str::contains("entering eth shell"));
+            .code(2)
+            .stdout("")
+            .stderr(predicate::str::contains(
+                "no command: pass it after `--` (a subshell opens only on a terminal)",
+            ));
+    }
+    // On a terminal (util-linux `script` gives it one): the subshell, with
+    // its exit code passed through.
+    let has_script = std::process::Command::new("script")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("util-linux"));
+    if has_script {
+        let bin = assert_cmd::cargo::cargo_bin!("chainz");
+        let mut script = std::process::Command::new("script");
+        sb.apply(&mut script);
+        let out = assert_cmd::Command::from_std(script)
+            .env("SHELL", "sh")
+            .args(["-qec", &format!("{} exec eth", bin.display()), "/dev/null"])
+            .write_stdin("echo id=$CHAIN_ID; exit 3\n")
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(out.status.code(), Some(3), "{text}");
+        assert!(text.contains("id=1"), "{text}");
+        assert!(text.contains("entering eth shell"), "{text}");
     }
     sb.cmd()
         .env("SHELL", "sh")

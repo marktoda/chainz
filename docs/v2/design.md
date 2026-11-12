@@ -83,7 +83,7 @@ One rule: **bare verbs act on chains, the primary noun; other nouns are groups.*
 
 ```
 # run
-chainz exec [CHAIN] [--signer S] [--rpc NAME|URL] [--direct] [--expose-key] [--explain] [-- CMD...]   (alias: x; no CMD: a subshell)
+chainz exec [CHAIN] [--signer S] [--rpc NAME|URL] [--direct] [--expose-key] [--explain] [-- CMD...]   (alias: x; no CMD on a terminal: a subshell)
 chainz env [CHAIN] [--signer S] [--rpc NAME|URL] [--direct] [--shell zsh|bash|fish]   # eval "$(chainz env base)"
 
 # chains

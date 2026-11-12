@@ -185,7 +185,7 @@ chainz exec eth --signer funder -- cast send @wallet --value 1ether
 chainz exec op --rpc llama -- cast block-number
 chainz exec op --rpc http://127.0.0.1:8545 -- cast block-number   # a URL, this run only
 eval "$(chainz env base)"             # export into the current shell
-chainz x base                         # or open a subshell (no command: $SHELL)
+chainz x base                         # or open a subshell (no command, on a terminal)
 ```
 
 ## serve: local RPC gateway

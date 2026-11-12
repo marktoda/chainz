@@ -48,6 +48,14 @@ pub fn exec(args: &ExecArgs) -> Result<i32> {
     let runtime = Runtime::resolve()?;
     let mut ctx = context_for("exec", &chainz, &runtime, &args.context, args.expose_key)?;
     if args.command.is_empty() {
+        // A subshell reads its commands from stdin: off a terminal that is
+        // the caller's input, which was never meant for a shell.
+        if !args.explain && !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+            return Err(crate::cli::usage_error(
+                &["exec"],
+                "no command: pass it after `--` (a subshell opens only on a terminal)",
+            ));
+        }
         return shell(&chainz, ctx, args.explain);
     }
     let expander = Expander::new(&chainz, &runtime, &ctx, args.context.direct);
