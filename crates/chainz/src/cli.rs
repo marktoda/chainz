@@ -309,7 +309,7 @@ pub struct ListArgs {
     /// JSON output
     #[arg(long)]
     pub json: bool,
-    /// Show credential-bearing URLs and header values
+    /// Show secret values (credential-bearing URLs, header values)
     #[arg(long)]
     pub reveal: bool,
 }
@@ -330,7 +330,7 @@ pub struct TopArgs {
     /// JSON output (with --once)
     #[arg(long, requires = "once")]
     pub json: bool,
-    /// Show secret values
+    /// Show secret values (credential-bearing URLs, header values)
     #[arg(long)]
     pub reveal: bool,
 }
@@ -822,7 +822,7 @@ pub struct VarLsArgs {
     /// Only these variables
     #[arg(value_name = "NAME", add = ArgValueCompleter::new(complete::vars))]
     pub names: Vec<String>,
-    /// Print the values
+    /// Show secret values (the variables' values)
     #[arg(long)]
     pub reveal: bool,
     /// List every config record that uses each variable
@@ -847,6 +847,26 @@ pub struct VarRmArgs {
 mod tests {
     use super::{HELP_GROUPS, Opt};
     use clap::{CommandFactory, Parser};
+
+    /// Every `--reveal` says the same thing, then what it shows there.
+    #[test]
+    fn every_reveal_reads_the_same() {
+        fn walk(command: &clap::Command, path: &str, seen: &mut Vec<String>) {
+            for arg in command.get_arguments() {
+                if arg.get_id() == "reveal" {
+                    let help = arg.get_help().map(ToString::to_string).unwrap_or_default();
+                    assert!(help.starts_with("Show secret values ("), "{path}: {help}");
+                    seen.push(path.to_string());
+                }
+            }
+            for sub in command.get_subcommands() {
+                walk(sub, &format!("{path} {}", sub.get_name()), seen);
+            }
+        }
+        let mut seen = Vec::new();
+        walk(&Opt::command(), "chainz", &mut seen);
+        assert_eq!(seen, ["chainz ls", "chainz top", "chainz var ls"]);
+    }
 
     /// Only the long-running commands go without the broken-pipe exit
     /// hook (it skips `Drop`).
