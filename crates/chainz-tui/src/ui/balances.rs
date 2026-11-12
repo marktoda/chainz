@@ -46,7 +46,7 @@ pub(crate) fn body(ctx: Ctx) -> Body {
                 Line::raw(""),
                 Line::from(vec![
                     Span::styled("Add one with  ", t.dim()),
-                    Span::styled("chainz signer add default", t.accent()),
+                    Span::styled("chainz signer add NAME", t.accent()),
                 ]),
                 Line::styled("Balances never unlock a key.", t.dim()),
             ]),

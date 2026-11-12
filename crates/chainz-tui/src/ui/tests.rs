@@ -411,7 +411,7 @@ fn endpoints_tab_shows_health_errors_and_tags() {
    alchemy-ws  ws             –      –           –    –                                      ws
    broken      invalid        –      –           –    –  variable ${EXAMPLE_KEY} is not set
 
- s: set active  h/l: chain  r: probe now  y: copy url  e: exec shell  esc: back  q: quit
+ s: set rpc  h/l: chain  r: probe now  y: copy url  e: exec shell  esc: back  q: quit
 ",
     );
     // Narrow: status, latency and the error survive.
@@ -428,7 +428,7 @@ fn endpoints_tab_shows_health_errors_and_tags() {
    alchemy-ws  ws             –
    broken      invalid        –  variable ${EXAMPLE_KEY} is not set
 
- s: set active  h/l: chain  r: probe now  y: copy url  q: quit
+ s: set rpc  h/l: chain  r: probe now  y: copy url  q: quit
 ",
     );
 }
@@ -580,7 +580,7 @@ fn balances_tab_empty_states() {
     let state = State::new(&bare, &empty_store());
     let text = frame(&app(Tab::Balances), &state, 100, 12);
     assert!(text.contains("No signer has a cached address."), "{text}");
-    assert!(text.contains("chainz signer add default"), "{text}");
+    assert!(text.contains("chainz signer add NAME"), "{text}");
     assert!(text.contains("Balances never unlock a key."), "{text}");
 
     let mut filtered = app(Tab::Balances);

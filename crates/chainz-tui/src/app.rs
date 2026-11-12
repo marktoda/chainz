@@ -55,7 +55,7 @@ impl Tab {
                 ("q", "quit"),
             ],
             Tab::Endpoints => &[
-                ("s", "set active"),
+                ("s", "set rpc"),
                 ("h/l", "chain"),
                 ("r", "probe now"),
                 ("y", "copy url"),
@@ -463,6 +463,18 @@ mod tests {
     use chainz_rpc::HealthStore;
 
     const NOW: u64 = 1_700_000_000_000;
+
+    /// `s` does one thing (set the active RPC; on Chains it opens the
+    /// endpoint list for that) and reads the same on both tabs.
+    #[test]
+    fn s_reads_the_same_on_every_tab() {
+        let s: Vec<&str> = [Tab::Chains, Tab::Endpoints]
+            .into_iter()
+            .flat_map(|tab| tab.hints().iter().filter(|(k, _)| *k == "s"))
+            .map(|(_, name)| *name)
+            .collect();
+        assert_eq!(s, ["set rpc", "set rpc"]);
+    }
 
     fn state() -> State {
         let mut eth = chain(
