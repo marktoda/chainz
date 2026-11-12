@@ -42,61 +42,9 @@ const HELP_GROUPS: &[(&str, &[&str])] = &[
 /// grouped under [`HELP_GROUPS`]. Parsing, completion and help all start
 /// here.
 pub fn command() -> clap::Command {
-    let command = Opt::command().mut_subcommand("exec", |exec| {
-        let about = exec
-            .get_about()
-            .map(ToString::to_string)
-            .unwrap_or_default();
-        exec.long_about(exec_help(&about))
-    });
+    let command = Opt::command();
     let template = grouped_help(&command);
     command.help_template(template)
-}
-
-/// `exec --help`: `about`, then the variables and tokens of the exec
-/// contract, from `chainz_core` (never a copy of them).
-fn exec_help(about: &str) -> String {
-    let tokens: Vec<String> = chainz_core::names::context_tokens()
-        .map(|t| format!("@{t}"))
-        .collect();
-    let exported = wrap(&chainz_core::contract::CONTRACT_VARS, "  ");
-    let tokens = wrap_text(&format!(
-        "Tokens: {}, any signer name (@funder), labels (@usdc, @myrouter), \
-         and `@name:chain` for another chain. `@@` is a literal @.",
-        tokens.join(" ")
-    ));
-    let shell =
-        wrap_text("With no command, $SHELL opens with the context exported (ctrl-d leaves it).");
-    format!(
-        "{about}\n\n\
-         Exported (each one the chain has; `--explain` shows them):\n{exported}\n\n\
-         {tokens}\n\n{shell}\n\n\
-         Example: chainz exec base -- cast balance @wallet"
-    )
-}
-
-/// The width [`wrap`] keeps help text to.
-const HELP_WIDTH: usize = 72;
-
-/// `words` joined by spaces, on lines of at most [`HELP_WIDTH`] columns,
-/// each starting with `indent`.
-fn wrap(words: &[&str], indent: &str) -> String {
-    let mut lines: Vec<String> = Vec::new();
-    for word in words {
-        match lines.last_mut() {
-            Some(line) if line.chars().count() + 1 + word.chars().count() <= HELP_WIDTH => {
-                line.push(' ');
-                line.push_str(word);
-            }
-            _ => lines.push(format!("{indent}{word}")),
-        }
-    }
-    lines.join("\n")
-}
-
-/// A paragraph of prose, [`wrap`]ped.
-fn wrap_text(text: &str) -> String {
-    wrap(&text.split_whitespace().collect::<Vec<_>>(), "")
 }
 
 /// Parse the process's arguments (exits on a usage error, as clap does).
@@ -166,8 +114,21 @@ pub fn usage_error(path: &[&str], message: &str) -> anyhow::Error {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Run a command with a chain's context (no command: open a subshell)
-    // The long help lists the contract from chainz_core: see `exec_help`.
-    #[command(visible_alias = "x")]
+    ///
+    /// Exported: ETH_RPC_URL, ETH_RPC_HEADERS (direct only), CHAIN_ID,
+    /// CHAINZ_CHAIN, ETHERSCAN_API_KEY, VERIFIER_URL/VERIFIER_API_KEY
+    /// (non-Etherscan explorers), ETH_FROM, WALLET_ADDRESS, ETH_KEYSTORE,
+    /// RAW_PRIVATE_KEY (--expose-key only), CHAIN_NAME (deprecated).
+    ///
+    /// Tokens: @rpc @chainid @chain @wallet @explorer @explorer_key,
+    /// any signer name (@funder), labels (@usdc, @myrouter), and
+    /// `@name:chain` for another chain. `@@` is a literal @.
+    ///
+    /// With no command, $SHELL opens with the context exported (ctrl-d
+    /// leaves it).
+    ///
+    /// Example: chainz exec base -- cast balance @wallet
+    #[command(visible_alias = "x", verbatim_doc_comment)]
     Exec(ExecArgs),
 
     /// Print a chain's context as shell exports: eval "$(chainz env base)"
@@ -990,8 +951,8 @@ mod tests {
         assert!(help.contains("exec, x"), "{help}");
     }
 
-    /// `exec --help` names every exported variable and every context
-    /// token.
+    /// `exec --help` is written by hand (it notes when each variable is
+    /// set); this keeps it naming every exported variable and token.
     #[test]
     fn exec_help_names_the_whole_contract() {
         let command = super::command();
