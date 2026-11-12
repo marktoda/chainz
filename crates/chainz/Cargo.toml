@@ -1,13 +1,13 @@
 [package]
 name = "chainz"
-description = "A local multichain workbench: chain configs, endpoints, signers, and exec with context"
+description = "A local multichain workbench: chains, endpoints, signers, and exec with context"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true
 license.workspace = true
 readme = "../../README.md"
-keywords = ["ethereum", "evm", "cli", "web3", "blockchain"]
+keywords = ["ethereum", "evm", "foundry", "rpc", "cli"]
 categories = ["command-line-utilities", "cryptography::cryptocurrencies", "development-tools"]
 
 [[bin]]

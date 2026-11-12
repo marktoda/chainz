@@ -1,6 +1,6 @@
 [package]
 name = "chainz-core"
-description = "Synchronous core of chainz: config model, secrets, resolution, token grammar, labels and runtime registry"
+description = "Synchronous core of chainz: config, secrets, chain resolution, exec context, labels. Internal to chainz: no stable API"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

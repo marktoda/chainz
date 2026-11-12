@@ -1,6 +1,6 @@
 [package]
 name = "chainz-rpc"
-description = "JSON-RPC client, endpoint probes, endpoint health, forwarding and the gateway control protocol for chainz"
+description = "JSON-RPC client, endpoint health and the gateway control protocol for chainz. Internal to chainz: no stable API"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -1,26 +1,32 @@
 //! `chainz top`: the live terminal dashboard.
 //!
-//! Modules, from what changes least to what changes most:
-//!
-//! - `plan`: the config resolved into owned, thread-safe targets, and the
-//!   display data (`*Info`) the rest of the crate sees;
-//! - `model`: the shared vocabulary: what workers report (`Update`,
-//!   `Refresh`), the state it folds into, and the
-//!   classification rules;
-//! - `gateway`: the one adapter over the control protocol, into model
-//!   types;
-//! - `data`: background workers that poll, probe, read balances and watch
-//!   the gateway and the config, reporting model updates;
-//! - `view`: the state as each tab's rows, every figure derived once;
-//! - `app`: selection, tabs and key bindings;
-//! - `ui`: rendering of (app, view, clock) into a buffer, and the
-//!   message and table text `--once` shares;
-//! - `snapshot` and `once`: the `--once` JSON document and text tables,
-//!   from the same view;
-//! - `term`: the terminal and the event loop.
-//!
 //! The UI thread never touches the network: it reads keys, folds updates
 //! from a channel and draws.
+//!
+//! Internal to [chainz](https://crates.io/crates/chainz), published only so
+//! the binary can be installed: there is no stable API, and any release may
+//! break it.
+
+// Modules, from what changes least to what changes most:
+//
+// - `plan`: the config resolved into owned, thread-safe targets, and the
+//   display data (`*Info`) the rest of the crate sees;
+// - `model`: the shared vocabulary: what workers report (`Update`,
+//   `Refresh`), the state it folds into, and the
+//   classification rules;
+// - `gateway`: the one adapter over the control protocol, into model
+//   types;
+// - `data`: background workers that poll, probe, read balances and watch
+//   the gateway and the config, reporting model updates;
+// - `view`: the state as each tab's rows, every figure derived once;
+// - `app`: selection, tabs and key bindings;
+// - `ui`: rendering of (app, view, clock) into a buffer, and the
+//   message and table text `--once` shares;
+// - `snapshot` and `once`: the `--once` JSON document and text tables,
+//   from the same view;
+// - `term`: the terminal and the event loop;
+// - `fmt`: number, time and text formatting for both outputs; `golden`
+//   pins the `--once` output.
 
 #![warn(missing_docs)]
 

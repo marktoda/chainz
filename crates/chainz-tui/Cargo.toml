@@ -1,6 +1,6 @@
 [package]
 name = "chainz-tui"
-description = "chainz top: the live dashboard of chains, endpoints, balances and gateway traffic"
+description = "The chainz top dashboard. Internal to chainz: no stable API"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

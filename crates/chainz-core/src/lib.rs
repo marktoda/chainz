@@ -1,8 +1,13 @@
 //! The synchronous core of chainz.
 //!
-//! No async runtime, no sockets, no threads: `exec`, `ls` and `env` call
-//! only this crate, which keeps the hot path honest at compile time (and
-//! the `strace` test checks it at run time).
+//! No async runtime, no sockets, no threads. `exec` and `env` call only
+//! this crate (and `ls` reads the recorded endpoint health besides), which
+//! keeps the hot path offline at compile time; the `strace` test checks it
+//! at run time.
+//!
+//! Internal to [chainz](https://crates.io/crates/chainz), published only so
+//! the binary can be installed: there is no stable API, and any release may
+//! break it.
 
 #![warn(missing_docs)]
 

@@ -12,6 +12,10 @@
 //! (tests start it in-process against mock upstreams). [`PinnedProxy`] is
 //! the single-endpoint variant (for forks); both use the same loopback
 //! token and `Host` checks.
+//!
+//! Internal to [chainz](https://crates.io/crates/chainz), published only so
+//! the binary can be installed: there is no stable API, and any release may
+//! break it.
 
 #![warn(missing_docs)]
 

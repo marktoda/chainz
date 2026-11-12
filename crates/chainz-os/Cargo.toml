@@ -1,6 +1,6 @@
 [package]
 name = "chainz-os"
-description = "OS primitives shared by the chainz crates: private files and directories, atomic writes, file locks, file stamps and the clock"
+description = "OS primitives for chainz (files, atomic writes, locks). Internal to chainz: no stable API"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

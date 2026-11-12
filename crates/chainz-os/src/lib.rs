@@ -12,6 +12,10 @@
 //! - [`now_ms`] and [`now_secs`], the wall clock as unix time.
 //!
 //! chainz supports Linux and macOS only.
+//!
+//! Internal to [chainz](https://crates.io/crates/chainz), published only so
+//! the binary can be installed: there is no stable API, and any release may
+//! break it.
 
 #![warn(missing_docs)]
 

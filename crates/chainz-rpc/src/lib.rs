@@ -6,6 +6,10 @@
 //! `chainz-core`: callers resolve config endpoints into [`Target`]s (with all
 //! `${VAR}` references already expanded) and hand them in.
 //!
+//! Internal to [chainz](https://crates.io/crates/chainz), published only so
+//! the binary can be installed: there is no stable API, and any release may
+//! break it.
+//!
 //! # Secrets
 //!
 //! Endpoint URLs and header values may embed API keys. No error message and no

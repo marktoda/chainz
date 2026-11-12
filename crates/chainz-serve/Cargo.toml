@@ -1,6 +1,6 @@
 [package]
 name = "chainz-serve"
-description = "chainz local RPC gateway: auth, failover, rate-limit smoothing, metrics and a request inspector"
+description = "The chainz local RPC gateway and fork proxy. Internal to chainz: no stable API"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
