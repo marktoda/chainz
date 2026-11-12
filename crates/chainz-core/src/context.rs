@@ -19,7 +19,11 @@
 //! | `CHAIN_NAME` | same as `CHAINZ_CHAIN`; v1 name, kept for one release |
 
 use crate::address::Address;
-use crate::contract::{CHAINZ_CHAIN, CONTRACT_VARS, ETHERSCAN_API_KEY, RAW_PRIVATE_KEY};
+use crate::contract::{
+    CHAIN_ID, CHAIN_NAME, CHAINZ_CHAIN, CONTRACT_VARS, ETH_FROM, ETH_KEYSTORE, ETH_RPC_HEADERS,
+    ETH_RPC_URL, ETHERSCAN_API_KEY, RAW_PRIVATE_KEY, VERIFIER_API_KEY, VERIFIER_URL,
+    WALLET_ADDRESS,
+};
 use crate::grammar::{self, Piece};
 use crate::labels::{LabelError, LabelIndex};
 use crate::model::{Backend, Chain, Config};
@@ -482,7 +486,7 @@ impl Context {
         let mut set = Vec::with_capacity(12);
         let mut warnings = Vec::new();
         let mut push = |name, value: String, shown| set.push(EnvVar { name, value, shown });
-        push("ETH_RPC_URL", self.rpc.url.clone(), Shown::Url);
+        push(ETH_RPC_URL, self.rpc.url.clone(), Shown::Url);
         if !self.rpc.via_gateway && !self.rpc.headers.is_empty() {
             let mut pairs = Vec::with_capacity(self.rpc.headers.len());
             for (name, value) in &self.rpc.headers {
@@ -493,11 +497,11 @@ impl Context {
                 }
                 pairs.push(format!("{name}: {value}"));
             }
-            push("ETH_RPC_HEADERS", pairs.join(","), Shown::Headers);
+            push(ETH_RPC_HEADERS, pairs.join(","), Shown::Headers);
         }
-        push("CHAIN_ID", self.chain_id.to_string(), Shown::Plain);
+        push(CHAIN_ID, self.chain_id.to_string(), Shown::Plain);
         push(CHAINZ_CHAIN, self.chain.clone(), Shown::Plain);
-        push("CHAIN_NAME", self.chain.clone(), Shown::Plain);
+        push(CHAIN_NAME, self.chain.clone(), Shown::Plain);
         if let Some(explorer) = &self.explorer {
             if let Some(error) = &explorer.key_error {
                 warnings.push(format!("not exporting the explorer key: {error}"));
@@ -507,21 +511,21 @@ impl Context {
             }
             if !explorer.etherscan {
                 // The API URL may carry a key (`?apikey=`).
-                push("VERIFIER_URL", explorer.api.clone(), Shown::Url);
+                push(VERIFIER_URL, explorer.api.clone(), Shown::Url);
                 if let Some(key) = &explorer.key {
-                    push("VERIFIER_API_KEY", key.clone(), Shown::Secret);
+                    push(VERIFIER_API_KEY, key.clone(), Shown::Secret);
                 }
             }
         }
         if let Some(signer) = &self.signer {
             if let Some(address) = signer.address {
-                push("ETH_FROM", address.to_string(), Shown::Plain);
-                push("WALLET_ADDRESS", address.to_string(), Shown::Plain);
+                push(ETH_FROM, address.to_string(), Shown::Plain);
+                push(WALLET_ADDRESS, address.to_string(), Shown::Plain);
             }
             if self.fork.is_none()
                 && let Some(path) = &signer.keystore
             {
-                push("ETH_KEYSTORE", path.display().to_string(), Shown::Plain);
+                push(ETH_KEYSTORE, path.display().to_string(), Shown::Plain);
             }
         }
         if self.expose_key {

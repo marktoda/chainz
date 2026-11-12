@@ -125,7 +125,7 @@ pub(crate) struct Builtins<'a> {
 }
 
 /// `${CHAIN_ID}`: the chain's ID.
-pub(crate) const CHAIN_ID_VAR: &str = "CHAIN_ID";
+pub(crate) const CHAIN_ID_VAR: &str = crate::contract::CHAIN_ID;
 /// `${CHAIN}`: the chain's short name.
 pub(crate) const CHAIN_VAR: &str = "CHAIN";
 /// Names that always resolve from the chain context.

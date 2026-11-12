@@ -18,21 +18,40 @@ pub const ETHERSCAN_API_KEY: &str = "ETHERSCAN_API_KEY";
 /// `RAW_PRIVATE_KEY`: the signer's key, only with `--expose-key`.
 pub const RAW_PRIVATE_KEY: &str = "RAW_PRIVATE_KEY";
 
+/// `ETH_RPC_URL`: the chain's RPC (the gateway's, or the endpoint's).
+pub const ETH_RPC_URL: &str = "ETH_RPC_URL";
+/// `ETH_RPC_HEADERS`: the endpoint's headers (direct only).
+pub const ETH_RPC_HEADERS: &str = "ETH_RPC_HEADERS";
+/// `CHAIN_ID`: the chain ID (also the built-in `${CHAIN_ID}` variable).
+pub const CHAIN_ID: &str = "CHAIN_ID";
+/// `CHAIN_NAME`: the chain's name.
+pub const CHAIN_NAME: &str = "CHAIN_NAME";
+/// `VERIFIER_URL`: a non-Etherscan explorer's API.
+pub const VERIFIER_URL: &str = "VERIFIER_URL";
+/// `VERIFIER_API_KEY`: a non-Etherscan explorer's key.
+pub const VERIFIER_API_KEY: &str = "VERIFIER_API_KEY";
+/// `ETH_FROM`: the signer's address.
+pub const ETH_FROM: &str = "ETH_FROM";
+/// `WALLET_ADDRESS`: the signer's address.
+pub const WALLET_ADDRESS: &str = "WALLET_ADDRESS";
+/// `ETH_KEYSTORE`: a keystore signer's file.
+pub const ETH_KEYSTORE: &str = "ETH_KEYSTORE";
+
 /// Every variable the exec contract may set. Variables not set for a
 /// context are removed from the child environment, so a value never
 /// leaks in from an enclosing `chainz shell`.
 pub const CONTRACT_VARS: [&str; 12] = [
-    "ETH_RPC_URL",
-    "ETH_RPC_HEADERS",
-    "CHAIN_ID",
+    ETH_RPC_URL,
+    ETH_RPC_HEADERS,
+    CHAIN_ID,
     CHAINZ_CHAIN,
-    "CHAIN_NAME",
+    CHAIN_NAME,
     ETHERSCAN_API_KEY,
-    "VERIFIER_URL",
-    "VERIFIER_API_KEY",
-    "ETH_FROM",
-    "WALLET_ADDRESS",
-    "ETH_KEYSTORE",
+    VERIFIER_URL,
+    VERIFIER_API_KEY,
+    ETH_FROM,
+    WALLET_ADDRESS,
+    ETH_KEYSTORE,
     RAW_PRIVATE_KEY,
 ];
 

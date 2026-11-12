@@ -523,3 +523,50 @@ fn explain_is_a_safe_view() {
     assert!(!view.rpc.contains("inf-key"), "{}", view.rpc);
     assert!(view.signer.is_some_and(|(name, _, _)| !name.is_empty()));
 }
+
+#[test]
+fn every_exported_name_is_a_contract_var() {
+    let f = fixture();
+    let expose = ExecOptions {
+        expose_key: true,
+        ..Default::default()
+    };
+    let headers = ExecOptions {
+        rpc: Some("gw".into()),
+        ..Default::default()
+    };
+    // Between them these set every variable the contract has.
+    let mut seen = std::collections::BTreeSet::new();
+    for (chain, opts) in [("eth", &expose), ("eth", &headers), ("celo", &expose)] {
+        let Ok(c) = ctx(&f, chain, opts) else {
+            continue;
+        };
+        for var in c.exports().unwrap().set {
+            assert!(
+                CONTRACT_VARS.contains(&var.name()),
+                "{} is exported but never unset",
+                var.name()
+            );
+            seen.insert(var.name());
+        }
+    }
+    assert!(seen.len() >= 10, "{seen:?}");
+}
+
+#[test]
+fn every_context_token_has_a_resolver() {
+    let f = fixture();
+    let opts = ExecOptions::default();
+    let c = ctx(&f, "eth", &opts).unwrap();
+    let e = Expander::new(&f.chainz, &f.runtime, &c, opts.direct);
+    for name in names::context_tokens() {
+        // A token without a match arm would fall through to the label
+        // lookup and fail as an unknown label.
+        if let Err(err) = e.expand_args(&[format!("@{name}")]) {
+            assert!(
+                !format!("{err:#}").contains("unknown label"),
+                "@{name}: {err:#}"
+            );
+        }
+    }
+}
