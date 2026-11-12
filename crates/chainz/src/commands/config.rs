@@ -2,8 +2,8 @@
 
 use super::edit_until_saved;
 use crate::cli::ConfigCommand;
-use anyhow::{Context, Result, bail};
-use chainz_core::store::{NEW_CONFIG, WriteLock};
+use anyhow::{Context, Result};
+use chainz_core::store::WriteLock;
 use chainz_core::{Chainz, LoadMode, StorePaths, migrate, paths};
 
 pub fn run(cmd: ConfigCommand) -> Result<i32> {
@@ -32,17 +32,8 @@ fn path(all: bool) -> Result<i32> {
 fn edit() -> Result<i32> {
     // Opening first runs any pending v1 migration.
     let mut chainz = Chainz::open_at(StorePaths::resolve()?, LoadMode::Lenient)?;
-    let original =
-        paths::read_private(&chainz.paths().config)?.unwrap_or_else(|| NEW_CONFIG.to_string());
-    let saved = edit_until_saved(&original, |edited| {
-        chainz.transact(|tx| {
-            if tx.doc.to_string() != original {
-                bail!("config.toml changed while you were editing; run the command again");
-            }
-            tx.doc = edited.parse().context("config.toml is not valid TOML")?;
-            Ok(())
-        })
-    })?;
+    let original = chainz.config_text()?;
+    let saved = edit_until_saved(&original, |edited| chainz.replace_text(&original, edited))?;
     if saved {
         println!("Saved {}", chainz.paths().config.display());
     } else {

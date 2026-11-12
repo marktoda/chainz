@@ -8,7 +8,7 @@ use anyhow::{Result, bail};
 use chainz_core::model::Config;
 use chainz_core::secrets::BUILTIN_VARS;
 use chainz_core::signer::{KeyBackend, SystemKeyBackend};
-use chainz_core::{edit, template};
+use chainz_core::template;
 use serde::Serialize;
 use zeroize::Zeroizing;
 
@@ -76,7 +76,7 @@ fn set(name: &str, value: Option<String>, stdin: bool) -> Result<i32> {
     }
     let mut chainz = open()?;
     let existed = chainz.secrets()?.vars.contains_key(name);
-    chainz.transact(|tx| edit::set_var(&mut tx.secrets, name, &value))?;
+    chainz.transact(|tx| tx.set_var(name, &value))?;
     println!(
         "{} variable '{name}'",
         if existed { "Updated" } else { "Set" }
@@ -140,7 +140,7 @@ fn rm(name: &str) -> Result<i32> {
             used.join(", ")
         );
     }
-    let removed = chainz.transact(|tx| Ok(edit::remove_var(&mut tx.secrets, name)))?;
+    let removed = chainz.transact(|tx| Ok(tx.remove_var(name)))?;
     if !removed {
         bail!("variable '{name}' is not set");
     }

@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use chainz_core::runtime::Runtime;
-use chainz_core::{Chainz, LoadMode, edit};
+use chainz_core::{Chainz, LoadMode};
 use chainz_rpc::HealthStore;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -237,9 +237,7 @@ impl Dashboard {
     }
 
     fn set_active(&mut self, chain: &str, endpoint: &str) {
-        let edited = self
-            .chainz
-            .transact(|tx| edit::set_active(&mut tx.doc, chain, endpoint));
+        let edited = self.chainz.transact(|tx| tx.set_active(chain, endpoint));
         match edited {
             Ok(()) => {
                 self.start();

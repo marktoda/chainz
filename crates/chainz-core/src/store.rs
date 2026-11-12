@@ -5,25 +5,32 @@
 //!   lazily, only when a `${VAR}` misses the environment or key material is
 //!   needed.
 //! - **Writes lock.** [`Chainz::transact`] takes an exclusive `flock` on
-//!   `config.lock`, re-reads both files, applies the edit to the
-//!   `toml_edit` documents, validates, then writes `secrets.toml` first and
-//!   `config.toml` second, each fsync'd and atomically renamed.
+//!   `config.lock`, re-reads both files, applies the edit through a
+//!   [`Tx`], validates, then writes `secrets.toml` first and `config.toml`
+//!   second, each fsync'd and atomically renamed.
 //! - **v1 migration** runs under the same lock with a re-check, the first
 //!   time a v1 `config.json` exists and `config.toml` does not.
 
 use crate::migrate;
-use crate::model::{Config, Endpoint};
+use crate::model::{CONFIG_VERSION, Config, Endpoint};
 use crate::paths;
 use crate::secrets::{Builtins, Secrets, VarResolver};
+use crate::tx::Tx;
 use crate::validate;
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use std::cell::OnceCell;
 use std::path::{Path, PathBuf};
-use toml_edit::DocumentMut;
 
-/// Text of a brand-new config file.
-pub const NEW_CONFIG: &str =
-    "# chainz configuration (v2). Hand-editable; secrets live in secrets.toml.\nversion = 2\n";
+/// Text of a brand-new config file: `header` (comment lines), then the
+/// version.
+pub(crate) fn new_config_text(header: &str) -> String {
+    format!("{header}version = {CONFIG_VERSION}\n")
+}
+
+/// Text of a brand-new hand-editable config file.
+fn new_config() -> String {
+    new_config_text("# chainz configuration (v2). Hand-editable; secrets live in secrets.toml.\n")
+}
 
 /// Where the config files live.
 #[derive(Debug, Clone)]
@@ -96,7 +103,7 @@ impl Drop for WriteLock {
 
 /// Parse config text into the typed view.
 pub fn parse_config(text: &str, path: &Path) -> Result<Config> {
-    toml::from_str(text).map_err(|e| {
+    Config::parse(text).map_err(|e| {
         anyhow!(
             "failed to parse {}: {} (fix it with `chainz config edit`)",
             path.display(),
@@ -131,16 +138,6 @@ pub(crate) fn redact_parse_error(message: &str, span: Option<std::ops::Range<usi
         Some(span) => format!("{message} (at byte {})", span.start),
         None => message.to_string(),
     }
-}
-
-fn parse_document(text: &str, path: &Path) -> Result<DocumentMut> {
-    text.parse().map_err(|e: toml_edit::TomlError| {
-        anyhow!(
-            "failed to parse {}: {}",
-            path.display(),
-            redact_parse_error(e.message(), e.span())
-        )
-    })
 }
 
 /// An endpoint with every `${VAR}` expanded: what is actually sent.
@@ -302,17 +299,16 @@ impl Chainz {
         }
         let config_text = paths::read_private(&self.paths.config)?;
         let secrets_text = paths::read_private(&self.paths.secrets)?;
-        let config_orig = config_text
-            .clone()
-            .unwrap_or_else(|| NEW_CONFIG.to_string());
+        let config_orig = config_text.clone().unwrap_or_else(new_config);
         let secrets_orig = secrets_text.clone().unwrap_or_default();
-        let mut tx = Tx {
-            doc: parse_document(&config_orig, &self.paths.config)?,
-            secrets: parse_document(&secrets_orig, &self.paths.secrets)?,
-        };
+        let mut tx = Tx::parse(
+            &config_orig,
+            &self.paths.config,
+            &secrets_orig,
+            &self.paths.secrets,
+        )?;
         let out = edit(&mut tx)?;
-        let new_config = tx.doc.to_string();
-        let new_secrets = tx.secrets.to_string();
+        let (new_config, new_secrets) = tx.texts();
         let config = parse_config(&new_config, &self.paths.config)?;
         let secrets = Secrets::parse(&new_secrets).map_err(|e| {
             anyhow!(
@@ -335,38 +331,68 @@ impl Chainz {
         self.secrets = OnceCell::from(secrets);
         Ok(out)
     }
-}
 
-/// The documents being edited inside [`Chainz::transact`].
-pub struct Tx {
-    /// `config.toml`.
-    pub doc: DocumentMut,
-    /// `secrets.toml`.
-    pub secrets: DocumentMut,
-}
+    /// The text of `config.toml` as it is on disk now (a new file's text
+    /// if there is none yet), to edit by hand and hand back to
+    /// [`replace_text`](Self::replace_text).
+    pub fn config_text(&self) -> Result<String> {
+        Ok(paths::read_private(&self.paths.config)
+            .with_context(|| format!("failed to read {}", self.paths.config.display()))?
+            .unwrap_or_else(new_config))
+    }
 
-impl Tx {
-    /// The typed view of the document as edited so far.
-    pub fn config(&self) -> Result<Config> {
-        toml_edit::de::from_str(&self.doc.to_string()).map_err(|e| {
-            anyhow!(
-                "edited config does not parse: {}",
-                redact_parse_error(e.message(), e.span())
-            )
+    /// Replace `config.toml` with `new`, an edited copy of `expected` (from
+    /// [`config_text`](Self::config_text)); refused if the file changed
+    /// meanwhile.
+    pub fn replace_text(&mut self, expected: &str, new: &str) -> Result<()> {
+        self.transact(|tx| {
+            unchanged_since(tx, expected)?;
+            tx.replace_config_text(new)
         })
     }
 
-    /// The typed view of the secrets as edited so far.
-    pub fn secrets_view(&self) -> Result<Secrets> {
-        Secrets::parse(&self.secrets.to_string())
-            .map_err(|e| anyhow!("edited secrets do not parse: {}", redact_toml_error(&e)))
+    /// Chain `name`'s tables as a standalone document to edit by hand,
+    /// with the config text it was cut from (for
+    /// [`replace_chain_snippet`](Self::replace_chain_snippet)).
+    pub fn chain_snippet(&self, name: &str) -> Result<ChainSnippet> {
+        let config = self.config_text()?;
+        let tx = Tx::parse(&config, &self.paths.config, "", &self.paths.secrets)?;
+        Ok(ChainSnippet {
+            chain: name.to_string(),
+            text: tx.chain_snippet(name)?,
+            config,
+        })
     }
+
+    /// Replace a chain's tables with an edited [`ChainSnippet`]; refused
+    /// if `config.toml` changed since the snippet was cut.
+    pub fn replace_chain_snippet(&mut self, snippet: &ChainSnippet, edited: &str) -> Result<()> {
+        self.transact(|tx| {
+            unchanged_since(tx, &snippet.config)?;
+            tx.replace_chain_snippet(&snippet.chain, edited)
+        })
+    }
+}
+
+/// One chain's tables cut from `config.toml` by [`Chainz::chain_snippet`].
+#[derive(Debug, Clone)]
+pub struct ChainSnippet {
+    chain: String,
+    config: String,
+    /// The snippet to edit.
+    pub text: String,
+}
+
+fn unchanged_since(tx: &Tx, expected: &str) -> Result<()> {
+    if tx.texts().0 != expected {
+        bail!("config.toml changed while you were editing; run the command again");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::edit;
 
     #[test]
     fn transactions_write_secrets_then_config_and_validate() {
@@ -374,12 +400,7 @@ mod tests {
         let paths = StorePaths::in_dir(dir.path().join("chainz"));
         let mut chainz = Chainz::open_at(paths.clone(), LoadMode::Strict).unwrap();
         assert!(!chainz.exists());
-        chainz
-            .transact(|tx| {
-                edit::set_var(&mut tx.secrets, "K", "value")?;
-                Ok(())
-            })
-            .unwrap();
+        chainz.transact(|tx| tx.set_var("K", "value")).unwrap();
         assert!(paths.secrets.exists() && paths.config.exists());
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(&paths.secrets)
@@ -394,7 +415,7 @@ mod tests {
         let before = std::fs::read_to_string(&paths.config).unwrap();
         let err = chainz
             .transact(|tx| {
-                tx.doc["default"] = toml_edit::value("ghost");
+                tx.set_default(Some("ghost"));
                 Ok(())
             })
             .unwrap_err();
@@ -434,7 +455,7 @@ mod tests {
     fn loose_permissions_are_tightened_on_read() {
         let dir = tempfile::tempdir().unwrap();
         let paths = StorePaths::in_dir(dir.path().to_path_buf());
-        std::fs::write(&paths.config, NEW_CONFIG).unwrap();
+        std::fs::write(&paths.config, new_config()).unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&paths.config, std::fs::Permissions::from_mode(0o644)).unwrap();
         Chainz::open_at(paths.clone(), LoadMode::Strict).unwrap();
@@ -449,7 +470,7 @@ mod tests {
     fn transaction_parse_errors_do_not_echo_the_source_line() {
         let dir = tempfile::tempdir().unwrap();
         let paths = StorePaths::in_dir(dir.path().to_path_buf());
-        std::fs::write(&paths.config, NEW_CONFIG).unwrap();
+        std::fs::write(&paths.config, new_config()).unwrap();
         let mut chainz = Chainz::open_at(paths.clone(), LoadMode::Strict).unwrap();
         // Broken by hand after loading: transact re-reads and re-parses.
         std::fs::write(
@@ -461,30 +482,17 @@ mod tests {
         assert!(!err.contains("super-secret-key"), "{err}");
         assert!(err.contains("config.toml"), "{err}");
 
-        std::fs::write(&paths.config, NEW_CONFIG).unwrap();
+        std::fs::write(&paths.config, new_config()).unwrap();
         std::fs::write(&paths.secrets, "K = \"super-secret-var\" trailing\n").unwrap();
         let err = format!("{:#}", chainz.transact(|_| Ok(())).unwrap_err());
         assert!(!err.contains("super-secret-var"), "{err}");
     }
 
     #[test]
-    fn tx_config_errors_do_not_echo_the_source_line() {
-        let tx = Tx {
-            doc: "version = 2\nchains.eth = { id = 1, rpc = 5, rpcs = { a = \"https://x.example/v3/super-secret-key\" } }\n"
-                .parse()
-                .unwrap(),
-            secrets: DocumentMut::new(),
-        };
-        let err = format!("{:#}", tx.config().unwrap_err());
-        assert!(!err.contains("super-secret-key"), "{err}");
-        assert!(err.contains("edited config does not parse"), "{err}");
-    }
-
-    #[test]
     fn secrets_parse_errors_do_not_echo_values() {
         let dir = tempfile::tempdir().unwrap();
         let paths = StorePaths::in_dir(dir.path().to_path_buf());
-        std::fs::write(&paths.config, NEW_CONFIG).unwrap();
+        std::fs::write(&paths.config, new_config()).unwrap();
         std::fs::write(
             &paths.secrets,
             "[vars]\nK = \"super-secret-value\" trailing\n",

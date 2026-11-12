@@ -3,7 +3,7 @@
 //! but never echo a URL, header value or secret.
 
 use crate::address::Address;
-use crate::model::{Backend, CONFIG_VERSION, Config};
+use crate::model::{Backend, CONFIG_VERSION, Config, Need};
 use crate::names;
 use crate::secrets::{BUILTIN_VARS, Secrets};
 use crate::template;
@@ -163,21 +163,17 @@ pub fn issues(config: &Config, secrets: Option<&Secrets>) -> Vec<String> {
             err(e.to_string());
         }
         let backend = signer.backend;
-        let allowed = backend_fields(backend);
-        for (field, value) in signer_fields(signer) {
-            if value.is_some() && !allowed.contains(&field) {
+        let fields = backend.fields();
+        for (field, value) in signer.optional_fields() {
+            if value.is_some() && !fields.iter().any(|(f, _)| *f == field) {
                 err(format!(
                     "signer '{name}' field '{field}' does not apply to backend '{backend}'"
                 ));
             }
         }
-        let required: &[(&str, &Option<String>)] = match backend {
-            Backend::Keystore => &[("path", &signer.path)],
-            Backend::OnePassword => &[("vault", &signer.vault), ("item", &signer.item)],
-            Backend::Keyring | Backend::Encrypted | Backend::Plaintext => &[],
-        };
-        for (field, value) in required {
-            if !value.as_deref().is_some_and(|v| !v.trim().is_empty()) {
+        for (field, value) in signer.optional_fields() {
+            let required = fields.contains(&(field, Need::Required));
+            if required && !value.is_some_and(|v| !v.trim().is_empty()) {
                 err(format!(
                     "signer '{name}' (backend '{backend}') needs a non-empty '{field}'"
                 ));
@@ -212,13 +208,11 @@ pub fn issues(config: &Config, secrets: Option<&Secrets>) -> Vec<String> {
     }
 
     for (label, entries) in &config.addresses {
-        if let Err(e) =
-            crate::edit::check_label_name(label, config.signers.keys().map(String::as_str))
-        {
+        if let Err(e) = names::check_label_name(label, config.signers.keys().map(String::as_str)) {
             err(e.to_string());
         }
         for (scope, address) in entries {
-            if scope != "*" && !config.chains.contains_key(scope) {
+            if scope != crate::labels::ALL_CHAINS && !config.chains.contains_key(scope) {
                 err(format!("label '{label}' names unknown chain '{scope}'"));
             }
             if address.parse::<Address>().is_err() {
@@ -252,28 +246,6 @@ pub fn validate(config: &Config, secrets: Option<&Secrets>) -> anyhow::Result<()
     }
 }
 
-/// The optional `[signers.NAME]` fields each backend accepts (`backend`
-/// and `address` apply to all).
-fn backend_fields(backend: Backend) -> &'static [&'static str] {
-    match backend {
-        Backend::Keyring => &["service", "username"],
-        Backend::Keystore => &["path"],
-        Backend::OnePassword => &["vault", "item"],
-        Backend::Encrypted | Backend::Plaintext => &[],
-    }
-}
-
-/// Every optional field of a signer record, by its config name.
-fn signer_fields(signer: &crate::model::Signer) -> [(&'static str, &Option<String>); 5] {
-    [
-        ("service", &signer.service),
-        ("username", &signer.username),
-        ("path", &signer.path),
-        ("vault", &signer.vault),
-        ("item", &signer.item),
-    ]
-}
-
 /// RFC 9110 token characters, the legal alphabet for HTTP header names.
 pub(crate) fn is_header_name_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte)
@@ -284,7 +256,7 @@ mod tests {
     use super::*;
 
     fn parse(text: &str) -> Config {
-        toml_edit::de::from_str(text).unwrap()
+        Config::parse(text).unwrap()
     }
 
     const OK: &str = r#"

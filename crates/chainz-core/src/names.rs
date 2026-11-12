@@ -120,6 +120,27 @@ pub fn check_signer_name(name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Why `name` cannot be a label, if it cannot. `signers` are the
+/// configured signer names (signers are labels automatically). The one
+/// definition of the label-name rules, shared by validation.
+pub fn check_label_name<'a>(
+    name: &str,
+    signers: impl IntoIterator<Item = &'a str>,
+) -> anyhow::Result<()> {
+    if !is_valid_label_name(name) {
+        anyhow::bail!("label name '{name}' must match [a-z0-9_-]+");
+    }
+    if is_reserved_token(name) {
+        anyhow::bail!("'{name}' is a context token (@{name}) and cannot be used as a label");
+    }
+    if signers.into_iter().any(|s| s.eq_ignore_ascii_case(name)) {
+        anyhow::bail!(
+            "'{name}' is a signer, and signers are labels already (@{name} is its address)"
+        );
+    }
+    Ok(())
+}
+
 /// The token-name alphabet, matched case-insensitively.
 pub fn is_token_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_' || b == b'-'

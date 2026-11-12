@@ -538,7 +538,7 @@ mod tests {
     use super::*;
 
     fn config() -> Config {
-        toml_edit::de::from_str(
+        Config::parse(
             r#"
 version = 2
 [signers.default]

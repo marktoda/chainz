@@ -17,14 +17,11 @@
 //! `_3`… on collision. A value some variable already holds reuses that
 //! variable.
 
-use crate::edit;
 use crate::model::{Config, Endpoint};
 use crate::template;
-use anyhow::Result;
 use indexmap::IndexMap;
 use std::collections::HashMap;
 use std::fmt;
-use toml_edit::DocumentMut;
 use zeroize::Zeroize;
 
 /// Variable names and values: the existing ones plus those created for
@@ -306,7 +303,8 @@ pub fn extract_explorer_key(explorer: &str, key: &str, vars: &mut VarTable) -> O
 }
 
 /// Every literal secret in a config and where it goes, computed without
-/// touching anything; [`apply`](Self::apply) makes the edits.
+/// touching anything; [`Tx::extract_all_secrets`](crate::tx::Tx::extract_all_secrets)
+/// makes the edits.
 pub struct SecretPlan {
     /// Endpoints to rewrite: chain, endpoint name, the new endpoint.
     pub endpoints: Vec<(String, String, Endpoint)>,
@@ -337,20 +335,9 @@ impl SecretPlan {
         self.vars.created_vars()
     }
 
-    /// Apply the plan: add the new variables to `secrets` and rewrite the
-    /// endpoints and explorer keys in `config` (inside a
-    /// [`Chainz::transact`](crate::store::Chainz::transact)).
-    pub fn apply(&self, config: &mut DocumentMut, secrets: &mut DocumentMut) -> Result<()> {
-        for (name, value) in self.new_vars() {
-            edit::set_var(secrets, name, value)?;
-        }
-        for (chain, name, endpoint) in &self.endpoints {
-            edit::set_endpoint(config, chain, name, endpoint)?;
-        }
-        for (explorer, key) in &self.explorer_keys {
-            edit::set_explorer_key(config, explorer, key)?;
-        }
-        Ok(())
+    /// The variable table, with the new variables.
+    pub(crate) fn vars(&self) -> &VarTable {
+        &self.vars
     }
 }
 
@@ -430,7 +417,7 @@ plain = "https://mainnet.base.org"
 
     #[test]
     fn plans_every_literal_secret_and_applies_cleanly() {
-        let config: Config = toml_edit::de::from_str(CONFIG).unwrap();
+        let config: Config = crate::model::Config::parse(CONFIG).unwrap();
         let mut existing = IndexMap::new();
         existing.insert("ALREADY".to_string(), "x".to_string());
         existing.insert("MY_ALCHEMY".to_string(), "alchemykey0001".to_string());
@@ -458,12 +445,15 @@ plain = "https://mainnet.base.org"
         );
         assert!(!format!("{plan:?}").contains("literal-etherscan-key"));
 
-        let mut doc: DocumentMut = CONFIG.parse().unwrap();
-        let mut secrets: DocumentMut = "[vars]\nALREADY = \"x\"\nMY_ALCHEMY = \"alchemykey0001\"\n"
-            .parse()
-            .unwrap();
-        plan.apply(&mut doc, &mut secrets).unwrap();
-        let text = doc.to_string();
+        let mut tx = crate::tx::Tx::parse(
+            CONFIG,
+            std::path::Path::new("config.toml"),
+            "[vars]\nALREADY = \"x\"\nMY_ALCHEMY = \"alchemykey0001\"\n",
+            std::path::Path::new("secrets.toml"),
+        )
+        .unwrap();
+        assert_eq!(tx.extract_all_secrets().unwrap(), plan.moved);
+        let (text, secrets) = tx.texts();
         for secret in [
             "abcdef0123456789",
             "alchemykey0001",
@@ -474,8 +464,8 @@ plain = "https://mainnet.base.org"
             assert!(!text.contains(secret), "{text}");
         }
         assert!(text.contains("accept = \"json\""), "{text}");
-        let config: Config = toml_edit::de::from_str(&text).unwrap();
-        let secrets = Secrets::parse(&secrets.to_string()).unwrap();
+        let config: Config = crate::model::Config::parse(&text).unwrap();
+        let secrets = Secrets::parse(&secrets).unwrap();
         crate::validate::validate(&config, Some(&secrets)).unwrap();
         assert_eq!(secrets.vars["INFURA_KEY"], "abcdef0123456789");
         assert_eq!(secrets.vars["GW_X_LIST"], "a,b");

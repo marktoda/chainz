@@ -7,10 +7,10 @@ use crate::{ui, view};
 use anyhow::{Context, Result, bail};
 use chainz_core::addrbook::{self, Labeler};
 use chainz_core::broadcast::{self, Action, Planned};
-use chainz_core::edit::{self, ALL_CHAINS, SetAddress};
-use chainz_core::labels::{Label, LabelIndex, LabelScope, LabelSource, builtin_tokens};
+use chainz_core::labels::{ALL_CHAINS, Label, LabelIndex, LabelScope, LabelSource, builtin_tokens};
 use chainz_core::model::Config;
 use chainz_core::resolve::{self, ChainRef, Source};
+use chainz_core::tx::{Overwrite, SetAddress};
 use chainz_core::{Address, names};
 use serde::Serialize;
 use std::io;
@@ -94,7 +94,7 @@ fn add(name: &str, address: &str, chain: Option<&str>, all_chains: bool) -> Resu
     let name = label_name(name);
     let address = parse_address(address, "address")?;
     // Fail on a bad name before asking which chain.
-    edit::check_label_name(&name, chainz.config().signers.keys().map(String::as_str))?;
+    names::check_label_name(&name, chainz.config().signers.keys().map(String::as_str))?;
     let scope = if all_chains {
         ALL_CHAINS.to_string()
     } else {
@@ -134,7 +134,7 @@ fn add(name: &str, address: &str, chain: Option<&str>, all_chains: bool) -> Resu
         );
     }
     let outcome =
-        chainz.transact(|tx| edit::set_address(&mut tx.doc, &name, &scope, &address, false))?;
+        chainz.transact(|tx| tx.set_address(&name, &scope, &address, Overwrite::Refuse))?;
     match outcome {
         SetAddress::Unchanged => println!("@{name} is already {address} {on}"),
         SetAddress::Added | SetAddress::Replaced(_) => println!("Added @{name} {on}: {address}"),
@@ -269,8 +269,7 @@ fn rm(name: &str, chain: Option<&str>) -> Result<i32> {
         Some(ALL_CHAINS) => Some(ALL_CHAINS.to_string()),
         Some(query) => Some(exact_chain(config, query)?),
     };
-    let removed =
-        chainz.transact(|tx| edit::remove_address(&mut tx.doc, &name, scope.as_deref()))?;
+    let removed = chainz.transact(|tx| tx.remove_address(&name, scope.as_deref()))?;
     for (scope, address) in removed {
         let on = if scope == ALL_CHAINS {
             "on every chain".to_string()
@@ -388,7 +387,7 @@ fn import(
                 else {
                     unreachable!("a planned write has a name, chain and address");
                 };
-                edit::set_address(&mut tx.doc, name, chain, address, true)?;
+                tx.set_address(name, chain, address, Overwrite::Replace)?;
             }
             Ok(planned)
         })?;

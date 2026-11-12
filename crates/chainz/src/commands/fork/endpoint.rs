@@ -150,8 +150,9 @@ mod tests {
 
     #[test]
     fn archive_candidates_prefer_active_then_failover() {
-        let chain: Chain = toml_edit::de::from_str(
+        let chain: Chain = chainz_core::Config::parse(
             r#"
+[chains.base]
 id = 8453
 rpc = "b"
 failover = ["c", "missing"]
@@ -160,6 +161,9 @@ rpcs.b = "https://b"
 rpcs.c = "https://c"
 "#,
         )
+        .unwrap()
+        .chains
+        .swap_remove("base")
         .unwrap();
         assert_eq!(archive_order(&chain), ["b", "c", "a"]);
     }

@@ -1,14 +1,13 @@
 //! `chain …`, `ls` and `use`.
 
-use super::rpc::{check, extract_secrets, probe_urls, report_moved};
+use super::rpc::{check, probe_urls, report_moved};
 use super::{chain_arg, edit_until_saved, open, pick_chain};
 use crate::cli::{ChainCommand, ListArgs};
 use crate::prompt::{self, is_tty};
 use crate::{net, ui, view};
 use anyhow::{Context, Result, anyhow, bail};
-use chainz_core::edit::{self, NewChain};
 use chainz_core::labels::LabelIndex;
-use chainz_core::model::Endpoint;
+use chainz_core::model::{Chain, Endpoint};
 use chainz_core::{names, resolve};
 use chainz_rpc::chainlist::{self, ChainlistEntry};
 use chainz_rpc::{ProbeResult, rank};
@@ -59,7 +58,7 @@ pub fn use_default(chain: Option<String>, clear: bool) -> Result<i32> {
     let mut chainz = open()?;
     if clear {
         chainz.transact(|tx| {
-            edit::set_default(&mut tx.doc, None);
+            tx.set_default(None);
             Ok(())
         })?;
         println!("Default chain cleared");
@@ -70,7 +69,7 @@ pub fn use_default(chain: Option<String>, clear: bool) -> Result<i32> {
         None => pick_chain(&chainz, "Default chain")?,
     };
     chainz.transact(|tx| {
-        edit::set_default(&mut tx.doc, Some(&name));
+        tx.set_default(Some(&name));
         Ok(())
     })?;
     println!("Default chain set to '{name}'");
@@ -191,15 +190,9 @@ fn add(
         .or_else(|| names::short_name(id).map(str::to_string))
         .or_else(|| entry.as_ref().map(|e| names::slugify(&e.name)))
         .ok_or_else(|| anyhow!("chain {id} has no built-in short name; pass --name"))?;
-    names::check_chain_name(&short)?;
-    if let Some((existing, _)) = chainz.config().chain_by_id(id) {
-        bail!("chain ID {id} is already configured as '{existing}'");
-    }
-    if let Some(signer) = &signer
-        && !chainz.config().signers.contains_key(signer)
-    {
-        bail!("signer '{signer}' not found; add it with `chainz signer add {signer}`");
-    }
+    chainz
+        .config()
+        .check_new_chain(&short, id, signer.as_deref())?;
 
     let mut endpoints: Vec<(String, Endpoint)> = Vec::new();
     let push = |endpoints: &mut Vec<(String, Endpoint)>, url: &str| {
@@ -258,17 +251,17 @@ fn add(
     let count = endpoints.len();
     let moved = chainz.transact(|tx| {
         let mut rpcs = endpoints;
-        let moved = extract_secrets(tx, &short, &mut rpcs)?;
-        let new = NewChain {
+        let moved = tx.extract_secrets(&short, &mut rpcs)?;
+        let new = Chain {
             id,
             aliases,
             signer,
             explorer: None,
             rpc: active.clone(),
             failover: vec![],
-            rpcs,
+            rpcs: rpcs.into_iter().collect(),
         };
-        edit::insert_chain(&mut tx.doc, &short, &new)?;
+        tx.insert_chain(&short, &new)?;
         Ok(moved)
     })?;
     println!("Added chain '{short}' ({id}) with {count} endpoint(s); active: {active}");
@@ -304,16 +297,9 @@ fn view_url(url: &str) -> String {
 fn edit_chain(query: &str) -> Result<i32> {
     let mut chainz = open()?;
     let name = chain_arg(&chainz, query)?;
-    let text = std::fs::read_to_string(&chainz.paths().config)?;
-    let doc: toml_edit::DocumentMut = text.parse()?;
-    let snippet = edit::chain_snippet(&doc, &name)?;
-    let saved = edit_until_saved(&snippet, |edited| {
-        chainz.transact(|tx| {
-            if tx.doc.to_string() != text {
-                bail!("config.toml changed while you were editing; run the command again");
-            }
-            edit::replace_chain_from_snippet(&mut tx.doc, &name, edited)
-        })
+    let snippet = chainz.chain_snippet(&name)?;
+    let saved = edit_until_saved(&snippet.text, |edited| {
+        chainz.replace_chain_snippet(&snippet, edited)
     })?;
     if saved {
         println!("Updated chain '{name}'");
@@ -326,22 +312,7 @@ fn edit_chain(query: &str) -> Result<i32> {
 fn rename(query: &str, new: &str) -> Result<i32> {
     let mut chainz = open()?;
     let old = chain_arg(&chainz, query)?;
-    names::check_chain_name(new)?;
-    if chainz.config().chains.contains_key(new) {
-        bail!("chain '{new}' already exists");
-    }
-    chainz.transact(|tx| {
-        edit::rename_chain(&mut tx.doc, &old, new)?;
-        // The new name makes a matching alias redundant.
-        let cfg = tx.config()?;
-        let aliases: Vec<String> = cfg.chains[new]
-            .aliases
-            .iter()
-            .filter(|a| !a.eq_ignore_ascii_case(new))
-            .cloned()
-            .collect();
-        edit::set_aliases(&mut tx.doc, new, &aliases)
-    })?;
+    chainz.transact(|tx| tx.rename_chain(&old, new))?;
     println!("Renamed chain '{old}' to '{new}'");
     Ok(0)
 }
@@ -363,7 +334,7 @@ fn alias(query: &str, aliases: Vec<String>, remove: bool) -> Result<i32> {
             }
         }
     }
-    chainz.transact(|tx| edit::set_aliases(&mut tx.doc, &name, &current))?;
+    chainz.transact(|tx| tx.set_aliases(&name, &current))?;
     println!(
         "Aliases for '{name}': {}",
         if current.is_empty() {
@@ -378,7 +349,7 @@ fn alias(query: &str, aliases: Vec<String>, remove: bool) -> Result<i32> {
 fn rm(query: &str) -> Result<i32> {
     let mut chainz = open()?;
     let name = resolve::resolve_exact(chainz.config(), query)?;
-    chainz.transact(|tx| edit::remove_chain(&mut tx.doc, &name))?;
+    chainz.transact(|tx| tx.remove_chain(&name))?;
     println!("Removed chain '{name}'");
     Ok(0)
 }

@@ -20,6 +20,18 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
+/// The `[addresses.NAME]` scope key meaning "every chain".
+pub const ALL_CHAINS: &str = "*";
+
+/// How a label scope reads in a sentence: "for every chain" or "on 'eth'".
+pub fn scope_phrase(scope: &str) -> String {
+    if scope == ALL_CHAINS {
+        "for every chain".to_string()
+    } else {
+        format!("on '{scope}'")
+    }
+}
+
 /// The token registry source, compiled into the binary.
 pub(crate) const TOKENS_TOML: &str = include_str!("tokens.toml");
 
@@ -181,7 +193,7 @@ impl LabelIndex {
                 let Ok(address) = address.parse::<Address>() else {
                     continue;
                 };
-                let scope = if scope == "*" {
+                let scope = if scope == ALL_CHAINS {
                     entry.all_chains = Some(address);
                     LabelScope::AllChains
                 } else if let Some(chain) = config.chains.get(scope) {
@@ -345,7 +357,7 @@ mod tests {
     use super::*;
 
     fn config() -> Config {
-        toml_edit::de::from_str(
+        crate::model::Config::parse(
             r#"
 version = 2
 [chains.base]

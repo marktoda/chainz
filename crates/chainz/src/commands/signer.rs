@@ -8,7 +8,8 @@ use crate::ui;
 use anyhow::{Context, Result, anyhow, bail};
 use chainz_core::model::{Backend, Signer};
 use chainz_core::signer::{self, KeyBackend, Provision, SystemKeyBackend};
-use chainz_core::{Address, Chainz, edit, names, paths};
+use chainz_core::tx::Users;
+use chainz_core::{Address, Chainz, names, paths};
 use serde::Serialize;
 use zeroize::Zeroizing;
 
@@ -137,7 +138,7 @@ fn add(
                 vault: None,
                 item: None,
             };
-            chainz.transact(|tx| edit::set_signer(&mut tx.doc, name, &record))?;
+            chainz.transact(|tx| tx.set_signer(name, &record))?;
             report_added(name, &record);
         }
         Backend::OnePassword => {
@@ -162,7 +163,7 @@ fn add(
                 vault: Some(vault),
                 item: Some(item),
             };
-            chainz.transact(|tx| edit::set_signer(&mut tx.doc, name, &record))?;
+            chainz.transact(|tx| tx.set_signer(name, &record))?;
             report_added(name, &record);
         }
         Backend::Keyring | Backend::Encrypted | Backend::Plaintext => {
@@ -176,11 +177,8 @@ fn add(
                 return Err(roll_back(backend, name, &provision, error));
             }
             let result = chainz.transact(|tx| {
-                edit::set_signer(&mut tx.doc, name, &provision.signer)?;
-                if let Some(secret) = &provision.secret {
-                    edit::set_signer_secret(&mut tx.secrets, name, secret)?;
-                }
-                Ok(())
+                tx.set_signer(name, &provision.signer)?;
+                tx.set_signer_secret(name, provision.secret.as_ref())
             });
             if let Err(e) = result {
                 return Err(roll_back(backend, name, &provision, e));
@@ -283,11 +281,8 @@ fn rm(backend: &dyn KeyBackend, name: &str, force: bool, yes: bool) -> Result<i3
             ),
         )?;
     }
-    let detached = chainz.transact(|tx| {
-        let detached = edit::remove_signer(&mut tx.doc, name, force)?;
-        edit::remove_signer_secret(&mut tx.secrets, name);
-        Ok(detached)
-    })?;
+    let users = if force { Users::Detach } else { Users::Keep };
+    let detached = chainz.transact(|tx| tx.remove_signer(name, users))?;
     if let Err(e) = signer::delete_external(backend, name, &record) {
         eprintln!(
             "{}",
@@ -399,12 +394,8 @@ fn migrate_one(
         .then(|| format!("{name}-v2"));
     let provision = signer::provision(backend, name, &key, target, fresh.as_deref())?;
     let result = chainz.transact(|tx| {
-        edit::set_signer(&mut tx.doc, name, &provision.signer)?;
-        edit::remove_signer_secret(&mut tx.secrets, name);
-        if let Some(secret) = &provision.secret {
-            edit::set_signer_secret(&mut tx.secrets, name, secret)?;
-        }
-        Ok(())
+        tx.set_signer(name, &provision.signer)?;
+        tx.set_signer_secret(name, provision.secret.as_ref())
     });
     if let Err(e) = result {
         return Err(roll_back(backend, name, &provision, e));

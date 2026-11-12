@@ -18,9 +18,9 @@
 //! such object per chain under `deployments`.
 
 use crate::address::Address;
-use crate::edit::check_label_name;
 use crate::model::Config;
 use crate::names;
+use crate::names::check_label_name;
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -623,7 +623,7 @@ mod tests {
     }
 
     fn config() -> Config {
-        toml_edit::de::from_str(&format!(
+        crate::model::Config::parse(&format!(
             r#"
 version = 2
 [chains.base]

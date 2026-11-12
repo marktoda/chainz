@@ -36,7 +36,7 @@ fn fixture_secrets() -> Vec<String> {
 
 fn parsed(plan: &Plan) -> (Config, Secrets) {
     (
-        toml_edit::de::from_str(&plan.config_toml).unwrap(),
+        crate::model::Config::parse(&plan.config_toml).unwrap(),
         Secrets::parse(&plan.secrets_toml).unwrap(),
     )
 }

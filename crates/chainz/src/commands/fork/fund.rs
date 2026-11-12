@@ -331,7 +331,7 @@ mod tests {
     }
 
     fn config() -> Config {
-        toml_edit::de::from_str(
+        Config::parse(
             r#"
 version = 2
 [chains.base]

@@ -417,7 +417,7 @@ Top, serve and fork share one RPC layer, and top reads serve through its control
 | `chainz-tui` | `chainz top` | rpc, ratatui, crossterm |
 | `chainz` (bin) | clap surface, pickers, output formatting, `exec`/`shell`/`env`, `fork` supervisor | all of the above |
 
-**Config writes go through `toml_edit`**, so `chainz rpc use` or the dashboard's `s` key changes one value and keeps your comments, ordering and formatting. Validation is unchanged from v1: one `Config::validate`, run before every write, with an atomic rename.
+**Config writes go through `toml_edit`**: each record is serialized from the typed model and merged into the existing table, so `chainz rpc use` or the dashboard's `s` key changes one value and keeps your comments, ordering and formatting. Validation is unchanged from v1: one `Config::validate`, run before every write, with an atomic rename.
 
 **Locking and write order.** Reads take no lock: each file is replaced by an atomic rename, so a reader always sees a whole file. Writes take an exclusive file lock, re-read both files, apply the change, validate, and then write.
 

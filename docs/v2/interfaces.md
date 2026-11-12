@@ -109,12 +109,15 @@ name.
 The address book (`addr …`, `label`, `doctor --tokens`) is built on:
 
 ```rust
-// chainz_core::edit, inside `transact`
+// chainz_core::labels / names
 pub const ALL_CHAINS: &str = "*";
+pub fn names::check_label_name<'a>(name: &str, signers: impl IntoIterator<Item = &'a str>) -> Result<()>;
+
+// chainz_core::tx::Tx, inside `transact`
 pub enum SetAddress { Added, Unchanged, Replaced(Address) }
-pub fn check_label_name<'a>(name: &str, signers: impl IntoIterator<Item = &'a str>) -> Result<()>;
-pub fn set_address(doc: &mut DocumentMut, name: &str, scope: &str, address: &Address, force: bool) -> Result<SetAddress>;
-pub fn remove_address(doc: &mut DocumentMut, name: &str, scope: Option<&str>) -> Result<Vec<(String, String)>>;
+pub enum Overwrite { Refuse, Replace }
+pub fn set_address(&mut self, name: &str, scope: &str, address: &Address, overwrite: Overwrite) -> Result<SetAddress>;
+pub fn remove_address(&mut self, name: &str, scope: Option<&str>) -> Result<Vec<(String, String)>>;
 
 // chainz_core::addrbook
 pub fn find(config: &Config, address: &Address) -> Vec<Label>; // `addr find`
@@ -151,10 +154,10 @@ pub fn plan(config: &Config, runs: &[Run], options: &Options) -> Vec<Planned>;
 `Deployed::problem` covers a failed transaction, a transaction with no receipt
 (when the file has receipts), and a missing name or address. `plan` puts each
 label on `config.chain_by_id(run.chain_id)`. It never uses a fork. It checks
-names with `edit::check_label_name`, drops repeats of the same (chain, name,
+names with `names::check_label_name`, drops repeats of the same (chain, name,
 address), and suffixes later different addresses with `names::unique_name`.
 The command plans again inside `transact`, under the lock, and applies every
-`Add`/`Overwrite` with `edit::set_address(…, force = true)`.
+`Add`/`Overwrite` with `tx.set_address(…, Overwrite::Replace)`.
 
 ## Upstream (`chainz_rpc::upstream`)
 
@@ -276,9 +279,18 @@ and the gateway all use it.
 
 - Config: `Chainz::open()` gives lock-free reads and auto-migrates v1 under
   the lock. `chainz.transact(|tx| { … })` holds the lock while it parses both
-  files, runs your `edit::*` calls on `tx.doc` / `tx.secrets`, validates, and
-  writes secrets then config. The writes are atomic, fsynced, and 0600. Only
-  write config through `transact`.
+  files, runs your `Tx` methods, validates, and writes secrets then config.
+  The writes are atomic, fsynced, and 0600. Only write config through
+  `transact`. Each `Tx` method picks its own file (`set_var` and signer key
+  material go to `secrets.toml`, everything else to `config.toml`). Records
+  are written by serializing the model types (`Chain`, `Endpoint`,
+  `Explorer`, `Signer`, `SignerSecret`) and merging them into the existing
+  table: unchanged keys keep their exact text and comments, changed values
+  are replaced in place, new keys are appended. `tx.config()` /
+  `tx.secrets()` are the typed views of the edit so far. Hand edits go
+  through `Chainz::config_text` + `replace_text(expected, new)` and
+  `Chainz::chain_snippet` + `replace_chain_snippet`, which refuse if the file
+  changed meanwhile.
 - Resolver: `resolve::select(config, Some(&runtime), explicit) -> Result<Option<(ChainRef, Source)>>`.
   It checks the explicit argument, then `$CHAINZ_CHAIN`, then the default.
   Management commands use `resolve_configured` (no forks) or `resolve_exact`

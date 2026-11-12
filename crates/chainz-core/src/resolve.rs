@@ -149,7 +149,7 @@ mod tests {
     use super::*;
 
     fn config() -> Config {
-        toml_edit::de::from_str(
+        crate::model::Config::parse(
             r#"
 version = 2
 [chains.eth]

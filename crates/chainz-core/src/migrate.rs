@@ -27,20 +27,19 @@
 //! are never dropped without such a note.
 
 use crate::address::Address;
-use crate::edit::{self, NewChain};
 use crate::extract::{self, VarTable};
-use crate::model::{Backend, Endpoint, Explorer, Signer};
+use crate::model::{Backend, Chain, Endpoint, Explorer, Signer};
 use crate::names;
 use crate::secrets::{BUILTIN_VARS, SignerSecret};
 use crate::store::{StorePaths, WriteLock};
 use crate::template;
+use crate::tx::Tx;
 use anyhow::{Context, Result, anyhow};
 use indexmap::IndexMap;
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
-use toml_edit::DocumentMut;
 
 pub use crate::extract::extract_known_key;
 
@@ -320,44 +319,43 @@ pub fn plan(v1_json: &str) -> Result<Plan> {
     let (signer_records, signer_names) = migrate_keys(&v1.keys, &mut summary);
     let chains = migrate_chains(&v1.chains, &rename, &signer_names, &mut vars, &mut summary);
 
-    let mut config = DocumentMut::new();
-    config.decor_mut().set_prefix(
-        "# chainz configuration (v2), migrated from the v1 config.json.\n# Secrets live in secrets.toml; reference them as ${NAME}.\n",
-    );
-    config["version"] = toml_edit::value(2);
-    let mut secrets = DocumentMut::new();
+    let mut tx = Tx::parse(
+        &crate::store::new_config_text(
+            "# chainz configuration (v2), migrated from the v1 config.json.\n# Secrets live in secrets.toml; reference them as ${NAME}.\n",
+        ),
+        Path::new("config.toml"),
+        "",
+        Path::new("secrets.toml"),
+    )?;
     if let Some(default) = &v1.default_chain {
         match chains.by_v1_name.get(&default.to_ascii_lowercase()) {
-            Some(name) => config["default"] = toml_edit::value(name.as_str()),
+            Some(name) => tx.set_default(Some(name)),
             None => summary.attention.push(format!(
                 "default chain '{default}' was not found and was dropped"
             )),
         }
     }
     for (name, explorer) in &chains.explorers {
-        edit::set_explorer(&mut config, name, explorer)?;
+        tx.set_explorer(name, explorer)?;
     }
     for (name, chain) in &chains.list {
-        edit::insert_chain(&mut config, name, chain)?;
+        tx.put_chain(name, chain)?;
     }
     for (name, signer, secret) in &signer_records {
-        edit::set_signer(&mut config, name, signer)?;
+        tx.set_signer(name, signer)?;
         if let Some(secret) = secret {
-            edit::set_signer_secret(&mut secrets, name, secret)?;
+            tx.set_signer_secret(name, Some(secret))?;
         }
     }
     for (name, value) in vars.iter() {
-        edit::set_var(&mut secrets, name, value)?;
+        tx.set_var(name, value)?;
     }
     summary.extracted = vars.created().to_vec();
-    if !secrets.is_empty() {
-        secrets
-            .decor_mut()
-            .set_prefix("# chainz secrets (mode 0600). Never share this file.\n");
+    if !tx.secrets_is_empty() {
+        tx.set_secrets_header("# chainz secrets (mode 0600). Never share this file.\n");
     }
 
-    let config_toml = config.to_string();
-    let secrets_toml = secrets.to_string();
+    let (config_toml, secrets_toml) = tx.texts();
     // The result must load and validate like any hand-written config. Every
     // entry that could fail was skipped above, so a failure here is a bug.
     let parsed = crate::store::parse_config(&config_toml, Path::new("config.toml"))?;
@@ -521,7 +519,7 @@ struct ChainPlan {
 
 /// The migrated chains and explorers.
 struct Chains {
-    list: Vec<(String, NewChain)>,
+    list: Vec<(String, Chain)>,
     explorers: IndexMap<String, Explorer>,
     /// Lowercase v1 name (or, failing that, alias) → v2 chain name.
     by_v1_name: HashMap<String, String>,
@@ -698,14 +696,14 @@ fn migrate_chains(
         summary.chains += 1;
         list.push((
             plan.name,
-            NewChain {
+            Chain {
                 id: plan.id,
                 aliases,
                 signer: plan.signer,
                 explorer: plan.explorer,
                 rpc,
                 failover: vec![],
-                rpcs: plan.rpcs,
+                rpcs: plan.rpcs.into_iter().collect(),
             },
         ));
     }

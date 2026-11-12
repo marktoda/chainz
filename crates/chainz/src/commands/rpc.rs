@@ -5,10 +5,11 @@ use crate::cli::RpcCommand;
 use crate::prompt::{self, is_tty};
 use crate::{net, ui};
 use anyhow::{Result, anyhow, bail};
-use chainz_core::extract::{self, Moved, VarTable};
+use chainz_core::extract::Moved;
 use chainz_core::model::Endpoint;
 use chainz_core::redact::redact;
-use chainz_core::{Chainz, Tx, edit, names};
+use chainz_core::tx::EndpointRole;
+use chainz_core::{Chainz, names};
 use chainz_rpc::chainlist;
 use chainz_rpc::{Health, HealthSample, ProbeResult, RpcClient, Target, classify, probe, rank};
 use indexmap::IndexMap;
@@ -169,25 +170,6 @@ pub(super) fn check(
         .map_err(|e| anyhow!("RPC check failed for {}: {e}", redact(&endpoint.url)))
 }
 
-/// Inside a transaction: move the literal secrets of `endpoints` (a known
-/// URL key, credential header values) into `secrets.toml` variables,
-/// rewriting the endpoints to reference them. Returns what moved.
-pub(super) fn extract_secrets(
-    tx: &mut Tx,
-    chain: &str,
-    endpoints: &mut [(String, Endpoint)],
-) -> Result<Vec<Moved>> {
-    let mut vars = VarTable::with_vars(&tx.secrets_view()?.vars);
-    let mut moved = Vec::new();
-    for (name, endpoint) in endpoints.iter_mut() {
-        moved.extend(extract::extract_endpoint(chain, name, endpoint, &mut vars));
-    }
-    for (name, value) in vars.created_vars() {
-        edit::set_var(&mut tx.secrets, name, value)?;
-    }
-    Ok(moved)
-}
-
 /// Say which secrets moved out of `config.toml`.
 pub(super) fn report_moved(moved: &[Moved]) {
     for m in moved {
@@ -257,12 +239,16 @@ fn add(
     }
     let moved = chainz.transact(|tx| {
         let mut endpoints = [(ep.clone(), endpoint)];
-        let moved = extract_secrets(tx, &chain, &mut endpoints)?;
+        let moved = tx.extract_secrets(&chain, &mut endpoints)?;
         let [(_, endpoint)] = &endpoints;
-        edit::add_endpoint(&mut tx.doc, &chain, &ep, endpoint, failover)?;
-        if activate {
-            edit::set_active(&mut tx.doc, &chain, &ep)?;
-        }
+        let role = if activate {
+            EndpointRole::Active
+        } else if failover {
+            EndpointRole::Failover
+        } else {
+            EndpointRole::Spare
+        };
+        tx.add_endpoint(&chain, &ep, endpoint, role)?;
         Ok(moved)
     })?;
     println!(
@@ -279,7 +265,7 @@ fn use_endpoint(chain: &str, name: &str) -> Result<i32> {
     if !chainz.config().chains[&chain].rpcs.contains_key(name) {
         bail!("chain '{chain}' has no endpoint '{name}'");
     }
-    chainz.transact(|tx| edit::set_active(&mut tx.doc, &chain, name))?;
+    chainz.transact(|tx| tx.set_active(&chain, name))?;
     println!("'{chain}' now uses '{name}'");
     Ok(0)
 }
@@ -292,7 +278,7 @@ fn rm(chain: &str, name: &str) -> Result<i32> {
             "'{name}' is the active endpoint of '{chain}'; switch first with `chainz rpc use {chain} <name>`"
         );
     }
-    chainz.transact(|tx| edit::remove_endpoint(&mut tx.doc, &chain, name))?;
+    chainz.transact(|tx| tx.remove_endpoint(&chain, name))?;
     println!("Removed endpoint '{name}' from '{chain}'");
     Ok(0)
 }
@@ -481,11 +467,11 @@ fn bench(chain: Option<String>, fix: bool, yes: bool) -> Result<i32> {
         }
         chainz.transact(|tx| {
             for (chain, best, proposal) in &changes {
-                edit::set_active(&mut tx.doc, chain, best)?;
+                tx.set_active(chain, best)?;
                 if write_failover {
                     let list: Vec<String> =
                         proposal.iter().filter(|n| *n != best).cloned().collect();
-                    edit::set_failover(&mut tx.doc, chain, &list)?;
+                    tx.set_failover(chain, &list)?;
                 }
             }
             Ok(())
@@ -560,12 +546,11 @@ fn discover(chain: &str, refresh: bool, yes: bool) -> Result<i32> {
             let ep = names::unique_name(&names::endpoint_name_for_url(url), |n| {
                 taken.iter().any(|t| t == n)
             });
-            edit::add_endpoint(
-                &mut tx.doc,
+            tx.add_endpoint(
                 &chain,
                 &ep,
                 &Endpoint::new(url.as_str()),
-                false,
+                EndpointRole::Spare,
             )?;
             taken.push(ep.clone());
             added.push(ep);

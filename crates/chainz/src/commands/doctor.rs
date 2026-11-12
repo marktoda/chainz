@@ -8,7 +8,7 @@ use anyhow::Result;
 use chainz_core::extract::{self, Location};
 use chainz_core::labels::{LabelIndex, LabelSource, builtin_tokens};
 use chainz_core::model::{Backend, Config};
-use chainz_core::{Chainz, edit, migrate, paths, validate};
+use chainz_core::{Chainz, migrate, paths, validate};
 use chainz_rpc::{Health, classify, rank};
 
 #[derive(Default)]
@@ -181,11 +181,7 @@ fn credentials(chainz: &mut Chainz, fix: bool, report: &mut Report) -> Result<()
         return Ok(());
     }
     // Re-plan under the lock, against the files as they are now.
-    let moved = chainz.transact(|tx| {
-        let plan = extract::plan_secret_extraction(&tx.config()?, &tx.secrets_view()?.vars);
-        plan.apply(&mut tx.doc, &mut tx.secrets)?;
-        Ok(plan.moved)
-    })?;
+    let moved = chainz.transact(|tx| tx.extract_all_secrets())?;
     for m in moved {
         report.fixed(&m.to_string());
     }
@@ -270,7 +266,7 @@ fn rpc_health(chainz: &mut Chainz, fix: bool, report: &mut Report) -> Result<()>
     if !switches.is_empty() {
         chainz.transact(|tx| {
             for (chain, _, best) in &switches {
-                edit::set_active(&mut tx.doc, chain, best)?;
+                tx.set_active(chain, best)?;
             }
             Ok(())
         })?;

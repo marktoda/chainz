@@ -280,7 +280,7 @@ mod tests {
     const WETH_OP: &str = "0x4200000000000000000000000000000000000006";
 
     fn config() -> Config {
-        toml_edit::de::from_str(&format!(
+        crate::model::Config::parse(&format!(
             r#"
 version = 2
 [chains.base]

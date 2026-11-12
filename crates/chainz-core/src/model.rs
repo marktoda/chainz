@@ -1,14 +1,14 @@
 //! The typed view of `config.toml` (version 2).
 //!
 //! These types are deserialized from the TOML document for reading and
-//! validation. Writes never serialize them back: they edit the
-//! `toml_edit` document (see [`crate::edit`]) so comments and ordering
-//! survive. Every `Debug` impl redacts URLs and secret-bearing values.
+//! validation, and serialized back by [`crate::tx::Tx`], which merges each
+//! record into the `toml_edit` document so comments and ordering survive.
+//! Every `Debug` impl redacts URLs and secret-bearing values.
 
 use crate::address::Address;
 use crate::redact::redact;
 use indexmap::IndexMap;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize, Serializer};
 use std::fmt;
 
 /// The only config version this build reads and writes.
@@ -38,24 +38,24 @@ pub struct Config {
 }
 
 /// One chain, keyed by its short name in [`Config::chains`].
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Chain {
     /// EVM chain ID.
     pub id: u64,
     /// Extra names this chain answers to (case-insensitive).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aliases: Vec<String>,
     /// Signer used for `@wallet`, `ETH_FROM` and `--expose-key`.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signer: Option<String>,
     /// Explorer name from [`Config::explorers`].
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub explorer: Option<String>,
     /// The active endpoint, by name.
     pub rpc: String,
     /// Endpoints the gateway may retry reads on, in order. Nothing else.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub failover: Vec<String>,
     /// Named endpoints.
     #[serde(default)]
@@ -82,6 +82,26 @@ enum EndpointWire {
         #[serde(default)]
         headers: IndexMap<String, String>,
     },
+}
+
+impl Serialize for Endpoint {
+    /// The plain URL string when there are no headers, else `{ url, headers }`.
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Detailed<'a> {
+            url: &'a str,
+            headers: &'a IndexMap<String, String>,
+        }
+        if self.headers.is_empty() {
+            serializer.serialize_str(&self.url)
+        } else {
+            Detailed {
+                url: &self.url,
+                headers: &self.headers,
+            }
+            .serialize(serializer)
+        }
+    }
 }
 
 impl From<EndpointWire> for Endpoint {
@@ -120,16 +140,16 @@ impl fmt::Debug for Endpoint {
 }
 
 /// A block explorer API, shared by every chain that names it.
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Explorer {
     /// API URL; `${CHAIN_ID}` lets one definition serve many chains.
     pub api: String,
     /// API key, normally `${VAR}`.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
     /// Optional browser URL (for links).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
 }
 
@@ -155,7 +175,7 @@ impl fmt::Debug for Explorer {
 }
 
 /// Where a signer's key material lives.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub enum Backend {
     /// OS keyring (Secret Service, macOS Keychain).
     #[serde(rename = "keyring")]
@@ -199,6 +219,20 @@ impl Backend {
     }
 }
 
+impl Backend {
+    /// The optional [`Signer`] fields this backend takes (`backend` and
+    /// `address` apply to all), and whether each is required. Every other
+    /// optional field must be absent.
+    pub fn fields(self) -> &'static [(&'static str, Need)] {
+        match self {
+            Backend::Keyring => &[("service", Need::Optional), ("username", Need::Optional)],
+            Backend::Keystore => &[("path", Need::Required)],
+            Backend::OnePassword => &[("vault", Need::Required), ("item", Need::Required)],
+            Backend::Encrypted | Backend::Plaintext => &[],
+        }
+    }
+}
+
 impl fmt::Display for Backend {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
@@ -209,32 +243,57 @@ impl fmt::Display for Backend {
 pub const KEYRING_SERVICE: &str = "chainz";
 
 /// A key reference plus its cached public address. Holds no key material.
-#[derive(Clone, Debug, Deserialize)]
+///
+/// A flat record rather than an enum tagged by backend: which optional
+/// fields a backend takes is the one table [`Backend::fields`], checked by
+/// validation, so a mistake gets a message naming the signer and field
+/// (and `doctor` can still load the file to list every problem).
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Signer {
     /// Storage backend.
     pub backend: Backend,
     /// Cached address: `@wallet`, `ETH_FROM` and balances never unlock.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub address: Option<Address>,
     /// Keyring service (default [`KEYRING_SERVICE`]).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service: Option<String>,
     /// Keyring username (default: the signer name).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
     /// Keystore file path (`~/` allowed).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     /// 1Password vault.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vault: Option<String>,
     /// 1Password item reference.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub item: Option<String>,
 }
 
+/// Whether a backend needs an optional [`Signer`] field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Need {
+    /// The backend works without it.
+    Optional,
+    /// The backend needs a non-empty value.
+    Required,
+}
+
 impl Signer {
+    /// Every optional field by its config name, set or not.
+    pub fn optional_fields(&self) -> [(&'static str, Option<&str>); 5] {
+        [
+            ("service", self.service.as_deref()),
+            ("username", self.username.as_deref()),
+            ("path", self.path.as_deref()),
+            ("vault", self.vault.as_deref()),
+            ("item", self.item.as_deref()),
+        ]
+    }
+
     /// Keyring service and username for a keyring signer named `name`.
     pub fn keyring_entry<'a>(&'a self, name: &'a str) -> (&'a str, &'a str) {
         (
@@ -245,6 +304,12 @@ impl Signer {
 }
 
 impl Config {
+    /// Parse `config.toml` text. Errors quote the source line; show them
+    /// through [`crate::store::redact_toml_error`].
+    pub fn parse(text: &str) -> Result<Self, toml::de::Error> {
+        toml::from_str(text)
+    }
+
     /// An empty v2 config.
     pub fn empty() -> Self {
         Self {
@@ -264,6 +329,25 @@ impl Config {
             .iter()
             .find(|(_, chain)| chain.id == id)
             .map(|(name, chain)| (name.as_str(), chain))
+    }
+
+    /// Why chain `name` with ID `id` (and signer `signer`) cannot be
+    /// added, if it cannot: an invalid or taken name, a configured ID, or
+    /// a missing signer.
+    pub fn check_new_chain(&self, name: &str, id: u64, signer: Option<&str>) -> anyhow::Result<()> {
+        crate::names::check_chain_name(name)?;
+        if self.chains.contains_key(name) {
+            anyhow::bail!("chain '{name}' already exists");
+        }
+        if let Some((existing, _)) = self.chain_by_id(id) {
+            anyhow::bail!("chain ID {id} is already configured as '{existing}'");
+        }
+        if let Some(signer) = signer
+            && !self.signers.contains_key(signer)
+        {
+            anyhow::bail!("signer '{signer}' not found; add it with `chainz signer add {signer}`");
+        }
+        Ok(())
     }
 
     /// Chain names that use signer `name`.
@@ -355,7 +439,7 @@ address = "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf"
 
     #[test]
     fn parses_the_design_example() {
-        let config: Config = toml_edit::de::from_str(SAMPLE).unwrap();
+        let config: Config = Config::parse(SAMPLE).unwrap();
         assert_eq!(config.version, 2);
         let eth = &config.chains["eth"];
         assert_eq!(eth.rpcs.len(), 3);
@@ -368,7 +452,7 @@ address = "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf"
 
     #[test]
     fn debug_never_shows_secrets() {
-        let config: Config = toml_edit::de::from_str(SAMPLE).unwrap();
+        let config: Config = Config::parse(SAMPLE).unwrap();
         let debug = format!("{config:?}");
         for secret in ["literal-explorer-secret", "path-secret", "header-secret"] {
             assert!(!debug.contains(secret), "{debug}");
@@ -378,10 +462,8 @@ address = "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf"
 
     #[test]
     fn unknown_chain_fields_are_rejected() {
-        let err = toml_edit::de::from_str::<Config>(
-            "version = 2\n[chains.eth]\nid = 1\nrcp = \"x\"\nrpc = \"x\"\n",
-        )
-        .unwrap_err();
+        let err = Config::parse("version = 2\n[chains.eth]\nid = 1\nrcp = \"x\"\nrpc = \"x\"\n")
+            .unwrap_err();
         assert!(err.to_string().contains("rcp"), "{err}");
     }
 }

@@ -19,7 +19,7 @@
 
 use crate::template;
 use indexmap::IndexMap;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::fmt;
 use zeroize::Zeroize;
@@ -38,32 +38,32 @@ pub struct Secrets {
 
 /// Key material for one signer. Exactly one shape is valid per backend:
 /// `private_key` (plaintext) or the encrypted envelope fields.
-#[derive(Clone, Default, Deserialize)]
+#[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SignerSecret {
     /// Plaintext hex key.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub private_key: Option<String>,
     /// Encrypted envelope: base64 AES-256-GCM ciphertext.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ciphertext: Option<String>,
     /// Base64 12-byte nonce.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nonce: Option<String>,
     /// Base64 Argon2id salt (>= 16 bytes).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub salt: Option<String>,
     /// Envelope version (1).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<u8>,
     /// Argon2id memory cost in KiB.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kdf_memory_kib: Option<u32>,
     /// Argon2id iterations.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kdf_iterations: Option<u32>,
     /// Argon2id lanes.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kdf_parallelism: Option<u32>,
 }
 
