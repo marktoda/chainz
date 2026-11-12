@@ -286,7 +286,8 @@ impl ChainState {
         *self.live.probed.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
     }
 
-    /// Remember which endpoint created a filter.
+    /// Remember which endpoint created a filter. Filter IDs are matched
+    /// regardless of case, here and below.
     pub fn remember_filter(&self, id: &str, endpoint: &str) {
         let mut filters = self.live.filters.lock().unwrap_or_else(|e| e.into_inner());
         if filters.len() >= MAX_FILTERS {
@@ -305,7 +306,7 @@ impl ChainState {
     /// The endpoint that created filter `id`, if known.
     pub fn filter_endpoint(&self, id: &str) -> Option<String> {
         let mut filters = self.live.filters.lock().unwrap_or_else(|e| e.into_inner());
-        let entry = filters.get_mut(id)?;
+        let entry = filters.get_mut(&id.to_ascii_lowercase())?;
         entry.1 = Instant::now();
         Some(entry.0.clone())
     }
@@ -316,7 +317,7 @@ impl ChainState {
             .filters
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .remove(id);
+            .remove(&id.to_ascii_lowercase());
     }
 }
 

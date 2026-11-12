@@ -96,11 +96,37 @@ pub struct Method {
     pub kind: Kind,
     /// The position of its block parameter, if it takes one.
     pub block_param: Option<usize>,
-    /// It sends a signed raw transaction (`eth_sendRawTransaction`, and
-    /// `…Sync`, which answers with the receipt).
-    pub raw_tx: bool,
-    /// It uninstalls a filter (`eth_uninstallFilter`).
-    pub uninstalls_filter: bool,
+    /// What its params look like.
+    pub params: Params,
+}
+
+/// What a method's params look like, for the inspector's summary and the
+/// gateway's own bookkeeping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Params {
+    /// Nothing the gateway reads.
+    Other,
+    /// `[tx, …]`: a transaction object (`to`, `data` or `input`).
+    Tx,
+    /// `[address, …]`.
+    Account,
+    /// `[address, slot, …]`.
+    Storage,
+    /// `[log filter]`.
+    LogFilter,
+    /// `[block, …]`.
+    Block,
+    /// `[block or transaction hash, …]`.
+    Hash,
+    /// `[block count, newest block, …]`.
+    FeeHistory,
+    /// `[filter ID]`.
+    FilterId,
+    /// `[filter ID]`, and the call uninstalls that filter.
+    Uninstall,
+    /// `[signed raw transaction]` (the `…Sync` form answers with the
+    /// receipt).
+    RawTx,
 }
 
 const fn method(name: &'static str, kind: Kind, block_param: Option<usize>) -> Method {
@@ -108,52 +134,65 @@ const fn method(name: &'static str, kind: Kind, block_param: Option<usize>) -> M
         name,
         kind,
         block_param,
-        raw_tx: false,
-        uninstalls_filter: false,
+        params: Params::Other,
+    }
+}
+
+impl Method {
+    const fn with(mut self, params: Params) -> Method {
+        self.params = params;
+        self
     }
 }
 
 /// Every method the gateway treats specially, in one place.
 pub const METHODS: &[Method] = &[
-    method("eth_newFilter", Kind::FilterCreate, None),
+    method("eth_newFilter", Kind::FilterCreate, None).with(Params::LogFilter),
     method("eth_newBlockFilter", Kind::FilterCreate, None),
     method("eth_newPendingTransactionFilter", Kind::FilterCreate, None),
-    method("eth_getFilterChanges", Kind::FilterUse, None),
-    method("eth_getFilterLogs", Kind::FilterUse, None),
-    Method {
-        uninstalls_filter: true,
-        ..method("eth_uninstallFilter", Kind::FilterUse, None)
-    },
-    method("eth_call", Kind::Read, Some(1)),
+    method("eth_getFilterChanges", Kind::FilterUse, None).with(Params::FilterId),
+    method("eth_getFilterLogs", Kind::FilterUse, None).with(Params::FilterId),
+    method("eth_uninstallFilter", Kind::FilterUse, None).with(Params::Uninstall),
+    method("eth_call", Kind::Read, Some(1)).with(Params::Tx),
     method("eth_callMany", Kind::Read, None),
     method("eth_simulateV1", Kind::Read, None),
-    method("eth_estimateGas", Kind::Read, Some(1)),
-    method("eth_createAccessList", Kind::Read, Some(1)),
-    method("eth_getBalance", Kind::Read, Some(1)),
-    method("eth_getCode", Kind::Read, Some(1)),
-    method("eth_getTransactionCount", Kind::Read, Some(1)),
-    method("eth_getStorageAt", Kind::Read, Some(2)),
-    method("eth_getProof", Kind::Read, Some(2)),
+    method("eth_estimateGas", Kind::Read, Some(1)).with(Params::Tx),
+    method("eth_createAccessList", Kind::Read, Some(1)).with(Params::Tx),
+    method("eth_getBalance", Kind::Read, Some(1)).with(Params::Account),
+    method("eth_getCode", Kind::Read, Some(1)).with(Params::Account),
+    method("eth_getTransactionCount", Kind::Read, Some(1)).with(Params::Account),
+    method("eth_getStorageAt", Kind::Read, Some(2)).with(Params::Storage),
+    method("eth_getProof", Kind::Read, Some(2)).with(Params::Account),
+    method("eth_getLogs", Kind::Read, None).with(Params::LogFilter),
+    method("eth_getBlockByNumber", Kind::Read, None).with(Params::Block),
+    method("eth_getBlockReceipts", Kind::Read, None).with(Params::Block),
+    method("eth_getBlockTransactionCountByNumber", Kind::Read, None).with(Params::Block),
+    method("eth_getUncleCountByBlockNumber", Kind::Read, None).with(Params::Block),
+    method("trace_block", Kind::Read, None).with(Params::Block),
+    method("debug_traceBlockByNumber", Kind::Read, None).with(Params::Block),
+    method("eth_getBlockByHash", Kind::Read, None).with(Params::Hash),
+    method("eth_getTransactionByHash", Kind::Read, None).with(Params::Hash),
+    method("eth_getTransactionReceipt", Kind::Read, None).with(Params::Hash),
+    method("debug_traceTransaction", Kind::Read, None).with(Params::Hash),
+    method("trace_transaction", Kind::Read, None).with(Params::Hash),
+    method("debug_traceBlockByHash", Kind::Read, None).with(Params::Hash),
     method("eth_blockNumber", Kind::Read, None),
     method("eth_chainId", Kind::Read, None),
     method("eth_gasPrice", Kind::Read, None),
     method("eth_maxPriorityFeePerGas", Kind::Read, None),
-    method("eth_feeHistory", Kind::Read, None),
+    method("eth_feeHistory", Kind::Read, None).with(Params::FeeHistory),
     method("eth_blobBaseFee", Kind::Read, None),
     method("eth_syncing", Kind::Read, None),
     method("eth_protocolVersion", Kind::Read, None),
-    // Shown with the block it names; never sent anywhere but the active
-    // endpoint.
-    method("eth_sendTransaction", Kind::ActiveOnly, Some(1)),
-    Method {
-        raw_tx: true,
-        ..method("eth_sendRawTransaction", Kind::ActiveOnly, None)
-    },
-    Method {
-        raw_tx: true,
-        ..method("eth_sendRawTransactionSync", Kind::ActiveOnly, None)
-    },
+    method("eth_sendTransaction", Kind::ActiveOnly, None).with(Params::Tx),
+    method("eth_sendRawTransaction", Kind::ActiveOnly, None).with(Params::RawTx),
+    method("eth_sendRawTransactionSync", Kind::ActiveOnly, None).with(Params::RawTx),
 ];
+
+/// The [`Params`] of `name`; [`Params::Other`] for a method not listed.
+pub fn params(name: &str) -> Params {
+    lookup(name).map_or(Params::Other, |m| m.params)
+}
 
 /// What the gateway knows about `name`, if it is listed in [`METHODS`].
 pub fn lookup(name: &str) -> Option<&'static Method> {
@@ -235,9 +274,9 @@ pub fn block_param(call: &Call) -> Option<&Value> {
     call.params.get(lookup(&call.method)?.block_param?)
 }
 
-/// The filter ID a [`Kind::FilterUse`] call refers to, normalised.
-pub fn filter_id(call: &Call) -> Option<String> {
-    Some(call.params.get(0)?.as_str()?.to_ascii_lowercase())
+/// The filter ID a [`Kind::FilterUse`] call refers to.
+pub fn filter_id(call: &Call) -> Option<&str> {
+    call.params.get(0)?.as_str()
 }
 
 #[cfg(test)]
@@ -350,24 +389,15 @@ mod tests {
                 m.name
             );
         }
-        let raw: Vec<&str> = METHODS
-            .iter()
-            .filter(|m| m.raw_tx)
-            .map(|m| m.name)
-            .collect();
-        assert_eq!(
-            raw,
-            ["eth_sendRawTransaction", "eth_sendRawTransactionSync"]
-        );
         // Strict hex: a sign is not a digit.
         let plus = single(json!({"id":1,"method":"eth_call","params":[{}, "0x+f"]}));
         assert!(!needs(&plus, Some(1_000)).any());
     }
 
     #[test]
-    fn filter_ids_are_normalised() {
+    fn filter_ids() {
         let c = single(json!({"id":1,"method":"eth_getFilterChanges","params":["0xAB"]}));
-        assert_eq!(filter_id(&c).as_deref(), Some("0xab"));
+        assert_eq!(filter_id(&c), Some("0xAB"));
         let c = single(json!({"id":1,"method":"eth_getFilterChanges","params":[]}));
         assert_eq!(filter_id(&c), None);
     }

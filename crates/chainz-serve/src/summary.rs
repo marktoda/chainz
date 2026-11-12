@@ -11,7 +11,7 @@ use chainz_rpc::{abi, hex};
 use serde_json::Value;
 use sha3::{Digest, Keccak256};
 
-use crate::classify::{self, Call, Parsed};
+use crate::classify::{self, Call, Params, Parsed};
 
 /// Longest summary kept.
 const MAX_LEN: usize = 96;
@@ -83,14 +83,12 @@ fn summarize_call(call: &Call, chain_id: u64, labels: &LabelIndex) -> String {
     let p = &call.params;
     let addr = |v: Option<&Value>| address(v, chain_id, labels);
     let block = classify::block_param(call);
-    if classify::lookup(&call.method).is_some_and(|m| m.raw_tx) {
-        return match p.get(0).and_then(Value::as_str).and_then(raw_tx_hash) {
+    match classify::params(&call.method) {
+        Params::RawTx => match p.get(0).and_then(Value::as_str).and_then(raw_tx_hash) {
             Some(hash) => format!("tx {hash}"),
             None => "tx (undecodable)".to_string(),
-        };
-    }
-    match call.method.as_str() {
-        "eth_call" | "eth_estimateGas" | "eth_createAccessList" | "eth_sendTransaction" => {
+        },
+        Params::Tx => {
             let tx = p.get(0);
             let to = tx.and_then(|t| t.get("to"));
             let data = tx
@@ -107,14 +105,12 @@ fn summarize_call(call: &Call, chain_id: u64, labels: &LabelIndex) -> String {
             };
             with_block(out, block)
         }
-        "eth_getBalance" | "eth_getCode" | "eth_getTransactionCount" | "eth_getProof" => {
-            with_block(addr(p.get(0)), block)
-        }
-        "eth_getStorageAt" => with_block(
+        Params::Account => with_block(addr(p.get(0)), block),
+        Params::Storage => with_block(
             format!("{} slot {}", addr(p.get(0)), short(p.get(1))),
             block,
         ),
-        "eth_getLogs" | "eth_newFilter" => {
+        Params::LogFilter => {
             let filter = p.get(0);
             let mut parts = Vec::new();
             match filter.and_then(|f| f.get("address")) {
@@ -145,19 +141,9 @@ fn summarize_call(call: &Call, chain_id: u64, labels: &LabelIndex) -> String {
             }
             parts.join(" ")
         }
-        "eth_getBlockByNumber"
-        | "eth_getBlockReceipts"
-        | "eth_getBlockTransactionCountByNumber"
-        | "eth_getUncleCountByBlockNumber"
-        | "trace_block"
-        | "debug_traceBlockByNumber" => p.get(0).and_then(block_tag).unwrap_or_default(),
-        "eth_getBlockByHash"
-        | "eth_getTransactionByHash"
-        | "eth_getTransactionReceipt"
-        | "debug_traceTransaction"
-        | "trace_transaction"
-        | "debug_traceBlockByHash" => short(p.get(0)),
-        "eth_feeHistory" => format!(
+        Params::Block => p.get(0).and_then(block_tag).unwrap_or_default(),
+        Params::Hash => short(p.get(0)),
+        Params::FeeHistory => format!(
             "{} blocks to {}",
             p.get(0)
                 .and_then(block_tag)
@@ -166,10 +152,8 @@ fn summarize_call(call: &Call, chain_id: u64, labels: &LabelIndex) -> String {
                 .and_then(block_tag)
                 .unwrap_or_else(|| "latest".to_string())
         ),
-        "eth_getFilterChanges" | "eth_getFilterLogs" | "eth_uninstallFilter" => {
-            format!("filter {}", short(p.get(0)))
-        }
-        _ => String::new(),
+        Params::FilterId | Params::Uninstall => format!("filter {}", short(p.get(0))),
+        Params::Other => String::new(),
     }
 }
 

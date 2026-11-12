@@ -34,7 +34,7 @@ use chainz_rpc::upstream::rpc_error_code;
 use chainz_rpc::{ErrorClass, HttpUpstream, RetryPolicy, RpcError};
 use serde_json::Value;
 
-use crate::classify::{self, Kind, Needs, Parsed};
+use crate::classify::{self, Kind, Needs, Params, Parsed};
 use crate::events::EventRing;
 use crate::http::{GATEWAY, Reply};
 use crate::inspector::Inspector;
@@ -439,10 +439,12 @@ impl Router {
         params_summary: &mut String,
     ) {
         let calls = parsed.calls();
-        let known = |call: &classify::Call| classify::lookup(&call.method);
         let interesting = calls.iter().any(|c| {
             classify::kind(&c.method) == Kind::FilterCreate
-                || known(c).is_some_and(|m| m.uninstalls_filter || m.raw_tx)
+                || matches!(
+                    classify::params(&c.method),
+                    Params::Uninstall | Params::RawTx
+                )
         });
         if !interesting || body.len() > MAX_INSPECTED_BODY {
             return;
@@ -462,21 +464,21 @@ impl Router {
             else {
                 continue;
             };
-            let method = known(call);
+            let params = classify::params(&call.method);
             if classify::kind(&call.method) == Kind::FilterCreate {
                 if let Some(filter) = result.as_str() {
                     chain.remember_filter(filter, endpoint);
                 }
-            } else if method.is_some_and(|m| m.uninstalls_filter)
+            } else if params == Params::Uninstall
                 && let Some(filter) = classify::filter_id(call)
             {
-                chain.forget_filter(&filter);
+                chain.forget_filter(filter);
             }
             // The node's hash is authoritative (blob transactions hash
             // differently from their network encoding). The `…Sync` form
             // answers with the receipt.
             if matches!(parsed, Parsed::Single(_))
-                && method.is_some_and(|m| m.raw_tx)
+                && params == Params::RawTx
                 && let Some(hash) = result
                     .as_str()
                     .or_else(|| result.get("transactionHash")?.as_str())
@@ -537,7 +539,7 @@ fn plan(chain: &ChainState, parsed: &Parsed) -> Result<Plan, String> {
             Kind::Read => needs = needs.union(classify::needs(call, chain.head())),
             Kind::ActiveOnly | Kind::FilterCreate => active_only = true,
             Kind::FilterUse => {
-                match classify::filter_id(call).and_then(|id| chain.filter_endpoint(&id)) {
+                match classify::filter_id(call).and_then(|id| chain.filter_endpoint(id)) {
                     Some(endpoint) => match &sticky {
                         Some(other) if *other != endpoint => {
                             return Err(
