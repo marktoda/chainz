@@ -43,7 +43,7 @@ V1 is a careful codebase: about 8,000 lines with transactional config writes, cr
 | v1 | Problem | v2 |
 | --- | --- | --- |
 | Chains are a JSON array; each has `name`, `selected_rpc`, `rpc_urls` | Names copied from chainlist ("Ethereum Mainnet") are long. The selected endpoint is a URL string repeated in two places. | TOML table keyed by short name: `[chains.eth]`. Endpoints are named, and the selected one is a name. |
-| Exec spawns the child and waits | Signals and exit codes are relayed second-hand, and a parent process lingers | `execvp` on Unix: chainz becomes the command |
+| Exec spawns the child and waits | Signals and exit codes are relayed second-hand, and a parent process lingers | `execvp`: chainz becomes the command |
 | Every command takes an exclusive config lock | Parallel `exec` calls in many terminals serialize on the lock | Reads take no lock: the atomic rename is enough. Writes lock. |
 | `@token` expansion is a string replace over a HashMap | Order is undefined. `@key` matches inside `@keystore`, and adding user tokens would collide. | One tokenizer with a fixed grammar (see Exec contract) |
 | Missing verifier settings are exported as `UNDEFINED` | Tools treat the literal as a real value | Unset variables are not exported |
@@ -84,18 +84,18 @@ The frequent actions are top-level verbs; management lives under nouns. You type
 ```
 # hot path
 chainz exec [CHAIN] [--signer S] [--rpc NAME] [--direct] [--expose-key] [--explain] -- CMD...   (alias: x)
-chainz shell [CHAIN]                 # subshell with the context exported
-chainz env [CHAIN] [--shell zsh|bash|fish]   # eval "$(chainz env base)"
-chainz use [CHAIN]                   # set the default chain
-chainz ls [--json]                   # alias of `chain ls`
+chainz shell [CHAIN] [--signer S] [--rpc NAME] [--direct]     # subshell with the context exported
+chainz env [CHAIN] [--signer S] [--rpc NAME] [--direct] [--shell zsh|bash|fish]   # eval "$(chainz env base)"
+chainz use [CHAIN | --clear]         # set the default chain
+chainz ls [--json] [--reveal]        # alias of `chain ls`
 
 # live surfaces
-chainz top [--once --json] [--reveal]
+chainz top [--once [--json]] [--reveal]
 chainz serve [--port 18545] [--detach] [--log FILE]
-chainz serve status | stop | log [-f] [--chain C] [--method M]
+chainz serve status [--json] | stop | log [-f] [--chain C] [--method M]
 chainz fork CHAIN [--block N] [--port P] [--name NAME] [--chain-id N] [--fund [SPEC] | --no-fund] [--detach]
                                      # SPEC: usdc=10000,weth=5; `ls` and `stop` are reserved names
-chainz fork ls | stop NAME|--all
+chainz fork ls [--json] | stop NAME|--all
 
 # setup and editing
 chainz init                          # TTY wizard: chains, a signer, an Etherscan key, a default
@@ -104,23 +104,25 @@ chainz edit [CHAIN]                  # $EDITOR on config.toml (or one chain's ta
 
 # management
 chainz chain ls [--json] [--reveal]
-chainz chain add [CHAIN_ID|NAME] [--name N] [--url URL]... [--signer S | --no-signer]
+chainz chain add [CHAIN_ID|NAME] [--name N] [--url URL]... [--signer S | --no-signer] [--no-check] [--refresh]
 chainz chain show CHAIN [--json] [--reveal]
 chainz chain set [CHAIN] [--signer S | --no-signer] [--rpc NAME|URL] [--header 'k: v']... [--clear-headers]
                  [--failover A,B | --no-failover] [--explorer E | --no-explorer] [--api-key-stdin]
-                 [--name NEW] [--alias A]... [--rm-alias A]...   # no flags on a TTY: a menu
+                 [--name NEW] [--alias A]... [--rm-alias A]... [--no-check]   # no flags on a TTY: a menu
 chainz chain rm CHAIN
-chainz rpc ls [CHAIN]                # endpoints, with latest health
-chainz rpc add CHAIN URL [--name N] [--header 'k: v']... [--failover | --activate]
+chainz rpc ls [CHAIN] [--json] [--reveal]   # endpoints, with latest health
+chainz rpc add CHAIN URL [--name N] [--header 'k: v']... [--failover | --activate] [--no-check]
 chainz rpc rm CHAIN NAME
-chainz rpc bench [CHAIN] [--fix [--yes]]   # rank and tag endpoints; --fix activates the best and proposes a failover list
-chainz rpc discover CHAIN [--yes]    # pull public RPCs from chainlist, probe, offer to add
-chainz signer add NAME [--stdin] [--backend keyring|encrypted|1password|keystore|plaintext] [--no-attach]
-chainz signer ls | rm NAME [--unassign] [--yes] | migrate [NAME|--all] [--to BACKEND]
+chainz rpc bench [CHAIN] [--fix [-y]]       # rank and tag endpoints; --fix activates the best and proposes a failover list
+chainz rpc discover CHAIN [--refresh] [-y]  # pull public RPCs from chainlist, probe, offer to add
+chainz signer add NAME [--stdin] [--backend keyring|encrypted|1password|keystore|plaintext]
+                  [--path P] [--vault V --item I] [--address A] [--no-attach]
+chainz signer ls [--json] | rm NAME [--unassign] [-y] | migrate [NAME|--all] [--to keyring|encrypted]
 chainz addr add NAME ADDRESS [--chain C | --all-chains]
-chainz addr ls [--chain C] [--builtin] | rm NAME [--chain C] | find 0x…
+chainz addr ls [--chain C] [--builtin] [--json] | rm NAME [--chain C] | find 0x… [--json]
+chainz addr import PATH... [--dry-run] [--prefix P] [--only A,B] [--force] [--json]
 chainz label [--chain C]             # stdin filter: 0x… → name(0x…)
-chainz var set NAME [--stdin] | get NAME [--reveal] | ls | rm NAME
+chainz var set NAME [VALUE | --stdin] | get NAME [--reveal] | ls [--reveal] [--json] | rm NAME
 chainz doctor [--fix] [--tokens]
 chainz config path [--all] | migrate [--dry-run]
 chainz completions SHELL
@@ -128,7 +130,7 @@ chainz completions SHELL
 
 **Renames from v1:** `key` becomes `signer` (it holds keystore and 1Password references, not only raw keys). `list` becomes `ls`, with `list` kept as an alias. `update` is `chain set`: one verb for every chain setting, flag-driven or, with no flags on a TTY, v1's menu (RPC / Signer / Explorer / Name / Aliases / Done), applied in one write. `--show-secrets` and `--show` both become `--reveal`. `init` stays as a TTY wizard; off a TTY it prints the quick start, as `chainz` with no arguments does on an empty config. The first signer attaches to every chain without one, and `chain add` attaches the only signer and the `etherscan` explorer when it exists.
 
-**Interactive vs scripted:** pickers open where the design needs a choice (`exec`/`shell`/`env`/`use` with no chain, `chain add` with no chain, `chain set` with no chain); off a TTY those fail with a precise usage message. `--yes` means "accept without asking" everywhere. No command ever blocks on a hidden prompt in a pipeline.
+**Interactive vs scripted:** pickers open where the design needs a choice (`exec`/`shell`/`env`/`use` with no chain, `chain add` with no chain, `chain set` with no chain, `addr add` with no chain context); off a TTY those fail with a precise usage message (exit 2 for a usage error). `--yes` means "accept without asking" everywhere. No command ever blocks on a hidden prompt in a pipeline.
 
 ## Config v2
 
@@ -189,7 +191,7 @@ The main config holds no secrets **once `doctor` is clean**: `doctor` warns abou
 | `$XDG_CONFIG_HOME/chainz/config.toml` | chains, endpoints, explorers, signer references, labels, settings | permanent, hand-editable |
 | `$XDG_CONFIG_HOME/chainz/secrets.toml` | variable values, plaintext keys | permanent, `0600` |
 | `$XDG_STATE_HOME/chainz/` | endpoint health history and capabilities, gateway and fork logs | rotated |
-| `$XDG_RUNTIME_DIR/chainz/` (falls back to the state dir) | `serve.json`, `serve.lock`, `serve.sock`, `forks/*.json` | cleared on reboot |
+| `$XDG_RUNTIME_DIR/chainz/` (falls back to the state dir) | `serve.json`, `serve.lock`, `serve.sock`, `forks/*.{json,lock}`, `ports/*.lock` | cleared on reboot |
 | `$XDG_CACHE_HOME/chainz/` | chainlist | rebuildable |
 
 The token registry is compiled into the binary, so it needs no cache entry.
@@ -243,7 +245,7 @@ The token registry is compiled into the binary, so it needs no cache entry.
 
 **Names.** Context tokens (`rpc`, `chainid`, `chain`, `wallet`, `explorer`, `explorer_key`) and signer names are reserved: a label can't use them. Built-in *token* labels (`usdc`, `weth`) can be shadowed by your own label. A label that exists but has no address on the current chain is an error naming the chain. `@key` is removed and fails with a pointer to `--expose-key`. `chainz exec --explain …` prints the context, the exported variable names and the rewritten argv (secrets redacted), then exits.
 
-**Process model.** On Unix, exec calls `execvp`: same PID, signals go straight to the command, and its exit status is the shell's exit status. Windows spawns and waits, and forwards the exit code. Before the exec, chainz holds no lock and no open sockets.
+**Process model.** Exec calls `execvp`: same PID, signals go straight to the command, and its exit status is the shell's exit status. Chainz runs on Linux and macOS only. Before the exec, chainz holds no lock and no open sockets.
 
 **Overhead budget.** The target is a median under 5 ms from start to `execvp` on a warm cache (v1 measures about 3.8 ms; process startup alone is about 1.3 ms, so the headroom is small). CI does not enforce an absolute number, which would flake. It enforces two things: the median must be at most 85% of v1's in the same CI job, and a structural test runs exec under `strace` and asserts no sockets, no threads, and no reads outside the config, secrets and runtime files.
 
@@ -253,11 +255,11 @@ The token registry is compiled into the binary, so it needs no cache entry.
 
 One `rpc` module gives every feature the same client, the same idea of endpoint health, and the same ranking. Doctor, `rpc bench`, the dashboard, the gateway and forks are all thin users of it.
 
-- **Client:** a JSON-RPC 2.0 client over a shared `reqwest` connection pool (HTTP/2, rustls), with per-endpoint headers, batch requests and typed helpers: `chain_id`, `block_number`, `get_block`, `get_balance`, `call`, `fee_history`. Errors are classified as `Timeout`, `Connect`, `RateLimited { retry_after }`, `Http(status)`, `Rpc { code, message }` or `ChainMismatch`. Error text never includes the URL or header values.
+- **Client:** a JSON-RPC 2.0 client over a shared `reqwest` connection pool (HTTP/2, rustls), with per-endpoint headers, batch requests and typed helpers: `chain_id`, `check_chain_id`, `block_number`, `get_block`, `get_balance`, `call`. Errors are `Timeout`, `Connect`, `RateLimited { retry_after }`, `Http(status)`, `Rpc { code, message }`, `ChainMismatch`, `InvalidResponse`, `BodyRead` (a body cut off mid-read), `InvalidEndpoint` or `Unsupported`; `is_transient` and `is_rate_limited` are the only retry predicates. Error text never includes the URL or header values. The client never follows a redirect.
 - **Probe:** a health probe is `eth_chainId` plus `eth_blockNumber` in one batch, under a 4-second deadline. It records latency, head height and the error class. An endpoint more than 20 blocks behind the best head for its chain is marked `lagging`, a state v1 couldn't detect.
-- **Capabilities** (probed by `rpc bench`, cached in the state dir): archive (`eth_getBalance` at block 1), `debug_traceTransaction`, `trace_block`, the largest `eth_getLogs` range accepted, and websocket support. Doctor and the dashboard show these as tags.
+- **Capabilities** (probed by `rpc bench`, cached in the state dir): archive (`eth_getBalance` at block 1), `debug_traceTransaction`, `trace_block`, the largest `eth_getLogs` range accepted, and websocket support. `rpc ls` and the dashboard's Endpoints tab show these as tags; the gateway and forks route by them.
 - **Ranking:** healthy before lagging before failing; within a class, by p50 latency over the recent window. `rpc bench --fix` and `doctor --fix` set `rpc = <best>` through the normal transactional config write.
-- **Health history:** probes append to a small ring buffer per endpoint in the state dir. The dashboard reads it to draw sparklines, and the gateway seeds its initial ranking from it so startup needs no warm-up.
+- **Health history:** probes append to a small ring buffer per endpoint in the state dir (`health.json`; a corrupt file is moved aside to `health.json.corrupt`, never overwritten). The dashboard reads it to draw sparklines and `rpc bench` ranks by its p50; the gateway reads only the capability tags from it.
 
 ## Gateway: `chainz serve`
 
@@ -284,7 +286,7 @@ One `rpc` module gives every feature the same client, the same idea of endpoint 
 
 **Rate-limit smoothing.** Each endpoint has an adaptive token bucket (additive increase, multiplicative decrease). On a 429 the gateway halves that endpoint's rate (once per second at most: a burst of 429s from concurrent requests is one signal) and waits out `Retry-After` on the **same** endpoint when the wait is 2 s or less. Staying put keeps read-your-writes intact for nonce reads and receipt polling. Only a longer wait moves a read to the failover pool. Every send, retries included, takes a slot from the bucket, so requests that waited out the same 429 come back spaced out. A request with no other endpoint to go to queues in the bucket for up to 10 s; past that it gets a 429 at once, with the bucket's wait (rounded up) as `Retry-After`. The client sees fewer 429s and no thundering-herd retries.
 
-**Metrics** per chain, endpoint and method over 1-minute and 15-minute windows: requests, errors by class, p50 and p95 latency, 429s, failovers and bytes.
+**Metrics** per chain, endpoint and method over 1-minute and 15-minute windows: requests, errors by class, p50 and p95 latency, 429s, failovers and bytes. Each window also carries totals, overall and per chain, with true percentiles over its requests; `serve status` shows those.
 
 **Inspector.** Every request becomes a record: time, chain, method, a short params summary (with addresses shown as labels, such as `eth_call → @usdc.balanceOf`), upstream endpoint, attempts, latency, status and response size. The last 10,000 records are kept in memory. `--log FILE` appends JSONL. `chainz serve log -f --chain base --method eth_call` tails it in the terminal.
 
@@ -294,7 +296,8 @@ One `rpc` module gives every feature the same client, the same idea of endpoint 
 
 - **Liveness:** the gateway holds an exclusive `flock` on `serve.lock` for its whole life. `exec` tries the lock without blocking. If it gets the lock, no gateway is running and `exec` goes direct. This replaces a PID check, which PID reuse can fool.
 - **Config changes:** the gateway watches `config.toml` and reloads on change, so `chainz chain set --rpc` takes effect immediately.
-- **Shutdown:** `serve stop` sends SIGTERM, and in-flight requests drain for up to 5 seconds.
+- **Shutdown:** `serve stop` sends SIGTERM, and in-flight requests drain for up to 5 seconds (the same drain as a fork's proxy).
+- **Limits and errors:** both proxies take request bodies up to 64 MiB and answer an upstream failure the same way: 429 with `Retry-After` and JSON-RPC code -32005 for a rate limit, 504 for a timeout, the upstream's own 4xx or 5xx, else 502, with an error body that never names the URL.
 
 ## Dashboard: `chainz top`
 
@@ -315,10 +318,12 @@ One `rpc` module gives every feature the same client, the same idea of endpoint 
 | --- | --- | --- |
 | Chains | head, block age, average block time, base fee, active RPC, p50 latency, sparkline, status | one request per chain (`eth_getBlockByNumber(latest)`), paced by the chain's block time, 3–12 s |
 | Endpoints | every endpoint of the selected chain: latency, lag, error class, capability tags; `s` makes it the active one | probes from the RPC layer, every 15 s |
-| Balances | each signer's native balance and major-token balances per chain | one Multicall3 `eth_call` per chain and signer, every 30 s and on `r` |
-| Traffic | when `serve` runs: requests per second, a live request feed with labels, top methods, errors and 429s per endpoint | the gateway's `/_chainz/events` and `/_chainz/metrics` |
+| Balances | each signer's native balance and major-token balances per chain | one Multicall3 `aggregate3` `eth_call` per chain for every signer and token (a JSON-RPC batch where Multicall3 is missing), every 30 s and on `r` |
+| Traffic | when `serve` runs: requests per second, a live request feed with labels, top methods, errors and 429s per endpoint | the gateway's `/_chainz/events` and `/_chainz/metrics` on its control socket |
 
-**Keys:** `1`–`4` switch tabs, `j`/`k` move, `/` filters chains, `enter` drills into a chain, `s` sets the active RPC (a normal transactional config write), `e` drops into `chainz shell` for the selected chain and returns on exit, `y` copies the selected address or URL (redacted unless `--reveal`), `q` quits.
+**Keys:** `1`–`4` switch tabs, `j`/`k` move, `h`/`l` switch chain or signer, `/` filters chains, `enter` drills into a chain, `s` sets the active RPC (a normal transactional config write), `e` drops into `chainz shell` for the selected chain and returns on exit, `y` copies the selected address or URL (redacted unless `--reveal`), `q` quits.
+
+**Active endpoint.** When a chain's head is read through the gateway, the RPC column, `y`, the Endpoints tab's marker and the JSON snapshot name the endpoint the gateway serves from; otherwise the configured active one. The Endpoints tab adds `(config: X)` when the two differ. Gateway and feed failures and config-reload notices show in the footer (on stderr with `--once`).
 
 The dashboard never unlocks a signer: balances use cached addresses only. It sends at most one request per chain per tick, plus bounded probes, so leaving it open all day stays well inside public RPC limits. Without a TTY, `chainz top --once --json` prints a single snapshot for scripts.
 
@@ -372,11 +377,11 @@ $ chainz exec base-fork -- cast send @usdc 'transfer(address,uint256)' @myrouter
 - **Orphans:** anvil runs in its own process group with `PR_SET_PDEATHSIG` on Linux. If the supervisor is SIGKILLed, anvil dies too. On macOS the next `chainz fork` or `fork ls` reaps any anvil whose supervisor is gone.
 - **Stopping:** Ctrl-C, `chainz fork stop base-fork` or `--all` stops anvil and removes the registry entry.
 
-**Registry.** In the runtime dir, the supervisor holds an exclusive `flock` on `forks/<name>.lock` for the fork's whole life (liveness is the lock, as for the gateway), and `forks/<name>.json` holds `{format, name, pid, anvil_pid, port, parent, chain_id, fork_block, started_at, ready}`.
+**Registry.** In the runtime dir, the supervisor holds an exclusive `flock` on `forks/<name>.lock` for the fork's whole life (liveness is the lock, as for the gateway), and `forks/<name>.json` (format 1) holds `{format, name, pid, anvil_pid, port, parent, chain_id, fork_block, started_at, ready}`.
 
 - **Lookup:** forks resolve **by name only**. A fork keeps its parent's chain ID, so `chainz exec 8453` always means real base and can never hit the fork by accident.
 - **Names:** `--name` may not collide with a configured chain's name or alias, or with the reserved words `ls` and `stop`.
-- **Ports and logs:** ports are allocated from 8601 upward. `--detach` runs the supervisor in the background, with logs in the state dir.
+- **Ports and logs:** ports are allocated from 8601 upward. The supervisor holds `ports/<port>.lock` for anvil's port from before anvil starts until the fork stops, so parallel forks never pick the same port; an automatically chosen port that anything else holds moves on to the next. `--port P` is used exactly or fails. `--detach` runs the supervisor in the background, with logs in the state dir.
 - **Replay protection:** because a fork shares the real chain ID, a transaction signed for the fork is valid on the real chain. On forks, chainz refuses `--expose-key` and does not export `ETH_KEYSTORE`, so the only signing path is anvil's `--unlocked` impersonation. Pass `--chain-id N` to give the fork its own ID if you need real signatures.
 
 **Funding** (`--fund`, on by default for the chain's signer):
@@ -385,7 +390,7 @@ $ chainz exec base-fork -- cast send @usdc 'transfer(address,uint256)' @myrouter
 - Tokens: `anvil_dealERC20` for each `name=amount` pair, with names resolved through the address book and amounts scaled by the registry's decimals. When a token's balance slot can't be found, fork reports which token failed and continues.
 - Sending: anvil starts with `--auto-impersonate`, and `ETH_FROM` is exported, so `cast send --unlocked` works from your real address without ever unlocking its key.
 
-`chainz fork ls` lists live forks with block height, uptime and port; the dashboard shows them as rows marked `fork`. Snapshots and fork state persistence are out of scope for v2.0.
+`chainz fork ls` lists live forks with their URL, parent, block height, uptime and PID. The dashboard does not show forks. Snapshots and fork state persistence are out of scope for v2.0.
 
 ## Signers and secrets
 
@@ -410,21 +415,30 @@ A signer is a reference to key material plus its cached public address. Chainz n
 
 ## Architecture
 
-One binary, built from a small workspace with a strict dependency direction: a synchronous core that knows nothing about the network; an RPC crate on top of it; then the live surfaces. The split keeps the hot path (`exec`, `ls`, `env`) honest at compile time. Those commands call only `chainz-core` APIs, so they cannot start the async runtime, open a socket or spawn a thread, and the `strace` test enforces that at runtime.
+One binary, built from a small workspace with a strict dependency direction: a leaf of OS primitives; a synchronous core that knows nothing about the network; an RPC crate beside it that knows nothing about the config; then the live surfaces, which join the two. The split keeps the hot path (`exec`, `ls`, `env`) honest at compile time. Those commands call only `chainz-core` APIs, so they cannot start the async runtime, open a socket or spawn a thread, and the `strace` test enforces that at runtime.
 
-&#91;embedded content: crate layers · 4 surfaces over rpc and core\]
+```
+                 chainz (bin)
+        ┌─────────┼──────────┐
+   chainz-tui     │     chainz-serve
+        └────┬────┴─────┬────┘
+        chainz-core  chainz-rpc        (rpc does not depend on core)
+             └────┬─────┘
+             chainz-os
+```
 
-Top, serve and fork share one RPC layer, and top reads serve through its control API. Exec talks only to the core and the runtime registry.
+Every crate also depends on `chainz-os` directly; `chainz-tui`'s tests use `chainz-serve`'s `testing` feature. Top, serve and fork share one RPC layer, and top reads serve through its control API. Exec talks only to the core and the runtime registry. Core decides where a chain's requests go (`chainz_core::route`), and each consumer turns that into an RPC `Target` in one line.
 
 | Crate | Owns | Depends on |
 | --- | --- | --- |
-| `chainz-core` | model (Chain, Endpoint, Signer, Label), config load and save via `toml_edit`, secrets, chain-reference resolution, token grammar, built-in tokens, label index, runtime registry (serve and forks), v1 migration | serde, toml\_edit, indexmap, k256, sha3, keyring, argon2, aes-gcm |
-| `chainz-rpc` | JSON-RPC client, probes, ranking, capabilities, health history, adaptive limiter, upstream forwarding | core, reqwest, tokio |
-| `chainz-serve` | gateway HTTP server, metrics, inspector, control API | rpc, hyper |
-| `chainz-tui` | `chainz top` | rpc, ratatui, crossterm |
-| `chainz` (bin) | clap surface, pickers, output formatting, `exec`/`shell`/`env`, `fork` supervisor | all of the above |
+| `chainz-os` | private dirs and files, atomic durable writes, `flock` locks and probes, file stamps, the clock | libc |
+| `chainz-core` | model (Chain, Endpoint, Signer, Label), config load and save via `toml_edit`, secrets, chain-reference resolution and routes, token grammar, exec contract, built-in tokens, label index, display redaction, runtime registry (serve and forks), v1 migration | os, serde, toml, toml\_edit, indexmap, k256, sha3, keyring, argon2, aes-gcm |
+| `chainz-rpc` | JSON-RPC client, probes, endpoint health and ranking, capabilities, health history, `HttpUpstream`, ABI helpers, chainlist, the control protocol (types, framing, client) | os, reqwest, tokio |
+| `chainz-serve` | gateway HTTP server, adaptive limiter, metrics, inspector, control handler, the fork's pinned proxy | os, core, rpc, hyper |
+| `chainz-tui` | `chainz top` | os, core, rpc, ratatui |
+| `chainz` (bin) | clap surface, pickers, output formatting, `exec`/`shell`/`env`, `fork` supervisor, background launch | all of the above |
 
-**Config writes go through `toml_edit`**: each record is serialized from the typed model and merged into the existing table, so `chainz chain set --rpc` or the dashboard's `s` key changes one value and keeps your comments, ordering and formatting. Validation is unchanged from v1: one `Config::validate`, run before every write, with an atomic rename.
+**Config writes go through `toml_edit`**: each record is serialized from the typed model and merged into the existing table, so `chainz chain set --rpc` or the dashboard's `s` key changes one value and keeps your comments, ordering and formatting. Validation is unchanged from v1: one `validate`, run before every write, with an atomic rename.
 
 **Locking and write order.** Reads take no lock: each file is replaced by an atomic rename, so a reader always sees a whole file. Writes take an exclusive file lock, re-read both files, apply the change, validate, and then write.
 
@@ -480,7 +494,7 @@ Each of these has a proposed default. Tick it to accept, or comment to change it
 - [ ] **Signer naming.** Default: `signer` replaces `key`, and `chainz key …` stays as a hidden alias for one release.
 - [ ] **Workspace split vs one crate.** Default: workspace. It enforces at compile time that the exec path cannot reach the network, and it makes the parallel streams merge cleanly. One crate with features would be simpler to publish.
 - [ ] **Gateway websockets** (`eth_subscribe`). Default: HTTP only in 2.0. The 24 websocket endpoints stay usable with `--direct`; routing them comes in 2.1.
-- [ ] **Windows.** Default: Linux and macOS only in 2.0. That removes the spawn-and-wait fallback and the Windows CI job; v1 stays available for Windows.
+- [x] **Windows.** Decided: Linux and macOS only in 2.0. The spawn-and-wait fallback and the Windows CI job are gone; v1 stays available for Windows.
 - [ ] **Foundry keystore backend** in 2.0. Default: yes. It is small, and it removes the last reason to use `--expose-key` for Foundry.
 
 ## Self-review
@@ -503,7 +517,7 @@ An independent Fable 5.2 reviewer read the first draft against the v1 source, th
 | 12 | Should-fix | A 5 ms absolute CI gate will flake, and "links only core" means nothing in one binary | Fixed: a relative gate plus an `strace` structural test; the claim restated as compile-time API separation |
 | 13 | Should-fix | The CLI tree is missing flags; `--fund` shape; `fork CHAIN` collides with `fork ls` | Fixed in CLI surface |
 | 14 | Should-fix | Phase 0 freeze point: streams collide on the forwarder, the clap tree and tokens; control types frozen too early | Fixed in Delivery plan: one `HttpUpstream` type, clap stubs, a minimal token registry, provisional control types, perf gate in phase 0 |
-| 15 | Nit | Over-engineered for a personal tool (capability probing, two metric windows, Windows); two template syntaxes | Mostly accepted: one `${…}` syntax with the environment first; Windows is now an open question. Capability probing stays because fork pinning and gateway routing depend on it |
+| 15 | Nit | Over-engineered for a personal tool (capability probing, two metric windows, Windows); two template syntaxes | Mostly accepted: one `${…}` syntax; Windows is dropped (Linux and macOS only). Capability probing stays because fork pinning and gateway routing depend on it |
 
 
 ## Implementation notes
