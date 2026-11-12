@@ -73,7 +73,7 @@ Forks are real chains while they run. `base-fork` resolves like any configured c
 3. `default` in the config, set with `chainz use`. Because this default is machine-wide and shared by every terminal, `exec` prints `chainz: base (default)` to stderr whenever the chain came from here.
 4. The interactive picker, but only on a TTY. Otherwise it is an error.
 
-Within step 1, a reference matches in this order: a live fork name, an exact chain ID, an exact name or alias (case-insensitive), then an unambiguous prefix. Destructive commands (`rm`) accept only an exact name or ID.
+Within step 1, a reference matches in this order: an exact chain ID, an exact name or alias (case-insensitive), a live fork's exact name, then an unambiguous prefix. A configured chain always beats a fork of the same name, and a fork whose supervisor is gone never resolves. Destructive commands (`rm`) accept only an exact name or ID.
 
 **How an endpoint is chosen for `exec`:** if `chainz serve` is running, the gateway URL for that chain is used. Otherwise the chain's active endpoint is used. `--direct` skips the gateway, and `--rpc <name>` picks a specific endpoint.
 
@@ -365,7 +365,7 @@ $ chainz exec base-fork -- cast send @usdc 'transfer(address,uint256)' @myrouter
 - **Orphans:** anvil runs in its own process group with `PR_SET_PDEATHSIG` on Linux. If the supervisor is SIGKILLed, anvil dies too. On macOS the next `chainz fork` or `fork ls` reaps any anvil whose supervisor is gone.
 - **Stopping:** Ctrl-C, `chainz fork stop base-fork` or `--all` stops anvil and removes the registry entry.
 
-**Registry.** `forks/<name>.json` in the runtime dir holds `{pid, port, parent, chain_id, fork_block, started_at}`.
+**Registry.** In the runtime dir, the supervisor holds an exclusive `flock` on `forks/<name>.lock` for the fork's whole life (liveness is the lock, as for the gateway), and `forks/<name>.json` holds `{format, name, pid, anvil_pid, port, parent, chain_id, fork_block, started_at, ready}`.
 
 - **Lookup:** forks resolve **by name only**. A fork keeps its parent's chain ID, so `chainz exec 8453` always means real base and can never hit the fork by accident.
 - **Names:** `--name` may not collide with a configured chain's name or alias, or with the reserved words `ls` and `stop`.

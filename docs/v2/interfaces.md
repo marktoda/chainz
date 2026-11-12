@@ -8,19 +8,39 @@ means changing every caller in the same commit.
 
 | Crate | Role | Async / network |
 |---|---|---|
-| `chainz-sys` | OS primitives: private dirs and files, atomic writes, `flock`, file stamps, the clock (no chainz dependencies) | none |
+| `chainz-sys` | OS primitives: private dirs and files, atomic writes, `flock`, file stamps, the clock, background launch (no chainz dependencies) | none |
 | `chainz-core` | config, secrets, migration, resolver, tokenizer, context, labels, runtime registry | none (sync; no tokio, reqwest or hyper) |
 | `chainz-rpc` | JSON-RPC client, probes, ranking, health history, `Upstream`, control protocol, chainlist | tokio + reqwest (rustls) |
-| `chainz-serve` | gateway: `run(Options)`, embeddable `Gateway::start(GatewayConfig)` | hyper 1 + tokio (multi-thread) |
+| `chainz-serve` | gateway: `run(paths, runtime, state_dir, Options, on_event)`, embeddable `Gateway::start(GatewayConfig)` | hyper 1 + tokio (multi-thread) |
 | `chainz-tui` | the `top` dashboard | ratatui + tokio |
 | `chainz` (bin) | clap surface, handlers, pickers, output | builds a current-thread runtime only for network commands (`net::block_on`) |
 
-`chainz-rpc` does not depend on `chainz-core`. The bin bridges the two with
-`net::target(chainz, chain_name, chain_id, endpoint_name, endpoint) -> Result<Target>`,
-which expands `${VAR}`s through
-`Chainz::expand_endpoint(chain_name, chain_id, endpoint_name, &Endpoint) -> Result<ExpandedEndpoint>`
-(the same call the gateway and `top` use; the chain need not be configured
-yet).
+`chainz-rpc` does not depend on `chainz-core`. Core decides where a chain's
+requests go (`chainz_core::route`), and each consumer turns the answer into
+a `Target` with one line:
+
+```rust
+pub struct RouteOpts { pub endpoint: Option<String>, pub direct: bool }
+pub struct Route { pub chain_id: u64, pub chain: String, pub endpoint: String, pub url: String,
+                   pub headers: Vec<(String, String)>, pub display: String,
+                   pub via_gateway: bool, pub websocket: bool }  // Debug redacts url and headers
+impl Chainz {
+    pub fn route(&self, chain: &str, opts: &RouteOpts, runtime: &Runtime) -> Result<Route>;
+    pub fn direct_route(&self, chain_name: &str, chain_id: u64, endpoint_name: &str,
+                        endpoint: &Endpoint) -> Result<Route>; // never the gateway; chain need not be configured
+}
+impl Route { pub fn via_gateway(info: &ServeInfo, chain: &str, chain_id: u64, endpoint: &str, pin: bool) -> Route }
+impl Chain { pub fn endpoints_by_preference(&self, http_only: bool) -> Vec<(&str, &Endpoint)> } // active, failover, rest
+pub fn uses_gateway(websocket: bool, direct: bool) -> bool;
+
+// bin: the one adapter
+Target::new(route.chain_id, &route.endpoint, &route.url, &route.headers)  // net::to_target
+```
+
+The rule: through a running gateway (pinned to the endpoint when one is
+named) unless `direct` or the endpoint is a websocket; otherwise the
+endpoint itself, `${VAR}`s expanded by `Chainz::expand_endpoint` (the same
+call the gateway and `top` use).
 
 ## Runtime registry (`chainz_core::runtime`)
 
@@ -29,48 +49,109 @@ it falls back to the state dir, `$XDG_STATE_HOME/chainz`. The directory is
 mode 0700.
 
 ```rust
+pub const LOOPBACK: Ipv4Addr;            // 127.0.0.1: every server binds it
+pub const DEFAULT_PORT: u16 = 18545;     // the gateway's
+pub fn loopback_url(port: u16) -> String; // http://127.0.0.1:<port>
+
+pub struct GatewayAddr { pub port: u16, pub token: String }   // Debug redacts token
+impl GatewayAddr {
+    pub fn path(&self, chain: Option<&str>, endpoint: Option<&str>) -> String; // /<token>[/<chain>[/<endpoint>]]
+    pub fn base_url(&self) -> String;                                      // http://127.0.0.1:<port>/<token>
+    pub fn url(&self, chain: &str, endpoint: Option<&str>) -> String;
+    pub fn parse_path(path: &str) -> Option<AddrPath<'_>>; // at most one trailing '/', no empty segment
+}
+pub struct AddrPath<'a> { pub token: &'a str, pub chain: Option<&'a str>, pub endpoint: Option<&'a str> }
+
 pub struct Runtime { /* dir */ }
 impl Runtime {
     pub fn resolve() -> io::Result<Self>;
     pub fn at(dir: impl Into<PathBuf>) -> Self;
     pub fn dir(&self) -> &Path;
     pub fn ensure_dir(&self) -> io::Result<()>;
-    pub fn serve_lock_path(&self) -> PathBuf;   // serve.lock
     pub fn serve_json_path(&self) -> PathBuf;   // serve.json
     pub fn serve_sock_path(&self) -> PathBuf;   // serve.sock
     pub fn forks_dir(&self) -> PathBuf;         // forks/
-    pub fn fork_path(&self, name: &str) -> PathBuf; // forks/<name>.json
-    pub fn serve_running(&self) -> bool;        // non-blocking flock probe; creates nothing
+    // the gateway
+    pub fn gateway(&self) -> io::Result<GatewayState>;  // one flock probe, then serve.json; creates nothing
     pub fn acquire_serve_lock(&self) -> io::Result<Option<ServeLock>>; // None = another gateway holds it
-    pub fn read_serve_info(&self) -> io::Result<Option<ServeInfo>>;
-    pub fn write_serve_info(&self, info: &ServeInfo) -> io::Result<()>; // atomic, 0600
-    pub fn remove_serve_info(&self) -> io::Result<()>;
-    pub fn gateway_url(&self, chain: &str, endpoint: Option<&str>) -> Option<String>;
-    pub fn list_forks(&self) -> io::Result<Vec<ForkRecord>>;
-    pub fn read_fork(&self, name: &str) -> io::Result<Option<ForkRecord>>;
-    pub fn write_fork(&self, record: &ForkRecord) -> io::Result<()>;
-    pub fn remove_fork(&self, name: &str) -> io::Result<()>;
+    // forks
+    pub fn claim_fork(&self, name: &str) -> io::Result<Option<ForkClaim>>; // None = a live fork has it
+    pub fn fork(&self, name: &str) -> io::Result<Option<ForkRecord>>;     // live and ready only
+    pub fn fork_live(&self, name: &str) -> io::Result<bool>;
+    pub fn forks(&self) -> io::Result<Vec<ForkEntry>>;                    // read-only, with liveness
+    pub fn reap_forks(&self, stop_orphan: impl FnMut(&ForkRecord)) -> io::Result<Vec<String>>;
+    pub fn reap_fork(&self, name: &str, stop_orphan: impl FnMut(&ForkRecord)) -> io::Result<bool>;
 }
 
-pub struct ServeInfo { pub pid: u32, pub port: u16, pub token: String, pub started_at: u64, pub version: String }
-impl ServeInfo { pub fn chain_url(&self, chain: &str, endpoint: Option<&str>) -> String } // http://127.0.0.1:<port>/<token>/<chain>[/<endpoint>]
+pub enum GatewayState { Down, Starting, Up(ServeInfo) } // Starting: lock held, serve.json not (or no longer) out
+impl ServeLock { pub fn publish(&self, info: &ServeInfo) -> io::Result<Published> } // dropping Published removes serve.json
 
-pub struct ForkRecord { pub name: String, pub pid: u32, pub port: u16, pub parent: String,
-                        pub chain_id: u64, pub fork_block: Option<u64>, pub started_at: u64 }
-impl ForkRecord { pub fn rpc_url(&self) -> String } // http://127.0.0.1:<port>
+pub struct ServeInfo { pub format: u32, pub pid: u32, pub port: u16, pub token: String,
+                       pub started_at: u64, pub version: String }
+impl ServeInfo { pub const FORMAT: u32 = 1; pub fn new(addr: &GatewayAddr, started_at: u64) -> Self;
+                 pub fn addr(&self) -> GatewayAddr }
+
+pub struct ForkRecord { pub format: u32, pub name: String, pub pid: u32, pub anvil_pid: u32, pub port: u16,
+                        pub parent: String, pub chain_id: u64, pub fork_block: Option<u64>,
+                        pub started_at: u64, pub ready: bool }
+impl ForkRecord { pub const FORMAT: u32 = 1; pub fn rpc_url(&self) -> String } // http://127.0.0.1:<port>
+pub struct ForkEntry { pub name: String, pub live: bool, pub supervisor: Option<u32>,
+                       pub record: Result<Option<ForkRecord>, String> }
+impl ForkEntry { pub fn ready(&self) -> Option<&ForkRecord> }
+impl ForkClaim { pub fn name(&self) -> &str; pub fn register(&self, record: &ForkRecord) -> io::Result<()> }
 ```
 
-**Exec seam.** `context::build` calls `runtime.gateway_url(chain, endpoint)`
-unless `--direct` is set, the chain is a fork, or the endpoint is a websocket.
-The seam returns `Some` only while `serve.lock` is held and `serve.json` is
-present. The gateway holds the lock, writes `serve.json`, and serves
-`/<token>/<chain>[/<endpoint>]`. `ServeInfo`'s `Debug` redacts `token`.
+| File | Written by | Meaning |
+| --- | --- | --- |
+| `serve.lock` | gateway | exclusive `flock` for the gateway's whole life |
+| `serve.json` | gateway | `ServeInfo` (0600), published once both listeners are bound, withdrawn first on shutdown |
+| `serve.sock` | gateway | control socket (0600) |
+| `forks/<name>.lock` | fork supervisor | exclusive `flock` for the fork's whole life (`O_CLOEXEC`: anvil never inherits it); holds the supervisor's PID |
+| `forks/<name>.json` | fork supervisor | `ForkRecord`: written when anvil spawns, `ready` once the fork serves |
 
-**Forks.** The resolver checks configured chains first, then
-`forks/<name>.json`. Live forks resolve as `ChainRef::Fork(ForkRecord)`, and
-their context points at anvil with no explorer and no `ETH_KEYSTORE`. A fork
-can't be named `ls`, `list` or `stop` (`names::RESERVED_FORK_NAMES`). `fork` writes
-and removes records, and removes stale ones (dead pid).
+Records carry a `format`; a reader refuses a format it does not know (an
+error, never "not running"). Liveness is always the lock, never a PID check.
+`acquire_serve_lock` removes a dead gateway's `serve.json` and fails if it
+can't. Fork files are only removed by the lock's holder: the supervisor on
+exit, or a reaper that took a dead fork's lock (`reap_forks` calls
+`stop_orphan` first, so the bin can stop an anvil the supervisor left). A
+claimant checks that the file it locked is still the one at the path.
+
+**Exec seam.** `context::build` routes through `Chainz::route`: the gateway
+URL while `Runtime::gateway()` is `Up`, unless `--direct` is set, the
+chain is a fork, or the endpoint is a websocket. An unreadable `serve.json`
+under a held lock fails `exec` (`--direct` bypasses it). The gateway
+serves `/<token>/<chain>[/<endpoint>]`, parsed by `GatewayAddr::parse_path`.
+
+**Forks.** The resolver checks configured chains first (exact ID, name,
+alias), then a live, ready fork's exact name, then prefixes. Live forks
+resolve as `ChainRef::Fork(ForkRecord)`, and their context points at anvil
+with no explorer and no `ETH_KEYSTORE`. The name rules are
+`chainz_core::forks`: `check_fork_name` (a valid chain name, not a
+`RESERVED_FORK_NAMES` subcommand, not a configured chain's name or alias),
+`default_fork_name(parent)` (`<parent>-fork`) and `check_forkable`
+(`UNFORKABLE`). A bin test keeps `RESERVED_FORK_NAMES` equal to the `fork`
+subcommands and aliases.
+
+**Logs.** `paths::serve_log()` (`$XDG_STATE_HOME/chainz/serve.log`) and
+`paths::fork_log(name)` (`…/forks/<name>.log`); `config path --all` lists
+them.
+
+**Background launch** (`chainz_sys`). `launch_detached(log, LogMode)`
+re-executes the full command line minus `--detach` in a new session, with
+`CHAINZ_DETACHED=1` set, stdin empty, stderr the log, and stdout a pipe.
+The child prints what the user should see, then calls `detached_ready()`
+(stdout onto the log), which closes the pipe; the parent's
+`Detached::wait_ready(timeout)` returns what it printed. `serve --detach`
+is ready once `serve.json` is out; `fork --detach` after its summary.
+
+**Gateway process** (`chainz_serve`). `run(StorePaths, Runtime,
+Option<state_dir>, Options { port, log, ticks }, on_event)` resolves
+nothing itself and reports `Event::{Started(&Gateway), Notice, Tick,
+Stopping { drain }}`; the bin presents them. `SHUTDOWN_BUDGET` (drain +
+slack + log writer wait) bounds `Gateway::shutdown`, and `serve stop`'s
+timeout derives from it. `AlreadyRunning` is the one "already running"
+error.
 
 ## Labels (`chainz_core::labels`)
 
