@@ -336,7 +336,7 @@ struct Shown {
 impl Shown {
     fn of(config: &Config, vars: &Vars, name: &str, edit: &ChainEdit) -> Self {
         let chain = &config.chains[name];
-        let or_dash = |v: Option<&str>| v.unwrap_or("-").to_string();
+        let or_dash = |v: Option<&str>| view::or_dash(v.unwrap_or_default());
         let pending_aliases = edit.aliases_after(name, chain);
         let aliases = pending_aliases.as_ref().unwrap_or(&chain.aliases);
         Shown {
@@ -348,20 +348,10 @@ impl Shown {
                 // why): shown redacted, as it may hold a key.
                 Err(_) => chainz_core::redact::url(edit.rpc.as_deref().unwrap_or_default()),
             },
-            signer: match &edit.signer {
-                Some(signer) => or_dash(signer.as_deref()),
-                None => or_dash(chain.signer.as_deref()),
-            },
-            explorer: match &edit.explorer {
-                Some(explorer) => or_dash(explorer.as_deref()),
-                None => or_dash(chain.explorer.as_deref()),
-            },
+            signer: or_dash(edit.signer.as_ref().unwrap_or(&chain.signer).as_deref()),
+            explorer: or_dash(edit.explorer.as_ref().unwrap_or(&chain.explorer).as_deref()),
             name: edit.name.clone().unwrap_or_else(|| name.to_string()),
-            aliases: if aliases.is_empty() {
-                "-".to_string()
-            } else {
-                aliases.join(", ")
-            },
+            aliases: view::or_dash(&aliases.join(", ")),
             pending_aliases,
         }
     }

@@ -63,10 +63,7 @@ pub fn run() -> Result<i32> {
     println!("{}", ui::section("tokens"));
     let (mut ok, mut failed, mut skipped) = (0, 0, 0);
     for (id, tokens) in &by_chain {
-        let chain = match config.chain_by_id(*id) {
-            Some((name, _)) => name.to_string(),
-            None => names::short_name(*id).map_or_else(|| id.to_string(), str::to_string),
-        };
+        let chain = config.chain_display(*id);
         match &outcomes[id] {
             Outcome::Skipped => {
                 skipped += tokens.len();

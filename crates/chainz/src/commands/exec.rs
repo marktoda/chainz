@@ -122,9 +122,7 @@ fn explain(ctx: &Context, exports: &Exports, argv: &str) -> String {
         Some((name, address, backend)) => writeln!(
             out,
             "signer    {name} {} ({backend})",
-            address
-                .map(|a| a.to_string())
-                .unwrap_or_else(|| "no cached address".into()),
+            crate::view::cached_address(address)
         ),
         None => writeln!(out, "signer    -"),
     };

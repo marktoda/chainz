@@ -147,11 +147,11 @@ pub fn add(
 }
 
 fn report_added(name: &str, signer: &Signer) {
-    let address = signer
-        .address
-        .map(|a| a.to_string())
-        .unwrap_or_else(|| "no cached address".into());
-    println!("Added signer '{name}' ({}) {address}", signer.backend);
+    println!(
+        "Added signer '{name}' ({}) {}",
+        signer.backend,
+        view::cached_address(signer.address)
+    );
 }
 
 #[derive(Serialize)]
@@ -190,7 +190,7 @@ fn ls(args: &JsonArgs) -> Result<i32> {
             [
                 r.name.to_string(),
                 r.backend.to_string(),
-                r.address.unwrap_or_else(|| "-".into()),
+                view::or_dash(r.address.as_deref().unwrap_or_default()),
                 ui::dim(&view::or_dash(&r.chains.join(", "))),
             ]
         })

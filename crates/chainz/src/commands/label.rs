@@ -390,11 +390,10 @@ fn import(args: &LabelImportArgs) -> Result<i32> {
         return Ok(0);
     }
     if planned.is_empty() {
-        let runs = match files.len() {
-            1 => "1 run file".to_string(),
-            n => format!("{n} run files"),
-        };
-        println!("No contracts to import in {runs}.");
+        println!(
+            "No contracts to import in {}.",
+            ui::count(files.len(), "run file")
+        );
         return Ok(0);
     }
     let count = |f: fn(&Action) -> bool| planned.iter().filter(|p| f(&p.action)).count();
@@ -456,8 +455,11 @@ fn import(args: &LabelImportArgs) -> Result<i32> {
             overwrote("overwrite")
         );
     } else {
-        let labels = if added == 1 { "label" } else { "labels" };
-        println!("\nAdded {added} {labels}{}{rest}.", overwrote("overwrote"));
+        println!(
+            "\nAdded {}{}{rest}.",
+            ui::count(added, "label"),
+            overwrote("overwrote")
+        );
     }
     let index = LabelIndex::new(config);
     let shadowed: Vec<String> = planned

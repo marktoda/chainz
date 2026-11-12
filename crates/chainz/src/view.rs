@@ -67,6 +67,11 @@ pub fn or_dash(value: &str) -> String {
     }
 }
 
+/// A signer's cached address, or that it has none.
+pub fn cached_address(address: Option<chainz_core::Address>) -> String {
+    address.map_or_else(|| "no cached address".to_string(), |a| a.to_string())
+}
+
 #[derive(Serialize)]
 pub struct EndpointView {
     pub name: String,
@@ -340,21 +345,17 @@ pub fn show(view: &ChainView, extra: &[(String, String)], now_ms: u64) -> String
         "  default   {}",
         if view.default { "yes" } else { "no" }
     );
-    let _ = writeln!(out, "  signer    {}", view.signer.as_deref().unwrap_or("-"));
+    let _ = writeln!(
+        out,
+        "  signer    {}",
+        or_dash(view.signer.as_deref().unwrap_or_default())
+    );
     let _ = writeln!(
         out,
         "  explorer  {}",
-        view.explorer.as_deref().unwrap_or("-")
+        or_dash(view.explorer.as_deref().unwrap_or_default())
     );
-    let _ = writeln!(
-        out,
-        "  failover  {}",
-        if view.failover.is_empty() {
-            "-".to_string()
-        } else {
-            view.failover.join(", ")
-        }
-    );
+    let _ = writeln!(out, "  failover  {}", or_dash(&view.failover.join(", ")));
     for (k, v) in extra {
         let _ = writeln!(out, "  {k:<9} {v}");
     }

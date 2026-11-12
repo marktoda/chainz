@@ -1722,7 +1722,7 @@ fn doctor_chain_with_every_endpoint_down_fails() {
         );
         assert!(
             text.contains(
-                "no healthy endpoint on uni; check your network, or `chainz doctor uni --discover`"
+                "no healthy endpoint on uni; check your network, or find public endpoints with `chainz doctor uni --discover`"
             ),
             "{text}"
         );

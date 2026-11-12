@@ -74,12 +74,7 @@ pub(super) fn rpc_health(chainz: &mut Chainz, fix: bool, report: &mut Report) ->
                 [one] => one.on.as_str(),
                 _ => "CHAIN",
             };
-            println!(
-                "  {}",
-                ui::dim(&format!(
-                    "check your network, or find public endpoints with `chainz doctor {chain} --discover`"
-                ))
-            );
+            println!("  {}", ui::dim(&discover_hint(chain)));
         }
         if fix {
             repairs.extend(proposed.into_iter().map(|r| (ep.clone(), r)));
@@ -110,13 +105,20 @@ pub(super) fn rpc_health(chainz: &mut Chainz, fix: bool, report: &mut Report) ->
             Ok(())
         })?;
         for (old, repair) in repairs {
-            report.fixed(&format!(
-                "{}: active {old} → {}",
-                repair.chain, repair.active
-            ));
+            report.fixed(&switched(&repair.chain, &old, &repair.active));
         }
     }
     Ok(())
+}
+
+/// What to try when no configured endpoint of `chain` is healthy.
+fn discover_hint(chain: &str) -> String {
+    format!("check your network, or find public endpoints with `chainz doctor {chain} --discover`")
+}
+
+/// A repaired chain: `eth: active a → b`.
+fn switched(chain: &str, old: &str, new: &str) -> String {
+    format!("{chain}: active {old} → {new}")
 }
 
 /// Endpoints that could not be probed (a `${VAR}` set nowhere, say): a
@@ -171,7 +173,8 @@ pub(super) fn endpoints(
     }
     let Some(repair) = Repair::propose(chain, c, p, &ranking) else {
         report.problem(&format!(
-            "no healthy endpoint on {chain}; check your network, or `chainz doctor {chain} --discover`"
+            "no healthy endpoint on {chain}; {}",
+            discover_hint(chain)
         ));
         return Ok(());
     };
@@ -209,7 +212,7 @@ pub(super) fn endpoints(
     let old = c.rpc.clone();
     chainz.transact(|tx| repair.apply(tx, write_failover))?;
     if failing.is_some() {
-        report.fixed(&format!("{chain}: active {old} → {}", repair.active));
+        report.fixed(&switched(chain, &old, &repair.active));
     }
     Ok(())
 }
