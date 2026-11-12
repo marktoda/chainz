@@ -6,7 +6,7 @@ use crate::cli::{
     AddrAddArgs, AddrCommand, AddrFindArgs, AddrImportArgs, AddrLsArgs, AddrRmArgs, LabelArgs,
 };
 use crate::load::open;
-use crate::select::{note_default, select_target};
+use crate::select::{Missing, NAME_A_CHAIN, note_default, select_target};
 use crate::{ui, view};
 use anyhow::{Context, Result, anyhow, bail};
 use chainz_core::addrbook::{self, Labeler};
@@ -62,7 +62,17 @@ fn add(args: &AddrAddArgs) -> Result<i32> {
     let scope = if args.all_chains {
         ALL_CHAINS.to_string()
     } else {
-        match select_target(&chainz, &Runtime::resolve()?, args.chain.as_deref())? {
+        let off_tty = format!("pass --chain (or --all-chains), {NAME_A_CHAIN}");
+        let missing = Missing {
+            command: &["addr", "add"],
+            off_tty: &off_tty,
+        };
+        match select_target(
+            &chainz,
+            &Runtime::resolve()?,
+            args.chain.as_deref(),
+            &missing,
+        )? {
             ChainRef::Configured(name) => name,
             // A fork has no config entry; its labels are its parent's.
             ChainRef::Fork(fork) => {

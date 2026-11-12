@@ -180,12 +180,14 @@ fn addr_add_ls_find_rm_roundtrip() {
 #[test]
 fn addr_add_defaults_to_the_current_chain_context() {
     let sb = eth_and_base();
-    // No --chain, no $CHAINZ_CHAIN, no default, no TTY: an error, not a guess.
+    // No --chain, no $CHAINZ_CHAIN, no default, no TTY: a usage error,
+    // not a guess.
     sb.cmd()
         .args(["addr", "add", "myrouter", ROUTER])
         .assert()
-        .failure()
-        .stderr(predicate::str::contains("no chain given"));
+        .code(2)
+        .stderr(predicate::str::contains("no chain given: pass --chain"))
+        .stderr(predicate::str::contains("Usage: chainz addr add"));
     assert!(!sb.config().contains("addresses"));
 
     // $CHAINZ_CHAIN (set inside `chainz shell`).

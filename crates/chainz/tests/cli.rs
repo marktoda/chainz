@@ -1617,6 +1617,69 @@ fn chain_add_without_a_chain_off_a_tty_is_a_usage_error_before_any_fetch() {
 }
 
 #[test]
+fn a_missing_chain_off_a_tty_is_a_usage_error() {
+    let sb = Sandbox::new();
+    sb.seed(&[("eth", 1), ("base", 8453)]);
+    for (args, usage) in [
+        (&["exec", "--", "true"][..], "Usage: chainz exec"),
+        (&["shell"], "Usage: chainz shell"),
+        (&["env"], "Usage: chainz env"),
+        (&["use"], "Usage: chainz use"),
+    ] {
+        sb.cmd()
+            .args(args)
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("no chain given: pass "))
+            .stderr(predicate::str::contains(usage));
+    }
+}
+
+#[test]
+fn other_missing_arguments_are_usage_errors() {
+    let sb = Sandbox::new();
+    sb.seed(&[("eth", 1)]);
+    for (args, message, usage) in [
+        (
+            &["fork", "stop"][..],
+            "which fork?",
+            "Usage: chainz fork stop",
+        ),
+        (
+            &["var", "set", "TOKEN"],
+            "no value given",
+            "Usage: chainz var set",
+        ),
+        (
+            &["signer", "add", "hot"],
+            "no key given",
+            "Usage: chainz signer add",
+        ),
+        (
+            &["signer", "add", "ks", "--backend", "keystore"],
+            "needs --path",
+            "Usage: chainz signer add",
+        ),
+        (
+            &["signer", "add", "op", "--backend", "1password"],
+            "needs --vault and --item",
+            "Usage: chainz signer add",
+        ),
+    ] {
+        sb.cmd()
+            .args(args)
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains(message))
+            .stderr(predicate::str::contains(usage));
+    }
+    for signer in ["hot", "ks", "op"] {
+        let table = format!("[signers.{signer}]");
+        assert!(!sb.config().contains(&table), "{}", sb.config());
+    }
+}
+
+#[test]
 fn chain_set_off_a_tty_needs_a_chain_and_flags() {
     let sb = Sandbox::new();
     sb.seed(&[("eth", 1)]);

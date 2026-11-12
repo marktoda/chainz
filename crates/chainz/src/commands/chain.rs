@@ -8,7 +8,7 @@ use crate::cli::{ChainAddArgs, ChainCommand, ChainRmArgs, ChainShowArgs, ListArg
 use crate::load::open;
 use crate::probe::{check, probe_urls, ranked_urls};
 use crate::prompt::{Ask, Tty};
-use crate::select::pick_chain;
+use crate::select::{Missing, pick_chain};
 use crate::{net, ui, view};
 use anyhow::{Context, Result, anyhow, bail};
 use chainz_core::Chainz;
@@ -66,7 +66,10 @@ pub fn use_default(args: &UseArgs) -> Result<i32> {
             &chainz,
             &mut Tty,
             "Default chain",
-            "pass the chain to make the default",
+            &Missing {
+                command: &["use"],
+                off_tty: "pass the chain to make the default",
+            },
         )?,
     };
     chainz.transact(|tx| {

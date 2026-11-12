@@ -2,27 +2,42 @@
 //! `$CHAINZ_CHAIN` / default / picker steps of the resolution order
 //! (`chainz_core::resolve` has the matching rules).
 
+use crate::cli::usage_error;
 use crate::prompt::{Ask, Tty};
 use anyhow::{Result, bail};
 use chainz_core::Chainz;
 use chainz_core::resolve::{self, ChainRef, Source};
 use chainz_core::runtime::Runtime;
 
-/// Interactive picker over configured chains. Off a TTY it fails with
-/// "no chain given: {off_tty}", where `off_tty` says how to name one for
-/// this command.
+/// How a command asks for a chain it was not given: its subcommand path
+/// (for the usage error) and how to name a chain for it.
+pub struct Missing<'a> {
+    /// The subcommand path, as [`usage_error`] takes it.
+    pub command: &'a [&'a str],
+    /// How to name a chain for this command, e.g. "pass one".
+    pub off_tty: &'a str,
+}
+
+/// How the context commands (and `addr add`) say how to name a chain.
+pub const NAME_A_CHAIN: &str = "set $CHAINZ_CHAIN, or set a default with `chainz use <chain>`";
+
+/// Interactive picker over configured chains. Off a TTY it is a usage
+/// error (exit 2) for `missing.command`: "no chain given: {off_tty}".
 pub fn pick_chain(
     chainz: &Chainz,
     ask: &mut dyn Ask,
     message: &str,
-    off_tty: &str,
+    missing: &Missing,
 ) -> Result<String> {
     let chains = &chainz.config().chains;
     if chains.is_empty() {
         bail!("{}", resolve::NO_CHAINS);
     }
     if !ask.is_interactive() {
-        bail!("no chain given: {off_tty}");
+        return Err(usage_error(
+            missing.command,
+            &format!("no chain given: {}", missing.off_tty),
+        ));
     }
     let items: Vec<String> = chains
         .iter()
@@ -36,12 +51,14 @@ pub fn pick_chain(
         .clone())
 }
 
-/// Resolve the chain for a context command (exec, shell, env): explicit,
-/// `$CHAINZ_CHAIN`, default (with a stderr notice), then a TTY picker.
+/// Resolve the chain for a context command (exec, shell, env) or
+/// `addr add`: explicit, `$CHAINZ_CHAIN`, default (with a stderr notice),
+/// then a TTY picker.
 pub fn select_target(
     chainz: &Chainz,
     runtime: &Runtime,
     explicit: Option<&str>,
+    missing: &Missing,
 ) -> Result<ChainRef> {
     match resolve::select(chainz.config(), Some(runtime), explicit, chainz.env())? {
         Some((target, Source::Default)) => {
@@ -49,13 +66,7 @@ pub fn select_target(
             Ok(target)
         }
         Some((target, _)) => Ok(target),
-        None => pick_chain(
-            chainz,
-            &mut Tty,
-            "Select a chain",
-            "pass one, set $CHAINZ_CHAIN, or set a default with `chainz use <chain>`",
-        )
-        .map(ChainRef::Configured),
+        None => pick_chain(chainz, &mut Tty, "Select a chain", missing).map(ChainRef::Configured),
     }
 }
 

@@ -3,7 +3,7 @@
 
 use crate::cli::{ContextArgs, EnvArgs, ExecArgs, ShellKind};
 use crate::load::open;
-use crate::select::select_target;
+use crate::select::{Missing, NAME_A_CHAIN, select_target};
 use crate::ui;
 use anyhow::Result;
 use chainz_core::Chainz;
@@ -12,8 +12,9 @@ use chainz_core::contract::RAW_PRIVATE_KEY;
 use chainz_core::runtime::Runtime;
 use chainz_core::signer::SystemKeyBackend;
 
-/// The resolved context for `exec`, `env` or `shell`.
+/// The resolved context for `command`: `exec`, `env` or `shell`.
 fn context_for(
+    command: &str,
     chainz: &Chainz,
     runtime: &Runtime,
     args: &ContextArgs,
@@ -23,7 +24,12 @@ fn context_for(
         expose_key,
         ..ExecOptions::from(args)
     };
-    let target = select_target(chainz, runtime, args.chain.as_deref())?;
+    let off_tty = format!("pass one, {NAME_A_CHAIN}");
+    let missing = Missing {
+        command: &[command],
+        off_tty: &off_tty,
+    };
+    let target = select_target(chainz, runtime, args.chain.as_deref(), &missing)?;
     context::build(chainz, runtime, &target, &opts)
 }
 
@@ -40,7 +46,7 @@ fn exports(ctx: &Context) -> Result<Exports> {
 pub fn exec(args: &ExecArgs) -> Result<i32> {
     let chainz = open()?;
     let runtime = Runtime::resolve()?;
-    let mut ctx = context_for(&chainz, &runtime, &args.context, args.expose_key)?;
+    let mut ctx = context_for("exec", &chainz, &runtime, &args.context, args.expose_key)?;
     let expander = Expander::new(&chainz, &runtime, &ctx, args.context.direct);
     let argv = expander.expand_args(&args.command)?;
     for warning in expander.warnings() {
@@ -126,7 +132,7 @@ fn explain(ctx: &Context, exports: &Exports, argv: &[context::ExpandedArg]) -> S
 pub fn shell(args: &ContextArgs) -> Result<i32> {
     let chainz = open()?;
     let runtime = Runtime::resolve()?;
-    let ctx = context_for(&chainz, &runtime, args, false)?;
+    let ctx = context_for("shell", &chainz, &runtime, args, false)?;
     let exports = exports(&ctx)?;
     let shell = user_shell();
     eprintln!(
@@ -154,7 +160,7 @@ pub fn shell(args: &ContextArgs) -> Result<i32> {
 pub fn env(args: &EnvArgs) -> Result<i32> {
     let chainz = open()?;
     let runtime = Runtime::resolve()?;
-    let ctx = context_for(&chainz, &runtime, &args.context, false)?;
+    let ctx = context_for("env", &chainz, &runtime, &args.context, false)?;
     let exports = exports(&ctx)?;
     let kind =
         args.shell.unwrap_or_else(

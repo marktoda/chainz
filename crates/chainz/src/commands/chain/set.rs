@@ -7,7 +7,7 @@ use crate::cli::{ChainSetArgs, usage_error};
 use crate::load::open;
 use crate::probe::check;
 use crate::prompt::{self, Ask, StdinTrim, Tty, read_stdin_secret};
-use crate::select::pick_chain;
+use crate::select::{Missing, pick_chain};
 use crate::view;
 use anyhow::Result;
 use chainz_core::model::{Config, Explorer};
@@ -36,7 +36,10 @@ pub fn set(args: &ChainSetArgs, command: &[&str]) -> Result<i32> {
             &chainz,
             &mut Tty,
             "Chain to change",
-            "pass the chain to change",
+            &Missing {
+                command,
+                off_tty: "pass the chain to change",
+            },
         )?,
     };
     flags.api_key = api_key(args)?;
