@@ -35,8 +35,8 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Run cargo test
-        run: cargo test --locked --workspace --all-targets
+      - name: Run tests
+        run: scripts/check.sh test
         env:
           CHAINZ_REQUIRE_TOOLS: "1"
 
@@ -55,21 +55,8 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Run cargo fmt
-        run: cargo fmt --all -- --check
-
-      - name: Run cargo clippy
-        run: cargo clippy --locked --workspace --all-targets -- -D warnings
-
-      # The tui's dev-dependency turns on chainz-serve/testing for the
-      # whole workspace; lint the gateway as it ships, without it.
-      - name: Run cargo clippy (chainz-serve without testing)
-        run: cargo clippy --locked -p chainz-serve --lib -- -D warnings
-
-      - name: Check rustdoc
-        run: cargo doc --locked --workspace --no-deps
-        env:
-          RUSTDOCFLAGS: -D warnings
+      - name: Run fmt, clippy and rustdoc
+        run: scripts/check.sh lint
 
   msrv:
     name: MSRV (rust-version in Cargo.toml)
@@ -94,15 +81,15 @@ jobs:
         run: cargo check --locked --workspace --all-targets
 
   perf:
-    name: Hot-path perf gate (v2 <= 85% of v1)
+    name: Hot-path perf gate (<= 85% of 0.4)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout sources
         uses: actions/checkout@v4
 
-      # v1 is pinned to its last commit (c964bce, PR #14): main is v2 since
-      # v2.0.0, and the v0.4.0 tag predates c964bce.
-      - name: Checkout v1 (c964bce, last v1 commit)
+      # The baseline is the last 0.4 commit (c964bce, PR #14, after the
+      # v0.4.0 tag). Once 2.0.0 is published, compare against it instead.
+      - name: Checkout 0.4 baseline (c964bce)
         uses: actions/checkout@v4
         with:
           ref: c964bceb3cc028b342459418902a17cc853a8836
@@ -123,7 +110,7 @@ jobs:
             .
             v1
 
-      - name: Build v1 and v2
+      - name: Build 0.4 and this commit
         run: |
           cargo build --release --locked -p chainz
           cargo build --release --locked --manifest-path v1/Cargo.toml

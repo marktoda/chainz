@@ -1,18 +1,15 @@
 # Releasing chainz
 
-Releases are intentionally tag-gated. Pushing a version tag publishes the
-workspace's six crates and creates a GitHub release, but only after the
-release candidate passes its tests and package-content check. All six share
-the one version in the root `Cargo.toml`, and `cargo publish --workspace`
-uploads them in dependency order:
+Releases are tag-gated. Pushing a version tag publishes the workspace's six
+crates and creates a GitHub release, but only after the release candidate
+passes its tests and package check. All six share the one version in the
+root `Cargo.toml`, and `cargo publish --workspace` uploads them in
+dependency order (see [docs/architecture.md](docs/architecture.md#crates)).
 
-1. `chainz-os` (no workspace dependencies)
-2. `chainz-core` (os)
-3. `chainz-rpc` (os; not core)
-4. `chainz-serve` (os, core, rpc)
-5. `chainz-tui` (os, core, rpc; serve with its `testing` feature as a
-   dev-dependency, so serve goes first)
-6. `chainz` (all of the above)
+The five library crates (`chainz-os`, `-core`, `-rpc`, `-serve`, `-tui`)
+are published only because `chainz` depends on them. They have no stable
+API: any release may break them, and their version always moves with
+`chainz`'s.
 
 ## One-time repository setup
 
@@ -25,14 +22,15 @@ uploads them in dependency order:
 
 1. Confirm CI is green on `main`. The release job does not install anvil,
    so CI is where the fork tests run.
-2. Replace `Unreleased` in `CHANGELOG.md` with the release date.
+2. In `CHANGELOG.md`, replace `Unreleased` with the release date. The
+   GitHub release notes are that version's section
+   (`scripts/release-notes.sh VERSION` prints them), and the release job
+   fails before publishing when it is missing.
 3. Set the intended version in the root `Cargo.toml`, in both
    `[workspace.package]` and the five `[workspace.dependencies]` path
    entries, then run `cargo update -w` so `Cargo.lock` records it.
-4. Run `cargo fmt --all -- --check`,
-   `cargo clippy --locked --workspace --all-targets -- -D warnings`,
-   `CHAINZ_REQUIRE_TOOLS=1 cargo test --locked --workspace --all-targets`,
-   and `cargo package --locked --workspace`.
+4. Run `CHAINZ_REQUIRE_TOOLS=1 scripts/check.sh` and
+   `cargo package --locked --workspace`.
 5. Merge the release-preparation change to `main`.
 6. Create and push an annotated tag, for example:
 

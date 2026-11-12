@@ -4,6 +4,9 @@
 #
 #   scripts/perf-gate.sh V1_BIN V2_BIN [MAX_RATIO]
 #
+# V1_BIN is chainz 0.4 as CI builds it: commit c964bce, `cargo build
+# --release`. V2_BIN is this tree's `cargo build --release -p chainz`.
+#
 # Every run uses scratch HOME/XDG directories and CHAINZ_DISABLE_KEYRING, so
 # the caller's real config, keyring and state are never read or written.
 set -euo pipefail
