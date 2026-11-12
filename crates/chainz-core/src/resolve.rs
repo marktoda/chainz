@@ -8,7 +8,7 @@
 //!
 //! Within a reference: an exact chain ID, an exact name or alias
 //! (case-insensitive), then a well-known long name as an implicit alias
-//! ([`implicit_alias`]: `arbitrum` finds the chain with ID 42161), then a
+//! (an implicit alias: `arbitrum` finds the chain with ID 42161), then a
 //! live fork's exact name, then an unambiguous prefix of a name or alias. Configured chains come first: a fork never
 //! shadows one, and a dead fork never resolves. Each command matches under one [`Policy`]; destructive commands
 //! use [`Policy::Exact`]: name or ID only.
@@ -146,7 +146,7 @@ pub fn configured<'c>(
 }
 
 /// [`Policy::Prefix`]'s exact matches only: an ID (an unknown ID is an
-/// error), then a name or alias in any case, then an [`implicit_alias`].
+/// error), then a name or alias in any case, then an implicit alias (a long name like `arbitrum`).
 /// The gateway resolves its URL paths this way, so they name the chains
 /// the CLI's references do.
 pub fn exact<'c>(config: &'c Config, query: &str) -> Result<Option<(&'c str, &'c Chain)>> {
@@ -168,7 +168,7 @@ pub fn exact<'c>(config: &'c Config, query: &str) -> Result<Option<(&'c str, &'c
 /// ([`names::LONG_NAMES`](crate::names::LONG_NAMES): `arbitrum`,
 /// `ethereum`), as an implicit alias of the chain with that ID. Callers try
 /// it only after every configured name and alias, so those always win.
-pub fn implicit_alias<'c>(config: &'c Config, query: &str) -> Option<(&'c str, &'c Chain)> {
+pub(crate) fn implicit_alias<'c>(config: &'c Config, query: &str) -> Option<(&'c str, &'c Chain)> {
     crate::names::long_name_id(query).and_then(|id| config.chain_by_id(id))
 }
 

@@ -13,8 +13,10 @@ pub struct Address([u8; 20]);
 /// Why a string is not a valid address.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AddressError {
+    /// Not `0x` and 40 hex characters.
     #[error("address must be 0x followed by 40 hex characters")]
     Format,
+    /// Mixed case that is not the EIP-55 checksum.
     #[error("address has an invalid EIP-55 checksum")]
     Checksum,
 }

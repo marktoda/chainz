@@ -115,7 +115,7 @@ pub fn explorers(current: &OsStr) -> Vec<CompletionCandidate> {
     };
     let mut out = Candidates::new(prefix);
     for (name, explorer) in &config.explorers {
-        out.push(name, chainz_core::redact::url(&explorer.api, false));
+        out.push(name, chainz_core::redact::url(&explorer.api));
     }
     out.push(
         chainz_core::model::Explorer::ETHERSCAN,

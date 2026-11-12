@@ -339,7 +339,7 @@ impl Tx {
 
     /// Add an endpoint from a user's URL to chain `chain`: the one way
     /// `add`, `update --rpc URL`, `update --add-rpc` and `doctor --discover` do
-    /// it. The URL and name are checked by [`Chain::new_endpoint`] (which
+    /// it. The URL and name are checked by `Chain::new_endpoint` (which
     /// also names it when `name` is `None`, and refuses a URL the chain
     /// has, by [`Endpoint::same_url`] over `secrets.toml`'s variables), and
     /// literal secrets in the URL and headers move into variables. Returns
@@ -383,7 +383,7 @@ impl Tx {
     }
 
     /// Remove an endpoint and its failover entry.
-    pub fn remove_endpoint(&mut self, chain: &str, name: &str) -> Result<()> {
+    pub(crate) fn remove_endpoint(&mut self, chain: &str, name: &str) -> Result<()> {
         self.update_chain(chain, |c| {
             if c.rpcs.shift_remove(name).is_none() {
                 bail!("chain '{chain}' has no endpoint '{name}'");

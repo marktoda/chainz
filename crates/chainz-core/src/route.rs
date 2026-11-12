@@ -92,7 +92,7 @@ impl Route {
             chain_id,
             chain: chain.to_string(),
             endpoint: endpoint.to_string(),
-            display: redact::url(&url, false),
+            display: redact::url(&url),
             url,
             headers: Vec::new(),
             via_gateway: true,
@@ -189,7 +189,7 @@ impl Chainz {
             endpoint: endpoint_name.to_string(),
             url: expanded.url,
             headers: expanded.headers,
-            display: redact::url(&endpoint.url, false),
+            display: redact::url(&endpoint.url),
             via_gateway: false,
             websocket: endpoint.is_websocket(),
         })

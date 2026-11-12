@@ -81,7 +81,7 @@ pub fn context_tokens() -> impl Iterator<Item = &'static str> {
 
 /// Short names for well-known chain IDs (first match wins in reverse
 /// lookups). Unknown IDs fall back to [`slugify`] of the chainlist name.
-pub const SHORT_NAMES: &[(u64, &str)] = &[
+pub(crate) const SHORT_NAMES: &[(u64, &str)] = &[
     (1, "eth"),
     (10, "op"),
     (56, "bsc"),
@@ -122,7 +122,7 @@ pub const SHORT_NAMES: &[(u64, &str)] = &[
 /// tried after every configured name and alias
 /// ([`crate::resolve::implicit_alias`]). Each names one chain, and none is
 /// a short name, so they add no ambiguity.
-pub const LONG_NAMES: &[(u64, &str)] = &[
+pub(crate) const LONG_NAMES: &[(u64, &str)] = &[
     (1, "ethereum"),
     (1, "mainnet"),
     (10, "optimism"),
@@ -134,7 +134,7 @@ pub const LONG_NAMES: &[(u64, &str)] = &[
 ];
 
 /// The chain ID a [long name](LONG_NAMES) stands for, in any case.
-pub fn long_name_id(name: &str) -> Option<u64> {
+pub(crate) fn long_name_id(name: &str) -> Option<u64> {
     LONG_NAMES
         .iter()
         .find(|(_, long)| long.eq_ignore_ascii_case(name))
@@ -149,7 +149,7 @@ pub fn short_name(chain_id: u64) -> Option<&'static str> {
         .map(|(_, name)| *name)
 }
 
-/// The chain ID of a built-in short or [long](LONG_NAMES) name
+/// The chain ID of a built-in short or long (chainlist) name
 /// (case-insensitive): what `add NAME --url …` resolves offline.
 pub fn builtin_chain_id(name: &str) -> Option<u64> {
     SHORT_NAMES
@@ -213,7 +213,7 @@ const NAME_PATTERN: &str = "[a-z0-9][a-z0-9_-]*";
 
 /// Why `name` cannot be a chain name, if it cannot: it must match
 /// `[a-z0-9][a-z0-9_-]*` and not be all digits (numbers mean chain IDs).
-pub fn check_chain_name(name: &str) -> anyhow::Result<()> {
+pub(crate) fn check_chain_name(name: &str) -> anyhow::Result<()> {
     check_chain_like("chain", name)
 }
 
@@ -412,7 +412,7 @@ pub(crate) fn unique_with(base: &str, sep: char, taken: impl Fn(&str) -> bool) -
 }
 
 /// `base`, or `base-2`, `base-3`… — the first name `taken` rejects.
-pub fn unique_name(base: &str, taken: impl Fn(&str) -> bool) -> String {
+pub(crate) fn unique_name(base: &str, taken: impl Fn(&str) -> bool) -> String {
     unique_with(base, '-', taken)
 }
 

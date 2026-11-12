@@ -59,7 +59,7 @@ pub async fn pin(
             RpcChoice::New(name, endpoint) => {
                 let pinned = Pinned {
                     rpc: endpoint.url.clone(),
-                    label: redact::url(&endpoint.url, false),
+                    label: redact::url(&endpoint.url),
                 };
                 (name, endpoint, pinned)
             }

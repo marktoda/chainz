@@ -156,7 +156,11 @@ impl EndpointPlan {
         EndpointPlan {
             info: EndpointInfo {
                 name: name.to_string(),
-                url: redact::url(&endpoint.url, reveal),
+                url: if reveal {
+                    endpoint.url.clone()
+                } else {
+                    redact::url(&endpoint.url)
+                },
                 websocket: endpoint.is_websocket(),
                 invalid: target.as_ref().err().cloned(),
             },

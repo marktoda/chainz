@@ -177,7 +177,7 @@ impl ChainEdit {
     /// The endpoints this edit adds to `chain` (named `name`), named, with
     /// their role: a new `--rpc` URL (active), then each `--add-rpc`
     /// (spare), the header flags on the one they apply to. URLs are
-    /// checked as [`Chain::new_endpoint`] does, against the chain and each
+    /// checked as `Chain::new_endpoint` does, against the chain and each
     /// other (compared with `vars`). [`Tx::edit_chain`] adds exactly these;
     /// the caller probes them first.
     pub fn added_endpoints(
@@ -231,7 +231,7 @@ pub struct EditReport {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Attach {
     /// The only signer, if there is exactly one, and `[explorers.etherscan]`,
-    /// if it is configured and [covers](Explorer::etherscan_covers) the chain.
+    /// if it is configured and covers the chain.
     Defaults,
     /// The built-in explorer only, on the same terms (`--no-signer`).
     ExplorerOnly,
@@ -247,7 +247,7 @@ pub struct Attached {
     /// The explorer attached, if any.
     pub explorer: Option<String>,
     /// Why `[explorers.etherscan]`, though configured, was not attached
-    /// ([`Explorer::etherscan_gap`]).
+    /// (`Explorer::etherscan_gap`).
     pub explorer_skipped: Option<String>,
     /// Why no signer was attached though some exist: `2 signers to choose
     /// from: a, b`.
@@ -255,7 +255,7 @@ pub struct Attached {
 }
 
 /// The chains with no explorer, split by whether the built-in `etherscan`
-/// [covers](Explorer::etherscan_covers) them: what
+/// covers them: what
 /// [`Tx::attach_explorer_where_missing`] attaches it to, and skips.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MissingExplorers {
@@ -288,8 +288,6 @@ pub struct ExplorersAttached {
     pub api_key_var: Option<String>,
 }
 
-const ETHERSCAN: &str = Explorer::ETHERSCAN;
-
 impl Tx {
     /// Insert a new chain (name, ID and signer checked), first filling in
     /// what `attach` asks for where `chain` names nothing.
@@ -317,12 +315,12 @@ impl Tx {
         }
         if attach != Attach::Nothing
             && chain.explorer.is_none()
-            && config.explorers.contains_key(ETHERSCAN)
+            && config.explorers.contains_key(Explorer::ETHERSCAN)
         {
             match Explorer::etherscan_gap(chain.id) {
                 None => {
-                    chain.explorer = Some(ETHERSCAN.to_string());
-                    attached.explorer = Some(ETHERSCAN.to_string());
+                    chain.explorer = Some(Explorer::ETHERSCAN.to_string());
+                    attached.explorer = Some(Explorer::ETHERSCAN.to_string());
                 }
                 Some(gap) => attached.explorer_skipped = Some(gap),
             }
@@ -365,7 +363,7 @@ impl Tx {
         let mut api_key_var = None;
         for name in &chains.covered {
             let edit = ChainEdit {
-                explorer: Some(Some(ETHERSCAN.to_string())),
+                explorer: Some(Some(Explorer::ETHERSCAN.to_string())),
                 api_key: key.take(),
                 ..ChainEdit::default()
             };
@@ -526,15 +524,16 @@ impl Tx {
             if let Some(explorer) = explorer
                 && !self.config()?.explorers.contains_key(explorer)
             {
-                if explorer != ETHERSCAN {
+                if explorer != Explorer::ETHERSCAN {
                     bail!(
-                        "explorer '{explorer}' not found; `{ETHERSCAN}` is built in, others go in [explorers.NAME] (`chainz edit`)"
+                        "explorer '{explorer}' not found; `{}` is built in, others go in [explorers.NAME] (`chainz edit`)",
+                        Explorer::ETHERSCAN
                     );
                 }
-                self.set_explorer(ETHERSCAN, &Explorer::etherscan())?;
-                report.created_explorer = Some(ETHERSCAN.to_string());
+                self.set_explorer(Explorer::ETHERSCAN, &Explorer::etherscan())?;
+                report.created_explorer = Some(Explorer::ETHERSCAN.to_string());
             }
-            if explorer.as_deref() == Some(ETHERSCAN)
+            if explorer.as_deref() == Some(Explorer::ETHERSCAN)
                 && let Some(gap) = Explorer::etherscan_gap(self.config()?.chains[name].id)
             {
                 report

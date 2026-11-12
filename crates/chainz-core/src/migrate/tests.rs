@@ -175,12 +175,9 @@ fn migration_writes_once_in_order_and_backs_up_v1() {
     let dir = tempfile::tempdir().unwrap();
     let paths = StorePaths::in_dir(dir.path().join("chainz"));
     std::fs::create_dir_all(paths.dir()).unwrap();
-    assert_eq!(status(&paths), Status::NoV1);
+    assert_eq!(pending(&paths), None);
     std::fs::write(paths.v1_config(), FIXTURE).unwrap();
-    assert_eq!(
-        status(&paths),
-        Status::Pending(paths.v1_config().to_path_buf())
-    );
+    assert_eq!(pending(&paths), Some(paths.v1_config().to_path_buf()));
     // The plan is what the migration writes.
     let planned = plan(FIXTURE).unwrap();
 
@@ -200,7 +197,7 @@ fn migration_writes_once_in_order_and_backs_up_v1() {
         .count();
     assert_eq!(migrated, 1);
     assert!(!paths.v1_config().exists());
-    assert_eq!(status(&paths), Status::Done);
+    assert_eq!(pending(&paths), None);
     assert_eq!(
         std::fs::read_to_string(paths.config()).unwrap(),
         planned.config_toml

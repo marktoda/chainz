@@ -163,11 +163,18 @@ impl EndpointView {
     ) -> Self {
         Self {
             name: name.to_string(),
-            url: redact::url(&endpoint.url, reveal),
+            url: if reveal {
+                endpoint.url.clone()
+            } else {
+                redact::url(&endpoint.url)
+            },
             headers: endpoint
                 .headers
                 .iter()
-                .map(|(k, v)| (k.clone(), redact::header(v, reveal)))
+                .map(|(k, v)| {
+                    let v = if reveal { v.clone() } else { redact::header(v) };
+                    (k.clone(), v)
+                })
                 .collect(),
             active: chain.rpc == name,
             failover: chain.failover.iter().any(|f| f == name),
@@ -197,7 +204,13 @@ impl ChainView {
             rpc: chain.rpc.clone(),
             rpc_url: chain
                 .active()
-                .map(|e| redact::url(&e.url, reveal))
+                .map(|e| {
+                    if reveal {
+                        e.url.clone()
+                    } else {
+                        redact::url(&e.url)
+                    }
+                })
                 .unwrap_or_default(),
             failover: chain.failover.clone(),
             signer: chain.signer.clone(),

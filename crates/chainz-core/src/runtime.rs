@@ -248,7 +248,7 @@ impl Runtime {
     }
 
     /// Create the directory (and `forks/`) with mode 0700.
-    pub fn ensure_dir(&self) -> io::Result<()> {
+    pub(crate) fn ensure_dir(&self) -> io::Result<()> {
         chainz_os::create_private_dir(&self.forks_dir())?;
         chainz_os::create_private_dir(&self.dir)
     }

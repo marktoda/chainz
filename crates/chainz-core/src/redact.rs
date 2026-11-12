@@ -2,15 +2,15 @@
 //!
 //! The display policy is [`url()`] and [`header()`]: `${VAR}` templates, hosts
 //! and ordinary paths print verbatim, only credential-shaped parts are
-//! masked as [`REDACTED`], and anything unparseable fails closed. `reveal`
-//! prints the value as stored. Every view of a URL, `Debug` output
-//! included, goes through them.
+//! masked as [`REDACTED`], and anything unparseable fails closed. Every
+//! view of a URL that is not revealed on request, `Debug` output included,
+//! goes through them.
 //!
 //! [`summarize`] (a terse host label) is the stricter view for compact
 //! listings.
 
 use crate::template;
-use crate::urls::{self, is_local_host as is_local, registrable_domain as public_domain};
+use crate::urls;
 
 /// TOML parse errors quote the offending line, which may hold a secret
 /// (an inline credential, a variable value): keep only message and position.
@@ -33,15 +33,12 @@ pub const REDACTED: &str = "[REDACTED]";
 /// What replaces a URL that does not parse.
 const REDACTED_URL: &str = "[REDACTED URL]";
 
-/// `value` (an endpoint or explorer URL) for display: verbatim with
-/// `reveal`, else with user info, credential-shaped host labels, path
-/// segments and query values, known provider keys and the fragment
-/// masked. Templates, hosts and ordinary paths stay readable. A value that
-/// does not parse as a URL is masked whole.
-pub fn url(value: &str, reveal: bool) -> String {
-    if reveal {
-        return value.to_string();
-    }
+/// `value` (an endpoint or explorer URL) for display: user info,
+/// credential-shaped host labels, path segments and query values, known
+/// provider keys and the fragment masked. Templates, hosts and ordinary
+/// paths stay readable. A value that does not parse as a URL is masked
+/// whole.
+pub fn url(value: &str) -> String {
     let Ok(parsed) = url::Url::parse(value) else {
         return REDACTED_URL.to_string();
     };
@@ -54,7 +51,13 @@ pub fn url(value: &str, reveal: bool) -> String {
         let host = urls::unescape_braces(host);
         let labels: Vec<&str> = host
             .split('.')
-            .map(|l| if is_secret_text(l) { REDACTED } else { l })
+            .map(|l| {
+                if urls::is_credential_shaped(l) {
+                    REDACTED
+                } else {
+                    l
+                }
+            })
             .collect();
         out.push_str(&labels.join("."));
     }
@@ -101,13 +104,10 @@ pub fn url(value: &str, reveal: bool) -> String {
     out
 }
 
-/// A header value for display: verbatim with `reveal`, else `${VAR}`
-/// templates and a fixed list of auth schemes and media types kept, and
-/// every other literal word masked (fails closed).
-pub fn header(value: &str, reveal: bool) -> String {
-    if reveal {
-        return value.to_string();
-    }
+/// A header value for display: `${VAR}` templates and a fixed list of
+/// auth schemes and media types kept, and every other literal word masked
+/// (fails closed).
+pub fn header(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for span in template::spans(value) {
         match span {
@@ -155,11 +155,6 @@ fn is_plain_word(word: &str) -> bool {
     word.is_empty() || SHOWN.iter().any(|w| w.eq_ignore_ascii_case(word))
 }
 
-/// Literal text that is credential-shaped (templates never are).
-fn is_secret_text(text: &str) -> bool {
-    urls::is_credential_shaped(text)
-}
-
 /// A path segment or query value that is safe to show: empty, a `${VAR}`
 /// template, a number, a version (`v2`), or a short lowercase word
 /// (`rpc`, `eth-mainnet`, `ext`). Everything else may be a key, so it
@@ -191,14 +186,14 @@ pub fn summarize(value: &str) -> String {
     };
 
     let bare_host = urls::bare(host);
-    let display_host = if is_local(host) {
+    let display_host = if urls::is_local_host(host) {
         if bare_host.contains(':') {
             format!("[{bare_host}]")
         } else {
             bare_host.to_string()
         }
     } else {
-        public_domain(host)
+        urls::registrable_domain(host)
             .map(|domain| {
                 if domain == host {
                     domain.to_string()
@@ -244,63 +239,52 @@ mod tests {
 
     #[test]
     fn display_policy_masks_only_credential_shapes() {
-        let shown = url(
-            "https://mainnet.infura.io/v3/0123456789abcdef0123456789abcdef",
-            false,
-        );
+        let shown = url("https://mainnet.infura.io/v3/0123456789abcdef0123456789abcdef");
         assert_eq!(shown, "https://mainnet.infura.io/v3/[REDACTED]");
         assert_eq!(
-            url("https://mainnet.infura.io/v3/${INFURA_KEY}", false),
+            url("https://mainnet.infura.io/v3/${INFURA_KEY}"),
             "https://mainnet.infura.io/v3/${INFURA_KEY}"
         );
+        assert_eq!(url("https://eth.llamarpc.com"), "https://eth.llamarpc.com/");
         assert_eq!(
-            url("https://eth.llamarpc.com", false),
-            "https://eth.llamarpc.com/"
-        );
-        assert_eq!(
-            url("https://u:p@rpc.example/api?apikey=abc&chain=1#frag", false),
+            url("https://u:p@rpc.example/api?apikey=abc&chain=1#frag"),
             "https://[REDACTED]@rpc.example/api?apikey=[REDACTED]&chain=1#[REDACTED]"
         );
         assert_eq!(
-            url("https://x.example/?chainid=${CHAIN_ID}&key=${K}", false),
+            url("https://x.example/?chainid=${CHAIN_ID}&key=${K}"),
             "https://x.example/?chainid=${CHAIN_ID}&key=${K}"
         );
-        assert_eq!(url("not a url secret", false), "[REDACTED URL]");
-        assert_eq!(url("not a url secret", true), "not a url secret");
+        assert_eq!(url("not a url secret"), "[REDACTED URL]");
         // Short or letters-only literal keys never show: anything that is
         // not a number, version or short lowercase word is masked.
         assert_eq!(
-            url("https://rpc.example/ext/bc/C/rpc/Ab3xYz9", false),
+            url("https://rpc.example/ext/bc/C/rpc/Ab3xYz9"),
             "https://rpc.example/ext/bc/[REDACTED]/rpc/[REDACTED]"
         );
         assert_eq!(
-            url(
-                "https://rpc.example/KJHGFDSAPOIUYTREWQ?token=s3cr3t&page=2",
-                false
-            ),
+            url("https://rpc.example/KJHGFDSAPOIUYTREWQ?token=s3cr3t&page=2"),
             "https://rpc.example/[REDACTED]?token=[REDACTED]&page=2"
         );
         assert_eq!(
-            url("https://x.example/v3/abc12?k=Zz", false),
+            url("https://x.example/v3/abc12?k=Zz"),
             "https://x.example/v3/[REDACTED]?k=[REDACTED]"
         );
         // A known provider key is masked even when short.
         assert_eq!(
-            url("https://eth-mainnet.g.alchemy.com/v2/abcdefgh", false),
+            url("https://eth-mainnet.g.alchemy.com/v2/abcdefgh"),
             "https://eth-mainnet.g.alchemy.com/v2/[REDACTED]"
         );
     }
 
     #[test]
     fn header_policy_keeps_words_and_templates() {
-        assert_eq!(header("Bearer ${TOKEN}", false), "Bearer ${TOKEN}");
-        assert_eq!(header("application/json", false), "application/json");
-        assert_eq!(header("Bearer abc123", false), "Bearer [REDACTED]");
-        assert_eq!(header("sk-live-verylongsecretvalue", false), "[REDACTED]");
-        assert_eq!(header("a, b1", false), "[REDACTED], [REDACTED]");
+        assert_eq!(header("Bearer ${TOKEN}"), "Bearer ${TOKEN}");
+        assert_eq!(header("application/json"), "application/json");
+        assert_eq!(header("Bearer abc123"), "Bearer [REDACTED]");
+        assert_eq!(header("sk-live-verylongsecretvalue"), "[REDACTED]");
+        assert_eq!(header("a, b1"), "[REDACTED], [REDACTED]");
         // Letters-only literal keys are masked too.
-        assert_eq!(header("abcdefghijkl", false), "[REDACTED]");
-        assert_eq!(header("basic ${CREDS}", false), "basic ${CREDS}");
-        assert_eq!(header("Bearer abc123", true), "Bearer abc123");
+        assert_eq!(header("abcdefghijkl"), "[REDACTED]");
+        assert_eq!(header("basic ${CREDS}"), "basic ${CREDS}");
     }
 }

@@ -17,10 +17,13 @@ use std::borrow::Cow;
 /// A template failed to expand. Never contains a resolved value.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum TemplateError {
+    /// The named variable is not set anywhere.
     #[error("variable ${{{0}}} is not set (set it with `chainz var set {0}` or export it)")]
     Unresolved(String),
+    /// A `${` without its closing brace.
     #[error("unterminated `${{` in template")]
     Unterminated,
+    /// A `${…}` whose name is not a valid variable name.
     #[error("invalid variable name `{0}` in template (use letters, digits and _)")]
     InvalidName(String),
 }

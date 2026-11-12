@@ -23,12 +23,8 @@ pub fn check(
     endpoint: &Endpoint,
 ) -> Result<()> {
     let target = net::target(chainz, chain, chain_id, ep, endpoint)?;
-    net::block_on(RpcClient::new().check_chain_id(&target, chain_id)).map_err(|e| {
-        anyhow!(
-            "RPC check failed for {}: {e}",
-            redact::url(&endpoint.url, false)
-        )
-    })
+    net::block_on(RpcClient::new().check_chain_id(&target, chain_id))
+        .map_err(|e| anyhow!("RPC check failed for {}: {e}", redact::url(&endpoint.url)))
 }
 
 /// Probe `urls` for chain `chain_id`. A URL that is not a valid endpoint is
@@ -45,7 +41,7 @@ pub fn probe_urls(chain_id: u64, urls: &[String]) -> Vec<(String, ProbeResult)> 
             }
             Err(e) => eprintln!(
                 "{}",
-                ui::warn(&format!("skipping {}: {e}", redact::url(url, false)))
+                ui::warn(&format!("skipping {}: {e}", redact::url(url)))
             ),
         }
     }
@@ -75,7 +71,7 @@ pub fn ranked_urls(probed: &[(String, ProbeResult)]) -> (Ranking, Vec<String>) {
         .map(|&i| {
             let (url, result) = &probed[i];
             let health = view::health_cell(Some(ranking.health[i]), Some(result.latency));
-            format!("{}  {health}", redact::url(url, false))
+            format!("{}  {health}", redact::url(url))
         })
         .collect();
     (ranking, items)

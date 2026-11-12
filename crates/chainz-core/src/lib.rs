@@ -4,6 +4,8 @@
 //! only this crate, which keeps the hot path honest at compile time (and
 //! the `strace` test checks it at run time).
 
+#![warn(missing_docs)]
+
 pub mod addrbook;
 pub mod address;
 pub mod broadcast;

@@ -219,7 +219,7 @@ impl Endpoint {
 impl fmt::Debug for Endpoint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Endpoint")
-            .field("url", &redact::url(&self.url, false))
+            .field("url", &redact::url(&self.url))
             .field("headers", &self.headers.keys().collect::<Vec<_>>())
             .finish()
     }
@@ -265,13 +265,13 @@ impl Explorer {
     /// The one rule for attaching the built-in explorer by default: `add`
     /// and `init` attach it only where it is covered, and `update
     /// --explorer etherscan` elsewhere warns ([`Explorer::etherscan_gap`]).
-    pub fn etherscan_covers(chain_id: u64) -> bool {
+    pub(crate) fn etherscan_covers(chain_id: u64) -> bool {
         ETHERSCAN_CHAIN_IDS.binary_search(&chain_id).is_ok()
     }
 
     /// Why the built-in explorer does not fit `chain_id`, if it does not:
     /// `etherscan doesn't cover chain ID 31337`.
-    pub fn etherscan_gap(chain_id: u64) -> Option<String> {
+    pub(crate) fn etherscan_gap(chain_id: u64) -> Option<String> {
         (!Self::etherscan_covers(chain_id))
             .then(|| format!("{} doesn't cover chain ID {chain_id}", Self::ETHERSCAN))
     }
@@ -283,7 +283,7 @@ impl Explorer {
 /// another family (Blockscout: Ink, Mode, Soneium, Zora) are not on it.
 /// Update it the way `SHORT_NAMES` and `tokens.toml` are updated: by hand,
 /// from that list.
-pub const ETHERSCAN_CHAIN_IDS: &[u64] = &[
+pub(crate) const ETHERSCAN_CHAIN_IDS: &[u64] = &[
     1,        // Ethereum Mainnet
     10,       // OP Mainnet
     50,       // XDC Mainnet
@@ -364,7 +364,7 @@ fn check_stored_url(url: &str, what: &str) -> anyhow::Result<()> {
 impl fmt::Debug for Explorer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Explorer")
-            .field("api", &redact::url(&self.api, false))
+            .field("api", &redact::url(&self.api))
             .field("key", &self.key.as_ref().map(|_| redact::REDACTED))
             .field("url", &self.url)
             .finish()
@@ -583,7 +583,12 @@ impl Signer {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Record<'a> {
     /// `chains.<chain>.rpcs.<endpoint>`
-    Endpoint { chain: &'a str, endpoint: &'a str },
+    Endpoint {
+        /// The chain's name.
+        chain: &'a str,
+        /// The endpoint's name.
+        endpoint: &'a str,
+    },
     /// `explorers.<explorer>`
     Explorer(&'a str),
 }
@@ -616,7 +621,7 @@ impl Config {
     /// Every value that may hold `${NAME}` templates, with the record it
     /// belongs to, in file order: endpoint URLs and header values, then
     /// explorer API URLs and keys.
-    pub fn templated_fields(&self) -> impl Iterator<Item = (Record<'_>, &str)> {
+    pub(crate) fn templated_fields(&self) -> impl Iterator<Item = (Record<'_>, &str)> {
         let endpoints = self.chains.iter().flat_map(|(chain, c)| {
             c.rpcs.iter().flat_map(move |(ep, e)| {
                 std::iter::once(e.url.as_str())
@@ -700,7 +705,7 @@ impl Config {
 
     /// Why a chain cannot use signer `signer`, if it cannot: it is not
     /// configured.
-    pub fn check_signer(&self, signer: &str) -> anyhow::Result<()> {
+    pub(crate) fn check_signer(&self, signer: &str) -> anyhow::Result<()> {
         if !self.signers.contains_key(signer) {
             anyhow::bail!("signer '{signer}' not found; add it with `chainz signer add {signer}`");
         }
@@ -807,7 +812,7 @@ impl Chain {
     /// (named `name`), if it cannot: it is not one of the chain's
     /// endpoints, it is a websocket (the gateway routes HTTP only), or it
     /// is the active endpoint.
-    pub fn check_failover(&self, name: &str, endpoint: &str) -> anyhow::Result<()> {
+    pub(crate) fn check_failover(&self, name: &str, endpoint: &str) -> anyhow::Result<()> {
         match self.rpcs.get(endpoint) {
             None => {
                 anyhow::bail!("chain '{name}' failover endpoint '{endpoint}' is not in its rpcs")
@@ -838,7 +843,7 @@ impl Chain {
     /// [`Endpoint::check_url`] and be new to the chain (by
     /// [`endpoint_at`](Self::endpoint_at) with `vars`); a given name must
     /// be free.
-    pub fn new_endpoint(
+    pub(crate) fn new_endpoint(
         &self,
         chain: &str,
         url: &str,

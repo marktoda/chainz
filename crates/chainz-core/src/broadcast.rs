@@ -46,6 +46,7 @@ pub struct Run {
     pub file: PathBuf,
     /// The chain ID it ran on.
     pub chain_id: u64,
+    /// The contracts it deployed, in file order.
     pub contracts: Vec<Deployed>,
 }
 
@@ -355,14 +356,19 @@ impl Action {
 /// One planned label.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Planned {
+    /// The run file the deployment came from.
     pub file: PathBuf,
+    /// The chain ID it ran on.
     pub chain_id: u64,
     /// The configured chain the label goes on (the first with the ID), if any.
     pub chain: Option<String>,
+    /// The contract name, when the run file gives one.
     pub contract: Option<String>,
     /// The label name, once one could be made.
     pub name: Option<String>,
+    /// The deployed address, when the run file gives a valid one.
     pub address: Option<Address>,
+    /// What importing it does.
     pub action: Action,
 }
 

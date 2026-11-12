@@ -13,7 +13,8 @@
 
 pub(crate) mod files;
 
-pub use files::{StorePaths, StoreStamp, WriteLock};
+pub(crate) use files::WriteLock;
+pub use files::{StorePaths, StoreStamp};
 
 use crate::contract::Env;
 use crate::migrate::{self, Summary};
@@ -68,7 +69,7 @@ pub(crate) struct ExpandedEndpoint {
 impl std::fmt::Debug for ExpandedEndpoint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ExpandedEndpoint")
-            .field("url", &crate::redact::url(&self.url, false))
+            .field("url", &crate::redact::url(&self.url))
             .field(
                 "headers",
                 &self.headers.iter().map(|(k, _)| k).collect::<Vec<_>>(),
@@ -131,7 +132,7 @@ impl Chainz {
         let mut notices = Vec::new();
         let (mut text, warning) = files::read(paths.config(), access)?;
         notices.extend(warning.map(Notice::Permissions));
-        if text.is_none() && access == Access::Own && paths.v1_source().is_some() {
+        if text.is_none() && access == Access::Own && migrate::pending(&paths).is_some() {
             let lock = WriteLock::acquire(&paths)?;
             if let Some(summary) = migrate::migrate_locked(&lock)? {
                 notices.push(Notice::Migrated {

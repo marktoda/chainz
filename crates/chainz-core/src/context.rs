@@ -90,7 +90,7 @@ impl fmt::Debug for ExplorerContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ExplorerContext")
             .field("name", &self.name)
-            .field("api", &redact::url(&self.api, false))
+            .field("api", &redact::url(&self.api))
             .field("key", &self.key.as_ref().map(|_| redact::REDACTED))
             .field("key_error", &self.key_error)
             .field("etherscan", &self.etherscan)
@@ -166,7 +166,7 @@ impl EnvVar {
     pub fn display(&self) -> String {
         match self.shown {
             Shown::Plain => self.value.clone(),
-            Shown::Url => redact::url(&self.value, false),
+            Shown::Url => redact::url(&self.value),
             Shown::Headers => self
                 .value
                 .split(',')
@@ -786,7 +786,7 @@ impl<'a> Expander<'a> {
                     .ok_or_else(|| anyhow!("chain '{chain}' has no explorer"))?;
                 ExpandedArg {
                     value: explorer.api.clone(),
-                    display: redact::url(&explorer.api, false),
+                    display: redact::url(&explorer.api),
                 }
             }
             ContextToken::ExplorerKey => {

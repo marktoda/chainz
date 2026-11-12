@@ -111,8 +111,9 @@ pub struct StoreStamp {
 
 /// The exclusive cross-process write lock on `config.lock`; released on
 /// drop. Holding one is the proof that a locked operation may run.
-pub struct WriteLock {
-    file: std::fs::File,
+pub(crate) struct WriteLock {
+    /// Held only to be closed: closing it releases the lock.
+    _file: std::fs::File,
     paths: StorePaths,
 }
 
@@ -122,7 +123,7 @@ impl WriteLock {
         let file = chainz_os::lock_file(&paths.lock)
             .with_context(|| format!("failed to lock {}", paths.lock.display()))?;
         Ok(Self {
-            file,
+            _file: file,
             paths: paths.clone(),
         })
     }
@@ -130,12 +131,6 @@ impl WriteLock {
     /// The paths this lock guards.
     pub fn paths(&self) -> &StorePaths {
         &self.paths
-    }
-}
-
-impl Drop for WriteLock {
-    fn drop(&mut self) {
-        let _ = self.file.unlock();
     }
 }
 

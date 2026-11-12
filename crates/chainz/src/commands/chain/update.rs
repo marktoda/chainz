@@ -204,7 +204,7 @@ pub(super) fn menu(
                         format!(
                             "{} {ep}  {}",
                             view::marker(ep == &chain.rpc, chain.failover.contains(ep)),
-                            chainz_core::redact::url(&e.url, false)
+                            chainz_core::redact::url(&e.url)
                         )
                     })
                     .collect();
@@ -340,12 +340,10 @@ impl Shown {
             rpc: match edit.rpc_choice(name, chain, vars) {
                 Ok(None) => chain.rpc.clone(),
                 Ok(Some(RpcChoice::Existing(endpoint))) => endpoint,
-                Ok(Some(RpcChoice::New(_, endpoint))) => {
-                    chainz_core::redact::url(&endpoint.url, false)
-                }
+                Ok(Some(RpcChoice::New(_, endpoint))) => chainz_core::redact::url(&endpoint.url),
                 // Neither an endpoint nor a usable URL (`Done` reports
                 // why): shown redacted, as it may hold a key.
-                Err(_) => chainz_core::redact::url(edit.rpc.as_deref().unwrap_or_default(), false),
+                Err(_) => chainz_core::redact::url(edit.rpc.as_deref().unwrap_or_default()),
             },
             signer: match &edit.signer {
                 Some(signer) => or_dash(signer.as_deref()),

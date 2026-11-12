@@ -411,7 +411,7 @@ mod tests {
             started_at: 0,
             ready: true,
         };
-        rt.ensure_dir().unwrap();
+        std::fs::create_dir_all(rt.forks_dir()).unwrap();
         std::fs::write(
             rt.forks_dir().join("gone-fork.json"),
             serde_json::to_vec(&record).unwrap(),

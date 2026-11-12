@@ -492,7 +492,7 @@ pub(crate) fn decrypt(secret: &SignerSecret, password: &str) -> Result<Zeroizing
 /// Read the address field of a Foundry keystore file without decrypting
 /// it: `None` when it has none (`cast wallet new` writes none). A missing
 /// or unreadable file, or one that is not a keystore, is an error.
-pub fn keystore_address(path: &std::path::Path) -> Result<Option<Address>> {
+pub(crate) fn keystore_address(path: &std::path::Path) -> Result<Option<Address>> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {

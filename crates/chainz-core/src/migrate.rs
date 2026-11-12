@@ -3,7 +3,7 @@
 //!
 //! 1. Runs under the config write lock and re-checks that `config.toml` is
 //!    still absent, so parallel `exec`s migrate exactly once.
-//! 2. Chains get short names from [`crate::names::SHORT_NAMES`] (else a slug);
+//! 2. Chains get short names from the built-in short-name table (else a slug);
 //!    the old name becomes an alias. Chains sharing a chain ID are merged.
 //!    An alias that is another chain's name or alias is dropped.
 //! 3. Every endpoint is kept and named after its host, `-ws` for websockets,
@@ -200,7 +200,7 @@ impl Summary {
 }
 
 /// A computed migration: the two files to write and the summary.
-pub struct Plan {
+pub(crate) struct Plan {
     /// New `config.toml`.
     pub config_toml: String,
     /// New `secrets.toml`.
@@ -852,26 +852,13 @@ fn backup_path(source: &Path) -> PathBuf {
     }
 }
 
-/// Whether a v1 config is waiting to be migrated.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Status {
-    /// `config.toml` exists: migrated, or never v1.
-    Done,
-    /// No `config.toml` and no v1 file.
-    NoV1,
-    /// The v1 file to migrate.
-    Pending(PathBuf),
-}
-
-/// Where `paths` stand (see [`Status`]).
-pub fn status(paths: &StorePaths) -> Status {
+/// The v1 file waiting to be migrated: there is one, and no `config.toml`
+/// yet.
+pub(crate) fn pending(paths: &StorePaths) -> Option<PathBuf> {
     if paths.config().exists() {
-        return Status::Done;
+        return None;
     }
-    match paths.v1_source() {
-        Some(source) => Status::Pending(source),
-        None => Status::NoV1,
-    }
+    paths.v1_source()
 }
 
 /// [`plan`] for the v1 file at `source`.
@@ -883,9 +870,9 @@ fn plan_file(source: &Path) -> Result<Plan> {
 
 /// Migrate under `lock`. Returns `None` when there was nothing to do
 /// (config.toml exists, or no v1 file).
-pub fn migrate_locked(lock: &WriteLock) -> Result<Option<Summary>> {
+pub(crate) fn migrate_locked(lock: &WriteLock) -> Result<Option<Summary>> {
     let paths = lock.paths();
-    let Status::Pending(source) = status(paths) else {
+    let Some(source) = pending(paths) else {
         return Ok(None);
     };
     let mut plan = plan_file(&source)?;
