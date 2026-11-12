@@ -61,22 +61,31 @@ jobs:
       - name: Run cargo clippy
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
+      # The tui's dev-dependency turns on chainz-serve/testing for the
+      # whole workspace; lint the gateway as it ships, without it.
+      - name: Run cargo clippy (chainz-serve without testing)
+        run: cargo clippy --locked -p chainz-serve --lib -- -D warnings
+
       - name: Check rustdoc
         run: cargo doc --locked --workspace --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
 
   msrv:
-    name: MSRV (1.90)
+    name: MSRV (rust-version in Cargo.toml)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout sources
         uses: actions/checkout@v4
 
+      - name: Read the MSRV from Cargo.toml
+        id: msrv
+        run: echo "version=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)" >> "$GITHUB_OUTPUT"
+
       - name: Install MSRV toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.90"
+          toolchain: ${{ steps.msrv.outputs.version }}
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2

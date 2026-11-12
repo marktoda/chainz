@@ -24,7 +24,7 @@ dirs = "6"
 zeroize.workspace = true
 aes-gcm = "0.10"
 argon2 = "0.5"
-base64 = "0.22"
+base64.workspace = true
 rand.workspace = true
 keyring = { version = "3", features = ["apple-native", "sync-secret-service", "vendored"] }
 

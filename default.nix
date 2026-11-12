@@ -12,7 +12,7 @@ in
       fileset = fs.unions [
         ./Cargo.toml
         ./Cargo.lock
-        ./README.md
+        ./README.md # the chainz crate's readme (crates/chainz/Cargo.toml)
         ./crates
       ];
     };

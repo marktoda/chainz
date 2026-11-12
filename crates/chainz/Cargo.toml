@@ -23,7 +23,6 @@ chainz-os.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-indexmap.workspace = true
 tokio.workspace = true
 clap = { version = "4", features = ["derive"] }
 clap_complete = { version = "4.6", features = ["unstable-dynamic"] }
@@ -35,5 +34,6 @@ libc.workspace = true
 tempfile.workspace = true
 
 [dev-dependencies]
+indexmap.workspace = true
 assert_cmd = "2"
 predicates = "3"

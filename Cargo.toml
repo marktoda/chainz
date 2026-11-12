@@ -41,6 +41,7 @@ hex = "0.4"
 rand = "0.9"
 zeroize = "1"
 libc = "0.2"
+base64 = "0.22"
 
 [profile.release]
 lto = "thin"
