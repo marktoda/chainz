@@ -52,6 +52,17 @@ impl<'a> Ctx<'a> {
     }
 }
 
+/// Rows of a screen that are not the tab's table or message: the title
+/// bar, the context line and the footer.
+pub const CHROME_ROWS: u16 = 3;
+
+/// The height of a screen just tall enough for a table of `rows` rows and
+/// its header (and never under six rows): what `--once` lays a message out
+/// in, chrome included.
+pub fn screen_height(rows: usize) -> u16 {
+    u16::try_from(rows).unwrap_or(u16::MAX - 8).max(6) + 1 + CHROME_ROWS
+}
+
 /// Smallest terminal the dashboard lays out in.
 const MIN_WIDTH: u16 = 28;
 const MIN_HEIGHT: u16 = 5;

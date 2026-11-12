@@ -215,17 +215,16 @@ fn once_json_matches_the_golden_files() {
     }
 }
 
-/// What `--once` printed before it had its own writer: the live frame,
-/// drawn by ratatui, with the tab bar, the key hints and the selection
-/// marker taken off; the Balances frames drawn without the chains that
-/// are down. The text writer must print exactly this, then its line
-/// naming those chains.
+/// The live frame of the same size, drawn by ratatui, with the tab bar,
+/// the key hints and the selection marker taken off; the Balances frames
+/// drawn without the chains that are down. `--once` text must print
+/// exactly this, then its line naming those chains: this keeps its own
+/// writer laid out like the screen.
 fn screen_text(state: &State, now_ms: u64) -> String {
     use crate::app::{App, Tab};
+    use crate::once::WIDTH;
     use crate::ui::theme::Theme;
-    const WIDTH: u16 = 120;
-    let rows = u16::try_from(state.chains.len()).unwrap_or(u16::MAX - 8);
-    let height = rows.max(6) + 4;
+    let height = crate::ui::screen_height(state.chains.len());
     let mut app = App::default();
     let mut out = String::new();
     let mut frame = |app: &App, state: &State| {

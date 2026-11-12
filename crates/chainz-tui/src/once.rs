@@ -24,7 +24,7 @@ use crate::ui::{self, Body, Content, Ctx};
 pub type WarnFn = Box<dyn FnMut(&str)>;
 
 /// The width the text tables are laid out for.
-const WIDTH: u16 = 120;
+pub(crate) const WIDTH: u16 = 120;
 
 /// Poll every chain once and print the result; warnings go to `warn`.
 pub(crate) fn run(
@@ -68,8 +68,7 @@ pub(crate) fn run(
 pub(crate) fn text(state: &State, now_ms: u64) -> String {
     // The room a message gets: what the screen would leave under the
     // context line if it were just tall enough for every chain.
-    let rows = u16::try_from(state.chains.len()).unwrap_or(u16::MAX - 8);
-    let room = rows.max(6) + 1;
+    let room = ui::screen_height(state.chains.len()) - ui::CHROME_ROWS;
     let mut app = App::default();
     fn ctx<'a>(app: &'a App, state: &'a State, now_ms: u64) -> Ctx<'a> {
         Ctx {
