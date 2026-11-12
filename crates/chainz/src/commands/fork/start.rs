@@ -262,14 +262,14 @@ async fn start_fork(supervisor: &mut Supervisor, job: &Job<'_>) -> Result<Runnin
         ..
     } = *job;
     let client = RpcClient::new();
-    let (endpoint, target) = endpoint::choose(chainz, parent, chain, args.block, &client).await?;
+    let (endpoint, _) = endpoint::choose(chainz, parent, chain, args.block, &client).await?;
 
     // One upstream for the fork's whole life, always behind our own
     // proxy: the real endpoint, or a running gateway pinned to it. Anvil's
     // argv (world-readable in /proc) then only ever holds the proxy's
     // per-fork token, never the gateway's token or an endpoint secret.
     // Retries stay on that endpoint: mixing nodes would corrupt the fork.
-    let (target, route) = endpoint::route(runtime, parent, chain.id, &endpoint, target)?;
+    let (target, route) = endpoint::upstream(chainz, runtime, parent, &endpoint)?;
     let upstream = Arc::new(HttpUpstream::new(client.clone()));
     let proxy = PinnedProxy::start(upstream, target, RetryPolicy::same_endpoint_transient())
         .await

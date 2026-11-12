@@ -305,15 +305,6 @@ impl Runtime {
         })
     }
 
-    /// **Exec seam for the gateway.** The loopback URL `exec` should use for
-    /// `chain` (pinned to `endpoint` when given) while a gateway is up.
-    pub fn gateway_url(&self, chain: &str, endpoint: Option<&str>) -> io::Result<Option<String>> {
-        Ok(match self.gateway()? {
-            GatewayState::Up(info) => Some(info.addr().url(chain, endpoint)),
-            GatewayState::Down | GatewayState::Starting => None,
-        })
-    }
-
     /// For the gateway: take `serve.lock` for the process lifetime, and
     /// remove the `serve.json` a dead gateway left (failing if it can't be
     /// removed, so nobody reads a dead gateway's record while we run).

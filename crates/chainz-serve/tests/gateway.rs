@@ -824,14 +824,7 @@ async fn inspector_control_api_and_runtime_files() {
         assert_eq!(mode, 0o600, "{}", file.display());
     }
     // The exec seam hands out exactly the URLs the gateway serves.
-    assert_eq!(
-        runtime.gateway_url("eth", None).unwrap(),
-        Some(rig.gateway().addr().url("eth", None))
-    );
-    assert_eq!(
-        runtime.gateway_url("eth", Some("a")).unwrap(),
-        Some(rig.gateway().addr().url("eth", Some("a")))
-    );
+    assert_eq!(&info.addr(), rig.gateway().addr());
     // A second gateway is refused while this one runs.
     let second = chainz_serve::Gateway::start(Rig::config(rig.dir.path())).await;
     let error = format!("{:#}", second.unwrap_err());

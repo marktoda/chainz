@@ -5,7 +5,8 @@ use crate::{net, ui};
 use anyhow::{Result, anyhow, bail};
 use chainz_core::Chainz;
 use chainz_core::model::Chain;
-use chainz_core::runtime::{GatewayState, Runtime, ServeInfo};
+use chainz_core::route::RouteOpts;
+use chainz_core::runtime::Runtime;
 use chainz_rpc::{Capabilities, RpcClient, Target, probe_capabilities};
 
 /// The one endpoint this fork uses for its whole life.
@@ -41,13 +42,9 @@ pub async fn choose(
     };
 
     let mut candidates: Vec<(String, Target)> = Vec::new();
-    for name in archive_order(chain) {
-        let endpoint = &chain.rpcs[&name];
-        if endpoint.is_websocket() {
-            continue;
-        }
-        match net::target(chainz, parent, chain.id, &name, endpoint) {
-            Ok(target) => candidates.push((name, target)),
+    for (name, endpoint) in chain.endpoints_by_preference(true) {
+        match net::target(chainz, parent, chain.id, name, endpoint) {
+            Ok(target) => candidates.push((name.to_string(), target)),
             Err(e) => eprintln!("{}", ui::warn(&format!("{e:#}"))),
         }
     }
@@ -104,76 +101,34 @@ pub async fn choose(
     })
 }
 
-/// Endpoint names in preference order: active, failover list, the rest.
-fn archive_order(chain: &Chain) -> Vec<String> {
-    let mut order: Vec<String> = Vec::with_capacity(chain.rpcs.len());
-    let preferred = std::iter::once(&chain.rpc).chain(&chain.failover);
-    for name in preferred.chain(chain.rpcs.keys()) {
-        if chain.rpcs.contains_key(name) && !order.contains(name) {
-            order.push(name.clone());
-        }
-    }
-    order
-}
-
-/// The upstream the fork's proxy forwards to: `target` itself, or, when a
-/// gateway is running, the gateway's URL pinned to the same endpoint (so
-/// fork traffic shows in its inspector). Returns the route's name too.
-pub fn route(
+/// The upstream the fork's proxy forwards to: the endpoint itself, or,
+/// when a gateway is running, the gateway pinned to that endpoint (so fork
+/// traffic shows in its inspector). Returns the route's name too. A gateway
+/// whose record can't be read is said, and the fork goes direct.
+pub fn upstream(
+    chainz: &Chainz,
     runtime: &Runtime,
     parent: &str,
-    chain_id: u64,
     endpoint: &str,
-    target: Target,
 ) -> Result<(Target, &'static str)> {
-    match gateway(runtime) {
-        Some(info) => {
-            let url = info.addr().url(parent, Some(endpoint));
-            let target = Target::new(chain_id, endpoint, &url, &[])
-                .map_err(|e| anyhow!("gateway URL: {e}"))?;
-            Ok((target, "gateway"))
-        }
-        None => Ok((target, "proxy")),
-    }
-}
-
-/// The gateway's discovery record, when one is up. A record that can't
-/// be read is said, and the fork goes direct.
-fn gateway(runtime: &Runtime) -> Option<ServeInfo> {
-    match runtime.gateway() {
-        Ok(GatewayState::Up(info)) => Some(info),
-        Ok(GatewayState::Down | GatewayState::Starting) => None,
+    let pinned = |direct| RouteOpts {
+        endpoint: Some(endpoint.to_string()),
+        direct,
+    };
+    let route = match chainz.route(parent, &pinned(false), runtime) {
+        Ok(route) => route,
         Err(e) => {
             eprintln!(
                 "{}",
-                ui::warn(&format!("not using the running gateway: {e}"))
+                ui::warn(&format!("not using the running gateway: {e:#}"))
             );
-            None
+            chainz.route(parent, &pinned(true), runtime)?
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn archive_candidates_prefer_active_then_failover() {
-        let chain: Chain = chainz_core::model::Config::parse(
-            r#"
-[chains.base]
-id = 8453
-rpc = "b"
-failover = ["c", "missing"]
-rpcs.a = "https://a"
-rpcs.b = "https://b"
-rpcs.c = "https://c"
-"#,
-        )
-        .unwrap()
-        .chains
-        .swap_remove("base")
-        .unwrap();
-        assert_eq!(archive_order(&chain), ["b", "c", "a"]);
-    }
+    };
+    let name = if route.via_gateway {
+        "gateway"
+    } else {
+        "proxy"
+    };
+    Ok((net::to_target(&route)?, name))
 }

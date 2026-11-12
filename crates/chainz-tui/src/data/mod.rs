@@ -22,6 +22,7 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
+use chainz_core::route::{self, Route};
 use chainz_core::runtime::{GatewayState, Runtime, ServeInfo};
 use chainz_rpc::{ErrorClass, HealthSample, HealthStore, RpcClient, Target, probe_all};
 use tokio::runtime::Handle;
@@ -204,11 +205,13 @@ impl Shared {
         let Some(active) = chain.active_endpoint() else {
             return (Err(invalid("no active endpoint".into())), false);
         };
-        // The gateway does not route websocket endpoints.
-        if let Some(info) = self.serve_info().filter(|_| !active.websocket) {
-            let url = info.addr().url(&chain.name, None);
-            let target =
-                Target::new(chain.id, "gateway", &url, &[]).map_err(|e| invalid(e.to_string()));
+        if let Some(info) = self
+            .serve_info()
+            .filter(|_| route::uses_gateway(active.websocket, false))
+        {
+            let route = Route::via_gateway(&info, &chain.name, chain.id, "gateway", false);
+            let target = Target::new(route.chain_id, &route.endpoint, &route.url, &route.headers)
+                .map_err(|e| invalid(e.to_string()));
             return (target, true);
         }
         (active.target.clone().map_err(invalid), false)

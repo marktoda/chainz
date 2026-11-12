@@ -21,6 +21,7 @@ pub mod names;
 pub mod paths;
 pub mod redact;
 pub mod resolve;
+pub mod route;
 pub mod runtime;
 pub mod secrets;
 pub mod signer;

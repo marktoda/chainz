@@ -1,8 +1,9 @@
 //! Bridge from config to `chainz-rpc`: async runtime, targets, health store.
 //! Never used by `exec`, `env`, `ls` or `shell`.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use chainz_core::model::Endpoint;
+use chainz_core::route::Route;
 use chainz_core::{Chainz, paths};
 use chainz_rpc::{HealthStore, Target};
 
@@ -24,9 +25,13 @@ pub fn target(
     endpoint_name: &str,
     endpoint: &Endpoint,
 ) -> Result<Target> {
-    let expanded = chainz.expand_endpoint(chain_name, chain_id, endpoint_name, endpoint)?;
-    Target::new(chain_id, endpoint_name, &expanded.url, &expanded.headers)
-        .map_err(|e| anyhow::anyhow!("chain '{chain_name}' endpoint '{endpoint_name}': {e}"))
+    to_target(&chainz.direct_route(chain_name, chain_id, endpoint_name, endpoint)?)
+}
+
+/// The `chainz-rpc` target for a route: the one adapter.
+pub fn to_target(route: &Route) -> Result<Target> {
+    Target::new(route.chain_id, &route.endpoint, &route.url, &route.headers)
+        .map_err(|e| anyhow!("chain '{}' endpoint '{}': {e}", route.chain, route.endpoint))
 }
 
 /// The persisted endpoint health store (empty when unreadable).
