@@ -1,4 +1,7 @@
-//! Raw JSON-RPC forwarding to one chosen endpoint, and the one retry loop.
+//! Raw JSON-RPC forwarding to one chosen endpoint, and the same-endpoint
+//! retry loop ([`RetryPolicy`]) for callers without a rate-limit bucket:
+//! the pinned fork proxy and `doctor`. The gateway sends one attempt at a
+//! time and retries in its router, where buckets and failover live.
 //!
 //! The gateway and the fork proxy forward through [`HttpUpstream`]. It
 //! never fails over to another endpoint; that decision belongs to the

@@ -74,7 +74,6 @@ pub struct Router {
     upstream: HttpUpstream,
     metrics: Metrics,
     inspector: Inspector,
-    policy: RetryPolicy,
 }
 
 /// A chain to route to, with the snapshot it came from.
@@ -98,8 +97,6 @@ impl Router {
             upstream,
             metrics: Metrics::default(),
             inspector,
-            // One attempt per call: the router owns every retry decision.
-            policy: RetryPolicy::none(),
         }
     }
 
@@ -362,7 +359,9 @@ impl Router {
             let sent = Instant::now();
             let result = self
                 .upstream
-                .send(endpoint.target(), body.clone(), &self.policy)
+                // One attempt per call: the router owns every retry
+                // decision (rate-limit buckets, backoff, failover).
+                .send(endpoint.target(), body.clone(), &RetryPolicy::none())
                 .await;
             let latency_ms = millis(sent.elapsed());
             match result {

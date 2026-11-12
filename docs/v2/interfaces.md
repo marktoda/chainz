@@ -520,8 +520,10 @@ mid-read is `RpcError::BodyRead` (class `invalid`). Such a policy also
 retries a 2xx single response carrying -32005, and returns it as it is when
 the retries run out. `error::SERVER_ERROR` names -32000.
 
-`HttpUpstream` retries on the same endpoint only. Failover to another
-endpoint is the gateway's job. `Target::new(chain_id, name, url, &[(String,
+`HttpUpstream` retries on the same endpoint only. `RetryPolicy` is the retry
+loop for callers without a rate-limit bucket (the pinned fork proxy,
+`doctor`). The gateway sends with `RetryPolicy::none()` and retries in
+`Router::try_endpoint`, where its buckets and failover live. `Target::new(chain_id, name, url, &[(String,
 String)])` holds the expanded URL and headers, and its `Debug` redacts them.
 `Retry-After` is clamped to `chainz_rpc::client::MAX_RETRY_AFTER` (60 s).
 `RpcClient` never follows a redirect: a 3xx is `RpcError::Http(status)`, so
