@@ -195,6 +195,10 @@ changed before 2.0.0; they are listed under Removed and Changed.
   under it. Without `--fix`, the closing line says what `--fix` would do
   (`would move 3 credentials, switch 2 active endpoints`) or that it can't
   repair these.
+- `ls` shows each chain's aliases and endpoint count (`EPS`). The `RPC`
+  column names the active endpoint and adds its host only when the name
+  doesn't already say it (`public …base.org`, but `infura`). `--json` is
+  unchanged.
 
 - Writes say what changed: `chain set` and `update` print each change as
   a transition (`active endpoint: alchemy → infura`) with its side effects

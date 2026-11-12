@@ -10,7 +10,7 @@
 
 use crate::ui;
 use chainz_core::model::{Chain, Config, Endpoint};
-use chainz_core::redact;
+use chainz_core::{names, redact};
 use console::{Alignment, pad_str, style};
 use serde::Serialize;
 use std::fmt::Write;
@@ -133,12 +133,14 @@ pub fn chains(config: &Config, reveal: bool) -> Vec<ChainView> {
         .collect()
 }
 
-/// The compact `ls` table.
+/// The compact `ls` table: the active endpoint by name, its host only
+/// when the name doesn't already say it (the full URL with `--reveal`),
+/// and the endpoint count.
 pub fn compact(config: &Config, reveal: bool) -> String {
     if config.chains.is_empty() {
         return no_chains();
     }
-    let rows: Vec<[String; 5]> = config
+    let rows: Vec<[String; 7]> = config
         .chains
         .iter()
         .map(|(name, chain)| {
@@ -147,25 +149,30 @@ pub fn compact(config: &Config, reveal: bool) -> String {
             } else {
                 " "
             };
-            // The compact column is a terse host label (stricter than
-            // `redact::url`); `chain show` and `rpc ls` show the URL.
-            let url = chain
-                .active()
-                .map(|e| match reveal {
-                    true => e.url.clone(),
-                    false => redact::summarize(&e.url),
-                })
-                .unwrap_or_default();
+            // The host is a terse label (stricter than `redact::url`);
+            // `chain show` and `rpc ls` show the URL.
+            let host = match chain.active() {
+                Some(e) if reveal => format!(" {}", ui::dim(&e.url)),
+                Some(e) if !names::named_after_url(&chain.rpc, &e.url) => {
+                    format!(" {}", ui::dim(&redact::summarize(&e.url)))
+                }
+                _ => String::new(),
+            };
             [
                 format!("{marker}{name}"),
                 chain.id.to_string(),
-                format!("{} {}", chain.rpc, ui::dim(&url)),
+                or_dash(&chain.aliases.join(", ")),
+                format!("{}{host}", chain.rpc),
+                chain.rpcs.len().to_string(),
                 or_dash(chain.signer.as_deref().unwrap_or_default()),
                 or_dash(chain.explorer.as_deref().unwrap_or_default()),
             ]
         })
         .collect();
-    table(&[" NAME", "ID", "RPC", "SIGNER", "EXPLORER"], &rows)
+    table(
+        &[" NAME", "ID", "ALIASES", "RPC", "EPS", "SIGNER", "EXPLORER"],
+        &rows,
+    )
 }
 
 /// Left-aligned columns two spaces apart, a bold header row first.

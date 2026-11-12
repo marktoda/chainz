@@ -277,6 +277,19 @@ pub fn endpoint_name_for_url(url: &str) -> String {
     }
 }
 
+/// Whether endpoint `name` is the one [`endpoint_name_for_url`] gives
+/// `url`, or that name made unique (`alchemy-2`): the name already says
+/// where the URL points, so a compact listing can leave the host out.
+pub fn named_after_url(name: &str, url: &str) -> bool {
+    let base = endpoint_name_for_url(url);
+    name.strip_prefix(base.as_str()).is_some_and(|rest| {
+        rest.is_empty()
+            || rest
+                .strip_prefix('-')
+                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    })
+}
+
 /// The provider an endpoint URL points at, for grouping endpoints that
 /// share an API key and rate limit: the host's registrable domain
 /// (`eth-mainnet.g.alchemy.com` → `alchemy.com`), or `host:port` for
@@ -360,6 +373,21 @@ mod tests {
             "cloudflare-eth"
         );
         assert_eq!(endpoint_name_for_url("not a url"), "rpc");
+        assert!(named_after_url("infura", "https://mainnet.infura.io/v3/x"));
+        assert!(named_after_url(
+            "alchemy-3",
+            "https://eth-mainnet.g.alchemy.com/v2/x"
+        ));
+        assert!(named_after_url("local", "http://127.0.0.1:8545"));
+        assert!(!named_after_url("public", "https://mainnet.base.org"));
+        assert!(!named_after_url(
+            "infura-x",
+            "https://mainnet.infura.io/v3/x"
+        ));
+        assert!(!named_after_url(
+            "alchemy-",
+            "https://eth-mainnet.g.alchemy.com/v2/x"
+        ));
         assert_eq!(
             provider_of("https://eth-mainnet.g.alchemy.com/v2/x").as_deref(),
             Some("alchemy.com")
