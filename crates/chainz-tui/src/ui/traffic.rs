@@ -1,5 +1,6 @@
 //! Tab 4: what the gateway is doing, when one runs.
 
+use chainz_core::fmt as core_fmt;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
@@ -33,8 +34,8 @@ fn section(area: Rect, buf: &mut Buffer, ctx: Ctx, title: String, grid: &Grid) {
 fn count(n: u64, t: super::theme::Theme, bad: bool) -> Cell {
     match (n, bad) {
         (0, _) => Cell::new("0", t.faint()),
-        (n, true) => Cell::new(fmt::group(n), t.bad()),
-        (n, false) => Cell::new(fmt::group(n), t.text()),
+        (n, true) => Cell::new(core_fmt::group(n), t.bad()),
+        (n, false) => Cell::new(core_fmt::group(n), t.text()),
     }
 }
 
@@ -64,7 +65,7 @@ fn feed_grid(ctx: Ctx, rows: usize) -> Grid {
             Cell::new(item.method.clone(), t.text()),
             Cell::new(item.summary.clone(), t.dim()),
             Cell::new(item.upstream.clone(), t.dim()),
-            Cell::new(fmt::group(u64::from(item.latency_ms)), t.text()),
+            Cell::new(core_fmt::group(u64::from(item.latency_ms)), t.text()),
             if item.attempts > 1 {
                 status.then(format!(" ×{}", item.attempts), t.warn())
             } else {
@@ -113,7 +114,7 @@ fn endpoints_grid(ctx: Ctx, rows: &[TrafficRow]) -> Grid {
             count(r.errors, t, true),
             match r.rate_limited {
                 0 => Cell::new("0", t.faint()),
-                n => Cell::new(fmt::group(n), t.warn()),
+                n => Cell::new(core_fmt::group(n), t.warn()),
             },
             count(r.failovers, t, false),
             Cell::new(fmt::latency(r.p50_ms), t.text()),
@@ -131,12 +132,12 @@ fn summary(ctx: Ctx, window: Option<&TrafficWindow>) -> Vec<Vec<Span<'static>>> 
     if let Some(w) = window {
         let per = fmt::window(w.window_secs);
         parts.push(vec![
-            Span::styled(fmt::group(w.requests), t.text()),
+            Span::styled(core_fmt::group(w.requests), t.text()),
             Span::styled(format!(" req/{per}"), t.dim()),
         ]);
         let tally = |n: u64, one: &str, many: &str, style| {
             vec![Span::styled(
-                format!("{} {}", fmt::group(n), if n == 1 { one } else { many }),
+                format!("{} {}", core_fmt::group(n), if n == 1 { one } else { many }),
                 if n == 0 { t.dim() } else { style },
             )]
         };
@@ -146,7 +147,7 @@ fn summary(ctx: Ctx, window: Option<&TrafficWindow>) -> Vec<Vec<Span<'static>>> 
     }
     if let Some(traffic) = &ctx.state.traffic {
         parts.push(vec![Span::styled(
-            format!("up {}", fmt::uptime(traffic.uptime_secs)),
+            format!("up {}", core_fmt::uptime(traffic.uptime_secs)),
             t.dim(),
         )]);
         parts.push(vec![Span::styled(

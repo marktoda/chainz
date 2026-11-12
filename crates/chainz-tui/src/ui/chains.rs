@@ -1,5 +1,6 @@
 //! Tab 1: every chain at a glance.
 
+use chainz_core::fmt as core_fmt;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
@@ -18,7 +19,7 @@ pub(super) fn status_cell(status: Status, t: Theme) -> Cell {
     match status {
         Status::Pending => Cell::new("…", t.faint()),
         Status::Ok => Cell::new("ok", t.ok()),
-        Status::Lag(n) => Cell::new(format!("lag {}", fmt::group(n)), t.lag()),
+        Status::Lag(n) => Cell::new(format!("lag {}", core_fmt::group(n)), t.lag()),
         Status::Slow => Cell::new("slow", t.warn()),
         Status::Down(class) => Cell::new(format!("down {class}"), t.bad()),
     }
@@ -51,7 +52,7 @@ fn row(r: &ChainRow, t: Theme) -> Vec<Cell> {
         Cell::new(chain.info.name.clone(), t.text()),
         Cell::new(chain.info.id.to_string(), t.dim()),
         match head {
-            Some(h) => Cell::new(fmt::group(h.number), live),
+            Some(h) => Cell::new(core_fmt::group(h.number), live),
             None if chain.fault.is_some() => blank(),
             None => Cell::new("…", t.faint()),
         },

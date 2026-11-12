@@ -1,5 +1,6 @@
 //! Tab 2: the selected chain's endpoints.
 
+use chainz_core::fmt as core_fmt;
 use ratatui::text::{Line, Span};
 
 use super::grid::{Cell, Col, Grid};
@@ -96,11 +97,11 @@ pub(super) fn body(ctx: Ctx) -> Body {
                 .map_or_else(blank, |ms| Cell::new(fmt::latency(ms), t.dim())),
             r.latest
                 .and_then(|s| s.head)
-                .map_or_else(blank, |head| Cell::new(fmt::group(head), fresh)),
+                .map_or_else(blank, |head| Cell::new(core_fmt::group(head), fresh)),
             match r.lag {
                 Some(0) => Cell::new("0", t.dim()),
                 Some(n) => Cell::new(
-                    fmt::group(n),
+                    core_fmt::group(n),
                     if matches!(r.status, EndpointStatus::Lagging(_)) {
                         t.lag()
                     } else {

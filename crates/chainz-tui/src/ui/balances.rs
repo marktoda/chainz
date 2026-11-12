@@ -1,5 +1,6 @@
 //! Tab 3: one signer's native and token balances on every chain.
 
+use chainz_core::fmt as core_fmt;
 use ratatui::text::{Line, Span};
 
 use super::grid::{Cell, Col, Grid};
@@ -54,7 +55,7 @@ pub(crate) fn body(ctx: Ctx) -> Body {
     let mut chips = vec![Span::styled("signer ", t.dim())];
     for (i, s) in state.signers.iter().enumerate() {
         let address = match &s.address {
-            Some(a) => fmt::short_address(a),
+            Some(a) => core_fmt::short_address(a),
             None => "no address".to_string(),
         };
         if i == shown {

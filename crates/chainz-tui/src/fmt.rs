@@ -1,8 +1,7 @@
 //! Number, time and text formatting shared by the renderer and `--once`.
 
+use chainz_core::fmt::group;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
-
-pub use chainz_core::fmt::{group, short_address, uptime};
 
 /// A coarse age: `4s`, `3m`, `2h`, `5d`.
 pub fn age(secs: u64) -> String {
@@ -142,31 +141,10 @@ pub fn sparkline(samples: &[Option<u32>], width: usize) -> Vec<Option<char>> {
         .collect()
 }
 
-/// Standard base64 with padding (for OSC 52).
-pub fn base64(data: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
-    for chunk in data.chunks(3) {
-        let b = [
-            chunk[0],
-            *chunk.get(1).unwrap_or(&0),
-            *chunk.get(2).unwrap_or(&0),
-        ];
-        let n = u32::from(b[0]) << 16 | u32::from(b[1]) << 8 | u32::from(b[2]);
-        for i in 0..4 {
-            if i <= chunk.len() {
-                out.push(ALPHABET[(n >> (18 - 6 * i) & 63) as usize] as char);
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chainz_core::fmt::short_address;
 
     #[test]
     fn ages() {
@@ -233,18 +211,5 @@ mod tests {
         let line = sparkline(&spiky, 3);
         assert_eq!(line, vec![Some('▁'), None, Some('█')]);
         assert!(sparkline(&[], 8).is_empty());
-    }
-
-    #[test]
-    fn base64_matches_the_rfc_vectors() {
-        for (plain, encoded) in [
-            ("", ""),
-            ("f", "Zg=="),
-            ("fo", "Zm8="),
-            ("foo", "Zm9v"),
-            ("foobar", "Zm9vYmFy"),
-        ] {
-            assert_eq!(base64(plain.as_bytes()), encoded);
-        }
     }
 }

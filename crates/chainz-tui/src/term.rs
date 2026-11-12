@@ -28,7 +28,9 @@ use crate::model::State;
 use crate::plan::Plan;
 use crate::ui::theme::Theme;
 use crate::ui::{self, Ctx};
-use crate::{Options, fmt, load_store};
+use crate::{Options, load_store};
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use chainz_sys::now_ms;
 
 /// How long to wait for a key before looking at worker updates.
@@ -110,7 +112,7 @@ impl Screen {
     /// clipboard tool.
     fn copy(&mut self, text: &str) -> io::Result<()> {
         let mut out = io::stdout();
-        write!(out, "\x1b]52;c;{}\x07", fmt::base64(text.as_bytes()))?;
+        write!(out, "\x1b]52;c;{}\x07", STANDARD.encode(text))?;
         out.flush()
     }
 }
