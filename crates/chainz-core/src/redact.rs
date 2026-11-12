@@ -76,7 +76,11 @@ pub fn url(value: &str) -> String {
             }
         })
         .collect();
-    out.push_str(&segments.join("/"));
+    // The parser adds the root path to `http://host`; print it only when
+    // the value has it, so the display matches the URL chainz exports.
+    if parsed.path() != "/" || has_explicit_path(value) {
+        out.push_str(&segments.join("/"));
+    }
     if let Some(query) = parsed.query() {
         let query = urls::unescape_braces(query);
         let pairs: Vec<String> = query
@@ -102,6 +106,14 @@ pub fn url(value: &str) -> String {
         out.push_str(REDACTED);
     }
     out
+}
+
+/// Whether `value` (a URL) spells out a path after its authority, even
+/// just `/`.
+fn has_explicit_path(value: &str) -> bool {
+    let rest = value.split_once("://").map_or(value, |(_, rest)| rest);
+    rest.find(['/', '?', '#'])
+        .is_some_and(|at| rest.as_bytes()[at] == b'/')
 }
 
 /// A header value for display: `${VAR}` templates and a fixed list of
@@ -237,6 +249,15 @@ mod tests {
         assert_eq!(summarize("http://[::1]:8545"), "http://[::1]:8545");
     }
 
+    /// The display is the exported URL, masked: no root path is added.
+    #[test]
+    fn display_keeps_the_urls_own_path() {
+        assert_eq!(url("http://127.0.0.1:11"), "http://127.0.0.1:11");
+        assert_eq!(url("http://127.0.0.1:11/"), "http://127.0.0.1:11/");
+        assert_eq!(url("http://127.0.0.1:11?x=1"), "http://127.0.0.1:11?x=1");
+        assert_eq!(url("https://rpc.example/v1"), "https://rpc.example/v1");
+    }
+
     #[test]
     fn display_policy_masks_only_credential_shapes() {
         let shown = url("https://mainnet.infura.io/v3/0123456789abcdef0123456789abcdef");
@@ -245,7 +266,7 @@ mod tests {
             url("https://mainnet.infura.io/v3/${INFURA_KEY}"),
             "https://mainnet.infura.io/v3/${INFURA_KEY}"
         );
-        assert_eq!(url("https://eth.llamarpc.com"), "https://eth.llamarpc.com/");
+        assert_eq!(url("https://eth.llamarpc.com"), "https://eth.llamarpc.com");
         assert_eq!(
             url("https://u:p@rpc.example/api?apikey=abc&chain=1#frag"),
             "https://[REDACTED]@rpc.example/api?apikey=[REDACTED]&chain=1#[REDACTED]"

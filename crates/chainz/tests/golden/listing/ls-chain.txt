@@ -13,7 +13,7 @@ Chain eth (ethereum, mainnet)
   ◐  gw        ✗ timed out  3m ago   https://gw.example.invalid/rpc/1
       x-api-key: [REDACTED]
       x-team: ${TEAM}
-  ◐  llama     -            -        https://eth.llamarpc.com/
-     llama-ws  -            -        wss://eth.llamarpc.com/ ws
+  ◐  llama     -            -        https://eth.llamarpc.com
+     llama-ws  -            -        wss://eth.llamarpc.com ws
 
 ● active  ◐ failover

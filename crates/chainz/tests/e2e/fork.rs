@@ -636,7 +636,7 @@ fn rpc_pins_the_upstream_by_name_or_url() {
     let out = fork.wait_for_output("ctrl-c to stop");
     assert!(
         out.contains(&format!(
-            "upstream local/{}/ (pinned, via proxy)",
+            "upstream local/{} (pinned, via proxy)",
             upstream.url()
         )),
         "{out}"
@@ -869,7 +869,7 @@ fn replay_guards_on_a_fork_context() {
     for query in ["31337", "local", "devnet"] {
         let explained = stdout(&sb.run(&["exec", query, "--explain", "--", "true"]));
         assert!(
-            explained.contains("ETH_RPC_URL=http://127.0.0.1:1/\n"),
+            explained.contains("ETH_RPC_URL=http://127.0.0.1:1\n"),
             "{query}: {explained}"
         );
         assert!(explained.contains("CHAINZ_CHAIN=local\n"), "{query}");

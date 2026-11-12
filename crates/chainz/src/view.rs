@@ -486,8 +486,8 @@ mod tests {
         assert_eq!(
             endpoint_table(&endpoints, now),
             "     NAME                      HEALTH  CHECKED  URL
-  ●  a                         42ms    2m ago   https://a.example/
-     gw-uniswap-internal-prod  -       -        https://gw-uniswap-internal-prod.example/
+  ●  a                         42ms    2m ago   https://a.example
+     gw-uniswap-internal-prod  -       -        https://gw-uniswap-internal-prod.example
 "
         );
     }

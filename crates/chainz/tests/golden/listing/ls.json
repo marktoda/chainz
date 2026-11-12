@@ -78,7 +78,7 @@
       },
       {
         "name": "llama",
-        "url": "https://eth.llamarpc.com/",
+        "url": "https://eth.llamarpc.com",
         "active": false,
         "failover": true,
         "websocket": false,
@@ -90,7 +90,7 @@
       },
       {
         "name": "llama-ws",
-        "url": "wss://eth.llamarpc.com/",
+        "url": "wss://eth.llamarpc.com",
         "active": false,
         "failover": false,
         "websocket": true,
@@ -109,7 +109,7 @@
     "id": 8453,
     "aliases": [],
     "rpc": "public",
-    "rpc_url": "https://mainnet.base.org/",
+    "rpc_url": "https://mainnet.base.org",
     "failover": [],
     "signer": "default",
     "wallet": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
@@ -127,7 +127,7 @@
     "endpoints": [
       {
         "name": "public",
-        "url": "https://mainnet.base.org/",
+        "url": "https://mainnet.base.org",
         "active": true,
         "failover": false,
         "websocket": false,

@@ -841,7 +841,7 @@ mod tests {
         };
         assert_eq!(
             (text.as_str(), what.as_str()),
-            ("https://eth.llamarpc.com/", "eth.llama URL")
+            ("https://eth.llamarpc.com", "eth.llama URL")
         );
         // Endpoints: the selected one. Its credential never reaches the
         // clipboard, because the plan holds only the redacted form.

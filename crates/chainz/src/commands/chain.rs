@@ -246,7 +246,10 @@ pub fn add_to(chainz: &mut Chainz, args: &AddArgs, ask: &mut dyn Ask) -> Result<
             }
             eprintln!(
                 "{}",
-                ui::dim(&format!("probing {} public RPCs…", http.len()))
+                ui::dim(&format!(
+                    "probing {}…",
+                    chainz_core::fmt::count(http.len(), "public RPC")
+                ))
             );
             let probed = probe_urls(id, &http);
             let chosen = choose_active(&probed, &entry.name, ask)?;

@@ -77,7 +77,7 @@
     },
     {
       "name": "llama",
-      "url": "https://eth.llamarpc.com/",
+      "url": "https://eth.llamarpc.com",
       "active": false,
       "failover": true,
       "websocket": false,
@@ -89,7 +89,7 @@
     },
     {
       "name": "llama-ws",
-      "url": "wss://eth.llamarpc.com/",
+      "url": "wss://eth.llamarpc.com",
       "active": false,
       "failover": false,
       "websocket": true,

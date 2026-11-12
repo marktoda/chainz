@@ -94,7 +94,7 @@
       "endpoints": [
         {
           "name": "local",
-          "url": "http://127.0.0.1:1/",
+          "url": "http://127.0.0.1:1",
           "active": true,
           "websocket": false,
           "status": "unknown",

@@ -41,7 +41,7 @@
         },
         {
           "name": "llama",
-          "url": "https://eth.llamarpc.com/",
+          "url": "https://eth.llamarpc.com",
           "active": false,
           "websocket": false,
           "status": "unknown",
@@ -105,7 +105,7 @@
       "endpoints": [
         {
           "name": "public",
-          "url": "https://mainnet.base.org/",
+          "url": "https://mainnet.base.org",
           "active": true,
           "websocket": false,
           "status": "unknown",
@@ -139,7 +139,7 @@
       "endpoints": [
         {
           "name": "public",
-          "url": "https://rpc.gnosischain.com/",
+          "url": "https://rpc.gnosischain.com",
           "active": true,
           "websocket": false,
           "status": "unknown",
@@ -173,7 +173,7 @@
       "endpoints": [
         {
           "name": "public",
-          "url": "https://polygon-rpc.com/",
+          "url": "https://polygon-rpc.com",
           "active": true,
           "websocket": false,
           "status": "unknown",
@@ -207,7 +207,7 @@
       "endpoints": [
         {
           "name": "forno",
-          "url": "https://forno.celo.org/",
+          "url": "https://forno.celo.org",
           "active": true,
           "websocket": false,
           "status": "unknown",
@@ -244,7 +244,7 @@
       "endpoints": [
         {
           "name": "local",
-          "url": "http://127.0.0.1:8545/",
+          "url": "http://127.0.0.1:8545",
           "active": true,
           "websocket": false,
           "status": "unknown",
