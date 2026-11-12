@@ -131,6 +131,9 @@ pub struct EditReport {
     pub api_key_var: Option<String>,
     /// Literal secrets moved into variables.
     pub moved: Vec<Moved>,
+    /// What the caller should warn about: the edit applied, but may not do
+    /// what was meant (`etherscan doesn't cover chain ID 31337`).
+    pub warnings: Vec<String>,
     /// The chain's name after the edit.
     pub chain: String,
 }
@@ -139,9 +142,9 @@ pub struct EditReport {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Attach {
     /// The only signer, if there is exactly one, and `[explorers.etherscan]`,
-    /// if it is configured.
+    /// if it is configured and [covers](Explorer::etherscan_covers) the chain.
     Defaults,
-    /// The built-in explorer only (`--no-signer`).
+    /// The built-in explorer only, on the same terms (`--no-signer`).
     ExplorerOnly,
     /// Nothing.
     Nothing,
@@ -154,6 +157,9 @@ pub struct Attached {
     pub signer: Option<String>,
     /// The explorer attached, if any.
     pub explorer: Option<String>,
+    /// Why `[explorers.etherscan]`, though configured, was not attached
+    /// ([`Explorer::etherscan_gap`]).
+    pub explorer_skipped: Option<String>,
 }
 
 const ETHERSCAN: &str = Explorer::ETHERSCAN;
@@ -177,8 +183,13 @@ impl Tx {
             && chain.explorer.is_none()
             && config.explorers.contains_key(ETHERSCAN)
         {
-            chain.explorer = Some(ETHERSCAN.to_string());
-            attached.explorer = Some(ETHERSCAN.to_string());
+            match Explorer::etherscan_gap(chain.id) {
+                None => {
+                    chain.explorer = Some(ETHERSCAN.to_string());
+                    attached.explorer = Some(ETHERSCAN.to_string());
+                }
+                Some(gap) => attached.explorer_skipped = Some(gap),
+            }
         }
         self.put_chain(name, &chain)?;
         Ok(attached)
@@ -351,6 +362,13 @@ impl Tx {
                 }
                 self.set_explorer(ETHERSCAN, &Explorer::etherscan())?;
                 report.created_explorer = Some(ETHERSCAN.to_string());
+            }
+            if explorer.as_deref() == Some(ETHERSCAN)
+                && let Some(gap) = Explorer::etherscan_gap(self.config()?.chains[name].id)
+            {
+                report
+                    .warnings
+                    .push(format!("{gap}; its API will reject this chain"));
             }
             self.update_chain(name, |c| {
                 c.explorer = explorer.clone();

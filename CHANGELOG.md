@@ -50,7 +50,11 @@ changed before 2.0.0; they are listed under Removed and Changed.
 - Auto-attach: the first signer `signer add` creates is attached to every
   chain without one (`--no-attach` skips it). `chain add` attaches the only
   signer (`--signer S` picks another, `--no-signer` none) and the
-  `etherscan` explorer when it is configured.
+  `etherscan` explorer when it is configured and Etherscan's v2 API covers
+  the chain (a built-in list: not anvil's 31337 or custom IDs, which print
+  `explorer: none (etherscan doesn't cover chain ID 31337)`). `init` attaches
+  it on the same terms; `chain set --explorer etherscan` on a chain it
+  doesn't cover still attaches it, with a warning.
 - `serve`: an opt-in local RPC gateway with approved-only failover,
   rate-limit smoothing, a request inspector (`serve log -f`), metrics, and a
   control socket. `exec` routes through it automatically while it runs.

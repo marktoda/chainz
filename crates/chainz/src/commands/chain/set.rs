@@ -128,6 +128,9 @@ fn print_report(report: &EditReport) {
         println!("  {change}");
     }
     crate::ui::report_moved(&report.moved);
+    for warning in &report.warnings {
+        eprintln!("{}", crate::ui::warn(warning));
+    }
 }
 
 // ----------------------------------------------------------------- menu

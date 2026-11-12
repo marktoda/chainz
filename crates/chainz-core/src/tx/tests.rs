@@ -600,6 +600,46 @@ fn defaults_attach_the_only_signer_and_the_builtin_explorer() {
 }
 
 #[test]
+fn the_builtin_explorer_attaches_only_where_etherscan_covers_the_chain() {
+    let mut tx = tx(&format!(
+        "{DOC}[explorers.etherscan]\napi = \"https://api.etherscan.io/v2/api?chainid=${{CHAIN_ID}}\"\n"
+    ));
+    let local = Chain {
+        id: 31337,
+        aliases: vec![],
+        signer: None,
+        explorer: None,
+        rpc: "a".into(),
+        failover: vec![],
+        rpcs: IndexMap::from([("a".to_string(), Endpoint::new("http://127.0.0.1:8545"))]),
+    };
+    let attached = tx.insert_chain("local", &local, Attach::Defaults).unwrap();
+    assert_eq!(attached.explorer, None);
+    assert_eq!(
+        attached.explorer_skipped.as_deref(),
+        Some("etherscan doesn't cover chain ID 31337")
+    );
+    assert_eq!(tx.config().unwrap().chains["local"].explorer, None);
+
+    // Asked for by name, it still attaches, with a warning.
+    let edit = ChainEdit {
+        explorer: Some(Some("etherscan".into())),
+        ..Default::default()
+    };
+    let report = tx.edit_chain("local", &edit).unwrap();
+    assert_eq!(
+        report.warnings,
+        ["etherscan doesn't cover chain ID 31337; its API will reject this chain"]
+    );
+    assert_eq!(
+        tx.config().unwrap().chains["local"].explorer.as_deref(),
+        Some("etherscan")
+    );
+    let report = tx.edit_chain("eth", &edit).unwrap();
+    assert!(report.warnings.is_empty());
+}
+
+#[test]
 fn endpoints_from_urls_are_checked_named_and_matched_one_way() {
     let mut doc = tx(DOC);
     // Named after the host, unique among the chain's endpoints.

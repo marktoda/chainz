@@ -260,7 +260,94 @@ impl Explorer {
             url: None,
         }
     }
+
+    /// Whether Etherscan's v2 API covers `chain_id` ([`ETHERSCAN_CHAIN_IDS`]).
+    /// The one rule for attaching the built-in explorer by default: `chain
+    /// add` and `init` attach it only where it is covered, and `chain set
+    /// --explorer etherscan` elsewhere warns ([`Explorer::etherscan_gap`]).
+    pub fn etherscan_covers(chain_id: u64) -> bool {
+        ETHERSCAN_CHAIN_IDS.binary_search(&chain_id).is_ok()
+    }
+
+    /// Why the built-in explorer does not fit `chain_id`, if it does not:
+    /// `etherscan doesn't cover chain ID 31337`.
+    pub fn etherscan_gap(chain_id: u64) -> Option<String> {
+        (!Self::etherscan_covers(chain_id))
+            .then(|| format!("{} doesn't cover chain ID {chain_id}", Self::ETHERSCAN))
+    }
 }
+
+/// Chain IDs Etherscan's v2 multichain API serves, sorted. Source: the
+/// v2 supported-chains list (<https://docs.etherscan.io/supported-chains>,
+/// also served as <https://api.etherscan.io/v2/chainlist>). Local and
+/// custom chains (anvil's 31337) and chains whose explorer is another
+/// family (Blockscout: Ink, Mode, Soneium, Zora) are not on it. Update it
+/// the way `SHORT_NAMES` and `tokens.toml` are updated: by hand, from that
+/// list.
+pub const ETHERSCAN_CHAIN_IDS: &[u64] = &[
+    1,         // Ethereum
+    10,        // OP Mainnet
+    25,        // Cronos
+    50,        // XDC
+    51,        // XDC Apothem
+    56,        // BNB Smart Chain
+    97,        // BNB Smart Chain testnet
+    100,       // Gnosis
+    130,       // Unichain
+    137,       // Polygon
+    146,       // Sonic
+    199,       // BitTorrent Chain
+    204,       // opBNB
+    252,       // Fraxtal
+    300,       // zkSync Sepolia
+    324,       // zkSync
+    480,       // World Chain
+    1101,      // Polygon zkEVM
+    1284,      // Moonbeam
+    1285,      // Moonriver
+    1287,      // Moonbase Alpha
+    1301,      // Unichain Sepolia
+    1328,      // Sei testnet
+    1329,      // Sei
+    1923,      // Swellchain
+    1924,      // Swellchain testnet
+    2442,      // Polygon zkEVM Cardona
+    2522,      // Fraxtal testnet
+    2741,      // Abstract
+    4801,      // World Chain Sepolia
+    5000,      // Mantle
+    5003,      // Mantle Sepolia
+    5611,      // opBNB testnet
+    8453,      // Base
+    10143,     // Monad testnet
+    11124,     // Abstract Sepolia
+    17000,     // Holesky
+    33111,     // ApeChain Curtis
+    33139,     // ApeChain
+    42161,     // Arbitrum One
+    42170,     // Arbitrum Nova
+    42220,     // Celo
+    43113,     // Avalanche Fuji
+    43114,     // Avalanche C-Chain
+    44787,     // Celo Alfajores
+    57054,     // Sonic Blaze
+    59141,     // Linea Sepolia
+    59144,     // Linea
+    80002,     // Polygon Amoy
+    80069,     // Berachain Bepolia
+    80094,     // Berachain
+    81457,     // Blast
+    84532,     // Base Sepolia
+    167000,    // Taiko
+    167009,    // Taiko Hekla
+    421614,    // Arbitrum Sepolia
+    534351,    // Scroll Sepolia
+    534352,    // Scroll
+    560048,    // Hoodi
+    11155111,  // Sepolia
+    11155420,  // OP Sepolia
+    168587773, // Blast Sepolia
+];
 
 impl Explorer {
     /// The rule every stored explorer `api` URL must pass (validation
@@ -783,6 +870,25 @@ impl fmt::Debug for Chain {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn etherscan_covers_its_listed_chains_only() {
+        assert!(
+            ETHERSCAN_CHAIN_IDS.windows(2).all(|w| w[0] < w[1]),
+            "sorted, no repeats"
+        );
+        for id in [1, 10, 8453, 42161, 11155111] {
+            assert!(Explorer::etherscan_covers(id), "{id}");
+            assert_eq!(Explorer::etherscan_gap(id), None);
+        }
+        for id in [31337, 999_999, 7777777, 57073] {
+            assert!(!Explorer::etherscan_covers(id), "{id}");
+        }
+        assert_eq!(
+            Explorer::etherscan_gap(31337).as_deref(),
+            Some("etherscan doesn't cover chain ID 31337")
+        );
+    }
 
     const SAMPLE: &str = r#"
 version = 2

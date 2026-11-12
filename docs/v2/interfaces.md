@@ -616,13 +616,17 @@ names the file. `ErrorClass::phrase()` is the class in a sentence
   such as `failover: b, c → c`, and a chain ID change; then the explorer
   key line, `replaced the value of ${VAR}` when it held another, and the
   rename), the added endpoint, the created explorer, the key variable and
-  the moved secrets; `EditReport::is_empty` is a no-op edit, which `chain
+  the moved secrets, and `warnings` (an `etherscan` explorer on a chain
+  `Explorer::etherscan_covers` rejects: `Explorer::etherscan_gap(id)`);
+  `EditReport::is_empty` is a no-op edit, which `chain
   set` reports as "No changes". Checking a new URL's chain ID is the caller's (network)
   job. `tx.insert_chain(name, &chain, Attach)` checks name, ID and signer and,
   with `Attach::Defaults`, attaches the only signer and
-  `[explorers.etherscan]` if configured (`Attach::ExplorerOnly` for
-  `--no-signer`, `Attach::Nothing` keeps the chain as given; `Attached` says
-  what was added). `tx.attach_signer_where_missing(signer)` gives a first
+  `[explorers.etherscan]` if configured and it covers the chain ID
+  (`Explorer::etherscan_covers`, over the built-in `ETHERSCAN_CHAIN_IDS`)
+  (`Attach::ExplorerOnly` for `--no-signer`, `Attach::Nothing` keeps the
+  chain as given; `Attached` says what was added, and `explorer_skipped`
+  why etherscan was not). `tx.attach_signer_where_missing(signer)` gives a first
   signer to every chain without one and returns them.
 - Notices: core never prints. A load or write that has something to say (a
   v1 migration, a file whose loose permissions could not be tightened)

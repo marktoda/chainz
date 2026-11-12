@@ -366,6 +366,9 @@ pub fn add(chainz: &mut Chainz, args: &ChainAddArgs, ask: &mut dyn Ask) -> Resul
     if let Some(explorer) = &attached.explorer {
         println!("  explorer: {explorer}");
     }
+    if let Some(gap) = &attached.explorer_skipped {
+        println!("  explorer: none ({gap})");
+    }
     ui::report_moved(&moved);
     let signers: Vec<&str> = chainz.config().signers.keys().map(String::as_str).collect();
     if attach == Attach::Defaults && args.signer.is_none() && signers.len() > 1 {

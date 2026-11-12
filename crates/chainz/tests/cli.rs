@@ -603,6 +603,48 @@ fn chain_add_with_url_stays_offline() {
 }
 
 #[test]
+fn etherscan_attaches_by_default_only_to_chains_it_covers() {
+    let sb = Sandbox::new();
+    sb.seed(&[("base", 8453)]);
+    sb.cmd()
+        .args(["chain", "set", "base", "--explorer", "etherscan"])
+        .assert()
+        .success()
+        .stderr("");
+    sb.cmd()
+        .args([
+            "chain",
+            "add",
+            "10",
+            "--url",
+            "http://127.0.0.1:1",
+            "--no-check",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("  explorer: etherscan\n"));
+    sb.cmd()
+        .args(["chain", "add", "31337", "--name", "local"])
+        .args(["--url", "http://127.0.0.1:1", "--no-check"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "  explorer: none (etherscan doesn't cover chain ID 31337)",
+        ));
+    // base and op only.
+    assert_eq!(sb.config().matches("explorer = \"etherscan\"").count(), 2);
+    // Asked for by name, it attaches anyway, with a warning.
+    sb.cmd()
+        .args(["chain", "set", "local", "--explorer", "etherscan"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("explorer: etherscan"))
+        .stderr(predicate::str::contains(
+            "etherscan doesn't cover chain ID 31337; its API will reject this chain",
+        ));
+}
+
+#[test]
 fn rpc_failure_never_leaks_the_url() {
     let sb = Sandbox::new();
     sb.cmd()

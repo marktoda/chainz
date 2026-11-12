@@ -163,10 +163,41 @@ fn add_signer(chainz: &mut Chainz, backend: &dyn KeyBackend, ask: &mut dyn Ask) 
     }
 }
 
+/// The chains with no explorer, split into those Etherscan covers (which
+/// get it) and those it does not (which are skipped).
+fn without_explorer(config: &Config) -> (Vec<String>, Vec<String>) {
+    config
+        .chains
+        .iter()
+        .filter(|(_, c)| c.explorer.is_none())
+        .map(|(name, c)| (name.clone(), Explorer::etherscan_covers(c.id)))
+        .fold((vec![], vec![]), |(mut covered, mut not), (name, yes)| {
+            match yes {
+                true => covered.push(name),
+                false => not.push(name),
+            }
+            (covered, not)
+        })
+}
+
 /// The Etherscan API key to store, if the user gives one. Asked only when
-/// some chain has no explorer.
+/// some chain Etherscan covers has no explorer.
 fn etherscan_key(config: &Config, ask: &mut dyn Ask) -> Result<Option<Zeroizing<String>>> {
-    if !config.chains.values().any(|c| c.explorer.is_none()) {
+    let (covered, not) = without_explorer(config);
+    if !not.is_empty() {
+        println!(
+            "{}",
+            ui::dim(&format!(
+                "{} doesn't cover {}; skipped",
+                Explorer::ETHERSCAN,
+                not.join(", ")
+            ))
+        );
+    }
+    if covered.is_empty() {
+        if not.is_empty() {
+            return Ok(None);
+        }
         println!("Every chain has an explorer");
         return Ok(None);
     }
@@ -181,20 +212,20 @@ fn etherscan_key(config: &Config, ask: &mut dyn Ask) -> Result<Option<Zeroizing<
 }
 
 /// The patches that attach `etherscan` (with `key`) to every chain that
-/// has no explorer. The key is stored once, with the first.
+/// has no explorer and that Etherscan covers. The key is stored once, with
+/// the first.
 fn etherscan_edits(config: &Config, key: Zeroizing<String>) -> Vec<(String, ChainEdit)> {
     let mut key = Some(key);
-    config
-        .chains
-        .iter()
-        .filter(|(_, c)| c.explorer.is_none())
-        .map(|(name, _)| {
+    without_explorer(config)
+        .0
+        .into_iter()
+        .map(|name| {
             let edit = ChainEdit {
                 explorer: Some(Some(Explorer::ETHERSCAN.to_string())),
                 api_key: key.take(),
                 ..ChainEdit::default()
             };
-            (name.clone(), edit)
+            (name, edit)
         })
         .collect()
 }
@@ -260,6 +291,10 @@ rpcs = {{ a = "https://base.example" }}
 id = 10
 rpc = "a"
 rpcs = {{ a = "https://op.example" }}
+[chains.local]
+id = 31337
+rpc = "a"
+rpcs = {{ a = "http://127.0.0.1:8545" }}
 [explorers.blockscout]
 api = "https://blockscout.example/api"
 "#
@@ -268,14 +303,18 @@ api = "https://blockscout.example/api"
     }
 
     #[test]
-    fn etherscan_goes_on_chains_without_an_explorer_with_one_key() {
+    fn etherscan_goes_on_covered_chains_without_an_explorer_with_one_key() {
         let config = config("");
         let mut script = Script::new([Yes(true), Text(" KEY ")]);
         let key = etherscan_key(&config, &mut script).unwrap().unwrap();
         assert_eq!(key.as_str(), "KEY");
         let edits = etherscan_edits(&config, key);
         let names: Vec<&str> = edits.iter().map(|(n, _)| n.as_str()).collect();
-        assert_eq!(names, ["eth", "op"]);
+        assert_eq!(
+            names,
+            ["eth", "op"],
+            "not local: etherscan doesn't cover 31337"
+        );
         assert!(edits[0].1.api_key.is_some());
         assert!(edits[1].1.api_key.is_none());
         for (_, edit) in &edits {
@@ -302,7 +341,7 @@ api = "https://blockscout.example/api"
             Some("op")
         );
         assert_eq!(
-            pick_default(&config(""), &mut Script::new([Pick(3)])).unwrap(),
+            pick_default(&config(""), &mut Script::new([Pick(4)])).unwrap(),
             None
         );
         assert_eq!(
