@@ -1220,6 +1220,18 @@ fn use_sets_default_with_stderr_notice() {
 }
 
 #[test]
+fn use_help_says_when_exec_falls_back_to_the_default() {
+    let sb = Sandbox::new();
+    sb.cmd()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Set the default chain, or show it; exec says on stderr when it falls back to it",
+        ));
+}
+
+#[test]
 fn exec_without_a_command_opens_a_subshell_only_on_a_terminal() {
     let sb = Sandbox::new();
     sb.seed(&[("eth", 1)]);

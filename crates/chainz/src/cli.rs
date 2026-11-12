@@ -133,7 +133,7 @@ pub enum Command {
     /// Print a chain's context as shell exports: eval "$(chainz env base)"
     Env(EnvArgs),
 
-    /// Set the default chain, or show it (exec notes on stderr whenever it applies)
+    /// Set the default chain, or show it; exec says on stderr when it falls back to it
     Use(UseArgs),
 
     /// List chains, or show one in full with its endpoints' health
