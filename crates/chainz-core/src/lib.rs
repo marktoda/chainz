@@ -8,6 +8,7 @@ pub mod addrbook;
 pub mod address;
 pub mod broadcast;
 pub mod context;
+mod envelope;
 pub mod extract;
 pub mod fmt;
 pub mod grammar;

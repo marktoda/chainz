@@ -3,11 +3,11 @@
 
 use super::{open, parse_address};
 use crate::cli::{BackendArg, MigrateTarget, SignerCommand};
-use crate::prompt::{self, StdinTrim, read_stdin_secret};
+use crate::prompt::{self, StdinTrim, Terminal, read_stdin_secret};
 use crate::ui;
 use anyhow::{Context, Result, anyhow, bail};
 use chainz_core::model::{Backend, Signer};
-use chainz_core::signer::{self, KeyBackend, Provision, SystemKeyBackend};
+use chainz_core::signer::{self, KeyBackend, Prompter, Provision, SystemKeyBackend};
 use chainz_core::tx::Users;
 use chainz_core::{Address, Chainz, names, paths};
 use serde::Serialize;
@@ -52,29 +52,8 @@ fn check_name(chainz: &Chainz, name: &str) -> Result<()> {
     Ok(())
 }
 
-/// `original`, with a failed rollback of the backend entry attached as
-/// context (the original error stays the cause).
-fn with_rollback(original: anyhow::Error, rollback: Result<()>) -> anyhow::Error {
-    match rollback {
-        Ok(()) => original,
-        Err(e) => original.context(format!(
-            "rolling back the new key entry also failed ({e:#}); remove it by hand"
-        )),
-    }
-}
-
-/// Undo `provision` after `original` went wrong.
-fn roll_back(
-    backend: &dyn KeyBackend,
-    name: &str,
-    provision: &Provision,
-    original: anyhow::Error,
-) -> anyhow::Error {
-    with_rollback(original, signer::rollback(backend, name, provision))
-}
-
 fn read_key(
-    backend: &dyn KeyBackend,
+    terminal: &dyn Prompter,
     name: &str,
     stdin: bool,
     key: Option<String>,
@@ -86,10 +65,10 @@ fn read_key(
     if stdin {
         return read_stdin_secret("private key", StdinTrim::Whitespace);
     }
-    if !backend.is_interactive() {
+    if !terminal.is_interactive() {
         bail!("no key given: pipe it with --stdin");
     }
-    backend.prompt_secret(&format!("Private key for {name}: "))
+    terminal.secret(&format!("Private key for {name}: "))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -119,27 +98,30 @@ fn add(
         .as_deref()
         .map(|a| parse_address(a, "--address"))
         .transpose()?;
-    match kind {
+    let provision = match kind {
         Backend::Keystore => {
             let path = path.ok_or_else(|| anyhow!("a keystore signer needs --path"))?;
-            let derived = signer::keystore_address(&paths::expand_tilde(&path)).ok();
+            let derived = match signer::keystore_address(&paths::expand_tilde(&path)) {
+                Ok(derived) => Some(derived),
+                Err(e) => {
+                    if address.is_none() {
+                        eprintln!(
+                            "{}",
+                            ui::warn(&format!(
+                                "no cached address for '{name}' ({e:#}); @wallet and ETH_FROM need one: pass --address"
+                            ))
+                        );
+                    }
+                    None
+                }
+            };
             let address = match (address, derived) {
                 (Some(given), Some(derived)) if given != derived => {
                     bail!("--address does not match the keystore's address {derived}")
                 }
                 (given, derived) => given.or(derived),
             };
-            let record = Signer {
-                backend: Backend::Keystore,
-                address,
-                service: None,
-                username: None,
-                path: Some(path),
-                vault: None,
-                item: None,
-            };
-            chainz.transact(|tx| tx.set_signer(name, &record))?;
-            report_added(name, &record);
+            Provision::reference(Signer::keystore(path, address))
         }
         Backend::OnePassword => {
             let (vault, item) = match (vault, item) {
@@ -154,43 +136,28 @@ fn add(
                         .context("the 1Password item is not a private key")?
                 }
             };
-            let record = Signer {
-                backend: Backend::OnePassword,
-                address: Some(address),
-                service: None,
-                username: None,
-                path: None,
-                vault: Some(vault),
-                item: Some(item),
-            };
-            chainz.transact(|tx| tx.set_signer(name, &record))?;
-            report_added(name, &record);
+            Provision::reference(Signer::one_password(vault, item, Some(address)))
         }
         Backend::Keyring | Backend::Encrypted | Backend::Plaintext => {
-            let key = read_key(backend, name, stdin, key)?;
-            chainz_core::address::validate_private_key(&key)?;
-            let provision = signer::provision(backend, name, &key, kind, None)?;
+            let key = read_key(&Terminal, name, stdin, key)?;
+            Address::from_private_key(&key)?;
+            let provision = signer::provision(backend, &Terminal, name, &key, kind)?;
             if let Some(given) = address
                 && Some(given) != provision.signer.address
             {
                 let error = anyhow!("--address does not match the key's address");
-                return Err(roll_back(backend, name, &provision, error));
+                return Err(provision.abandon(backend, name, error));
             }
-            let result = chainz.transact(|tx| {
-                tx.set_signer(name, &provision.signer)?;
-                tx.set_signer_secret(name, provision.secret.as_ref())
-            });
-            if let Err(e) = result {
-                return Err(roll_back(backend, name, &provision, e));
-            }
-            report_added(name, &provision.signer);
-            if kind == Backend::Plaintext {
-                eprintln!(
-                    "{}",
-                    ui::warn(&format!("'{name}' is stored in plaintext in secrets.toml"))
-                );
-            }
+            provision
         }
+    };
+    chainz.install_signer(backend, name, &provision)?;
+    report_added(name, &provision.signer);
+    if kind == Backend::Plaintext {
+        eprintln!(
+            "{}",
+            ui::warn(&format!("'{name}' is stored in plaintext in secrets.toml"))
+        );
     }
     Ok(0)
 }
@@ -249,17 +216,6 @@ fn ls(json: bool) -> Result<i32> {
     Ok(0)
 }
 
-/// What `signer rm` deletes besides the config entry, if anything.
-fn key_material(record: &Signer) -> Option<&'static str> {
-    match record.backend {
-        Backend::Keyring => Some("its OS keyring entry"),
-        Backend::Encrypted => Some("its encrypted key in secrets.toml"),
-        Backend::Plaintext => Some("its key in secrets.toml"),
-        // A reference: the keystore file or 1Password item stays.
-        Backend::Keystore | Backend::OnePassword => None,
-    }
-}
-
 fn rm(backend: &dyn KeyBackend, name: &str, force: bool, yes: bool) -> Result<i32> {
     let mut chainz = open()?;
     let Some(record) = chainz.config().signers.get(name).cloned() else {
@@ -272,7 +228,7 @@ fn rm(backend: &dyn KeyBackend, name: &str, force: bool, yes: bool) -> Result<i3
             users.join(", ")
         );
     }
-    if let Some(material) = key_material(&record) {
+    if let Some(material) = record.key_material() {
         prompt::confirm_or_yes(
             yes,
             &format!("Remove signer '{name}' and delete {material}? This can't be undone"),
@@ -282,17 +238,18 @@ fn rm(backend: &dyn KeyBackend, name: &str, force: bool, yes: bool) -> Result<i3
         )?;
     }
     let users = if force { Users::Detach } else { Users::Keep };
-    let detached = chainz.transact(|tx| tx.remove_signer(name, users))?;
-    if let Err(e) = signer::delete_external(backend, name, &record) {
+    let removed = chainz.remove_signer(backend, name, users)?;
+    if let Err(e) = removed.external {
+        let material = record.key_material().unwrap_or("its key material");
         eprintln!(
             "{}",
             ui::warn(&format!(
-                "removed '{name}' from config but its keyring entry remains: {e:#}"
+                "removed '{name}' from config but {material} remains: {e:#}"
             ))
         );
     }
-    let suffix = if detached > 0 {
-        format!(" (detached from {detached} chain(s))")
+    let suffix = if removed.detached > 0 {
+        format!(" (detached from {} chain(s))", removed.detached)
     } else {
         String::new()
     };
@@ -388,67 +345,11 @@ fn migrate_one(
         }
         _ => {}
     }
-    let key = signer::unlock(backend, name, &old, chainz.secrets()?)?;
-    // A fresh keyring entry name never clobbers the entry still in use.
-    let fresh = (target == Backend::Keyring && old.backend == Backend::Keyring)
-        .then(|| format!("{name}-v2"));
-    let provision = signer::provision(backend, name, &key, target, fresh.as_deref())?;
-    let result = chainz.transact(|tx| {
-        tx.set_signer(name, &provision.signer)?;
-        tx.set_signer_secret(name, provision.secret.as_ref())
-    });
-    if let Err(e) = result {
-        return Err(roll_back(backend, name, &provision, e));
-    }
-    if old.backend == Backend::Keyring
-        && old.keyring_entry(name) != provision.signer.keyring_entry(name)
-        && let Err(e) = signer::delete_external(backend, name, &old)
-    {
-        eprintln!(
-            "{}",
-            ui::warn(&format!(
-                "the old keyring entry for '{name}' remains: {e:#}"
-            ))
-        );
+    let key = signer::unlock(backend, &Terminal, name, &old, chainz.secrets()?)?;
+    let provision = signer::provision(backend, &Terminal, name, &key, target)?;
+    if let Some(warning) = chainz.install_signer(backend, name, &provision)? {
+        eprintln!("{}", ui::warn(&warning));
     }
     println!("Moved '{name}' from {} to {target}", old.backend);
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_failed_rollback_is_context_on_the_original_error() {
-        let original = || anyhow!("config write failed");
-        assert_eq!(
-            format!("{:#}", with_rollback(original(), Ok(()))),
-            "config write failed"
-        );
-        let both = with_rollback(original(), Err(anyhow!("keyring locked")));
-        let text = format!("{both:#}");
-        assert!(text.contains("keyring locked"), "{text}");
-        assert!(text.ends_with("config write failed"), "{text}");
-        assert_eq!(both.root_cause().to_string(), "config write failed");
-    }
-
-    #[test]
-    fn only_backends_holding_key_material_need_confirmation() {
-        let signer = |backend| Signer {
-            backend,
-            address: None,
-            service: None,
-            username: None,
-            path: None,
-            vault: None,
-            item: None,
-        };
-        for backend in [Backend::Keyring, Backend::Encrypted, Backend::Plaintext] {
-            assert!(key_material(&signer(backend)).is_some(), "{backend}");
-        }
-        for backend in [Backend::Keystore, Backend::OnePassword] {
-            assert!(key_material(&signer(backend)).is_none(), "{backend}");
-        }
-    }
 }

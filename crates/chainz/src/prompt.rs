@@ -107,6 +107,21 @@ pub fn warn_secret_argument(what: &str, instead: &str) {
     );
 }
 
+/// Hidden prompts on the terminal (stderr), for passwords and keys.
+pub struct Terminal;
+
+impl chainz_core::signer::Prompter for Terminal {
+    fn is_interactive(&self) -> bool {
+        std::io::stderr().is_terminal()
+    }
+
+    fn secret(&self, prompt: &str) -> Result<Zeroizing<String>> {
+        Ok(Zeroizing::new(
+            rpassword::prompt_password(prompt).context("failed to read the password")?,
+        ))
+    }
+}
+
 fn terminal_prompt<T>(result: dialoguer::Result<T>) -> Result<T> {
     match result {
         Ok(value) => Ok(value),

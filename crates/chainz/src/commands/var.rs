@@ -7,7 +7,7 @@ use crate::ui;
 use anyhow::{Result, bail};
 use chainz_core::model::Config;
 use chainz_core::secrets::BUILTIN_VARS;
-use chainz_core::signer::{KeyBackend, SystemKeyBackend};
+use chainz_core::signer::Prompter;
 use chainz_core::template;
 use serde::Serialize;
 use zeroize::Zeroizing;
@@ -64,11 +64,11 @@ fn set(name: &str, value: Option<String>, stdin: bool) -> Result<i32> {
         }
         None if stdin => read_stdin_secret("value", StdinTrim::TrailingNewlines)?,
         None => {
-            let backend = SystemKeyBackend;
-            if !backend.is_interactive() {
+            let terminal = prompt::Terminal;
+            if !terminal.is_interactive() {
                 bail!("no value given: pipe it with --stdin");
             }
-            backend.prompt_secret(&format!("Value for {name}: "))?
+            terminal.secret(&format!("Value for {name}: "))?
         }
     };
     if value.is_empty() {

@@ -186,17 +186,17 @@ pub fn issues(config: &Config, secrets: Option<&Secrets>) -> Vec<String> {
                     None => err(format!(
                         "signer '{name}' (plaintext) has no key in secrets.toml"
                     )),
-                    Some(key) => match Address::from_private_key(key) {
+                    Some(key) => match crate::address::check_cached_address(key, signer.address) {
                         Err(_) => err(format!("signer '{name}' has an invalid private key")),
-                        Ok(derived) if signer.address.is_some_and(|a| a != derived) => err(
-                            format!("signer '{name}' cached address does not match its key"),
-                        ),
-                        Ok(_) => {}
+                        Ok((_, true)) => err(format!(
+                            "signer '{name}' cached address does not match its key"
+                        )),
+                        Ok((_, false)) => {}
                     },
                 },
                 Backend::Encrypted => {
                     if let Err(e) = secret
-                        .map(crate::signer::validate_envelope)
+                        .map(|s| crate::envelope::Envelope::read(s).map(|_| ()))
                         .unwrap_or_else(|| Err(anyhow::anyhow!("no encrypted key in secrets.toml")))
                     {
                         err(format!("signer '{name}' (encrypted): {e}"));

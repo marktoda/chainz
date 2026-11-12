@@ -303,6 +303,16 @@ and the gateway all use it.
   or route them as they happen with `set_notice_sink(fn(&Notice))`. The bin
   prints each `Display` line as `chainz: …`; serve adds them to the
   snapshot warnings.
+- Signers: `signer::provision(&dyn KeyBackend, &dyn Prompter, name, key, backend)`
+  stores a key and returns a `Provision` (`Provision::reference(Signer)` for
+  keystore and 1Password references). `Chainz::install_signer` writes the
+  record and key material in one transaction, abandons the provision (deletes
+  the keyring entry it created) if that fails, and deletes a replaced
+  signer's old keyring entry. `Chainz::remove_signer` is the reverse.
+  `KeyBackend` is external storage only; `Prompter` (hidden prompts) is
+  implemented by the binary (`prompt::Terminal`). `CHAINZ_DISABLE_KEYRING`
+  (`signer::DISABLE_KEYRING_VAR`) makes the keyring unavailable for tests and
+  the perf gate.
 - Resolver: `resolve::select(config, Some(&runtime), explicit) -> Result<Option<(ChainRef, Source)>>`.
   It checks the explicit argument, then `$CHAINZ_CHAIN`, then the default.
   Management commands use `resolve_configured` (no forks) or `resolve_exact`

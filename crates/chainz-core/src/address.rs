@@ -65,6 +65,17 @@ impl Address {
     }
 }
 
+/// The address `private_key` derives, and whether it differs from the
+/// `cached` one (no cached address never differs): the one check behind
+/// validation, unlock and v1 migration.
+pub(crate) fn check_cached_address(
+    private_key: &str,
+    cached: Option<Address>,
+) -> Result<(Address, bool), PrivateKeyError> {
+    let derived = Address::from_private_key(private_key)?;
+    Ok((derived, cached.is_some_and(|cached| cached != derived)))
+}
+
 /// Validate a hex private key without deriving anything else.
 pub fn validate_private_key(private_key: &str) -> Result<(), PrivateKeyError> {
     Address::from_private_key(private_key).map(|_| ())

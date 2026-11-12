@@ -1,36 +1,32 @@
-//! Signer key material: backends, provisioning, unlock and the encrypted
-//! envelope.
+//! Signer key material: backends, provisioning, unlock and the signer
+//! lifecycle ([`Chainz::install_signer`], [`Chainz::remove_signer`]).
 //!
 //! The rule: chainz unlocks a key only for `--expose-key` (and when moving a
 //! key between backends). Everything else uses the cached address.
 //!
-//! [`KeyBackend`] is the seam to external storage. Production uses
-//! [`SystemKeyBackend`] (OS keyring, `op`, terminal prompts); this crate's
-//! tests use an in-memory backend and never touch the developer's keyring.
+//! [`KeyBackend`] is the seam to external storage and [`Prompter`] the seam
+//! to the person at the terminal. Production uses [`SystemKeyBackend`] (OS
+//! keyring, `op`) and the binary's terminal prompter; this crate's tests use
+//! in-memory ones and never touch the developer's keyring.
 
-use crate::address::Address;
+use crate::address::{Address, check_cached_address};
+use crate::envelope::{self, Envelope};
 use crate::model::{Backend, KEYRING_SERVICE, Signer};
 use crate::secrets::{Secrets, SignerSecret};
+use crate::store::Chainz;
+use crate::tx::Users;
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
 use anyhow::{Context, Result, anyhow, bail};
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use rand::Rng;
 use zeroize::Zeroizing;
 
-const ENVELOPE_VERSION: u8 = 1;
-// Argon2 0.5 defaults, persisted per record so library default changes
-// never strand an existing key.
-const KDF_MEMORY_KIB: u32 = 19_456;
-const KDF_ITERATIONS: u32 = 2;
-const KDF_PARALLELISM: u32 = 1;
+/// The environment variable that makes the OS keyring unavailable (the
+/// test harness and the perf gate set it).
+pub const DISABLE_KEYRING_VAR: &str = "CHAINZ_DISABLE_KEYRING";
 
-/// External key storage and prompting.
+/// External key storage.
 pub trait KeyBackend {
-    /// Whether a password prompt can be shown.
-    fn is_interactive(&self) -> bool;
-    /// Prompt for a hidden value.
-    fn prompt_secret(&self, prompt: &str) -> Result<Zeroizing<String>>;
     /// Whether the OS keyring is usable.
     fn keyring_available(&self) -> bool;
     /// Read a keyring entry.
@@ -44,24 +40,23 @@ pub trait KeyBackend {
     fn one_password_get(&self, vault: &str, item: &str) -> Result<Zeroizing<String>>;
 }
 
-/// The real OS keyring, `op` CLI and terminal prompts.
+/// Hidden prompts for passwords and keys.
+pub trait Prompter {
+    /// Whether a hidden prompt can be shown.
+    fn is_interactive(&self) -> bool;
+    /// Prompt for a hidden value.
+    fn secret(&self, prompt: &str) -> Result<Zeroizing<String>>;
+}
+
+/// The real OS keyring and `op` CLI.
 ///
-/// `CHAINZ_DISABLE_KEYRING` (any value) makes the keyring unavailable; the
+/// [`DISABLE_KEYRING_VAR`] (any value) makes the keyring unavailable; the
 /// test harness always sets it.
 pub struct SystemKeyBackend;
 
 impl KeyBackend for SystemKeyBackend {
-    fn is_interactive(&self) -> bool {
-        use std::io::IsTerminal;
-        std::io::stderr().is_terminal()
-    }
-
-    fn prompt_secret(&self, prompt: &str) -> Result<Zeroizing<String>> {
-        Ok(Zeroizing::new(rpassword_prompt(prompt)?))
-    }
-
     fn keyring_available(&self) -> bool {
-        if std::env::var_os("CHAINZ_DISABLE_KEYRING").is_some() {
+        if std::env::var_os(DISABLE_KEYRING_VAR).is_some() {
             return false;
         }
         // Read-only probe: a missing entry proves the store answers. v1
@@ -123,24 +118,21 @@ impl KeyBackend for SystemKeyBackend {
 
 impl SystemKeyBackend {
     fn guard(&self) -> Result<()> {
-        if std::env::var_os("CHAINZ_DISABLE_KEYRING").is_some() {
-            bail!("the OS keyring is disabled (CHAINZ_DISABLE_KEYRING is set)");
+        if std::env::var_os(DISABLE_KEYRING_VAR).is_some() {
+            bail!("the OS keyring is disabled ({DISABLE_KEYRING_VAR} is set)");
         }
         Ok(())
     }
 }
 
-fn rpassword_prompt(prompt: &str) -> Result<String> {
-    rpassword::prompt_password(prompt).context("failed to read the password")
-}
-
-/// In-memory backend for tests: never touches the OS keyring or `op`.
+/// In-memory key storage and scripted prompts for tests: never touches the
+/// OS keyring, `op` or the terminal.
 #[cfg(test)]
 #[derive(Default)]
 pub struct MemoryKeyBackend {
     /// Keyring entries by (service, username).
     pub entries: std::cell::RefCell<std::collections::HashMap<(String, String), String>>,
-    /// Scripted answers for `prompt_secret`, consumed front to back.
+    /// Scripted answers for prompts, consumed front to back.
     pub prompts: std::cell::RefCell<Vec<String>>,
     /// Whether the fake keyring is available.
     pub keyring: bool,
@@ -151,17 +143,21 @@ pub struct MemoryKeyBackend {
 }
 
 #[cfg(test)]
-impl KeyBackend for MemoryKeyBackend {
+impl Prompter for MemoryKeyBackend {
     fn is_interactive(&self) -> bool {
         self.interactive
     }
-    fn prompt_secret(&self, _: &str) -> Result<Zeroizing<String>> {
+    fn secret(&self, _: &str) -> Result<Zeroizing<String>> {
         let mut prompts = self.prompts.borrow_mut();
         if prompts.is_empty() {
             bail!("no scripted prompt answer");
         }
         Ok(Zeroizing::new(prompts.remove(0)))
     }
+}
+
+#[cfg(test)]
+impl KeyBackend for MemoryKeyBackend {
     fn keyring_available(&self) -> bool {
         self.keyring
     }
@@ -197,8 +193,8 @@ impl KeyBackend for MemoryKeyBackend {
     }
 }
 
-/// The outcome of storing a key: what to write to config and secrets, and
-/// what to undo if that write fails.
+/// A signer ready to be written: the record for config.toml, the key
+/// material for secrets.toml, and what to undo if that write fails.
 #[derive(Debug)]
 pub struct Provision {
     /// The `[signers.NAME]` record for config.toml.
@@ -207,24 +203,47 @@ pub struct Provision {
     pub secret: Option<SignerSecret>,
     /// Whether an external keyring entry was created (and must be deleted
     /// on rollback).
-    pub created_external: bool,
+    created_external: bool,
 }
 
-fn blank_signer(backend: Backend, address: Option<Address>) -> Signer {
-    Signer {
-        backend,
-        address,
-        service: None,
-        username: None,
-        path: None,
-        vault: None,
-        item: None,
+impl Provision {
+    /// A reference signer (keystore, 1Password): nothing stored, nothing
+    /// to undo.
+    pub fn reference(signer: Signer) -> Self {
+        Self {
+            signer,
+            secret: None,
+            created_external: false,
+        }
+    }
+
+    /// Give up on this provision after `original` went wrong: delete the
+    /// external entry it created, and attach a failure to do so to
+    /// `original` as context (the original error stays the cause).
+    pub fn abandon(
+        &self,
+        keys: &dyn KeyBackend,
+        name: &str,
+        original: anyhow::Error,
+    ) -> anyhow::Error {
+        let rollback = if self.created_external && self.signer.backend == Backend::Keyring {
+            let (service, username) = self.signer.keyring_entry(name);
+            keys.keyring_delete(service, username)
+        } else {
+            Ok(())
+        };
+        match rollback {
+            Ok(()) => original,
+            Err(e) => original.context(format!(
+                "rolling back the new key entry also failed ({e:#}); remove it by hand"
+            )),
+        }
     }
 }
 
 /// The safe default backend: the keyring when available, else encrypted.
-pub fn safe_default(backend: &dyn KeyBackend) -> Backend {
-    if backend.keyring_available() {
+pub fn safe_default(keys: &dyn KeyBackend) -> Backend {
+    if keys.keyring_available() {
         Backend::Keyring
     } else {
         Backend::Encrypted
@@ -232,57 +251,51 @@ pub fn safe_default(backend: &dyn KeyBackend) -> Backend {
 }
 
 /// Store `private_key` for signer `name` in `target` (keyring, encrypted or
-/// plaintext). `keyring_username` overrides the entry name (migration uses
-/// a fresh one to avoid clobbering the entry still in use).
+/// plaintext).
 pub fn provision(
-    backend: &dyn KeyBackend,
+    keys: &dyn KeyBackend,
+    prompter: &dyn Prompter,
     name: &str,
     private_key: &str,
     target: Backend,
-    keyring_username: Option<&str>,
 ) -> Result<Provision> {
     let address = Address::from_private_key(private_key)?;
+    let key = normalize_key(private_key);
     match target {
         Backend::Plaintext => Ok(Provision {
-            signer: blank_signer(Backend::Plaintext, Some(address)),
+            signer: Signer::new(Backend::Plaintext, Some(address)),
             secret: Some({
                 let mut secret = SignerSecret::default();
-                secret.private_key = Some(normalize_key(private_key));
+                secret.private_key = Some(key.to_string());
                 secret
             }),
             created_external: false,
         }),
         Backend::Keyring => {
-            if !backend.keyring_available() {
+            if !keys.keyring_available() {
                 bail!("the OS keyring is unavailable; use --backend encrypted instead");
             }
-            let username = keyring_username.unwrap_or(name);
-            let created =
-                backend.keyring_set(KEYRING_SERVICE, username, &normalize_key(private_key))?;
-            let mut signer = blank_signer(Backend::Keyring, Some(address));
-            if username != name {
-                signer.username = Some(username.to_string());
-            }
+            let created = keys.keyring_set(KEYRING_SERVICE, name, &key)?;
             Ok(Provision {
-                signer,
+                signer: Signer::new(Backend::Keyring, Some(address)),
                 secret: None,
                 created_external: created,
             })
         }
         Backend::Encrypted => {
-            if !backend.is_interactive() {
+            if !prompter.is_interactive() {
                 bail!(
                     "encrypted storage needs an interactive password prompt; use --backend plaintext --stdin only if plaintext storage is intentional"
                 );
             }
-            let password = backend.prompt_secret(&format!("Encryption password for {name}: "))?;
-            let confirm = backend.prompt_secret("Confirm encryption password: ")?;
+            let password = prompter.secret(&format!("Encryption password for {name}: "))?;
+            let confirm = prompter.secret("Confirm encryption password: ")?;
             if password.as_str() != confirm.as_str() {
                 bail!("encryption passwords do not match");
             }
             Ok(Provision {
-                signer: blank_signer(Backend::Encrypted, Some(address)),
-                secret: Some(encrypt(&normalize_key(private_key), &password)?),
+                signer: Signer::new(Backend::Encrypted, Some(address)),
+                secret: Some(encrypt(&key, &password)?),
                 created_external: false,
             })
         }
@@ -292,20 +305,76 @@ pub fn provision(
     }
 }
 
-/// Undo the external side effect of a provision whose config write failed.
-pub fn rollback(backend: &dyn KeyBackend, name: &str, provision: &Provision) -> Result<()> {
-    if provision.created_external && provision.signer.backend == Backend::Keyring {
-        let (service, username) = provision.signer.keyring_entry(name);
-        backend.keyring_delete(service, username)?;
+/// What [`Chainz::remove_signer`] did.
+#[derive(Debug)]
+pub struct Removed {
+    /// How many chains were detached from the signer.
+    pub detached: usize,
+    /// Deleting the signer's external key material, if it has any. The
+    /// signer is gone from the config either way.
+    pub external: Result<()>,
+}
+
+impl Chainz {
+    /// Write signer `name` from `provision` (record and key material, in
+    /// one transaction). An existing signer of that name is replaced; its
+    /// old keyring entry is deleted once nothing references it, and a
+    /// failure to do so is returned as a warning. If the write fails, the
+    /// provision is [abandoned](Provision::abandon).
+    pub fn install_signer(
+        &mut self,
+        keys: &dyn KeyBackend,
+        name: &str,
+        provision: &Provision,
+    ) -> Result<Option<String>> {
+        let old = self.config().signers.get(name).cloned();
+        let written = self.transact(|tx| {
+            tx.set_signer(name, &provision.signer)?;
+            tx.set_signer_secret(name, provision.secret.as_ref())
+        });
+        if let Err(e) = written {
+            return Err(provision.abandon(keys, name, e));
+        }
+        let new = &provision.signer;
+        let Some(old) = old.filter(|old| {
+            old.backend == Backend::Keyring
+                && !(new.backend == Backend::Keyring
+                    && new.keyring_entry(name) == old.keyring_entry(name))
+        }) else {
+            return Ok(None);
+        };
+        Ok(delete_external(keys, name, &old)
+            .err()
+            .map(|e| format!("the old keyring entry for '{name}' remains: {e:#}")))
     }
-    Ok(())
+
+    /// Remove signer `name` (record and key material in one transaction),
+    /// then delete its external key material.
+    pub fn remove_signer(
+        &mut self,
+        keys: &dyn KeyBackend,
+        name: &str,
+        users: Users,
+    ) -> Result<Removed> {
+        let record = self
+            .config()
+            .signers
+            .get(name)
+            .cloned()
+            .ok_or_else(|| anyhow!("signer '{name}' not found"))?;
+        let detached = self.transact(|tx| tx.remove_signer(name, users))?;
+        Ok(Removed {
+            detached,
+            external: delete_external(keys, name, &record),
+        })
+    }
 }
 
 /// Delete a signer's external keyring entry (after it left config).
-pub fn delete_external(backend: &dyn KeyBackend, name: &str, signer: &Signer) -> Result<()> {
+fn delete_external(keys: &dyn KeyBackend, name: &str, signer: &Signer) -> Result<()> {
     if signer.backend == Backend::Keyring {
         let (service, username) = signer.keyring_entry(name);
-        backend.keyring_delete(service, username)?;
+        keys.keyring_delete(service, username)?;
     }
     Ok(())
 }
@@ -313,7 +382,8 @@ pub fn delete_external(backend: &dyn KeyBackend, name: &str, signer: &Signer) ->
 /// Unlock a signer's private key. Only `--expose-key` and backend migration
 /// call this.
 pub fn unlock(
-    backend: &dyn KeyBackend,
+    keys: &dyn KeyBackend,
+    prompter: &dyn Prompter,
     name: &str,
     signer: &Signer,
     secrets: &Secrets,
@@ -331,61 +401,49 @@ pub fn unlock(
                 .signers
                 .get(name)
                 .ok_or_else(|| anyhow!("signer '{name}' has no encrypted key in secrets.toml"))?;
-            if !backend.is_interactive() {
+            if !prompter.is_interactive() {
                 bail!("signer '{name}' is encrypted and needs an interactive password prompt");
             }
-            let password = backend.prompt_secret(&format!("Decryption password for {name}: "))?;
+            let password = prompter.secret(&format!("Decryption password for {name}: "))?;
             decrypt(secret, &password)
                 .with_context(|| format!("failed to decrypt signer '{name}'"))?
         }
         Backend::Keyring => {
             let (service, username) = signer.keyring_entry(name);
-            backend.keyring_get(service, username)?
+            keys.keyring_get(service, username)?
         }
-        Backend::OnePassword => backend.one_password_get(
-            signer.vault.as_deref().unwrap_or_default(),
-            signer.item.as_deref().unwrap_or_default(),
-        )?,
+        Backend::OnePassword => {
+            let (Some(vault), Some(item)) = (signer.vault.as_deref(), signer.item.as_deref())
+            else {
+                bail!("signer '{name}' (backend '1password') needs a 'vault' and an 'item'");
+            };
+            keys.one_password_get(vault, item)?
+        }
         Backend::Keystore => bail!(
             "signer '{name}' is a Foundry keystore; chainz never decrypts it. Foundry reads it via ETH_KEYSTORE"
         ),
     };
-    let address = Address::from_private_key(&key)
-        .map_err(|_| anyhow!("signer '{name}' holds an invalid private key"))?;
-    if let Some(cached) = signer.address
-        && cached != address
-    {
-        bail!("signer '{name}' key does not match its cached address");
+    match check_cached_address(&key, signer.address) {
+        Err(_) => bail!("signer '{name}' holds an invalid private key"),
+        Ok((_, true)) => bail!("signer '{name}' key does not match its cached address"),
+        Ok((_, false)) => Ok(key),
     }
-    Ok(key)
 }
 
-fn normalize_key(key: &str) -> String {
-    key.trim().to_string()
+fn normalize_key(key: &str) -> Zeroizing<String> {
+    Zeroizing::new(key.trim().to_string())
 }
 
-fn argon2_params(memory_kib: u32, iterations: u32, parallelism: u32) -> Result<argon2::Params> {
-    if memory_kib > 262_144 || iterations > 10 || parallelism > 16 {
-        bail!("key-derivation parameters exceed safety limits");
-    }
-    argon2::Params::new(memory_kib, iterations, parallelism, Some(32))
-        .map_err(|e| anyhow!("invalid key-derivation parameters: {e}"))
-}
-
-fn derive(password: &str, salt: &[u8], m: u32, t: u32, p: u32) -> Result<Zeroizing<[u8; 32]>> {
+fn derive(password: &str, salt: &[u8], params: argon2::Params) -> Result<Zeroizing<[u8; 32]>> {
     let mut key = Zeroizing::new([0u8; 32]);
-    argon2::Argon2::new(
-        argon2::Algorithm::Argon2id,
-        argon2::Version::V0x13,
-        argon2_params(m, t, p)?,
-    )
-    .hash_password_into(password.as_bytes(), salt, &mut key[..])
-    .map_err(|e| anyhow!("key derivation failed: {e}"))?;
+    argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params)
+        .hash_password_into(password.as_bytes(), salt, &mut key[..])
+        .map_err(|e| anyhow!("key derivation failed: {e}"))?;
     Ok(key)
 }
 
 /// Encrypt a private key with a password (AES-256-GCM, Argon2id).
-pub fn encrypt(private_key: &str, password: &str) -> Result<SignerSecret> {
+pub(crate) fn encrypt(private_key: &str, password: &str) -> Result<SignerSecret> {
     if password.is_empty() {
         bail!("encryption password cannot be empty");
     }
@@ -394,72 +452,33 @@ pub fn encrypt(private_key: &str, password: &str) -> Result<SignerSecret> {
     rng.fill(&mut salt);
     let mut nonce = [0u8; 12];
     rng.fill(&mut nonce);
-    let key = derive(
-        password,
-        &salt,
-        KDF_MEMORY_KIB,
-        KDF_ITERATIONS,
-        KDF_PARALLELISM,
+    let params = envelope::kdf_params(
+        envelope::KDF_MEMORY_KIB,
+        envelope::KDF_ITERATIONS,
+        envelope::KDF_PARALLELISM,
     )?;
+    let key = derive(password, &salt, params)?;
     let cipher = Aes256Gcm::new_from_slice(&key[..])
         .map_err(|_| anyhow!("failed to initialize encryption"))?;
     let ciphertext = cipher
         .encrypt(Nonce::from_slice(&nonce), private_key.as_bytes())
         .map_err(|_| anyhow!("failed to encrypt the private key"))?;
-    let mut secret = SignerSecret::default();
-    secret.ciphertext = Some(BASE64.encode(ciphertext));
-    secret.nonce = Some(BASE64.encode(nonce));
-    secret.salt = Some(BASE64.encode(salt));
-    secret.version = Some(ENVELOPE_VERSION);
-    secret.kdf_memory_kib = Some(KDF_MEMORY_KIB);
-    secret.kdf_iterations = Some(KDF_ITERATIONS);
-    secret.kdf_parallelism = Some(KDF_PARALLELISM);
-    Ok(secret)
+    Ok(Envelope::record(&ciphertext, &nonce, &salt))
 }
 
 /// Decrypt an envelope made by [`encrypt`] (or v1's `EncryptedKey`).
-pub fn decrypt(secret: &SignerSecret, password: &str) -> Result<Zeroizing<String>> {
-    validate_envelope(secret)?;
-    let salt = BASE64.decode(secret.salt.as_deref().unwrap_or_default())?;
-    let nonce = BASE64.decode(secret.nonce.as_deref().unwrap_or_default())?;
-    let ciphertext = BASE64.decode(secret.ciphertext.as_deref().unwrap_or_default())?;
-    let key = derive(
-        password,
-        &salt,
-        secret.kdf_memory_kib.unwrap_or(KDF_MEMORY_KIB),
-        secret.kdf_iterations.unwrap_or(KDF_ITERATIONS),
-        secret.kdf_parallelism.unwrap_or(KDF_PARALLELISM),
-    )?;
+pub(crate) fn decrypt(secret: &SignerSecret, password: &str) -> Result<Zeroizing<String>> {
+    let envelope = Envelope::read(secret)?;
+    let key = derive(password, &envelope.salt, envelope.kdf)?;
     let cipher = Aes256Gcm::new_from_slice(&key[..])
         .map_err(|_| anyhow!("failed to initialize decryption"))?;
     let plaintext = cipher
-        .decrypt(Nonce::from_slice(&nonce), ciphertext.as_ref())
+        .decrypt(
+            Nonce::from_slice(&envelope.nonce),
+            envelope.ciphertext.as_ref(),
+        )
         .map_err(|_| anyhow!("wrong password or corrupted key"))?;
     Ok(Zeroizing::new(String::from_utf8(plaintext)?))
-}
-
-/// Structural checks on an encrypted envelope (no password needed).
-pub fn validate_envelope(secret: &SignerSecret) -> Result<()> {
-    if secret.version.unwrap_or(ENVELOPE_VERSION) != ENVELOPE_VERSION {
-        bail!("unsupported encrypted-key version");
-    }
-    let decode = |v: &Option<String>| {
-        BASE64
-            .decode(v.as_deref().unwrap_or_default())
-            .unwrap_or_default()
-    };
-    if decode(&secret.ciphertext).is_empty()
-        || decode(&secret.nonce).len() != 12
-        || decode(&secret.salt).len() < 16
-    {
-        bail!("invalid encrypted-key parameters");
-    }
-    argon2_params(
-        secret.kdf_memory_kib.unwrap_or(KDF_MEMORY_KIB),
-        secret.kdf_iterations.unwrap_or(KDF_ITERATIONS),
-        secret.kdf_parallelism.unwrap_or(KDF_PARALLELISM),
-    )?;
-    Ok(())
 }
 
 /// Read the address field of a Foundry keystore file without decrypting it.
@@ -495,19 +514,20 @@ mod tests {
     #[test]
     fn keyring_provision_caches_address_and_rolls_back() {
         let b = mem(true, false);
-        let p = provision(&b, "default", KEY, Backend::Keyring, None).unwrap();
+        let p = provision(&b, &b, "default", KEY, Backend::Keyring).unwrap();
         assert_eq!(p.signer.address.unwrap().to_string(), ADDR);
         assert!(p.created_external);
         assert_eq!(b.entries.borrow().len(), 1);
-        rollback(&b, "default", &p).unwrap();
+        let err = p.abandon(&b, "default", anyhow!("config write failed"));
+        assert_eq!(err.to_string(), "config write failed");
         assert!(b.entries.borrow().is_empty());
     }
 
     #[test]
     fn keyring_unavailable_or_noninteractive_fails_safe() {
         let b = mem(false, false);
-        assert!(provision(&b, "k", KEY, Backend::Keyring, None).is_err());
-        let err = provision(&b, "k", KEY, Backend::Encrypted, None).unwrap_err();
+        assert!(provision(&b, &b, "k", KEY, Backend::Keyring).is_err());
+        let err = provision(&b, &b, "k", KEY, Backend::Encrypted).unwrap_err();
         assert!(err.to_string().contains("interactive"));
         assert_eq!(safe_default(&b), Backend::Encrypted);
     }
@@ -518,23 +538,22 @@ mod tests {
         b.prompts
             .borrow_mut()
             .extend(["pw".to_string(), "pw".to_string(), "pw".to_string()]);
-        let p = provision(&b, "cold", KEY, Backend::Encrypted, None).unwrap();
+        let p = provision(&b, &b, "cold", KEY, Backend::Encrypted).unwrap();
         let mut secrets = Secrets::default();
         secrets
             .signers
             .insert("cold".into(), p.secret.clone().unwrap());
-        let key = unlock(&b, "cold", &p.signer, &secrets).unwrap();
+        let key = unlock(&b, &b, "cold", &p.signer, &secrets).unwrap();
         assert_eq!(key.as_str(), KEY);
         b.prompts.borrow_mut().push("wrong".into());
-        assert!(unlock(&b, "cold", &p.signer, &secrets).is_err());
+        assert!(unlock(&b, &b, "cold", &p.signer, &secrets).is_err());
     }
 
     #[test]
     fn keystore_is_never_unlocked() {
         let b = mem(true, true);
-        let mut s = blank_signer(Backend::Keystore, None);
-        s.path = Some("/x".into());
-        let err = unlock(&b, "dep", &s, &Secrets::default()).unwrap_err();
+        let s = Signer::keystore("/x".into(), None);
+        let err = unlock(&b, &b, "dep", &s, &Secrets::default()).unwrap_err();
         assert!(err.to_string().contains("ETH_KEYSTORE"));
     }
 
@@ -543,8 +562,71 @@ mod tests {
         let b = mem(true, false);
         b.keyring_set(KEYRING_SERVICE, "x", &"2".repeat(64))
             .unwrap();
-        let mut s = blank_signer(Backend::Keyring, Some(ADDR.parse().unwrap()));
-        s.username = Some("x".into());
-        assert!(unlock(&b, "x", &s, &Secrets::default()).is_err());
+        let s = Signer::keyring("x", None, None, Some(ADDR.parse().unwrap()));
+        assert!(unlock(&b, &b, "x", &s, &Secrets::default()).is_err());
+    }
+
+    #[test]
+    fn a_failed_rollback_is_context_on_the_original_error() {
+        let b = MemoryKeyBackend {
+            keyring: true,
+            ..Default::default()
+        };
+        let p = provision(&b, &b, "default", KEY, Backend::Keyring).unwrap();
+        b.entries.borrow_mut().clear();
+        // The memory backend's delete never fails; a failing one is a
+        // keyring that went away.
+        struct Gone;
+        impl KeyBackend for Gone {
+            fn keyring_available(&self) -> bool {
+                false
+            }
+            fn keyring_get(&self, _: &str, _: &str) -> Result<Zeroizing<String>> {
+                bail!("gone")
+            }
+            fn keyring_set(&self, _: &str, _: &str, _: &str) -> Result<bool> {
+                bail!("gone")
+            }
+            fn keyring_delete(&self, _: &str, _: &str) -> Result<()> {
+                bail!("keyring locked")
+            }
+            fn one_password_get(&self, _: &str, _: &str) -> Result<Zeroizing<String>> {
+                bail!("gone")
+            }
+        }
+        let both = p.abandon(&Gone, "default", anyhow!("config write failed"));
+        let text = format!("{both:#}");
+        assert!(text.contains("keyring locked"), "{text}");
+        assert!(text.ends_with("config write failed"), "{text}");
+        assert_eq!(both.root_cause().to_string(), "config write failed");
+    }
+
+    #[test]
+    fn install_and_remove_a_signer_with_its_keyring_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::StorePaths::in_dir(dir.path().to_path_buf());
+        let mut chainz = Chainz::open_at(paths, crate::LoadMode::Strict).unwrap();
+        let b = mem(true, true);
+        let p = provision(&b, &b, "hot", KEY, Backend::Keyring).unwrap();
+        assert_eq!(chainz.install_signer(&b, "hot", &p).unwrap(), None);
+        assert_eq!(chainz.config().signers["hot"].backend, Backend::Keyring);
+
+        // Moving it out of the keyring deletes the old entry.
+        let p = provision(&b, &b, "hot", KEY, Backend::Plaintext).unwrap();
+        assert_eq!(chainz.install_signer(&b, "hot", &p).unwrap(), None);
+        assert!(b.entries.borrow().is_empty());
+        assert!(chainz.secrets().unwrap().signers.contains_key("hot"));
+
+        // A failed write undoes the keyring entry it created.
+        let p = provision(&b, &b, "Bad Name", KEY, Backend::Keyring).unwrap();
+        assert_eq!(b.entries.borrow().len(), 1);
+        assert!(chainz.install_signer(&b, "Bad Name", &p).is_err());
+        assert!(b.entries.borrow().is_empty());
+
+        let removed = chainz.remove_signer(&b, "hot", Users::Keep).unwrap();
+        assert_eq!(removed.detached, 0);
+        assert!(removed.external.is_ok());
+        assert!(chainz.config().signers.is_empty());
+        assert!(chainz.secrets().unwrap().signers.is_empty());
     }
 }

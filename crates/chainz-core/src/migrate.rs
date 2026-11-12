@@ -450,42 +450,27 @@ fn migrate_key(
         .address
         .as_deref()
         .and_then(|a| a.parse::<Address>().ok());
-    let mut signer = Signer {
-        backend: Backend::Keyring,
-        address: None,
-        service: None,
-        username: None,
-        path: None,
-        vault: None,
-        item: None,
-    };
     let mut secret = None;
-    match &key.kind {
+    let mut signer = match &key.kind {
         V1KeyKind::Keyring { service, username } => {
-            signer.backend = Backend::Keyring;
-            if service != crate::model::KEYRING_SERVICE {
-                signer.service = Some(service.clone());
-            }
-            if username != name {
-                signer.username = Some(username.clone());
-            }
+            Signer::keyring(name, Some(service), Some(username), None)
         }
         V1KeyKind::PrivateKey { value } => {
-            let derived = Address::from_private_key(value)
+            let (derived, mismatch) = crate::address::check_cached_address(value, address)
                 .map_err(|_| "it holds an invalid private key".to_string())?;
-            if address.is_some_and(|cached| cached != derived) {
+            if mismatch {
                 attention.push(format!(
                     "signer '{name}' had a cached address that does not match its key; the key's own address is used"
                 ));
             }
             address = Some(derived);
-            signer.backend = Backend::Plaintext;
             let mut s = SignerSecret::default();
             s.private_key = Some(value.trim().to_string());
             secret = Some(s);
             attention.push(format!(
                 "signer '{name}' is plaintext; move it with `chainz signer migrate {name}`"
             ));
+            Signer::new(Backend::Plaintext, None)
         }
         V1KeyKind::EncryptedKey {
             value,
@@ -496,7 +481,6 @@ fn migrate_key(
             kdf_iterations,
             kdf_parallelism,
         } => {
-            signer.backend = Backend::Encrypted;
             let mut s = SignerSecret::default();
             s.ciphertext = Some(value.clone());
             s.nonce = Some(nonce.clone());
@@ -505,22 +489,26 @@ fn migrate_key(
             s.kdf_memory_kib = *kdf_memory_kib;
             s.kdf_iterations = *kdf_iterations;
             s.kdf_parallelism = *kdf_parallelism;
-            crate::signer::validate_envelope(&s)
+            crate::envelope::Envelope::read(&s)
                 .map_err(|e| format!("its encrypted key cannot be read ({e})"))?;
             secret = Some(s);
+            Signer::new(Backend::Encrypted, None)
         }
         V1KeyKind::OnePassword { vault, item } => {
             if vault.trim().is_empty() || item.trim().is_empty() {
                 return Err("its 1Password vault or item is empty".to_string());
             }
-            signer.backend = Backend::OnePassword;
-            signer.vault = Some(vault.clone());
-            signer.item = Some(item.clone());
+            Signer::one_password(vault.clone(), item.clone(), None)
         }
-    }
+    };
     if address.is_none() {
+        let why = if key.address.is_some() {
+            "an invalid cached address"
+        } else {
+            "no cached address"
+        };
         attention.push(format!(
-            "signer '{name}' has no cached address; @wallet needs one (re-add it or run `chainz signer migrate {name}`)"
+            "signer '{name}' has {why}; @wallet needs one (re-add it or run `chainz signer migrate {name}`)"
         ));
     }
     signer.address = address;

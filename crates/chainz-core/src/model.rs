@@ -283,6 +283,72 @@ pub enum Need {
 }
 
 impl Signer {
+    /// A signer with no optional fields: an encrypted or plaintext key in
+    /// secrets.toml, or a keyring entry under the default service and the
+    /// signer's own name.
+    pub fn new(backend: Backend, address: Option<Address>) -> Self {
+        Self {
+            backend,
+            address,
+            service: None,
+            username: None,
+            path: None,
+            vault: None,
+            item: None,
+        }
+    }
+
+    /// A keyring signer named `name`; `service` and `username` are kept
+    /// only where they differ from the defaults.
+    pub fn keyring(
+        name: &str,
+        service: Option<&str>,
+        username: Option<&str>,
+        address: Option<Address>,
+    ) -> Self {
+        Self {
+            service: service
+                .filter(|s| *s != KEYRING_SERVICE)
+                .map(str::to_string),
+            username: username.filter(|u| *u != name).map(str::to_string),
+            ..Self::new(Backend::Keyring, address)
+        }
+    }
+
+    /// A Foundry keystore file reference.
+    pub fn keystore(path: String, address: Option<Address>) -> Self {
+        Self {
+            path: Some(path),
+            ..Self::new(Backend::Keystore, address)
+        }
+    }
+
+    /// A 1Password item reference.
+    pub fn one_password(vault: String, item: String, address: Option<Address>) -> Self {
+        Self {
+            vault: Some(vault),
+            item: Some(item),
+            ..Self::new(Backend::OnePassword, address)
+        }
+    }
+
+    /// Where the key material that chainz deletes along with this signer
+    /// lives, if anywhere (keystore files and 1Password items are only
+    /// referenced, and stay).
+    pub fn key_material(&self) -> Option<&'static str> {
+        match self.backend {
+            Backend::Keyring => Some("its OS keyring entry"),
+            Backend::Encrypted => Some("its encrypted key in secrets.toml"),
+            Backend::Plaintext => Some("its key in secrets.toml"),
+            Backend::Keystore | Backend::OnePassword => None,
+        }
+    }
+
+    /// Whether removing this signer deletes key material.
+    pub fn holds_key_material(&self) -> bool {
+        self.key_material().is_some()
+    }
+
     /// Every optional field by its config name, set or not.
     pub fn optional_fields(&self) -> [(&'static str, Option<&str>); 5] {
         [
@@ -465,5 +531,26 @@ address = "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf"
         let err = Config::parse("version = 2\n[chains.eth]\nid = 1\nrcp = \"x\"\nrpc = \"x\"\n")
             .unwrap_err();
         assert!(err.to_string().contains("rcp"), "{err}");
+    }
+
+    #[test]
+    fn only_backends_holding_key_material_delete_it() {
+        for backend in [Backend::Keyring, Backend::Encrypted, Backend::Plaintext] {
+            assert!(Signer::new(backend, None).holds_key_material(), "{backend}");
+        }
+        for backend in [Backend::Keystore, Backend::OnePassword] {
+            assert!(
+                !Signer::new(backend, None).holds_key_material(),
+                "{backend}"
+            );
+        }
+    }
+
+    #[test]
+    fn keyring_signers_keep_only_non_default_entries() {
+        let plain = Signer::keyring("hot", Some(KEYRING_SERVICE), Some("hot"), None);
+        assert!(plain.service.is_none() && plain.username.is_none());
+        let custom = Signer::keyring("hot", Some("v1"), Some("me"), None);
+        assert_eq!(custom.keyring_entry("hot"), ("v1", "me"));
     }
 }

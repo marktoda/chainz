@@ -103,7 +103,13 @@ fn expose_key_signer(ctx: &Context) -> Result<&str> {
 /// The signer's private key: keyring, password prompt or `op read`.
 fn unlock(chainz: &Chainz, name: &str) -> Result<String> {
     let signer = &chainz.config().signers[name];
-    let key = signer::unlock(&SystemKeyBackend, name, signer, chainz.secrets()?)?;
+    let key = signer::unlock(
+        &SystemKeyBackend,
+        &crate::prompt::Terminal,
+        name,
+        signer,
+        chainz.secrets()?,
+    )?;
     Ok(key.to_string())
 }
 
