@@ -186,6 +186,10 @@ changed before 2.0.0; they are listed under Removed and Changed.
 
 ### Fixed
 
+- `chain add NAME --url URL` downloaded chainlist to resolve the name. With
+  `--url` the chain is now a chain ID or a built-in short name (`arb`,
+  `base`…), resolved offline; another name is a usage error asking for the
+  ID (and `--name`).
 - `rpc bench` showed dead endpoints with a `0ms` latency and ranked them by
   how fast they failed. They now come last in config order, with `–` and
   what went wrong (`✗ connection failed`); each chain says how many

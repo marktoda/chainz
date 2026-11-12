@@ -104,7 +104,7 @@ chainz edit [CHAIN]                  # $EDITOR on config.toml (or one chain's ta
 
 # management
 chainz chain ls [--json] [--reveal]
-chainz chain add [CHAIN_ID|NAME] [--name N] [--url URL]... [--signer S | --no-signer] [--no-check] [--refresh]
+chainz chain add [CHAIN_ID|NAME] [--name N] [--url URL]... [--signer S | --no-signer] [--no-check] [--refresh]   # with --url: an ID or built-in short name, offline
 chainz chain show CHAIN [--json] [--reveal]
 chainz chain set [CHAIN] [--signer S | --no-signer] [--rpc NAME|URL] [--header 'k: v']... [--clear-headers]
                  [--failover A,B | --no-failover] [--explorer E | --no-explorer] [--api-key-stdin]

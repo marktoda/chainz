@@ -389,7 +389,8 @@ pub enum ChainCommand {
 
 #[derive(Debug, Default, Args)]
 pub struct ChainAddArgs {
-    /// Chain ID or chainlist name (picker if omitted on a TTY)
+    /// Chain ID or chainlist name (picker if omitted on a TTY); with
+    /// --url, a chain ID or built-in short name (no chainlist lookup)
     pub chain: Option<String>,
     /// Short name (default: built-in table, else a slug)
     #[arg(long)]

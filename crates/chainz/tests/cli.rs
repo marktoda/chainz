@@ -506,6 +506,38 @@ fn chain_add_by_hand_checks_chain_id() {
         .stderr(predicate::str::contains("RPC check failed"));
 }
 
+/// With `--url` the chain is an ID or a built-in short name, resolved
+/// offline: chainlist is never downloaded.
+#[test]
+fn chain_add_with_url_stays_offline() {
+    let sb = Sandbox::new();
+    let out = sb.ok(&[
+        "chain",
+        "add",
+        "arb",
+        "--url",
+        "http://127.0.0.1:1",
+        "--no-check",
+    ]);
+    assert!(out.contains("Added chain 'arb' (42161)"), "{out}");
+    let out = sb.run(&[
+        "chain",
+        "add",
+        "mychain",
+        "--url",
+        "http://127.0.0.1:1",
+        "--no-check",
+    ]);
+    assert_eq!(out.status.code(), Some(2));
+    let err = stderr(&out);
+    assert!(
+        err.contains("not a chain ID or a built-in short name"),
+        "{err}"
+    );
+    assert!(err.contains("--name mychain"), "{err}");
+    assert!(!sb.cache_file("chains.json").exists());
+}
+
 #[test]
 fn rpc_failure_never_leaks_the_url() {
     let sb = Sandbox::new();

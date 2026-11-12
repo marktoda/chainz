@@ -116,10 +116,7 @@ fn find_in_chainlist<'a>(entries: &'a [ChainlistEntry], query: &str) -> Result<&
         });
     }
     let q = query.to_ascii_lowercase();
-    if let Some(id) = names::SHORT_NAMES
-        .iter()
-        .find(|(_, n)| *n == q)
-        .map(|(id, _)| *id)
+    if let Some(id) = names::chain_id_for_short_name(query)
         && let Some(e) = entries.iter().find(|e| e.chain_id == id)
     {
         return Ok(e);
@@ -152,8 +149,9 @@ fn find_in_chainlist<'a>(entries: &'a [ChainlistEntry], query: &str) -> Result<&
 /// Where `chain add` gets the chain from, decided from the arguments
 /// alone (before any network access).
 enum ChainSource {
-    /// A chain ID with `--url`s: no chainlist needed (its cached entry, if
-    /// any, only names the chain).
+    /// `--url`s with a chain ID or a built-in short name (`arb`): no
+    /// chainlist needed (its cached entry, if any, only names the chain).
+    /// With `--url`, `chain add` never goes online for the chain.
     Offline { id: u64 },
     /// Look the chain up on chainlist (a picker when no chain is given).
     Chainlist,
@@ -162,10 +160,19 @@ enum ChainSource {
 impl ChainSource {
     fn of(args: &ChainAddArgs, ask: &dyn Ask) -> Result<Self> {
         match &args.chain {
-            Some(query) if !args.urls.is_empty() => match query.parse() {
-                Ok(id) => Ok(ChainSource::Offline { id }),
-                Err(_) => Ok(ChainSource::Chainlist),
-            },
+            Some(query) if !args.urls.is_empty() => query
+                .parse()
+                .ok()
+                .or_else(|| names::chain_id_for_short_name(query))
+                .map(|id| ChainSource::Offline { id })
+                .ok_or_else(|| {
+                    crate::cli::usage_error(
+                        &["chain", "add"],
+                        &format!(
+                            "'{query}' is not a chain ID or a built-in short name; with --url, pass the chain ID (and --name {query} to name it)"
+                        ),
+                    )
+                }),
             Some(_) => Ok(ChainSource::Chainlist),
             None if ask.is_interactive() => Ok(ChainSource::Chainlist),
             None => Err(crate::cli::usage_error(
