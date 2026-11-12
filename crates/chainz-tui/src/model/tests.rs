@@ -146,7 +146,10 @@ fn chain_status_is_pending_ok_lag_slow_or_down() {
 
     // A failed poll is down, whatever came before; the head is kept.
     state.apply(failed("eth", ErrorClass::Timeout));
-    assert_eq!(status(&state, 0), Status::Down(FaultClass::Rpc(ErrorClass::Timeout)));
+    assert_eq!(
+        status(&state, 0),
+        Status::Down(FaultClass::Rpc(ErrorClass::Timeout))
+    );
     assert_eq!(state.chains[0].head.as_ref().unwrap().number, 1_003);
     assert_eq!(state.chains[0].samples.back(), Some(&None));
     state.apply(polled("eth", 1_004, 50));
@@ -171,7 +174,10 @@ fn chain_status_is_pending_ok_lag_slow_or_down() {
     }
     assert_eq!(status(&state, 1), Status::Lag(10));
     state.apply(failed("base", ErrorClass::RateLimited));
-    assert_eq!(status(&state, 1), Status::Down(FaultClass::Rpc(ErrorClass::RateLimited)));
+    assert_eq!(
+        status(&state, 1),
+        Status::Down(FaultClass::Rpc(ErrorClass::RateLimited))
+    );
     // An update for a chain that no longer exists is dropped.
     state.apply(polled("gone", 1, 1));
 }

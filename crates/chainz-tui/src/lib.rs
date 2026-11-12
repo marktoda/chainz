@@ -13,7 +13,8 @@
 //!   the gateway and the config, reporting model updates;
 //! - `view`: the state as each tab's rows, every figure derived once;
 //! - `app`: selection, tabs and key bindings;
-//! - `ui`: pure rendering of (app, view, clock) into a buffer;
+//! - `ui`: rendering of (app, view, clock) into a buffer, and the
+//!   message and table text `--once` shares;
 //! - `snapshot` and `once`: the `--once` JSON document and text tables,
 //!   from the same view;
 //! - `term`: the terminal and the event loop.

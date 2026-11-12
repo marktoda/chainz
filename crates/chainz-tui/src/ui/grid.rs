@@ -188,7 +188,7 @@ impl Grid {
 
     /// The header and every row, unstyled and unselected, for a width of
     /// `available` cells: the table as plain text lines.
-    pub fn plain_lines(&self, available: u16) -> Vec<Line<'static>> {
+    pub fn plain_lines(&self, available: u16) -> Vec<String> {
         let widths = self.widths(available);
         let header: Vec<Cell> = self
             .cols
@@ -197,7 +197,7 @@ impl Grid {
             .collect();
         std::iter::once(&header)
             .chain(&self.rows)
-            .map(|cells| self.line(&widths, cells, Span::raw(" ")))
+            .map(|cells| super::plain(&self.line(&widths, cells, Span::raw(" ")), available))
             .collect()
     }
 

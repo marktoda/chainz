@@ -4,8 +4,8 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+use chainz_core::StorePaths;
 use chainz_core::runtime::ServeInfo;
-use chainz_core::store::StorePaths;
 use chainz_rpc::{ErrorClass, RpcError};
 use serde_json::{Value, json};
 use tokio::runtime::Handle;
@@ -111,7 +111,10 @@ async fn a_hostile_endpoint_does_not_stop_the_poller() {
     }
     let chain = &state.chains[0];
     assert_eq!(chain.block_time, None);
-    assert_eq!(chain.head.as_ref().unwrap().base_fee, Some(crate::view::SATURATED));
+    assert_eq!(
+        chain.head.as_ref().unwrap().base_fee,
+        Some(crate::view::SATURATED)
+    );
     // Rendering and the snapshot survive it too.
     let _ = chain.status(state.slow_threshold());
     let _ = chain.block_age(chainz_os::now_ms());
@@ -212,7 +215,10 @@ async fn a_poller_paces_by_the_idle_flag_and_the_last_retry_after() {
     let Update::Head { result, .. } = poller.step().await else {
         panic!("a head update");
     };
-    assert_eq!(result.unwrap_err().class, FaultClass::Rpc(ErrorClass::RateLimited));
+    assert_eq!(
+        result.unwrap_err().class,
+        FaultClass::Rpc(ErrorClass::RateLimited)
+    );
     let pacing = poller.pacing();
     assert_eq!(pacing.failures, 1);
     assert_eq!(pacing.retry_after, Some(Duration::from_secs(7)));
@@ -384,7 +390,10 @@ async fn a_failing_chain_backs_off_and_recovers() {
         _ => None,
     })
     .await;
-    assert_eq!(first.unwrap_err().class, FaultClass::Rpc(ErrorClass::RateLimited));
+    assert_eq!(
+        first.unwrap_err().class,
+        FaultClass::Rpc(ErrorClass::RateLimited)
+    );
     // The waits between the failures are `next_delay`'s (tested exactly
     // above); here, that the poller keeps going and recovers.
 
@@ -923,7 +932,10 @@ async fn once_collects_every_chain_and_retries_a_rate_limit() {
     let [healthy_chain, limited_chain, down_chain] = &state.chains[..] else {
         panic!("three chains");
     };
-    assert_eq!(healthy_chain.fault.as_ref().unwrap().class, FaultClass::Rpc(ErrorClass::Rpc));
+    assert_eq!(
+        healthy_chain.fault.as_ref().unwrap().class,
+        FaultClass::Rpc(ErrorClass::Rpc)
+    );
     assert_eq!(
         healthy_chain.balances.as_ref().unwrap().holders[0].native,
         Some(3)
@@ -934,7 +946,10 @@ async fn once_collects_every_chain_and_retries_a_rate_limit() {
         limited_chain.balances.as_ref().unwrap().holders[1].tokens,
         [Some(4), Some(4)]
     );
-    assert_eq!(down_chain.fault.as_ref().unwrap().class, FaultClass::Rpc(ErrorClass::Http));
+    assert_eq!(
+        down_chain.fault.as_ref().unwrap().class,
+        FaultClass::Rpc(ErrorClass::Http)
+    );
     assert_eq!(
         down_chain.balance_fault.as_ref().unwrap().class,
         FaultClass::Rpc(ErrorClass::Http)

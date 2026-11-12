@@ -93,6 +93,20 @@ pub fn width(s: &str) -> usize {
     UnicodeWidthStr::width(s)
 }
 
+/// The longest start of `s` that fits in `max` cells: what a row `max`
+/// cells wide shows of it.
+pub fn cut(s: &str, max: usize) -> &str {
+    let mut used = 0;
+    for (at, c) in s.char_indices() {
+        let w = c.width().unwrap_or(0);
+        if used + w > max {
+            return &s[..at];
+        }
+        used += w;
+    }
+    s
+}
+
 /// Cut `s` to at most `max` cells, ending in `…` when anything was cut.
 pub fn truncate(s: &str, max: usize) -> String {
     if width(s) <= max {
@@ -101,18 +115,7 @@ pub fn truncate(s: &str, max: usize) -> String {
     if max == 0 {
         return String::new();
     }
-    let mut out = String::new();
-    let mut used = 0;
-    for c in s.chars() {
-        let w = c.width().unwrap_or(0);
-        if used + w > max - 1 {
-            break;
-        }
-        out.push(c);
-        used += w;
-    }
-    out.push('…');
-    out
+    format!("{}…", cut(s, max - 1))
 }
 
 const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
@@ -140,7 +143,6 @@ pub fn sparkline(samples: &[Option<u32>], width: usize) -> Vec<Option<char>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chainz_core::fmt::short_address;
 
     #[test]
     fn ages() {
@@ -188,14 +190,9 @@ mod tests {
         assert_eq!(truncate("infura", 10), "infura");
         assert_eq!(truncate("publicnode-2", 8), "publicn…");
         assert_eq!(truncate("abc", 0), "");
-        assert_eq!(
-            short_address(
-                &"0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf"
-                    .parse()
-                    .unwrap()
-            ),
-            "0x7E5F…5Bdf"
-        );
+        assert_eq!(truncate("日本語", 4), "日…");
+        assert_eq!(cut("日本語", 5), "日本");
+        assert_eq!(cut("abc", 9), "abc");
     }
 
     #[test]

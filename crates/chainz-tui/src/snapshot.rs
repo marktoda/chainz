@@ -150,7 +150,8 @@ pub struct ChainBalances {
 /// An amount in raw units and formatted with its decimals.
 #[derive(Debug, Serialize)]
 pub struct Amount {
-    /// Currency symbol, when known.
+    /// Currency symbol. Always present (every chain has a native
+    /// symbol); optional only so older readers keep working.
     pub symbol: Option<String>,
     /// Decimals.
     pub decimals: u8,

@@ -117,7 +117,9 @@ impl HealthSink {
         }
         let saved = store.save();
         drop(store);
-        let error = saved.err().map(|e| format!("health history not saved: {e}"));
+        let error = saved
+            .err()
+            .map(|e| format!("health history not saved: {e}"));
         self.failed.report(error)
     }
 }

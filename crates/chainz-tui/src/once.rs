@@ -9,8 +9,6 @@ use chainz_core::Chainz;
 use chainz_core::runtime::Runtime;
 use chainz_rpc::HealthStore;
 use chainz_os::now_ms;
-use ratatui::text::Line;
-use unicode_width::UnicodeWidthChar;
 
 use crate::app::{App, Tab};
 use crate::data::{self, Event, Shared, Tuning};
@@ -102,51 +100,19 @@ pub(crate) fn text(state: &State, now_ms: u64) -> String {
 }
 
 /// One tab's body as text: the context line (or `heading`), then the
-/// table, or the message centred a third of the way down `room` lines.
+/// table, or the message laid out as on a screen with `room` lines under
+/// the context line.
 fn frame(body: Body, heading: Option<String>, room: u16) -> String {
     let theme = Theme::new(false);
     let mut lines = vec![match (heading, body.context) {
         (Some(heading), _) => heading,
-        (None, Some(parts)) => plain(&ui::context_line(WIDTH, theme, parts)),
+        (None, Some(parts)) => ui::plain(&ui::context_line(WIDTH, theme, parts), WIDTH),
         (None, None) => String::new(),
     }];
     match body.content {
-        Content::Message(message) => {
-            let height = u16::try_from(message.len()).unwrap_or(u16::MAX).min(room);
-            lines.extend((0..(room - height) / 3).map(|_| String::new()));
-            for line in &message {
-                let width = u16::try_from(line.width()).unwrap_or(u16::MAX);
-                let indent = (WIDTH / 2).saturating_sub(width / 2);
-                let text = " ".repeat(usize::from(indent)) + &plain(line);
-                lines.push(cut(&text, WIDTH));
-            }
-        }
-        Content::Table { grid, .. } => {
-            lines.extend(grid.plain_lines(WIDTH).iter().map(plain));
-        }
+        Content::Message(message) => lines.extend(ui::message_text(&message, WIDTH, room)),
+        Content::Table { grid, .. } => lines.extend(grid.plain_lines(WIDTH)),
     }
     let lines: Vec<&str> = lines.iter().map(|l| l.trim_end()).collect();
     lines.join("\n").trim_end().to_string()
-}
-
-/// A line's text, cut to [`WIDTH`] cells.
-fn plain(line: &Line) -> String {
-    let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-    cut(&text, WIDTH)
-}
-
-/// `text` cut to at most `width` terminal cells, trailing blanks trimmed.
-fn cut(text: &str, width: u16) -> String {
-    let mut out = String::new();
-    let mut used = 0;
-    for c in text.chars() {
-        let w = c.width().unwrap_or(0);
-        if used + w > usize::from(width) {
-            break;
-        }
-        out.push(c);
-        used += w;
-    }
-    out.truncate(out.trim_end().len());
-    out
 }

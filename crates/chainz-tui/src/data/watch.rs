@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+use chainz_core::StorePaths;
 use chainz_core::runtime::{GatewayState, Runtime, ServeInfo};
-use chainz_core::store::StorePaths;
 use chainz_os::FileStamp;
 use tokio::sync::watch;
 

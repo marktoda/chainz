@@ -1,6 +1,7 @@
-//! Rendering. Pure functions from ([`App`], [`State`], a clock) to a
-//! ratatui buffer: no I/O and no wall-clock reads, so every frame is
-//! reproducible in a test.
+//! Rendering, from ([`App`], [`State`], a clock) to a ratatui buffer. No
+//! I/O; renderers read the time from [`Ctx`] (only [`Ctx::now`] looks at
+//! the clock), and tables remember their scroll position in `App`'s
+//! cells. So every frame is reproducible in a test.
 //!
 //! The Chains, Endpoints and Balances tabs describe what they show as a
 //! [`Body`] (built from [`crate::view`] rows); [`render`] draws it, and
@@ -312,16 +313,41 @@ fn scroll_hint(
     }
 }
 
+/// How far down an area `height` rows tall a centred message of `lines`
+/// lines starts: a third of the room it leaves.
+fn message_top(lines: usize, height: u16) -> u16 {
+    let lines = u16::try_from(lines).unwrap_or(u16::MAX).min(height);
+    (height - lines) / 3
+}
+
 /// A centred message for a tab with nothing to show.
 fn empty(area: Rect, buf: &mut Buffer, lines: Vec<Line<'static>>) {
-    let height = u16::try_from(lines.len())
-        .unwrap_or(u16::MAX)
-        .min(area.height);
-    let top = area.y + (area.height - height) / 3;
+    let top = area.y + message_top(lines.len(), area.height);
     Paragraph::new(lines)
         .alignment(Alignment::Center)
         .wrap(Wrap { trim: true })
         .render(Rect::new(area.x, top, area.width, area.bottom() - top), buf);
+}
+
+/// [`empty`]'s message as plain text in an area `width` × `height`: blank
+/// lines down to where it starts, then each line centred as ratatui
+/// centres it (and cut, where [`empty`] would wrap).
+pub fn message_text(lines: &[Line], width: u16, height: u16) -> Vec<String> {
+    let top = message_top(lines.len(), height);
+    let mut out = vec![String::new(); usize::from(top)];
+    for line in lines {
+        let indent = (width / 2).saturating_sub(line_width(&line.spans) / 2);
+        let text = " ".repeat(usize::from(indent)) + &plain(line, u16::MAX);
+        out.push(fmt::cut(&text, usize::from(width)).trim_end().to_string());
+    }
+    out
+}
+
+/// A line's text without its styles, cut to `width` cells as a row that
+/// wide shows it, trailing blanks trimmed.
+pub fn plain(line: &Line, width: u16) -> String {
+    let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+    fmt::cut(&text, usize::from(width)).trim_end().to_string()
 }
 
 /// Split `area` into the context line and the rest.

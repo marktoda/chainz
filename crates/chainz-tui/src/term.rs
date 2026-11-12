@@ -22,13 +22,13 @@ use ratatui::crossterm::terminal::{
 };
 use ratatui::crossterm::{execute, queue};
 
+use crate::ShellFn;
 use crate::app::{Action, App};
 use crate::data::{self, ConfigFiles, ConfigStamp, Engine, Shared, Tuning};
 use crate::model::State;
 use crate::plan::Plan;
 use crate::ui::theme::Theme;
 use crate::ui::{self, Ctx};
-use crate::ShellFn;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use chainz_os::now_ms;
@@ -426,7 +426,7 @@ fn quit_on_signals(rt: &tokio::runtime::Handle) -> Result<Arc<AtomicI32>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chainz_core::store::StorePaths;
+    use chainz_core::StorePaths;
 
     #[test]
     fn only_the_ui_thread_panicking_restores_the_terminal() {

@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use chainz_core::store::StorePaths;
+use chainz_core::StorePaths;
 use chainz_core::{Chainz, LoadMode};
 use chainz_rpc::{ErrorClass, HealthStore};
 
