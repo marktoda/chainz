@@ -186,6 +186,11 @@ changed before 2.0.0; they are listed under Removed and Changed.
 
 ### Fixed
 
+- `init` dead ends: with no chains it skips the Explorer and Default steps
+  and ends with how to add one, not "Done"; a key that doesn't work (a
+  typo, a password mismatch) is asked again instead of ending the wizard;
+  and when chainlist is unreachable it offers to add the chain by ID and
+  RPC URL.
 - `signer add --backend keystore` refuses a `--path` that doesn't exist, and
   a keystore with no address field (as `cast wallet new` writes) without
   `--address`, saying how to get it (`cast wallet address --keystore

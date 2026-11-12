@@ -183,6 +183,17 @@ impl ChainSource {
     }
 }
 
+/// `chain add` needed chainlist and could not get it (an error's context:
+/// `init` then offers the offline path, a chain ID and an RPC URL).
+#[derive(Debug)]
+pub struct ChainlistUnavailable;
+
+impl std::fmt::Display for ChainlistUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("chainlist is unavailable")
+    }
+}
+
 /// The chain `chain add` found.
 enum Found {
     /// By ID, with its chainlist entry when the cache has one.
@@ -218,7 +229,7 @@ fn find_chain(args: &ChainAddArgs, source: ChainSource, ask: &mut dyn Ask) -> Re
             .and_then(|all| all.into_iter().find(|e| e.chain_id == id));
         return Ok(Found::Offline { id, cached });
     }
-    let registry = net::chainlist(&cache, args.refresh).context("chainlist is unavailable")?;
+    let registry = net::chainlist(&cache, args.refresh).context(ChainlistUnavailable)?;
     let all = registry.entries;
     let entry = match &args.chain {
         Some(q) => find_in_chainlist(&all, q)?.clone(),

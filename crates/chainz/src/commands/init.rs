@@ -40,39 +40,67 @@ pub fn run() -> Result<i32> {
     }
     let mut chainz = open()?;
     println!("{}", ui::section("Chains"));
-    add_chains(&mut chainz, ask)?;
+    add_chains(&mut chainz, ask, &mut chain::add)?;
     println!("{}", ui::section("Signer"));
     add_signer(&mut chainz, &SystemKeyBackend, ask)?;
-    println!("{}", ui::section("Explorer"));
-    if let Some(key) = etherscan_key(chainz.config(), ask)? {
-        set_etherscan(&mut chainz, key)?;
-    }
-    println!("{}", ui::section("Default chain"));
-    if let Some(default) = pick_default(chainz.config(), ask)? {
-        chainz.transact(|tx| {
-            tx.set_default(Some(&default));
-            Ok(())
-        })?;
-        println!("Default chain set to '{default}'");
+    if !chainz.config().chains.is_empty() {
+        println!("{}", ui::section("Explorer"));
+        if let Some(key) = etherscan_key(chainz.config(), ask)? {
+            set_etherscan(&mut chainz, key)?;
+        }
+        println!("{}", ui::section("Default chain"));
+        if let Some(default) = pick_default(chainz.config(), ask)? {
+            chainz.transact(|tx| {
+                tx.set_default(Some(&default));
+                Ok(())
+            })?;
+            println!("Default chain set to '{default}'");
+        }
     }
     println!();
-    println!(
-        "{}",
-        ui::success("Done. Try `chainz ls`, or `chainz exec -- cast block-number`.")
-    );
+    println!("{}", closing(chainz.config()));
     Ok(0)
 }
 
+/// The last line: what to try next, given what the wizard left.
+fn closing(config: &Config) -> String {
+    match (config.chains.keys().next(), &config.default) {
+        (None, _) => ui::warn(
+            "No chains yet: add one with `chainz chain add <chain>` (an ID, or a name on chainlist), or run `chainz init` again.",
+        ),
+        (Some(_), Some(_)) => {
+            ui::success("Done. Try `chainz ls`, or `chainz exec -- cast block-number`.")
+        }
+        (Some(first), None) => ui::success(&format!(
+            "Done. Try `chainz ls`, or `chainz exec {first} -- cast block-number`."
+        )),
+    }
+}
+
+/// How `init` adds one chain: `chain::add` (tests pass their own).
+type AddChain<'a> = dyn FnMut(&mut Chainz, &ChainAddArgs, &mut dyn Ask) -> Result<i32> + 'a;
+
 /// Add chains from chainlist until the user is done. A chain that fails
-/// to add is reported and the loop goes on.
-fn add_chains(chainz: &mut Chainz, ask: &mut dyn Ask) -> Result<()> {
+/// to add is reported and the loop goes on; when chainlist is
+/// unreachable, the chain can be given by ID and RPC URL instead.
+fn add_chains(chainz: &mut Chainz, ask: &mut dyn Ask, add: &mut AddChain<'_>) -> Result<()> {
     let have = chainz.config().chains.len();
     if have > 0 {
         println!("{have} chain(s) configured");
     }
     let mut more = ask.confirm("Add a chain from chainlist?", have == 0)?;
     while more {
-        if let Err(e) = chain::add(chainz, &ChainAddArgs::default(), ask) {
+        let mut result = add(chainz, &ChainAddArgs::default(), ask);
+        if let Err(e) = &result
+            && e.downcast_ref::<chain::ChainlistUnavailable>().is_some()
+        {
+            eprintln!("{}", ui::fail(&format!("{e:#}")));
+            result = match ask.confirm("Add it by chain ID and RPC URL instead?", true)? {
+                true => add_offline(chainz, ask, add),
+                false => Ok(0),
+            };
+        }
+        if let Err(e) = result {
             if ui::is_cancelled(&e) {
                 return Err(e);
             }
@@ -83,8 +111,21 @@ fn add_chains(chainz: &mut Chainz, ask: &mut dyn Ask) -> Result<()> {
     Ok(())
 }
 
+/// `chain add ID --url URL`, asked for.
+fn add_offline(chainz: &mut Chainz, ask: &mut dyn Ask, add: &mut AddChain<'_>) -> Result<i32> {
+    let id = ask.text("Chain ID", None)?;
+    let url = ask.text("RPC URL", None)?;
+    let args = ChainAddArgs {
+        chain: Some(id.trim().to_string()),
+        urls: vec![url.trim().to_string()],
+        ..ChainAddArgs::default()
+    };
+    add(chainz, &args, ask)
+}
+
 /// Add a first signer (attached to every chain without one), unless one
-/// exists or the user skips it.
+/// exists or the user skips it. A key that doesn't work (a typo, a
+/// password mismatch) is reported and asked again.
 fn add_signer(chainz: &mut Chainz, backend: &dyn KeyBackend, ask: &mut dyn Ask) -> Result<()> {
     if !chainz.config().signers.is_empty() {
         let names: Vec<&str> = chainz.config().signers.keys().map(String::as_str).collect();
@@ -102,12 +143,24 @@ fn add_signer(chainz: &mut Chainz, backend: &dyn KeyBackend, ask: &mut dyn Ask) 
         );
         return Ok(());
     }
-    let name = ask.text("Signer name", Some("deployer"))?;
-    let args = SignerAddArgs {
-        name: name.trim().to_string(),
-        ..SignerAddArgs::default()
-    };
-    signer::add(chainz, backend, &AskPrompter::new(ask), &args).map(drop)
+    let mut name = "deployer".to_string();
+    loop {
+        name = ask.text("Signer name", Some(&name))?.trim().to_string();
+        let args = SignerAddArgs {
+            name: name.clone(),
+            ..SignerAddArgs::default()
+        };
+        match signer::add(chainz, backend, &AskPrompter::new(ask), &args) {
+            Ok(_) => return Ok(()),
+            Err(e) if ui::is_cancelled(&e) => return Err(e),
+            Err(e) => {
+                eprintln!("{}", ui::fail(&format!("{e:#}")));
+                if !ask.confirm("Try again?", true)? {
+                    return Ok(());
+                }
+            }
+        }
+    }
 }
 
 /// The Etherscan API key to store, if the user gives one. Asked only when
@@ -296,6 +349,85 @@ api = "https://blockscout.example/api"
         let mut chainz = Chainz::open_at(paths, chainz_core::LoadMode::Strict).unwrap();
         add_signer(&mut chainz, &NoKeyring, &mut Script::new([Yes(false)])).unwrap();
         assert!(chainz.config().signers.is_empty());
+    }
+
+    #[test]
+    fn a_bad_key_is_asked_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = chainz_core::StorePaths::in_dir(dir.path().join("chainz"));
+        let mut chainz = Chainz::open_at(paths, chainz_core::LoadMode::Strict).unwrap();
+        let key = "0x4c0883a69102937d6231471b5dbb6204fe512961708279f22a82e1d1b1c2f8f2";
+        let mut script = Script::new([
+            Yes(true),
+            Text("ops"),
+            Text("0xnotakey"),
+            Yes(true), // try again
+            Text("ops"),
+            Text(key),
+            Text("pw"),
+            Text("pw"),
+        ]);
+        add_signer(&mut chainz, &NoKeyring, &mut script).unwrap();
+        assert!(script.done());
+        assert!(chainz.config().signers.contains_key("ops"));
+        // Declining to retry leaves the wizard going, with no signer.
+        let dir = tempfile::tempdir().unwrap();
+        let paths = chainz_core::StorePaths::in_dir(dir.path().join("chainz"));
+        let mut chainz = Chainz::open_at(paths, chainz_core::LoadMode::Strict).unwrap();
+        let mut script = Script::new([Yes(true), Text("ops"), Text("bad"), Yes(false)]);
+        add_signer(&mut chainz, &NoKeyring, &mut script).unwrap();
+        assert!(chainz.config().signers.is_empty());
+    }
+
+    #[test]
+    fn unreachable_chainlist_offers_the_chain_id_and_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = chainz_core::StorePaths::in_dir(dir.path().join("chainz"));
+        let mut chainz = Chainz::open_at(paths, chainz_core::LoadMode::Strict).unwrap();
+        let mut seen: Vec<(Option<String>, Vec<String>)> = Vec::new();
+        let mut add = |_: &mut Chainz, args: &ChainAddArgs, _: &mut dyn Ask| -> Result<i32> {
+            seen.push((args.chain.clone(), args.urls.clone()));
+            match args.chain {
+                None => Err(anyhow::anyhow!("offline").context(chain::ChainlistUnavailable)),
+                Some(_) => Ok(0),
+            }
+        };
+        let mut script = Script::new([
+            Yes(true), // add a chain
+            Yes(true), // by ID and URL
+            Text(" 8453 "),
+            Text("http://127.0.0.1:8545"),
+            Yes(false), // no more
+        ]);
+        add_chains(&mut chainz, &mut script, &mut add).unwrap();
+        assert!(script.done());
+        assert_eq!(
+            seen,
+            [
+                (None, vec![]),
+                (Some("8453".into()), vec!["http://127.0.0.1:8545".into()])
+            ]
+        );
+    }
+
+    #[test]
+    fn the_closing_line_fits_what_was_set_up() {
+        let none = Config::parse("version = 2\n").unwrap();
+        let line = closing(&none);
+        assert!(
+            !line.contains("Done") && line.contains("chainz chain add"),
+            "{line}"
+        );
+        let line = closing(&config(""));
+        assert!(
+            line.contains("Done") && line.contains("exec eth --"),
+            "{line}"
+        );
+        let line = closing(&config("default = \"base\""));
+        assert!(
+            line.contains("`chainz exec -- cast block-number`"),
+            "{line}"
+        );
     }
 
     /// The README's quick start is this one.
