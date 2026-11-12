@@ -267,7 +267,7 @@ fn var_renames(vars: &BTreeMap<String, String>) -> HashMap<String, String> {
 }
 
 /// Compute the migration of v1 JSON text without touching the filesystem.
-pub fn plan(v1_json: &str) -> Result<Plan> {
+pub(crate) fn plan(v1_json: &str) -> Result<Plan> {
     let v1: V1Config = serde_json::from_str(v1_json).map_err(|e| {
         anyhow!(
             "failed to parse the v1 config: {:?} error at line {}, column {}",
