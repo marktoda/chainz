@@ -1,43 +1,31 @@
 //! The running gateway: listeners, background tasks and lifecycle.
 
 use std::collections::HashMap;
-use std::convert::Infallible;
-use std::future::Future;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
 use std::sync::Arc;
-use std::task::Poll;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use bytes::Bytes;
 use chainz_core::StorePaths;
 use chainz_core::runtime::{
     DEFAULT_PORT, GatewayAddr, GatewayState, LOOPBACK, Published, Runtime, ServeInfo, ServeLock,
 };
-use chainz_rpc::control::{
-    ChainStatus, EVENTS_PATH, EventsOptions, METRICS_PATH, RELOAD_PATH, RequestRecord, STATUS_PATH,
-    SocketPath, Status,
-};
+use chainz_rpc::control::{ChainStatus, MetricsSnapshot, MetricsTotals, SocketPath, Status};
 use chainz_rpc::{HttpUpstream, RpcClient};
 use http_body_util::{BodyExt, Limited};
-use hyper::body::{Body, Frame, Incoming};
+use hyper::body::Incoming;
 use hyper::header::{ALLOW, CONTENT_TYPE, HOST, HeaderValue};
-use hyper::server::conn::http1;
-use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
-use hyper_util::rt::{TokioIo, TokioTimer};
-use hyper_util::server::graceful::GracefulShutdown;
 use serde_json::Value;
 use tokio::net::{TcpListener, UnixListener};
 use tokio::sync::{broadcast, watch};
 use tokio::task::{JoinHandle, JoinSet};
 
 use crate::auth;
+use crate::control::{self, ControlState, EventRing};
 use crate::http::{self, BoxBody, Reply, is_json, json, plain};
 use crate::inspector::Inspector;
-use crate::metrics::Summary;
 use crate::router::Router;
 use crate::state::Snapshot;
 use chainz_sys::{FileStamp, now_secs};
@@ -185,6 +173,24 @@ impl Shared {
     }
 }
 
+impl ControlState for Shared {
+    fn status(&self) -> Status {
+        Shared::status(self)
+    }
+
+    fn metrics(&self) -> MetricsSnapshot {
+        self.router.metrics.snapshot(now_secs())
+    }
+
+    fn events(&self) -> &EventRing {
+        self.router.inspector.events()
+    }
+
+    async fn reload(&self) -> Result<()> {
+        Shared::reload(self).await
+    }
+}
+
 /// A running gateway. Call [`Gateway::shutdown`] to stop it cleanly.
 pub struct Gateway {
     shared: Arc<Shared>,
@@ -294,7 +300,7 @@ impl Gateway {
 
         let (stop, stopped) = watch::channel(false);
         let tasks = vec![
-            tokio::spawn(http::serve_tcp(
+            tokio::spawn(http::serve(
                 tcp,
                 {
                     let shared = shared.clone();
@@ -306,9 +312,17 @@ impl Gateway {
                 stopped.clone(),
                 config.drain,
             )),
-            tokio::spawn(serve_control(
+            tokio::spawn(http::serve(
                 unix,
-                shared.clone(),
+                {
+                    let shared = shared.clone();
+                    let stopped = stopped.clone();
+                    move |request| {
+                        let shared = shared.clone();
+                        let stopped = stopped.clone();
+                        async move { control::handle(&*shared, request, stopped).await }
+                    }
+                },
                 stopped.clone(),
                 config.drain,
             )),
@@ -357,7 +371,7 @@ impl Gateway {
     }
 
     /// Totals over the last minute.
-    pub fn summary(&self) -> Summary {
+    pub fn summary(&self) -> MetricsTotals {
         self.shared.router.metrics.summary(now_secs())
     }
 
@@ -465,163 +479,6 @@ async fn proxy(shared: &Shared, request: Request<Incoming>) -> Response<BoxBody>
         .handle(&snapshot, chain, pin, body)
         .await
         .into_response()
-}
-
-/// Serve the control API on the unix socket until stopped.
-async fn serve_control(
-    listener: UnixListener,
-    shared: Arc<Shared>,
-    mut stopped: watch::Receiver<bool>,
-    drain: Duration,
-) {
-    let graceful = GracefulShutdown::new();
-    let mut builder = http1::Builder::new();
-    builder.timer(TokioTimer::new());
-    let mut connections = JoinSet::new();
-    loop {
-        tokio::select! {
-            accepted = listener.accept() => {
-                let Ok((stream, _)) = accepted else {
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                    continue;
-                };
-                let shared = shared.clone();
-                let stopped = stopped.clone();
-                let service = service_fn(move |request| {
-                    let shared = shared.clone();
-                    let stopped = stopped.clone();
-                    async move { Ok::<_, Infallible>(control(&shared, request, stopped).await) }
-                });
-                let connection = builder.serve_connection(TokioIo::new(stream), service);
-                let connection = graceful.watch(connection);
-                connections.spawn(async move {
-                    let _ = connection.await;
-                });
-            }
-            Some(_) = connections.join_next(), if !connections.is_empty() => {}
-            _ = stopped.changed() => break,
-        }
-    }
-    drop(listener);
-    http::drain_connections(graceful, connections, drain).await;
-}
-
-async fn control(
-    shared: &Arc<Shared>,
-    request: Request<Incoming>,
-    stopped: watch::Receiver<bool>,
-) -> Response<BoxBody> {
-    let path = request.uri().path();
-    let known = [STATUS_PATH, METRICS_PATH, EVENTS_PATH, RELOAD_PATH].contains(&path);
-    match (request.method(), path) {
-        (&Method::GET, STATUS_PATH) => json(
-            StatusCode::OK,
-            serde_json::to_vec(&shared.status()).unwrap_or_default(),
-        ),
-        (&Method::GET, METRICS_PATH) => {
-            let snapshot = shared.router.metrics.snapshot(now_secs());
-            json(
-                StatusCode::OK,
-                serde_json::to_vec(&snapshot).unwrap_or_default(),
-            )
-        }
-        (&Method::POST, RELOAD_PATH) => match shared.reload().await {
-            Ok(()) => plain(StatusCode::NO_CONTENT, ""),
-            Err(_) => plain(StatusCode::INTERNAL_SERVER_ERROR, "reload failed\n"),
-        },
-        (&Method::GET, EVENTS_PATH) => {
-            let options = EventsOptions::from_query(request.uri().query().unwrap_or(""));
-            let (backlog, live) = shared.router.inspector.subscribe(options);
-            let mut response =
-                Response::new(EventsBody::new(backlog, live, stopped).boxed_unsync());
-            response.headers_mut().insert(
-                CONTENT_TYPE,
-                HeaderValue::from_static("application/x-ndjson"),
-            );
-            response
-        }
-        _ if known => plain(StatusCode::METHOD_NOT_ALLOWED, ""),
-        _ => plain(StatusCode::NOT_FOUND, ""),
-    }
-}
-
-/// The NDJSON events stream: the backlog in one chunk, then live records
-/// until the client goes away or the gateway stops. The body drives
-/// itself, so it ends with its connection and leaves no task behind.
-struct EventsBody {
-    backlog: Option<Bytes>,
-    next: Option<NextLine>,
-}
-
-type NextLine = Pin<Box<dyn Future<Output = Option<(Bytes, Live)>> + Send>>;
-
-/// What a following events stream waits on.
-struct Live {
-    records: broadcast::Receiver<RequestRecord>,
-    stopped: watch::Receiver<bool>,
-}
-
-impl EventsBody {
-    fn new(
-        backlog: Vec<RequestRecord>,
-        live: Option<broadcast::Receiver<RequestRecord>>,
-        stopped: watch::Receiver<bool>,
-    ) -> Self {
-        let chunk: Vec<u8> = backlog.iter().flat_map(ndjson).collect();
-        EventsBody {
-            backlog: (!chunk.is_empty()).then(|| Bytes::from(chunk)),
-            next: live.map(|records| Box::pin(next_line(Live { records, stopped })) as NextLine),
-        }
-    }
-}
-
-fn ndjson(record: &RequestRecord) -> Vec<u8> {
-    let mut line = serde_json::to_vec(record).unwrap_or_default();
-    line.push(b'\n');
-    line
-}
-
-/// The next live record as a line, or `None` when the stream is over.
-async fn next_line(mut live: Live) -> Option<(Bytes, Live)> {
-    loop {
-        let record = tokio::select! {
-            record = live.records.recv() => record,
-            _ = live.stopped.changed() => return None,
-        };
-        match record {
-            Ok(record) => return Some((Bytes::from(ndjson(&record)), live)),
-            Err(broadcast::error::RecvError::Lagged(_)) => continue,
-            Err(broadcast::error::RecvError::Closed) => return None,
-        }
-    }
-}
-
-impl Body for EventsBody {
-    type Data = Bytes;
-    type Error = Infallible;
-
-    fn poll_frame(
-        mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<Option<Result<Frame<Bytes>, Infallible>>> {
-        if let Some(chunk) = self.backlog.take() {
-            return Poll::Ready(Some(Ok(Frame::data(chunk))));
-        }
-        let Some(next) = self.next.as_mut() else {
-            return Poll::Ready(None);
-        };
-        match next.as_mut().poll(cx) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(Some((line, live))) => {
-                self.next = Some(Box::pin(next_line(live)));
-                Poll::Ready(Some(Ok(Frame::data(line))))
-            }
-            Poll::Ready(None) => {
-                self.next = None;
-                Poll::Ready(None)
-            }
-        }
-    }
 }
 
 /// Probe every failover pool's heads and keep the per-chain high-water
