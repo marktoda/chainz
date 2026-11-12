@@ -17,8 +17,6 @@ mod sys;
 mod ui;
 mod view;
 
-use clap::Parser;
-
 fn main() {
     ui::exit_quietly_on_broken_pipe();
     // Shell completion requests (`CHAINZ_COMPLETE=zsh chainz -- …`): one env
@@ -26,7 +24,7 @@ fn main() {
     if complete::requested() {
         complete::run();
     }
-    let opt = cli::Opt::parse();
+    let opt = cli::parse();
     let code = match commands::dispatch(opt) {
         Ok(code) => code,
         Err(error) => {

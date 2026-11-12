@@ -13,14 +13,12 @@
 //!   no key unlocking, no network. A missing config completes nothing.
 //! - Every failure is an empty list; nothing is ever printed to stderr.
 
-use crate::cli::Opt;
 use chainz_core::Chainz;
 use chainz_core::contract::Env;
 use chainz_core::labels::LabelIndex;
 use chainz_core::model::Config;
 use chainz_core::resolve::{self, ChainRef};
 use chainz_core::runtime::{ForkEntry, Runtime};
-use clap::CommandFactory;
 use clap_complete::engine::{CompletionCandidate, PathCompleter, ValueCompleter};
 use clap_complete::env::{CompleteEnv, Shells};
 use std::ffi::OsStr;
@@ -40,7 +38,7 @@ pub fn run() -> ! {
     std::panic::set_hook(Box::new(|_| {}));
     let ok = std::panic::catch_unwind(|| {
         let cwd = std::env::current_dir().ok();
-        CompleteEnv::with_factory(Opt::command)
+        CompleteEnv::with_factory(crate::cli::command)
             .var(VAR)
             .bin("chainz")
             .try_complete(std::env::args_os(), cwd.as_deref())
@@ -356,7 +354,7 @@ fn escaped(words: &[String]) -> bool {
 /// The chain argument typed so far (positional `CHAIN` or `--chain`), by
 /// walking the words against the CLI definition.
 fn typed_chain(words: &[String]) -> Option<String> {
-    let mut root = Opt::command();
+    let mut root = crate::cli::command();
     root.build();
     let mut cmd = &root;
     let mut position = 0;

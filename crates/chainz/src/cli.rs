@@ -8,7 +8,7 @@
 use crate::complete;
 use chainz_core::context::ExecOptions;
 use chainz_core::model::Backend;
-use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use clap_complete::engine::ArgValueCompleter;
 
 #[derive(Debug, Parser)]
@@ -16,18 +16,82 @@ use clap_complete::engine::ArgValueCompleter;
     name = "chainz",
     version,
     about = "A local multichain workbench: chains, endpoints, signers, and exec with context",
-    after_help = "Run `chainz <command> --help` for details. `chainz exec base -- cast block-number` is the hot path."
+    after_help = "`chainz x base -- cast block-number` is the hot path. `chainz <command> --help` for details."
 )]
 pub struct Opt {
     #[command(subcommand)]
     pub cmd: Option<Command>,
 }
 
+/// The top-level help's command groups, in order. Every visible command
+/// is in exactly one (a test checks); each line is built from the
+/// command's own name, aliases and about.
+const HELP_GROUPS: &[(&str, &[&str])] = &[
+    ("Run", &["exec", "env"]),
+    (
+        "Chains",
+        &["ls", "use", "add", "update", "rm", "edit", "init"],
+    ),
+    ("Signers, labels, variables", &["signer", "label", "var"]),
+    ("Health and runtime", &["doctor", "top", "serve", "fork"]),
+    ("Setup", &["completions"]),
+];
+
+/// The command line definition: [`Opt`]'s, with the top-level help
+/// grouped under [`HELP_GROUPS`]. Parsing, completion and help all start
+/// here.
+pub fn command() -> clap::Command {
+    let command = Opt::command();
+    let template = grouped_help(&command);
+    command.help_template(template)
+}
+
+/// Parse the process's arguments (exits on a usage error, as clap does).
+pub fn parse() -> Opt {
+    Opt::from_arg_matches(&command().get_matches()).unwrap_or_else(|e| e.exit())
+}
+
+/// The top-level help template: about, usage, then each group's commands
+/// (`exec, x  Run a command…`), aligned across groups, then the options.
+fn grouped_help(command: &clap::Command) -> clap::builder::StyledStr {
+    use std::fmt::Write;
+    let header = command.get_styles().get_header();
+    let rows: Vec<Vec<(String, String)>> = HELP_GROUPS
+        .iter()
+        .map(|(_, names)| {
+            names
+                .iter()
+                .map(|name| {
+                    let sub = command
+                        .find_subcommand(name)
+                        .unwrap_or_else(|| panic!("no command '{name}' to list in help"));
+                    let label = std::iter::once(sub.get_name())
+                        .chain(sub.get_visible_aliases())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let about = sub.get_about().map(ToString::to_string).unwrap_or_default();
+                    (label, about)
+                })
+                .collect()
+        })
+        .collect();
+    let width = rows.iter().flatten().map(|(l, _)| l.len()).max().unwrap_or(0);
+    let mut out = String::from("{about-with-newline}\n{usage-heading} {usage}\n");
+    for ((title, _), rows) in HELP_GROUPS.iter().zip(&rows) {
+        let _ = write!(out, "\n{header}{title}:{header:#}\n");
+        for (label, about) in rows {
+            let _ = writeln!(out, "  {header}{label:<width$}{header:#}  {about}");
+        }
+    }
+    let _ = write!(out, "\n{header}Options:{header:#}\n{{options}}{{after-help}}");
+    out.into()
+}
+
 /// A usage error for the subcommand at `path` (`["signer", "add"]`), worded
 /// like clap's own: the message, the subcommand's usage line, and a
 /// pointer to `--help`. It exits 2, as clap's do (see `ui::exit_code`).
 pub fn usage_error(path: &[&str], message: &str) -> anyhow::Error {
-    let mut command = Opt::command();
+    let mut command = command();
     command.build();
     let mut sub = &mut command;
     for name in path {
@@ -40,8 +104,7 @@ pub fn usage_error(path: &[&str], message: &str) -> anyhow::Error {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Run a command with a chain's context: environment and @tokens (no
-    /// command: open a subshell)
+    /// Run a command with a chain's context (no command: open a subshell)
     ///
     /// Exported: ETH_RPC_URL, ETH_RPC_HEADERS (direct only), CHAIN_ID,
     /// CHAINZ_CHAIN, ETHERSCAN_API_KEY, VERIFIER_URL/VERIFIER_API_KEY
@@ -106,14 +169,13 @@ pub enum Command {
     /// Edit config.toml, or one chain's table, in $EDITOR (validated on save)
     Edit(EditArgs),
 
-    /// Manage signers (key references with cached addresses)
+    /// Key references with cached addresses: add, ls, rm, migrate
     Signer {
         #[command(subcommand)]
         cmd: SignerCommand,
     },
 
-    /// Name addresses: `label 0x…` looks one up, `… | chainz label`
-    /// rewrites stdin; add, ls, rm, import
+    /// Name addresses: `label 0x…`, `… | chainz label`, add, ls, rm, import
     #[command(args_conflicts_with_subcommands = true)]
     Label {
         #[command(subcommand)]
@@ -122,13 +184,13 @@ pub enum Command {
         args: LabelArgs,
     },
 
-    /// Manage variables (values live in secrets.toml)
+    /// Values for ${NAME} in config (kept in secrets.toml): set, ls, rm
     Var {
         #[command(subcommand)]
         cmd: VarCommand,
     },
 
-    /// Check config, secrets, references and RPC health
+    /// Check config, credentials, signers and endpoints; --fix repairs
     Doctor(DoctorArgs),
 
     /// Print the shell loader for dynamic completions
@@ -750,8 +812,36 @@ pub struct VarRmArgs {
 
 #[cfg(test)]
 mod tests {
-    use super::Opt;
+    use super::{HELP_GROUPS, Opt};
     use clap::CommandFactory;
+
+    /// The grouped top-level help lists every visible command exactly
+    /// once, and nothing else.
+    #[test]
+    fn help_groups_list_every_command_once() {
+        let command = Opt::command();
+        let mut visible: Vec<&str> = command
+            .get_subcommands()
+            .filter(|c| !c.is_hide_set())
+            .map(|c| c.get_name())
+            .collect();
+        let mut grouped: Vec<&str> = HELP_GROUPS
+            .iter()
+            .flat_map(|(_, names)| names.iter().copied())
+            .collect();
+        visible.sort_unstable();
+        grouped.sort_unstable();
+        assert_eq!(grouped, visible);
+        let help = super::command().render_help().to_string();
+        for name in &grouped {
+            let lines = help
+                .lines()
+                .filter(|l| l.trim_start().starts_with(&format!("{name} ")) || l.trim_start().starts_with(&format!("{name},")))
+                .count();
+            assert_eq!(lines, 1, "{name} in:\n{help}");
+        }
+        assert!(help.contains("exec, x"), "{help}");
+    }
 
     /// `exec --help` restates the contract by hand: it must name every
     /// exported variable and every context token.

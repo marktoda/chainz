@@ -7,7 +7,7 @@
 //! start.
 
 use super::{chain, signer};
-use crate::cli::{AddArgs, Opt, SignerAddArgs};
+use crate::cli::{AddArgs, SignerAddArgs};
 use crate::load::open;
 use crate::prompt::{Ask, AskPrompter, Tty};
 use crate::{ui, view};
@@ -16,7 +16,6 @@ use chainz_core::Chainz;
 use chainz_core::model::{Backend, Config, Explorer};
 use chainz_core::signer::{KeyBackend, SystemKeyBackend};
 use chainz_core::tx::ChainEdit;
-use clap::CommandFactory;
 use zeroize::Zeroizing;
 
 /// `chainz` with no command: the quick start until a chain exists, then
@@ -26,7 +25,7 @@ pub fn no_command() -> Result<i32> {
     if chainz.config().chains.is_empty() {
         print!("{}", view::no_chains());
     } else {
-        Opt::command().print_help()?;
+        crate::cli::command().print_help()?;
     }
     Ok(0)
 }
