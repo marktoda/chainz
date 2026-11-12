@@ -72,6 +72,10 @@ pub fn use_default(args: &UseArgs) -> Result<i32> {
             },
         )?,
     };
+    if chainz.config().default.as_deref() == Some(name.as_str()) {
+        println!("No changes ('{name}' is already the default chain)");
+        return Ok(0);
+    }
     chainz.transact(|tx| {
         tx.set_default(Some(&name));
         Ok(())

@@ -23,10 +23,18 @@ pub fn run(args: &EditArgs) -> Result<i32> {
                 .0
                 .to_string();
             let snippet = chainz.chain_snippet(&name)?;
+            let mut changes = Vec::new();
             edit_until_saved(&snippet.text, |edited| {
-                chainz.replace_chain_snippet(&snippet, edited)
+                changes = chainz.replace_chain_snippet(&snippet, edited)?;
+                Ok(())
             })?
-            .then(|| format!("Updated chain '{name}'"))
+            .then(|| {
+                let mut report = format!("Updated chain '{name}'");
+                for change in &changes {
+                    report.push_str(&format!("\n  {change}"));
+                }
+                report
+            })
         }
     };
     println!("{}", saved.as_deref().unwrap_or("No changes"));

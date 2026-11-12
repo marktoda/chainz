@@ -116,12 +116,13 @@ fn check_new_url(chainz: &chainz_core::Chainz, name: &str, edit: &ChainEdit) -> 
 }
 
 fn print_report(report: &EditReport) {
+    if report.is_empty() {
+        println!("No changes ('{}' already has these settings)", report.chain);
+        return;
+    }
     println!("Updated chain '{}'", report.chain);
     if let Some(explorer) = &report.created_explorer {
         println!("  created [explorers.{explorer}]");
-    }
-    if let Some(endpoint) = &report.added_endpoint {
-        println!("  added endpoint '{endpoint}'");
     }
     for change in &report.changes {
         println!("  {change}");

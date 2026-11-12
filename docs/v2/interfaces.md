@@ -611,8 +611,13 @@ names the file. `ErrorClass::phrase()` is the class in a sentence
   `<EXPLORER>_API_KEY`), aliases, and the rename last. Each rule shares its
   check and message with validation (`Config::check_signer`,
   `Chain::check_failover`, `names::check_alias`). `EditReport` lists the
-  changes, the added endpoint, the created explorer, the key variable and
-  the moved secrets. Checking a new URL's chain ID is the caller's (network)
+  changes (`Chain::changes(old, new)`, the one way a chain change is
+  described, `edit CHAIN` included: `active endpoint: a → b`, side effects
+  such as `failover: b, c → c`, and a chain ID change; then the explorer
+  key line, `replaced the value of ${VAR}` when it held another, and the
+  rename), the added endpoint, the created explorer, the key variable and
+  the moved secrets; `EditReport::is_empty` is a no-op edit, which `chain
+  set` reports as "No changes". Checking a new URL's chain ID is the caller's (network)
   job. `tx.insert_chain(name, &chain, Attach)` checks name, ID and signer and,
   with `Attach::Defaults`, attaches the only signer and
   `[explorers.etherscan]` if configured (`Attach::ExplorerOnly` for

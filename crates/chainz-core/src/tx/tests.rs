@@ -726,3 +726,93 @@ fn a_url_whose_key_moved_is_still_the_same_endpoint() {
         &vars
     ));
 }
+
+/// The report says what changed, from → to, side effects included; an
+/// edit that changes nothing reports nothing.
+#[test]
+fn edit_reports_transitions_and_no_ops() {
+    let mut doc = tx(&format!("{DOC}{SIGNER}"));
+    // `b` is in failover: activating it drops it from there.
+    let edit = ChainEdit {
+        rpc: Some("b".into()),
+        signer: Some(Some("deployer".into())),
+        ..ChainEdit::default()
+    };
+    let report = doc.edit_chain("eth", &edit).unwrap();
+    assert_eq!(
+        report.changes,
+        [
+            "active endpoint: a → b",
+            "failover: b → none",
+            "signer: none → deployer"
+        ]
+    );
+    assert!(!report.is_empty());
+    // The same again: nothing changes, nothing is reported.
+    let report = doc.edit_chain("eth", &edit).unwrap();
+    assert!(report.is_empty(), "{report:?}");
+    let report = doc
+        .edit_chain(
+            "eth",
+            &ChainEdit {
+                add_aliases: vec!["eth".into()],
+                failover: Some(vec![]),
+                ..ChainEdit::default()
+            },
+        )
+        .unwrap();
+    assert!(report.is_empty(), "{report:?}");
+
+    // The explorer key: stored, unchanged, then replaced.
+    let key = |k: &str| ChainEdit {
+        explorer: Some(Some("etherscan".into())),
+        api_key: Some(zeroize::Zeroizing::new(k.into())),
+        ..ChainEdit::default()
+    };
+    let report = doc.edit_chain("eth", &key("one")).unwrap();
+    assert!(
+        report
+            .changes
+            .contains(&"explorer: none → etherscan".to_string())
+    );
+    assert!(
+        report
+            .changes
+            .last()
+            .unwrap()
+            .contains("stored in ${ETHERSCAN_API_KEY}")
+    );
+    assert!(doc.edit_chain("eth", &key("one")).unwrap().is_empty());
+    let report = doc.edit_chain("eth", &key("two")).unwrap();
+    assert_eq!(
+        report.changes,
+        ["explorer key: replaced the value of ${ETHERSCAN_API_KEY} (used by eth)"]
+    );
+}
+
+#[test]
+fn chain_changes_cover_every_field() {
+    let config = Config::parse(
+        "version = 2\n[chains.a]\nid = 1\naliases = [\"x\"]\nrpc = \"p\"\nfailover = [\"q\"]\n[chains.a.rpcs]\np = \"https://p.example\"\nq = { url = \"https://q.example\", headers = { h = \"1\" } }\n\n[chains.b]\nid = 2\naliases = [\"y\"]\nsigner = \"s\"\nexplorer = \"e\"\nrpc = \"q\"\n[chains.b.rpcs]\nq = { url = \"https://q2.example\", headers = { h = \"2\", k = \"3\" } }\nr = \"https://r.example\"\n",
+    )
+    .unwrap();
+    let changes = Chain::changes(&config.chains["a"], &config.chains["b"]);
+    assert_eq!(
+        changes,
+        [
+            "chain ID: 1 → 2 (its endpoints were not re-checked)",
+            "alias removed: x",
+            "alias added: y",
+            "removed endpoint 'p'",
+            "endpoint 'q': URL changed",
+            "header h set on q",
+            "header k set on q",
+            "added endpoint 'r'",
+            "active endpoint: p → q",
+            "failover: q → none",
+            "signer: none → s",
+            "explorer: none → e",
+        ]
+    );
+    assert!(Chain::changes(&config.chains["a"], &config.chains["a"]).is_empty());
+}

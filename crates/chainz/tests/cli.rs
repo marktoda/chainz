@@ -636,6 +636,33 @@ fn chain_rm_names_its_labels_and_the_default() {
     assert!(out.contains("default cleared"), "{out}");
 }
 
+/// Writes say what changed, from → to, with side effects; a no-op says
+/// "No changes".
+#[test]
+fn chain_set_and_rpc_rm_report_what_changed() {
+    let sb = Sandbox::new();
+    sb.write_config(
+        "version = 2\n[chains.eth]\nid = 1\nrpc = \"a\"\nfailover = [\"b\", \"c\"]\n[chains.eth.rpcs]\na = \"http://127.0.0.1:1/a\"\nb = \"http://127.0.0.1:1/b\"\nc = \"http://127.0.0.1:1/c\"\n",
+    );
+    let before = sb.config();
+    assert_eq!(
+        sb.ok(&["chain", "set", "eth", "--rpc", "a"]),
+        "No changes ('eth' already has these settings)\n"
+    );
+    assert_eq!(sb.config(), before);
+    assert_eq!(
+        sb.ok(&["chain", "set", "eth", "--rpc", "b"]),
+        "Updated chain 'eth'\n  active endpoint: a → b\n  failover: b, c → c\n"
+    );
+    let out = sb.ok(&["rpc", "rm", "eth", "c", "--yes"]);
+    assert_eq!(
+        out,
+        "Removed endpoint 'c' from 'eth'\n  also removed from failover (now: none)\n"
+    );
+    sb.ok(&["use", "eth"]);
+    assert!(sb.ok(&["use", "eth"]).starts_with("No changes"));
+}
+
 #[test]
 fn chain_set_renames_and_aliases() {
     let sb = Sandbox::new();
@@ -1186,11 +1213,15 @@ fn edit_validates_before_saving() {
 fn edit_chain_replaces_one_chain() {
     let sb = Sandbox::new();
     sb.seed(&[("eth", 1), ("base", 8453)]);
+    // A chain ID change is named in the report.
     sb.cmd()
         .env("EDITOR", "sed -i s/id\\ =\\ 8453/id\\ =\\ 84532/")
         .args(["edit", "ba"])
         .assert()
-        .success();
+        .success()
+        .stdout(predicate::str::contains(
+            "Updated chain 'base'\n  chain ID: 8453 → 84532 (its endpoints were not re-checked)\n",
+        ));
     assert!(sb.config().contains("id = 84532"));
     assert!(sb.config().contains("[chains.eth]"));
 }
@@ -1972,7 +2003,7 @@ fn chain_set_applies_every_flag_in_one_write() {
         .clone();
     let text = String::from_utf8_lossy(&text);
     assert!(text.contains("Updated chain 'eth'"), "{text}");
-    assert!(text.contains("signer: none"), "{text}");
+    assert!(text.contains("signer: default → none"), "{text}");
     let show = sb.ok(&["chain", "show", "eth", "--json"]);
     let show: serde_json::Value = serde_json::from_str(&show).unwrap();
     assert_eq!(show["failover"], serde_json::json!(["local"]));

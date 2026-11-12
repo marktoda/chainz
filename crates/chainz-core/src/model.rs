@@ -568,6 +568,80 @@ impl Config {
 }
 
 impl Chain {
+    /// What changed from `old` to `new` (one chain, before and after a
+    /// write), one line per change, in a fixed order: chain ID, aliases,
+    /// endpoints, active endpoint, failover, signer, explorer. Empty when
+    /// nothing did. The one way writes describe a chain change (`chain
+    /// set`, `edit CHAIN`). Never shows a URL or header value.
+    pub fn changes(old: &Chain, new: &Chain) -> Vec<String> {
+        let mut out = Vec::new();
+        if old.id != new.id {
+            out.push(format!(
+                "chain ID: {} → {} (its endpoints were not re-checked)",
+                old.id, new.id
+            ));
+        }
+        let has = |list: &[String], a: &str| list.iter().any(|x| x.eq_ignore_ascii_case(a));
+        for alias in old.aliases.iter().filter(|a| !has(&new.aliases, a)) {
+            out.push(format!("alias removed: {alias}"));
+        }
+        for alias in new.aliases.iter().filter(|a| !has(&old.aliases, a)) {
+            out.push(format!("alias added: {alias}"));
+        }
+        for name in old.rpcs.keys().filter(|n| !new.rpcs.contains_key(*n)) {
+            out.push(format!("removed endpoint '{name}'"));
+        }
+        for (name, endpoint) in &new.rpcs {
+            let Some(before) = old.rpcs.get(name) else {
+                out.push(format!("added endpoint '{name}'"));
+                continue;
+            };
+            if before.url != endpoint.url {
+                out.push(format!("endpoint '{name}': URL changed"));
+            }
+            for header in before.headers.keys() {
+                if !endpoint.headers.contains_key(header) {
+                    out.push(format!("header {header} removed from {name}"));
+                }
+            }
+            for (header, value) in &endpoint.headers {
+                if before.headers.get(header) != Some(value) {
+                    out.push(format!("header {header} set on {name}"));
+                }
+            }
+        }
+        if old.rpc != new.rpc {
+            out.push(format!("active endpoint: {} → {}", old.rpc, new.rpc));
+        }
+        let list = |l: &[String]| match l.is_empty() {
+            true => "none".to_string(),
+            false => l.join(", "),
+        };
+        if old.failover != new.failover {
+            out.push(format!(
+                "failover: {} → {}",
+                list(&old.failover),
+                list(&new.failover)
+            ));
+        }
+        let or_none = |v: &Option<String>| v.clone().unwrap_or_else(|| "none".to_string());
+        if old.signer != new.signer {
+            out.push(format!(
+                "signer: {} → {}",
+                or_none(&old.signer),
+                or_none(&new.signer)
+            ));
+        }
+        if old.explorer != new.explorer {
+            out.push(format!(
+                "explorer: {} → {}",
+                or_none(&old.explorer),
+                or_none(&new.explorer)
+            ));
+        }
+        out
+    }
+
     /// The active endpoint record, if the config is consistent.
     pub fn active(&self) -> Option<&Endpoint> {
         self.rpcs.get(&self.rpc)

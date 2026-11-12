@@ -155,8 +155,24 @@ fn rm(args: &RpcRmArgs) -> Result<i32> {
         &format!("rpc rm {} {name}", args.chain),
         &format!("endpoint '{name}' from '{chain}'"),
     )?;
+    let failover = c.failover.clone();
     chainz.transact(|tx| tx.remove_endpoint(&chain, name))?;
     println!("Removed endpoint '{name}' from '{chain}'");
+    if failover.contains(name) {
+        let rest: Vec<&str> = failover
+            .iter()
+            .filter(|f| *f != name)
+            .map(String::as_str)
+            .collect();
+        println!(
+            "  also removed from failover (now: {})",
+            if rest.is_empty() {
+                "none".to_string()
+            } else {
+                rest.join(", ")
+            }
+        );
+    }
     Ok(0)
 }
 

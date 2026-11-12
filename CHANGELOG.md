@@ -179,6 +179,15 @@ changed before 2.0.0; they are listed under Removed and Changed.
   that with `strace`. The internals were restructured before release so
   each rule has one owner and no crate or module depends on itself.
 
+- Writes say what changed: `chain set` and `update` print each change as
+  a transition (`active endpoint: alchemy → infura`) with its side effects
+  (`failover: llama, ankr → ankr` when the new active endpoint was in
+  failover), and "No changes" when every value was already set (they used
+  to print "Updated chain"). `rpc rm` says when the endpoint also left
+  failover, `use` with the current default says so, `--api-key-stdin`
+  says when it replaced the value of the shared key variable, and `edit
+  CHAIN` lists what changed, a chain ID change included.
+
 ### Removed
 
 - Windows support.

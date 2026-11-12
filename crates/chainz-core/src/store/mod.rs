@@ -371,11 +371,26 @@ impl Chainz {
     }
 
     /// Replace a chain's tables with an edited [`ChainSnippet`]; refused
-    /// if `config.toml` changed since the snippet was cut.
-    pub fn replace_chain_snippet(&mut self, snippet: &ChainSnippet, edited: &str) -> Result<()> {
+    /// if `config.toml` changed since the snippet was cut. Returns what
+    /// changed ([`Chain::changes`](crate::model::Chain::changes)): a chain
+    /// ID change included.
+    pub fn replace_chain_snippet(
+        &mut self,
+        snippet: &ChainSnippet,
+        edited: &str,
+    ) -> Result<Vec<String>> {
         self.transact(|tx| {
             unchanged_since(tx, &snippet.config)?;
-            tx.replace_chain_snippet(&snippet.chain, edited)
+            let chain = &snippet.chain;
+            let before = tx.config()?.chains[chain].clone();
+            tx.replace_chain_snippet(chain, edited)?;
+            let after = tx
+                .config()?
+                .chains
+                .get(chain)
+                .cloned()
+                .ok_or_else(|| anyhow!("chain '{chain}' not found"))?;
+            Ok(crate::model::Chain::changes(&before, &after))
         })
     }
 }

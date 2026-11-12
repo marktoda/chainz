@@ -41,6 +41,17 @@ pub struct ChainEdit {
     pub remove_aliases: Vec<String>,
 }
 
+impl EditReport {
+    /// Whether the edit changed nothing (a no-op: every value was already
+    /// set).
+    pub fn is_empty(&self) -> bool {
+        self.changes.is_empty()
+            && self.added_endpoint.is_none()
+            && self.created_explorer.is_none()
+            && self.moved.is_empty()
+    }
+}
+
 impl ChainEdit {
     /// Whether the patch changes nothing.
     pub fn is_empty(&self) -> bool {
@@ -109,7 +120,8 @@ pub enum RpcChoice {
 /// What [`Tx::edit_chain`] did, for the caller to report.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EditReport {
-    /// One line per change, in the order applied (`signer: deployer`).
+    /// One line per change ([`Chain::changes`], then the explorer key and
+    /// the rename): `signer: deployer → ops`.
     pub changes: Vec<String>,
     /// The endpoint `--rpc URL` added, if it added one.
     pub added_endpoint: Option<String>,
@@ -196,7 +208,9 @@ impl Tx {
 
     /// Apply `edit` to chain `name`: endpoint and headers first, then
     /// failover, explorer and key, signer, aliases, and the rename last.
-    /// Validation runs on commit, as for every transaction.
+    /// Validation runs on commit, as for every transaction. The report's
+    /// changes are [`Chain::changes`] from before to after (so a no-op
+    /// edit reports none), then the explorer key and the rename.
     pub fn edit_chain(&mut self, name: &str, edit: &ChainEdit) -> Result<EditReport> {
         let config = self.config()?;
         let chain = config
@@ -216,13 +230,9 @@ impl Tx {
                 chain.check_failover(name, f)?;
             }
             self.set_failover(name, failover)?;
-            report.changes.push(match failover.is_empty() {
-                true => "failover: none".to_string(),
-                false => format!("failover: {}", failover.join(", ")),
-            });
         }
 
-        self.edit_explorer(name, edit, &mut report)?;
+        let key_line = self.edit_explorer(name, edit, &mut report)?;
 
         if let Some(signer) = &edit.signer {
             if let Some(signer) = signer {
@@ -232,9 +242,6 @@ impl Tx {
                 c.signer = signer.clone();
                 Ok(())
             })?;
-            report
-                .changes
-                .push(format!("signer: {}", signer.as_deref().unwrap_or("none")));
         }
 
         if !edit.add_aliases.is_empty() || !edit.remove_aliases.is_empty() {
@@ -245,7 +252,6 @@ impl Tx {
                 if aliases.len() == before {
                     bail!("chain '{name}' has no alias '{alias}'");
                 }
-                report.changes.push(format!("alias removed: {alias}"));
             }
             for alias in &edit.add_aliases {
                 let alias = alias.trim();
@@ -256,11 +262,13 @@ impl Tx {
                     continue;
                 }
                 aliases.push(alias.to_string());
-                report.changes.push(format!("alias added: {alias}"));
             }
             self.set_aliases(name, &aliases)?;
         }
 
+        let after = self.config()?.chains[name].clone();
+        report.changes = Chain::changes(&chain, &after);
+        report.changes.extend(key_line);
         if let Some(new) = &edit.name
             && new != name
         {
@@ -287,16 +295,10 @@ impl Tx {
             None => chain.rpc.clone(),
             Some(RpcChoice::Existing(ep_name)) => ep_name,
             Some(RpcChoice::New(ep_name, endpoint)) => {
-                for (header, _) in &endpoint.headers {
-                    report
-                        .changes
-                        .push(format!("header {header} set on {ep_name}"));
-                }
                 let (ep_name, moved) =
                     self.add_endpoint_url(name, Some(&ep_name), &endpoint, EndpointRole::Active)?;
                 report.moved = moved;
-                report.added_endpoint = Some(ep_name.clone());
-                report.changes.push(format!("active endpoint: {ep_name}"));
+                report.added_endpoint = Some(ep_name);
                 return Ok(());
             }
         };
@@ -307,7 +309,6 @@ impl Tx {
         if edit.clear_headers && !endpoint.headers.is_empty() {
             endpoint.headers.clear();
             changed = true;
-            report.changes.push(format!("headers cleared on {ep_name}"));
         }
         for (header, value) in &edit.headers {
             let header = header.trim();
@@ -318,9 +319,6 @@ impl Tx {
                 .headers
                 .insert(header.to_string(), value.trim().to_string());
             changed = true;
-            report
-                .changes
-                .push(format!("header {header} set on {ep_name}"));
         }
         if changed {
             let mut endpoints = [(ep_name.clone(), endpoint)];
@@ -330,18 +328,18 @@ impl Tx {
         }
         if edit.rpc.is_some() && chain.rpc != ep_name {
             self.set_active(name, &ep_name)?;
-            report.changes.push(format!("active endpoint: {ep_name}"));
         }
         Ok(())
     }
 
-    /// `--explorer` and `--api-key`.
+    /// `--explorer` and `--api-key`. Returns the line saying where the key
+    /// went, when it changed anything.
     fn edit_explorer(
         &mut self,
         name: &str,
         edit: &ChainEdit,
         report: &mut EditReport,
-    ) -> Result<()> {
+    ) -> Result<Option<String>> {
         if let Some(explorer) = &edit.explorer {
             if let Some(explorer) = explorer
                 && !self.config()?.explorers.contains_key(explorer)
@@ -358,33 +356,44 @@ impl Tx {
                 c.explorer = explorer.clone();
                 Ok(())
             })?;
-            report.changes.push(format!(
-                "explorer: {}",
-                explorer.as_deref().unwrap_or("none")
-            ));
         }
-        if let Some(key) = &edit.api_key {
-            let key = key.trim();
-            if key.is_empty() {
-                bail!("the API key is empty");
-            }
-            let config = self.config()?;
-            let explorer_name = config.chains[name].explorer.clone().ok_or_else(|| {
-                anyhow!("chain '{name}' has no explorer to set a key for; pass --explorer")
-            })?;
-            let mut explorer = config.explorers[&explorer_name].clone();
-            let var = crate::extract::explorer_key_var(&explorer_name, &explorer);
-            self.set_var(&var, key)?;
-            let reference = format!("${{{var}}}");
-            if explorer.key.as_deref() != Some(&reference) {
-                explorer.key = Some(reference);
-                self.set_explorer(&explorer_name, &explorer)?;
-            }
-            report.changes.push(format!(
+        let Some(key) = &edit.api_key else {
+            return Ok(None);
+        };
+        let key = key.trim();
+        if key.is_empty() {
+            bail!("the API key is empty");
+        }
+        let config = self.config()?;
+        let explorer_name = config.chains[name].explorer.clone().ok_or_else(|| {
+            anyhow!("chain '{name}' has no explorer to set a key for; pass --explorer")
+        })?;
+        let mut explorer = config.explorers[&explorer_name].clone();
+        let var = crate::extract::explorer_key_var(&explorer_name, &explorer);
+        let held = self.secrets()?.vars.get(&var).map(|v| v == key);
+        self.set_var(&var, key)?;
+        let reference = format!("${{{var}}}");
+        let referenced = explorer.key.as_deref() == Some(&reference);
+        if !referenced {
+            explorer.key = Some(reference);
+            self.set_explorer(&explorer_name, &explorer)?;
+        }
+        report.api_key_var = Some(var.clone());
+        let users = config
+            .chains
+            .iter()
+            .filter(|(_, c)| c.explorer.as_deref() == Some(&explorer_name))
+            .map(|(n, _)| n.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        Ok(match held {
+            Some(true) if referenced => None,
+            Some(false) => Some(format!(
+                "explorer key: replaced the value of ${{{var}}} (used by {users})"
+            )),
+            _ => Some(format!(
                 "explorer key: stored in ${{{var}}} (used by every chain on {explorer_name})"
-            ));
-            report.api_key_var = Some(var);
-        }
-        Ok(())
+            )),
+        })
     }
 }
