@@ -1,3 +1,12 @@
+chain_totals_60s
+chain_totals_60s.eth
+chain_totals_60s.eth.bytes
+chain_totals_60s.eth.errors
+chain_totals_60s.eth.failovers
+chain_totals_60s.eth.p50_ms
+chain_totals_60s.eth.p95_ms
+chain_totals_60s.eth.rate_limited
+chain_totals_60s.eth.requests
 chains
 chains[].active
 chains[].chain
@@ -18,5 +27,13 @@ last_60s[].requests
 pid
 port
 running
+totals_60s
+totals_60s.bytes
+totals_60s.errors
+totals_60s.failovers
+totals_60s.p50_ms
+totals_60s.p95_ms
+totals_60s.rate_limited
+totals_60s.requests
 uptime_secs
 version

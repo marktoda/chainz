@@ -1,8 +1,9 @@
-//! The gateway's control API: types, a client, the shared event buffer
-//! and (with the `mock` feature) an in-process mock server.
+//! The gateway's control protocol: its types, its routes, its NDJSON
+//! framing, and a client. The server lives in `chainz-serve`.
 //!
 //! The protocol is stable: the gateway, `chainz serve status|log` and the
-//! dashboard are all built on it.
+//! dashboard are all built on it. Fields added since 2.0 are optional, so a
+//! newer client reads an older gateway and the reverse.
 //!
 //! Protocol: HTTP/1.1 over the unix socket `serve.sock` (mode 0600), one
 //! request per connection (`Connection: close`).
@@ -11,52 +12,88 @@
 //! | --- | --- |
 //! | `GET /_chainz/status` | [`Status`] JSON |
 //! | `GET /_chainz/metrics` | [`MetricsSnapshot`] JSON |
-//! | `GET /_chainz/events[?backlog=N][&follow=false]` | `application/x-ndjson` stream of [`RequestRecord`], one per line: first the last `N` buffered records (default 0, oldest first), then live records until either side closes. With `follow=false` the stream ends after the backlog. |
-//! | `POST /_chainz/reload` | `204 No Content` |
-//! | anything else | `404 Not Found` |
+//! | `GET /_chainz/events[?backlog=N][&after=ID][&follow=false]` | `application/x-ndjson` stream of [`RequestRecord`], one per line: first the last `N` buffered records (default 0, oldest first) with an ID above `after`, then live records until either side closes. With `follow=false` the stream ends after the backlog. A malformed query is `400 Bad Request`. |
+//! | `POST /_chainz/reload` | `204 No Content`; `500` with the cause as text when the new config is invalid (the old one stays in force) |
+//! | anything else | `404 Not Found` (`405` for a known path with the wrong method) |
 //!
 //! Response bodies may be framed by `Content-Length`, chunked transfer
 //! encoding, or connection close; the client accepts all three.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::time::Duration;
 
+use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::mpsc;
 
 use crate::error::ErrorClass;
 
-#[cfg(feature = "mock")]
-pub use mock::MockControlServer;
-
-/// Path of the status endpoint.
-pub const STATUS_PATH: &str = "/_chainz/status";
-/// Path of the metrics endpoint.
-pub const METRICS_PATH: &str = "/_chainz/metrics";
-/// Path of the events stream.
-pub const EVENTS_PATH: &str = "/_chainz/events";
-/// Path of the reload endpoint.
-pub const RELOAD_PATH: &str = "/_chainz/reload";
-
-/// Records the gateway (and the mock) keep for `backlog`.
-pub const EVENTS_BUFFER: usize = 10_000;
 /// How long [`ControlClient`] waits to connect and read a response head
 /// (and, except for the events stream, the whole body).
-pub const CONTROL_TIMEOUT: Duration = Duration::from_secs(5);
-/// Live records an events stream may fall behind by before it skips.
-const LIVE_BUFFER: usize = 4096;
+const CONTROL_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The control API's endpoints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Route {
+    /// `GET /_chainz/status`.
+    Status,
+    /// `GET /_chainz/metrics`.
+    Metrics,
+    /// `GET /_chainz/events`.
+    Events,
+    /// `POST /_chainz/reload`.
+    Reload,
+}
+
+impl Route {
+    /// Every route.
+    pub const ALL: [Route; 4] = [Route::Status, Route::Metrics, Route::Events, Route::Reload];
+
+    /// The request path.
+    pub fn path(self) -> &'static str {
+        match self {
+            Route::Status => "/_chainz/status",
+            Route::Metrics => "/_chainz/metrics",
+            Route::Events => "/_chainz/events",
+            Route::Reload => "/_chainz/reload",
+        }
+    }
+
+    /// The HTTP method it takes.
+    pub fn method(self) -> &'static str {
+        match self {
+            Route::Reload => "POST",
+            _ => "GET",
+        }
+    }
+
+    /// The route at `path` (without the query), if any.
+    pub fn from_path(path: &str) -> Option<Route> {
+        Route::ALL.into_iter().find(|route| route.path() == path)
+    }
+}
+
+/// How much of the buffer an events stream replays first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Backlog {
+    /// Up to this many records, the most recent ones.
+    Last(usize),
+    /// Everything the gateway still holds.
+    All,
+}
 
 /// What an events stream delivers. The default is live records only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EventsOptions {
-    /// Replay up to this many buffered records first, oldest first.
-    pub backlog: usize,
+    /// Replay these buffered records first, oldest first.
+    pub backlog: Backlog,
+    /// Only records with an ID above this one, in the backlog and live.
+    pub after_id: Option<u64>,
     /// Keep streaming live records after the backlog.
     pub follow: bool,
 }
@@ -64,39 +101,93 @@ pub struct EventsOptions {
 impl Default for EventsOptions {
     fn default() -> Self {
         EventsOptions {
-            backlog: 0,
+            backlog: Backlog::Last(0),
+            after_id: None,
             follow: true,
         }
     }
 }
 
 impl EventsOptions {
-    /// The request path with its query string.
-    pub fn path(&self) -> String {
-        let mut path = EVENTS_PATH.to_string();
-        let mut sep = '?';
-        if self.backlog > 0 {
-            path.push_str(&format!("{sep}backlog={}", self.backlog));
-            sep = '&';
+    /// The request path with its query string. [`Backlog::All`] is sent as
+    /// the largest count, which a 2.0 gateway reads the same way.
+    fn path(&self) -> String {
+        let mut query = Vec::new();
+        match self.backlog {
+            Backlog::Last(0) => {}
+            Backlog::Last(n) => query.push(format!("backlog={n}")),
+            Backlog::All => query.push(format!("backlog={}", usize::MAX)),
+        }
+        if let Some(id) = self.after_id {
+            query.push(format!("after={id}"));
         }
         if !self.follow {
-            path.push_str(&format!("{sep}follow=false"));
+            query.push("follow=false".to_string());
         }
-        path
+        match query.is_empty() {
+            true => Route::Events.path().to_string(),
+            false => format!("{}?{}", Route::Events.path(), query.join("&")),
+        }
     }
 
-    /// Parse the query string of an events request (unknown keys ignored).
-    pub fn from_query(query: &str) -> Self {
-        let mut opts = EventsOptions::default();
-        for pair in query.split('&') {
-            match pair.split_once('=') {
-                Some(("backlog", v)) => opts.backlog = v.parse().unwrap_or(0),
-                Some(("follow", v)) => opts.follow = !matches!(v, "false" | "0"),
+    /// Parse the query string of an events request. Unknown keys are
+    /// ignored (for older clients and newer ones alike); a known key with
+    /// a bad value is an error.
+    pub fn from_query(query: &str) -> Result<Self, String> {
+        let mut options = EventsOptions::default();
+        for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+            let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+            let number = || {
+                value
+                    .parse::<u64>()
+                    .map_err(|_| format!("`{key}` must be a number, not `{value}`"))
+            };
+            match key {
+                "backlog" => {
+                    options.backlog = match usize::try_from(number()?) {
+                        Ok(usize::MAX) | Err(_) => Backlog::All,
+                        Ok(n) => Backlog::Last(n),
+                    }
+                }
+                "after" => options.after_id = Some(number()?),
+                "follow" => {
+                    options.follow = match value {
+                        "true" | "1" => true,
+                        "false" | "0" => false,
+                        _ => return Err(format!("`follow` must be true or false, not `{value}`")),
+                    }
+                }
                 _ => {}
             }
         }
-        opts
+        Ok(options)
     }
+
+    /// Whether a record with this ID is one the stream asked for.
+    pub fn wants(&self, id: u64) -> bool {
+        self.after_id.is_none_or(|after| id > after)
+    }
+}
+
+/// One NDJSON line: `value` as JSON, then `\n`.
+pub fn write_line<T: Serialize>(value: &T) -> serde_json::Result<Vec<u8>> {
+    let mut line = serde_json::to_vec(value)?;
+    line.push(b'\n');
+    Ok(line)
+}
+
+/// Take the next complete NDJSON line out of `buf` and parse it, skipping
+/// blank lines. `None` when no complete line is left; the rest of `buf` is
+/// kept for the next read.
+pub fn read_line<T: DeserializeOwned>(buf: &mut Vec<u8>) -> Option<serde_json::Result<T>> {
+    while let Some(end) = buf.iter().position(|&b| b == b'\n') {
+        let line: Vec<u8> = buf.drain(..=end).collect();
+        let line = line.trim_ascii();
+        if !line.is_empty() {
+            return Some(serde_json::from_slice(line));
+        }
+    }
+    None
 }
 
 /// A unix socket path short enough for `sockaddr_un` (about 107 bytes).
@@ -146,6 +237,8 @@ impl SocketPath {
 const MAX_BODY: usize = 64 * 1024 * 1024;
 /// Largest single events line the client accepts.
 const MAX_LINE: usize = 1024 * 1024;
+/// Most of an error body the client quotes.
+const MAX_ERROR_BODY: usize = 4096;
 
 /// Gateway status.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -177,6 +270,25 @@ pub struct ChainStatus {
     pub head: Option<u64>,
 }
 
+/// The gateway's two metrics windows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Window {
+    /// The last minute.
+    Short,
+    /// The last 15 minutes.
+    Long,
+}
+
+impl Window {
+    /// The window's length in seconds.
+    pub const fn secs(self) -> u64 {
+        match self {
+            Window::Short => 60,
+            Window::Long => 900,
+        }
+    }
+}
+
 /// Metrics over every window at one instant.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MetricsSnapshot {
@@ -186,6 +298,13 @@ pub struct MetricsSnapshot {
     pub windows: Vec<MetricsWindow>,
 }
 
+impl MetricsSnapshot {
+    /// The given window, if the gateway sent it.
+    pub fn window(&self, window: Window) -> Option<&MetricsWindow> {
+        self.windows.iter().find(|w| w.window_secs == window.secs())
+    }
+}
+
 /// Metrics over one sliding window.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MetricsWindow {
@@ -193,6 +312,14 @@ pub struct MetricsWindow {
     pub window_secs: u64,
     /// One row per (chain, endpoint, method).
     pub rows: Vec<MetricsRow>,
+    /// Every row together, with true percentiles. Absent from a 2.0
+    /// gateway.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub totals: Option<MetricsTotals>,
+    /// Each chain's rows together, with true percentiles. Empty from a 2.0
+    /// gateway.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub chains: BTreeMap<String, MetricsTotals>,
 }
 
 /// Metrics for one (chain, endpoint, method) within a window.
@@ -217,6 +344,26 @@ pub struct MetricsRow {
     pub rate_limited: u64,
     /// Requests that failed over to another endpoint.
     pub failovers: u64,
+    /// Response bytes.
+    pub bytes: u64,
+}
+
+/// Many [`MetricsRow`]s together. The percentiles are over every sample,
+/// not an average of the rows' percentiles.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MetricsTotals {
+    /// Upstream attempts sent.
+    pub requests: u64,
+    /// Failed attempts.
+    pub errors: u64,
+    /// As [`MetricsRow::rate_limited`].
+    pub rate_limited: u64,
+    /// Requests that failed over to another endpoint.
+    pub failovers: u64,
+    /// Median latency in milliseconds.
+    pub p50_ms: u32,
+    /// 95th percentile latency in milliseconds.
+    pub p95_ms: u32,
     /// Response bytes.
     pub bytes: u64,
 }
@@ -261,103 +408,25 @@ pub enum RecordStatus {
     },
 }
 
-/// The last [`EVENTS_BUFFER`] request records plus a live broadcast: what
-/// `/_chainz/events` serves, in the gateway and in the mock alike.
-///
-/// A subscriber sees each record exactly once, in its backlog or live:
-/// records are broadcast under the same lock the backlog is read under.
-pub struct EventRing {
-    inner: Mutex<RingInner>,
-    live: broadcast::Sender<RequestRecord>,
-}
-
-struct RingInner {
-    next_id: u64,
-    records: VecDeque<RequestRecord>,
-}
-
-impl std::fmt::Debug for EventRing {
+/// `ok`, `rpc(-32000)`, or the class alone (`timeout`).
+impl std::fmt::Display for RecordStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("EventRing").finish_non_exhaustive()
-    }
-}
-
-impl Default for EventRing {
-    fn default() -> Self {
-        EventRing::new()
-    }
-}
-
-impl EventRing {
-    /// An empty ring.
-    pub fn new() -> Self {
-        EventRing {
-            inner: Mutex::new(RingInner {
-                next_id: 1,
-                records: VecDeque::new(),
-            }),
-            live: broadcast::channel(LIVE_BUFFER).0,
+        match self {
+            RecordStatus::Ok => f.write_str("ok"),
+            RecordStatus::Error {
+                class,
+                code: Some(code),
+            } => write!(f, "{class}({code})"),
+            RecordStatus::Error { class, code: None } => write!(f, "{class}"),
         }
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, RingInner> {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    /// Keep `record` as it is and broadcast it.
-    pub fn push(&self, record: RequestRecord) {
-        let mut inner = self.lock();
-        inner.keep(record.clone());
-        let _ = self.live.send(record);
-    }
-
-    /// Give `record` the next ID (1, 2, …), keep it and broadcast it.
-    /// `also` sees the numbered record under the ring's lock, so whatever
-    /// it does happens in ID order.
-    pub fn push_numbered(&self, mut record: RequestRecord, also: impl FnOnce(&RequestRecord)) {
-        let mut inner = self.lock();
-        record.id = inner.next_id;
-        inner.next_id += 1;
-        inner.keep(record.clone());
-        also(&record);
-        let _ = self.live.send(record);
-    }
-
-    /// The backlog asked for (oldest first) and, when following, a receiver
-    /// for everything after it.
-    pub fn subscribe(
-        &self,
-        options: EventsOptions,
-    ) -> (
-        Vec<RequestRecord>,
-        Option<broadcast::Receiver<RequestRecord>>,
-    ) {
-        let inner = self.lock();
-        let skip = inner.records.len().saturating_sub(options.backlog);
-        let backlog = inner.records.iter().skip(skip).cloned().collect();
-        (backlog, options.follow.then(|| self.live.subscribe()))
-    }
-
-    /// Live subscribers right now.
-    pub fn subscribers(&self) -> usize {
-        self.live.receiver_count()
-    }
-}
-
-impl RingInner {
-    fn keep(&mut self, record: RequestRecord) {
-        if self.records.len() == EVENTS_BUFFER {
-            self.records.pop_front();
-        }
-        self.records.push_back(record);
     }
 }
 
 /// A client for the control socket.
 ///
-/// Every call gives up after [`CONTROL_TIMEOUT`] (see
-/// [`with_timeout`](Self::with_timeout)), so a wedged gateway can't hang
-/// the caller; only the body of an events stream is open-ended.
+/// Every call gives up after 5 s (see [`with_timeout`](Self::with_timeout)),
+/// so a wedged gateway can't hang the caller; only the body of an events
+/// stream is open-ended.
 #[derive(Debug, Clone)]
 pub struct ControlClient {
     socket: PathBuf,
@@ -373,7 +442,7 @@ impl ControlClient {
         }
     }
 
-    /// Replace the [`CONTROL_TIMEOUT`].
+    /// Replace the 5 s timeout.
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
@@ -393,32 +462,28 @@ impl ControlClient {
 
     /// `GET /_chainz/status`.
     pub async fn status(&self) -> io::Result<Status> {
-        self.get_json(STATUS_PATH).await
+        self.get_json(Route::Status.path()).await
     }
 
     /// `GET /_chainz/metrics`.
     pub async fn metrics(&self) -> io::Result<MetricsSnapshot> {
-        self.get_json(METRICS_PATH).await
+        self.get_json(Route::Metrics.path()).await
     }
 
-    /// `GET /_chainz/events`. Returns once the server has accepted the stream
-    /// (every record pushed after that is delivered). The receiver closes when
-    /// the server closes the stream; dropping it closes the connection.
-    /// Malformed lines are skipped.
-    pub async fn events(&self) -> io::Result<mpsc::Receiver<RequestRecord>> {
-        self.events_with(EventsOptions::default()).await
-    }
-
-    /// `GET /_chainz/events` with a backlog and/or without following; see
-    /// [`EventsOptions`]. With `follow: false` the receiver closes after the
-    /// backlog.
-    pub async fn events_with(
+    /// `GET /_chainz/events`; see [`EventsOptions`]. Returns once the server
+    /// has accepted the stream (every record pushed after that is
+    /// delivered). The receiver closes when the server closes the stream
+    /// (after the backlog, with `follow: false`); dropping it closes the
+    /// connection. Malformed lines are skipped.
+    pub async fn events(
         &self,
         options: EventsOptions,
     ) -> io::Result<mpsc::Receiver<RequestRecord>> {
         // Only the head is timed: the stream itself runs until either side
         // closes it.
-        let mut body = self.timed(self.send("GET", &options.path())).await?;
+        let mut body = self
+            .timed(self.send(Route::Events.method(), &options.path()))
+            .await?;
         let (tx, rx) = mpsc::channel(1024);
         tokio::spawn(async move {
             let mut buf: Vec<u8> = Vec::new();
@@ -429,13 +494,10 @@ impl ControlClient {
                 };
                 let Ok(Some(chunk)) = chunk else { return };
                 buf.extend_from_slice(&chunk);
-                while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
-                    let line: Vec<u8> = buf.drain(..=pos).collect();
-                    let line = line.trim_ascii();
-                    if line.is_empty() {
-                        continue;
-                    }
-                    if let Ok(record) = serde_json::from_slice::<RequestRecord>(line)
+                while let Some(record) = read_line::<RequestRecord>(&mut buf) {
+                    // A 2.0 gateway ignores `after`: filter here too.
+                    if let Ok(record) = record
+                        && options.wants(record.id)
                         && tx.send(record).await.is_err()
                     {
                         return;
@@ -449,10 +511,12 @@ impl ControlClient {
         Ok(rx)
     }
 
-    /// `POST /_chainz/reload`.
+    /// `POST /_chainz/reload`. A refused reload is an error carrying the
+    /// gateway's reason.
     pub async fn reload(&self) -> io::Result<()> {
         self.timed(async {
-            let mut body = self.send("POST", RELOAD_PATH).await?;
+            let route = Route::Reload;
+            let mut body = self.send(route.method(), route.path()).await?;
             body.read_all().await?;
             Ok(())
         })
@@ -466,7 +530,8 @@ impl ControlClient {
         serde_json::from_slice(&bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
-    /// Send a request and read the response head; errors on non-2xx.
+    /// Send a request and read the response head; errors on non-2xx, with
+    /// the start of the response body.
     async fn send(&self, method: &str, path: &str) -> io::Result<Body<UnixStream>> {
         let socket = SocketPath::new(&self.socket)?;
         let mut stream = UnixStream::connect(socket.as_path()).await?;
@@ -483,11 +548,6 @@ impl ControlClient {
             .nth(1)
             .and_then(|s| s.parse::<u16>().ok())
             .ok_or_else(|| invalid("malformed status line"))?;
-        if !(200..300).contains(&status) {
-            return Err(io::Error::other(format!(
-                "control API {method} {path} returned HTTP {status}"
-            )));
-        }
         let mode = if status == 204 {
             BodyMode::Length(0)
         } else if head
@@ -504,7 +564,19 @@ impl ControlClient {
         } else {
             BodyMode::Eof
         };
-        Ok(Body { reader, mode })
+        let mut body = Body { reader, mode };
+        if !(200..300).contains(&status) {
+            let text = body.read_all().await.unwrap_or_default();
+            let text = String::from_utf8_lossy(&text[..text.len().min(MAX_ERROR_BODY)]);
+            let reason = match text.trim() {
+                "" => String::new(),
+                text => format!(": {text}"),
+            };
+            return Err(io::Error::other(format!(
+                "control API {method} {path} returned HTTP {status}{reason}"
+            )));
+        }
+        Ok(body)
     }
 }
 
@@ -647,251 +719,92 @@ impl<R: AsyncRead + Unpin> Body<R> {
     }
 }
 
-/// The mock control server (feature `mock`).
-#[cfg(feature = "mock")]
-mod mock {
-    use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::{Arc, Mutex};
-
-    use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
-    use tokio::net::{UnixListener, UnixStream};
-    use tokio::sync::broadcast;
-    use tokio::task::{JoinHandle, JoinSet};
-
+#[cfg(test)]
+mod tests {
     use super::*;
 
-    struct MockState {
-        status: Mutex<Status>,
-        metrics: Mutex<MetricsSnapshot>,
-        reloads: AtomicU64,
-        events: EventRing,
-    }
-
-    /// An in-process mock of the control socket, for tests of control clients
-    /// (the dashboard's tests run against it). Events are streamed with chunked
-    /// transfer encoding, as a hyper-based server would.
-    ///
-    /// Dropping it stops the server, closes every connection and removes the
-    /// socket file.
-    pub struct MockControlServer {
-        path: PathBuf,
-        state: Arc<MockState>,
-        accept: JoinHandle<()>,
-    }
-
-    impl std::fmt::Debug for MockControlServer {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.debug_struct("MockControlServer")
-                .field("path", &self.path)
-                .finish_non_exhaustive()
+    #[test]
+    fn routes_round_trip() {
+        for route in Route::ALL {
+            assert_eq!(Route::from_path(route.path()), Some(route));
         }
+        assert_eq!(Route::from_path("/_chainz/nope"), None);
+        assert_eq!(Route::Reload.method(), "POST");
     }
 
-    impl MockControlServer {
-        /// Bind `socket` (mode 0600; a stale file there is replaced) and serve.
-        pub async fn start(
-            socket: &Path,
-            status: Status,
-            metrics: MetricsSnapshot,
-        ) -> io::Result<Self> {
-            match std::fs::remove_file(socket) {
-                Ok(()) => {}
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e),
-            }
-            let listener = UnixListener::bind(SocketPath::new(socket)?.as_path())?;
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
-            }
-            let state = Arc::new(MockState {
-                status: Mutex::new(status),
-                metrics: Mutex::new(metrics),
-                reloads: AtomicU64::new(0),
-                events: EventRing::new(),
-            });
-            let accept_state = state.clone();
-            let accept = tokio::spawn(async move {
-                // Owned by this task: aborting it aborts every connection.
-                let mut conns = JoinSet::new();
-                loop {
-                    tokio::select! {
-                        accepted = listener.accept() => {
-                            let Ok((stream, _)) = accepted else { continue };
-                            conns.spawn(serve_conn(stream, accept_state.clone()));
-                        }
-                        Some(_) = conns.join_next(), if !conns.is_empty() => {}
-                    }
-                }
-            });
-            Ok(MockControlServer {
-                path: socket.to_path_buf(),
-                state,
-                accept,
+    #[test]
+    fn events_query_round_trips() {
+        let cases = [
+            EventsOptions::default(),
+            EventsOptions {
+                backlog: Backlog::Last(7),
+                after_id: None,
+                follow: false,
+            },
+            EventsOptions {
+                backlog: Backlog::All,
+                after_id: Some(41),
+                follow: true,
+            },
+        ];
+        for options in cases {
+            let path = options.path();
+            let query = path.split_once('?').map_or("", |(_, q)| q);
+            assert_eq!(EventsOptions::from_query(query), Ok(options), "{path}");
+        }
+        assert_eq!(EventsOptions::default().path(), Route::Events.path());
+        assert_eq!(cases[1].path(), "/_chainz/events?backlog=7&follow=false");
+        // `All` is the largest count, which a 2.0 gateway reads as "all".
+        assert_eq!(
+            cases[2].path(),
+            format!("/_chainz/events?backlog={}&after=41", usize::MAX)
+        );
+        // Unknown keys are ignored; bad values are errors.
+        assert_eq!(
+            EventsOptions::from_query("x=1&follow=0"),
+            Ok(EventsOptions {
+                follow: false,
+                ..EventsOptions::default()
             })
-        }
-
-        /// Broadcast a record to every connected events client, and keep it for
-        /// `backlog` requests (the last [`EVENTS_BUFFER`] are kept).
-        pub fn push_event(&self, record: RequestRecord) {
-            self.state.events.push(record);
-        }
-
-        /// Replace the snapshot served by `/_chainz/metrics`.
-        pub fn set_metrics(&self, metrics: MetricsSnapshot) {
-            *self.state.metrics.lock().unwrap_or_else(|e| e.into_inner()) = metrics;
-        }
-
-        /// Replace the status served by `/_chainz/status`.
-        pub fn set_status(&self, status: Status) {
-            *self.state.status.lock().unwrap_or_else(|e| e.into_inner()) = status;
-        }
-
-        /// How many `POST /_chainz/reload` requests were served.
-        pub fn reload_count(&self) -> u64 {
-            self.state.reloads.load(Ordering::SeqCst)
-        }
-
-        /// How many events streams are currently connected.
-        pub fn event_subscribers(&self) -> usize {
-            self.state.events.subscribers()
-        }
-
-        /// The socket path.
-        pub fn path(&self) -> &Path {
-            &self.path
+        );
+        for bad in ["backlog=-1", "backlog=lots", "after=", "follow=maybe"] {
+            assert!(EventsOptions::from_query(bad).is_err(), "{bad}");
         }
     }
 
-    impl Drop for MockControlServer {
-        fn drop(&mut self) {
-            self.accept.abort();
-            let _ = std::fs::remove_file(&self.path);
-        }
+    #[test]
+    fn ndjson_lines() {
+        let mut buf = Vec::new();
+        buf.extend(write_line(&1u32).unwrap());
+        buf.extend(b"\n  \nnot json\n[2");
+        assert_eq!(read_line::<u32>(&mut buf).unwrap().unwrap(), 1);
+        assert!(read_line::<u32>(&mut buf).unwrap().is_err());
+        assert!(read_line::<u32>(&mut buf).is_none());
+        assert_eq!(buf, b"[2", "a partial line is kept");
     }
 
-    async fn serve_conn(stream: UnixStream, state: Arc<MockState>) {
-        let (read, mut write) = stream.into_split();
-        let mut reader = BufReader::new(read);
-        let Ok(head) = read_head(&mut reader).await else {
-            return;
+    #[test]
+    fn record_status_display() {
+        let error = |code| RecordStatus::Error {
+            class: ErrorClass::Rpc,
+            code,
         };
-        if let Some(len) = head
-            .header("content-length")
-            .and_then(|v| v.trim().parse::<u64>().ok())
-        {
-            let mut discard = (&mut reader).take(len);
-            if tokio::io::copy(&mut discard, &mut tokio::io::sink())
-                .await
-                .is_err()
-            {
-                return;
-            }
-        }
-        let mut parts = head.first_line.split_whitespace();
-        let method = parts.next().unwrap_or("");
-        let target = parts.next().unwrap_or("");
-        let (path, query) = target.split_once('?').unwrap_or((target, ""));
-
-        let json_response = |body: Vec<u8>| {
-            let mut r = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                body.len()
-            )
-            .into_bytes();
-            r.extend_from_slice(&body);
-            r
-        };
-        let simple = |status: &str| {
-            format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-                .into_bytes()
-        };
-
-        let known = [STATUS_PATH, METRICS_PATH, EVENTS_PATH, RELOAD_PATH].contains(&path);
-        let response = match (method, path) {
-            ("GET", STATUS_PATH) => {
-                let status = state
-                    .status
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clone();
-                json_response(serde_json::to_vec(&status).unwrap_or_default())
-            }
-            ("GET", METRICS_PATH) => {
-                let metrics = state
-                    .metrics
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clone();
-                json_response(serde_json::to_vec(&metrics).unwrap_or_default())
-            }
-            ("POST", RELOAD_PATH) => {
-                state.reloads.fetch_add(1, Ordering::SeqCst);
-                simple("204 No Content")
-            }
-            ("GET", EVENTS_PATH) => {
-                let options = EventsOptions::from_query(query);
-                let (backlog, rx) = state.events.subscribe(options);
-                stream_events(reader, write, backlog, rx).await;
-                return;
-            }
-            _ if known => simple("405 Method Not Allowed"),
-            _ => simple("404 Not Found"),
-        };
-        let _ = write.write_all(&response).await;
-        let _ = write.shutdown().await;
+        assert_eq!(RecordStatus::Ok.to_string(), "ok");
+        assert_eq!(error(Some(3)).to_string(), "rpc(3)");
+        assert_eq!(error(None).to_string(), "rpc");
     }
 
-    async fn stream_events(
-        mut reader: BufReader<tokio::net::unix::OwnedReadHalf>,
-        mut write: tokio::net::unix::OwnedWriteHalf,
-        backlog: Vec<RequestRecord>,
-        rx: Option<broadcast::Receiver<RequestRecord>>,
-    ) {
-        fn chunk(record: &RequestRecord) -> Vec<u8> {
-            let mut line = serde_json::to_vec(record).unwrap_or_default();
-            line.push(b'\n');
-            let mut chunk = format!("{:x}\r\n", line.len()).into_bytes();
-            chunk.extend_from_slice(&line);
-            chunk.extend_from_slice(b"\r\n");
-            chunk
-        }
-
-        let head = "HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
-        if write.write_all(head.as_bytes()).await.is_err() {
-            return;
-        }
-        for record in &backlog {
-            if write.write_all(&chunk(record)).await.is_err() {
-                return;
-            }
-        }
-        let Some(mut rx) = rx else {
-            let _ = write.write_all(b"0\r\n\r\n").await;
-            return;
-        };
-        let mut scratch = [0u8; 256];
-        loop {
-            tokio::select! {
-                record = rx.recv() => match record {
-                    Ok(record) => {
-                        if write.write_all(&chunk(&record)).await.is_err() {
-                            return;
-                        }
-                    }
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(broadcast::error::RecvError::Closed) => {
-                        let _ = write.write_all(b"0\r\n\r\n").await;
-                        return;
-                    }
-                },
-                n = reader.read(&mut scratch) => {
-                    if !matches!(n, Ok(n) if n > 0) {
-                        return; // client closed
-                    }
-                }
-            }
-        }
+    #[test]
+    fn windows_by_name_and_optional_totals() {
+        // A 2.0 gateway's snapshot: no totals.
+        let old =
+            r#"{"at_ms":1,"windows":[{"window_secs":900,"rows":[]},{"window_secs":60,"rows":[]}]}"#;
+        let snapshot: MetricsSnapshot = serde_json::from_str(old).unwrap();
+        let short = snapshot.window(Window::Short).unwrap();
+        assert_eq!(short.window_secs, 60);
+        assert!(short.totals.is_none() && short.chains.is_empty());
+        // And without totals, nothing new is written either.
+        assert!(!serde_json::to_string(&snapshot).unwrap().contains("totals"));
+        assert_eq!(snapshot.window(Window::Long).unwrap().window_secs, 900);
     }
 }

@@ -254,10 +254,7 @@ mod tests {
             .unwrap();
         assert_eq!(registry.entries.len(), 2);
         assert_eq!(registry.find(8453).unwrap().name, "Bare");
-        assert!(matches!(
-            registry.find(5),
-            Err(ChainlistError::NotFound(5))
-        ));
+        assert!(matches!(registry.find(5), Err(ChainlistError::NotFound(5))));
         assert_eq!(read_cache(dir.path()).unwrap().len(), 2);
     }
 

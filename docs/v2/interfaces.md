@@ -10,7 +10,7 @@ means changing every caller in the same commit.
 |---|---|---|
 | `chainz-sys` | OS primitives: private dirs and files, atomic writes, `flock`, file stamps, the clock, background launch (no chainz dependencies) | none |
 | `chainz-core` | config, secrets, migration, resolver, tokenizer, context, labels, runtime registry | none (sync; no tokio, reqwest or hyper) |
-| `chainz-rpc` | JSON-RPC client, probes, ranking, health history, `Upstream`, control protocol, chainlist | tokio + reqwest (rustls) |
+| `chainz-rpc` | JSON-RPC client, probes, endpoint health and ranking, health history, `HttpUpstream`, control protocol, chainlist | tokio + reqwest (rustls) |
 | `chainz-serve` | gateway: `run(paths, runtime, state_dir, Options, on_event)`, embeddable `Gateway::start(GatewayConfig)` | hyper 1 + tokio (multi-thread) |
 | `chainz-tui` | the `top` dashboard | ratatui + tokio |
 | `chainz` (bin) | clap surface, handlers, pickers, output | builds a current-thread runtime only for network commands (`net::block_on`) |
@@ -257,34 +257,64 @@ dry run), and applies every planned write with `tx.write_address(&write)`.
 ## Upstream (`chainz_rpc::upstream`)
 
 ```rust
-pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
-pub trait Upstream: Send + Sync {
-    fn send<'a>(&'a self, target: &'a Target, body: Bytes, policy: &'a RetryPolicy)
-        -> BoxFuture<'a, Result<UpstreamResponse, RpcError>>;
-}
-pub struct RetryOn { pub connect: bool, pub timeout: bool, pub gateway_status: bool,
-                     pub rate_limited: bool, pub limit_exceeded: bool } // + RetryOn::NONE / ::ALL
+pub enum RetryOn { Nothing, Transient }
 pub struct RetryPolicy { pub max_attempts: u32, pub backoff: Duration, pub max_backoff: Duration,
-                         pub max_retry_after: Duration, pub timeout: Duration, pub retry_on: RetryOn }
+                         pub max_retry_after: Duration, pub retry_on: RetryOn }
 impl RetryPolicy {
-    pub fn none() -> Self;
-    pub fn same_endpoint_transient() -> Self;
+    pub fn none() -> Self;                     // one attempt
+    pub fn same_endpoint_transient() -> Self;  // the fork proxy
+    pub fn patient() -> Self;                  // token metadata: 5 attempts, 0.5–4 s
     pub fn retries(&self, error: &RpcError) -> bool;        // is this error retried?
     pub async fn run<T, F, Fut>(&self, call: F) -> Result<T, RpcError>; // backoff + Retry-After
 }
-pub struct UpstreamResponse { pub status: u16, pub body: Bytes, pub attempts: u32,
-                              pub latency: Duration, pub retry_after: Option<Duration> }
-pub struct HttpUpstream; impl HttpUpstream { pub fn new(client: RpcClient) -> Self }
+pub struct HttpUpstream; impl HttpUpstream {
+    pub fn new(client: RpcClient) -> Self;
+    pub async fn send(&self, target: &Target, body: Bytes, policy: &RetryPolicy)
+        -> Result<Bytes, RpcError>;            // the 2xx body
+}
 pub fn rpc_error_code(body: &[u8]) -> Option<i64>;
-pub const LIMIT_EXCEEDED: i64 = -32005;
 ```
 
-`Upstream` retries on the same endpoint only. Failover to another endpoint is
-the gateway's job. `Target::new(chain_id, name, url, &[(String, String)])`
-holds the expanded URL and headers, and its `Debug` redacts them.
+`RpcError::is_transient()` (timeout, connect, a body cut off mid-read, HTTP
+502–504) and `RpcError::is_rate_limited()` (HTTP 429, JSON-RPC
+`error::LIMIT_EXCEEDED` = -32005) are the only retry predicates: the gateway
+fails over on exactly these, and `RetryOn::Transient` retries them. A body
+cut off mid-read is `RpcError::BodyRead` (class `invalid`). With
+`RetryOn::Transient`, a 2xx -32005 answer is retried too, and returned as it
+is when the retries run out.
+
+`HttpUpstream` retries on the same endpoint only. Failover to another
+endpoint is the gateway's job. `Target::new(chain_id, name, url, &[(String,
+String)])` holds the expanded URL and headers, and its `Debug` redacts them.
 `Retry-After` is clamped to `chainz_rpc::client::MAX_RETRY_AFTER` (60 s).
 `RpcClient` never follows a redirect: a 3xx is `RpcError::Http(status)`, so
 a target's headers never reach another host.
+
+## Endpoint health (`chainz_rpc::health`)
+
+```rust
+pub const ENDPOINT_LAG: u64 = 20;  // lagging its peers (ranking, doctor, dashboard)
+pub const CHAIN_LAG: u64 = 3;      // a chain's head is behind (dashboard)
+pub const FAILOVER_LAG: u64 = 2;   // a failover endpoint may take a read (gateway)
+pub const P50_WINDOW: usize = 16;  // samples behind HealthStore::p50
+pub trait Observation { fn head(&self) -> Option<u64>; fn error(&self) -> Option<ErrorClass>;
+                        fn latency(&self) -> Duration; } // ProbeResult, HealthSample, EndpointProbe
+pub enum Health { Healthy, Lagging { behind: u64 }, Failing(ErrorClass) }
+pub fn classify<O: Observation>(observations: &[O]) -> Vec<Health>;
+pub struct Ranking { pub health: Vec<Health>, pub order: Vec<usize> }
+impl Ranking { pub fn new(obs) -> Self; pub fn with_p50(obs, p50: &[Option<Duration>]) -> Self;
+               pub fn best(&self) -> Option<usize>; pub fn best_healthy(&self) -> Option<usize>; }
+pub struct EndpointProbe { pub chain_id: u64, pub endpoint: String, pub result: ProbeResult,
+                           pub capabilities: Option<Capabilities> }
+pub fn record(store: &mut HealthStore, probes) -> io::Result<()>; // samples + capabilities, saved
+```
+
+`HealthStore::load(dir)` returns an error for an unreadable store; a corrupt
+`health.json` is moved aside to `health.json.corrupt` (never overwritten) and
+reported. Callers warn and go on with `HealthStore::new(dir)` (empty, still
+saves) or `HealthStore::empty()` (no state dir). `HealthStore::path(dir)`
+names the file. `ErrorClass::phrase()` is the class in a sentence
+("connection failed", "timed out").
 
 ## Loopback auth (`chainz_serve::auth`)
 
@@ -304,11 +334,11 @@ not a missing `Host`.
 
 `chainz_serve::PinnedProxy` is a single-endpoint server built on these
 checks, for a fork's `--fork-url`: every body goes to one `Target` through an
-`Upstream` under the given `RetryPolicy`, never anywhere else.
+`HttpUpstream` under the given `RetryPolicy`, never anywhere else.
 
 ```rust
 impl PinnedProxy {
-    pub async fn start(upstream: Arc<dyn Upstream>, target: Target, policy: RetryPolicy)
+    pub async fn start(upstream: HttpUpstream, target: Target, policy: RetryPolicy)
         -> io::Result<PinnedProxy>;      // binds 127.0.0.1:0
     pub fn url(&self) -> String;         // http://127.0.0.1:<port>/<token>
     pub fn port(&self) -> u16;
@@ -318,38 +348,49 @@ impl PinnedProxy {
 
 It accepts only `POST` with `application/json` to `/<token>` (a trailing `/`
 is allowed) from a loopback `Host`, and answers 403/405/415 otherwise. An
-upstream failure is an HTTP error (429 with `Retry-After`, 504, or 502) with a
-JSON-RPC error body that never names the URL.
+upstream failure maps exactly as in the gateway: 429 with `Retry-After` (the
+upstream's, else 2 s) and JSON-RPC code -32005; 504 for a timeout; another
+upstream 4xx/5xx passed through; else 502; with a JSON-RPC error body that
+never names the URL.
 
 ## Control protocol (`chainz_rpc::control`, unix only)
 
-The control protocol is HTTP/1.1 over `serve.sock`, mode 0600:
+The control protocol is HTTP/1.1 over `serve.sock`, mode 0600. Paths are
+`Route::{Status, Metrics, Events, Reload}.path()`:
 
 | Path | Method | Body |
 |---|---|---|
 | `/_chainz/status` | GET | `Status { version, pid, port, uptime_secs, chains: Vec<ChainStatus { chain, chain_id, active, failover, head }> }` |
-| `/_chainz/metrics` | GET | `MetricsSnapshot { at_ms, windows: Vec<MetricsWindow { window_secs, rows: Vec<MetricsRow { chain, endpoint, method, requests, errors: BTreeMap<ErrorClass,u64>, p50_ms, p95_ms, rate_limited, failovers, bytes }> }> }` |
-| `/_chainz/events[?backlog=N][&follow=false]` | GET | NDJSON stream of `RequestRecord { id, at_ms, chain, method, params_summary, upstream, attempts, latency_ms, status: RecordStatus::{Ok, Error{class, code}}, response_bytes }`. First the last `N` buffered records (default 0; the gateway keeps `EVENTS_BUFFER` = 10,000), oldest first, then live records. `follow=false` ends the stream after the backlog. |
-| `/_chainz/reload` | POST | empty → 204; 500 when the new config is invalid (the old one stays in force) |
+| `/_chainz/metrics` | GET | `MetricsSnapshot { at_ms, windows: Vec<MetricsWindow { window_secs, rows: Vec<MetricsRow { chain, endpoint, method, requests, errors: BTreeMap<ErrorClass,u64>, p50_ms, p95_ms, rate_limited, failovers, bytes }>, totals?: MetricsTotals, chains?: BTreeMap<chain, MetricsTotals> }> }` with `MetricsTotals { requests, errors, rate_limited, failovers, p50_ms, p95_ms, bytes }` |
+| `/_chainz/events[?backlog=N][&after=ID][&follow=false]` | GET | NDJSON stream of `RequestRecord { id, at_ms, chain, method, params_summary, upstream, attempts, latency_ms, status: RecordStatus::{Ok, Error{class, code}}, response_bytes }`. First the last `N` buffered records with an ID above `after` (default 0; the gateway keeps 10,000), oldest first, then live records above `after`. `follow=false` ends the stream after the backlog. A malformed value is 400. |
+| `/_chainz/reload` | POST | empty → 204; 500 with the cause as plain text when the new config is invalid (the old one stays in force) |
+
+A known path with the wrong method is 405 (with `Allow`); anything else is
+404. Fields marked `?` came after 2.0 and are optional both ways: absent from
+a 2.0 gateway, ignored by a 2.0 client. `totals` and `chains` are the window's
+rows together with true percentiles (not averages of the rows'). Windows are
+named `Window::{Short, Long}` (60 s, 900 s); find one with
+`MetricsSnapshot::window(Window)`. `RecordStatus` displays as `ok`,
+`class(code)` or `class`.
 
 The client is `ControlClient::new(socket)` with async `status()`,
-`metrics()`, `events() -> mpsc::Receiver<RequestRecord>`,
-`events_with(EventsOptions { backlog, follow })`, and `reload()`. Each call
-gives up after `CONTROL_TIMEOUT` (5 s; `.with_timeout(d)` changes it), so a
-wedged gateway can't hang `serve status` or the dashboard; only the body of
-an events stream is open-ended. `RequestRecord` never holds params, URLs, or
-bodies. `params_summary` is already redacted.
+`metrics()`, `events(EventsOptions { backlog: Backlog::{Last(n), All},
+after_id, follow }) -> mpsc::Receiver<RequestRecord>`, and `reload()` (a
+refused reload's error quotes the gateway's reason). `Backlog::All` goes out
+as the largest count, which a 2.0 gateway reads the same way, and the client
+drops records at or below `after_id` itself, for a 2.0 gateway that ignores
+it. Each call gives up after 5 s (`.with_timeout(d)` changes it), so a wedged
+gateway can't hang `serve status` or the dashboard; only the body of an events
+stream is open-ended. `RequestRecord` never holds params, URLs, or bodies.
+`params_summary` is already redacted. NDJSON lines are framed by
+`write_line(&value)` and `read_line(&mut buf)`.
 
-`EventRing` is the buffer behind `/_chainz/events`: the last
-`EVENTS_BUFFER` records plus a live broadcast, with `push` (as given),
-`push_numbered` (assigns IDs 1, 2, …) and `subscribe(EventsOptions)`. The
-gateway's inspector and the mock share it.
-
-With the `mock` cargo feature (enable it in `[dev-dependencies]`),
-`MockControlServer::start(path, status, metrics).await` provides
-`push_event`, `set_status`, `set_metrics`, `reload_count`, and
-`event_subscribers`, and keeps pushed events for `backlog` like the gateway.
-The dashboard's tests run against it.
+The server is `chainz-serve`'s: the gateway runs it over its live state. With
+the `testing` cargo feature (enable it in `[dev-dependencies]`),
+`chainz_serve::testing::ControlServer::start(path, status, metrics).await`
+runs the same handler over canned state, with `push_event` (kept for
+`backlog`, IDs as given), `set_metrics`, `reload_count` (every reload
+succeeds), and `event_subscribers`. The dashboard's tests run against it.
 
 What the real gateway puts in these types:
 
@@ -358,7 +399,8 @@ What the real gateway puts in these types:
   requests that moved on *from* that endpoint. `rate_limited` counts 429s
   plus requests the endpoint's own bucket turned away unsent (those are not
   in `requests`). A batch is one attempt under the method `batch(n)`.
-  Windows are 60 s and 900 s.
+  Windows are 60 s and 900 s, and every window carries `totals` and
+  `chains`, even with no traffic.
 - `RequestRecord` is one per client request. `upstream` is the endpoint that
   answered (or failed last), `attempts` spans endpoints, and a JSON-RPC
   error in a single response is `Error { class: Rpc, code }`.
@@ -367,8 +409,8 @@ What the real gateway puts in these types:
   list: only failover pools are probed.
 
 `SocketPath::new(path)` gives a bindable/connectable path for sockets deeper
-than `sockaddr_un` allows (Linux: via `/proc/self/fd`). The client, the mock
-and the gateway all use it.
+than `sockaddr_un` allows (Linux: via `/proc/self/fd`). The client and the
+server both use it.
 
 ## Other seams
 
@@ -462,8 +504,7 @@ and the gateway all use it.
   imported from `chainz_core::model` only (no root re-exports).
   `chainz_rpc::hex::{encode, decode, parse_quantity, parse_quantity_saturating}`;
   `chainz_rpc::erc20::{SYMBOL, DECIMALS, decode_string, decode_u8}`;
-  `HealthStore::empty()` and `HealthStore::load_or_empty(Option<&Path>)` for
-  callers that treat an unreadable store as empty.
+  `chainz_rpc::health` for endpoint health, ranking and recording probes.
 
 ## Bin crate: adding a command handler
 

@@ -1,9 +1,9 @@
 //! `chain …`, `ls` and `use`.
 
 use super::rpc::report_moved;
-use crate::probe::{check, probe_urls, ranked_urls};
 use super::{chain_arg, edit_until_saved, open, pick_chain};
 use crate::cli::{ChainCommand, ListArgs};
+use crate::probe::{check, probe_urls, ranked_urls};
 use crate::prompt::{self, is_tty};
 use crate::{net, ui, view};
 use anyhow::{Context, Result, anyhow, bail};
@@ -12,8 +12,8 @@ use chainz_core::model::{Chain, Endpoint};
 use chainz_core::resolve::Policy;
 use chainz_core::tx::Attach;
 use chainz_core::{names, resolve};
-use chainz_rpc::chainlist::{self, ChainlistEntry};
 use chainz_rpc::ProbeResult;
+use chainz_rpc::chainlist::{self, ChainlistEntry};
 
 pub fn run(cmd: ChainCommand) -> Result<i32> {
     match cmd {

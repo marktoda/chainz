@@ -8,8 +8,8 @@ use std::io;
 use std::path::PathBuf;
 
 use chainz_rpc::control::{
-    ControlClient, EventsOptions, MetricsRow, MetricsSnapshot, MetricsWindow, RecordStatus,
-    RequestRecord, Status,
+    Backlog, ControlClient, EventsOptions, MetricsRow, MetricsSnapshot, MetricsWindow,
+    RecordStatus, RequestRecord, Status,
 };
 use tokio::sync::mpsc;
 
@@ -52,11 +52,12 @@ impl GatewayLink {
     /// gateway already served (oldest first), then live ones.
     pub async fn events(&self, backlog: usize) -> io::Result<EventStream> {
         let options = EventsOptions {
-            backlog,
+            backlog: Backlog::Last(backlog),
+            after_id: None,
             follow: true,
         };
         Ok(EventStream {
-            records: self.client.events_with(options).await?,
+            records: self.client.events(options).await?,
         })
     }
 
@@ -166,12 +167,12 @@ fn window(w: MetricsWindow) -> TrafficWindow {
 #[cfg(test)]
 pub(crate) mod testing {
     //! Fixtures in the control protocol's own types, for the tests that
-    //! drive a `MockControlServer`.
+    //! drive a `ControlServer`.
 
     use super::*;
     use chainz_rpc::ErrorClass;
     use chainz_rpc::control::ChainStatus;
-    pub(crate) use chainz_rpc::control::MockControlServer;
+    pub(crate) use chainz_serve::testing::ControlServer;
 
     pub(crate) fn status() -> Status {
         Status {
@@ -228,6 +229,8 @@ pub(crate) mod testing {
                 MetricsWindow {
                     window_secs: 900,
                     rows: vec![row("eth", "infura", "eth_call", 9_000, 50, &[], 0)],
+                    totals: None,
+                    chains: BTreeMap::new(),
                 },
                 MetricsWindow {
                     window_secs: 60,
@@ -245,6 +248,8 @@ pub(crate) mod testing {
                         ),
                         row("eth", "infura", "eth_blockNumber", 22, 31, &[], 0),
                     ],
+                    totals: None,
+                    chains: BTreeMap::new(),
                 },
             ],
         }
@@ -328,7 +333,7 @@ mod tests {
     async fn reads_status_metrics_events_and_reloads_over_the_socket() {
         let dir = crate::data::testing::short_tempdir();
         let socket = dir.path().join("serve.sock");
-        let server = MockControlServer::start(&socket, status(), metrics())
+        let server = ControlServer::start(&socket, status(), metrics())
             .await
             .unwrap();
         let link = GatewayLink::new(&socket);

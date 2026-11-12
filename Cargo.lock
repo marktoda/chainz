@@ -333,7 +333,6 @@ name = "chainz-rpc"
 version = "2.0.0"
 dependencies = [
  "bytes",
- "chainz-rpc",
  "chainz-sys",
  "reqwest",
  "serde",
@@ -358,6 +357,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "rand 0.9.5",
+ "serde",
  "serde_json",
  "sha3",
  "tempfile",
@@ -379,6 +379,7 @@ dependencies = [
  "anyhow",
  "chainz-core",
  "chainz-rpc",
+ "chainz-serve",
  "chainz-sys",
  "ratatui",
  "serde",

@@ -399,8 +399,7 @@ const ONCE_RETRIES: u32 = 2;
 /// instead.
 fn rate_limited(fault: &Fault) -> bool {
     fault.class == ErrorClass::RateLimited
-        || (fault.class == ErrorClass::Rpc
-            && fault.code == Some(chainz_rpc::error::LIMIT_EXCEEDED))
+        || (fault.class == ErrorClass::Rpc && fault.code == Some(chainz_rpc::error::LIMIT_EXCEEDED))
 }
 
 /// One round of everything `--once` reports: every chain's head and

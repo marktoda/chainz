@@ -140,6 +140,7 @@ impl AimdLimiter {
         s.rate = Some(rate);
     }
 
+    #[cfg(test)]
     /// The current rate in requests per second; `None` when unlimited.
     pub fn rate(&self) -> Option<f64> {
         self.lock().rate

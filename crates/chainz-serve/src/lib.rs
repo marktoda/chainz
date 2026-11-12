@@ -17,6 +17,7 @@
 
 pub mod auth;
 mod classify;
+mod control;
 mod gateway;
 mod http;
 mod inspector;
@@ -26,6 +27,8 @@ pub mod pinned;
 mod router;
 mod state;
 mod summary;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -36,7 +39,6 @@ use chainz_core::runtime::Runtime;
 use tokio::signal::unix::{SignalKind, signal};
 
 pub use gateway::{DRAIN, Gateway, GatewayConfig, SHUTDOWN_BUDGET};
-pub use metrics::Summary;
 pub use pinned::PinnedProxy;
 
 /// The one wording of "a gateway already runs": the bin says it before

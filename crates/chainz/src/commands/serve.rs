@@ -12,10 +12,12 @@ use chainz_core::StorePaths;
 use chainz_core::paths;
 use chainz_core::runtime::{GatewayState, LOOPBACK, Runtime, ServeInfo};
 use chainz_rpc::control::{
-    ControlClient, EVENTS_BUFFER, EventsOptions, MetricsRow, RecordStatus, RequestRecord, Status,
+    Backlog, ControlClient, EventsOptions, MetricsRow, MetricsTotals, MetricsWindow, RequestRecord,
+    Status, Window,
 };
 use chainz_serve::Event;
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -247,6 +249,11 @@ struct StatusJson<'a> {
     /// Upstream metrics over the last 60 s.
     #[serde(skip_serializing_if = "Option::is_none")]
     last_60s: Option<&'a [MetricsRow]>,
+    /// Their totals, overall and per chain (absent from a 2.0 gateway).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    totals_60s: Option<&'a MetricsTotals>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chain_totals_60s: Option<&'a BTreeMap<String, MetricsTotals>>,
 }
 
 fn status(json: bool) -> Result<i32> {
@@ -257,6 +264,8 @@ fn status(json: bool) -> Result<i32> {
                 running: false,
                 status: None,
                 last_60s: None,
+                totals_60s: None,
+                chain_totals_60s: None,
             };
             println!("{}", serde_json::to_string_pretty(&stopped)?);
         } else {
@@ -276,17 +285,14 @@ fn status(json: bool) -> Result<i32> {
             info.pid
         )
     })?;
-    let minute = metrics
-        .windows
-        .iter()
-        .find(|w| w.window_secs == 60)
-        .map(|w| w.rows.as_slice())
-        .unwrap_or_default();
+    let minute = metrics.window(Window::Short);
     if json {
         let running = StatusJson {
             running: true,
             status: Some(&status),
-            last_60s: Some(minute),
+            last_60s: Some(minute.map(|w| w.rows.as_slice()).unwrap_or_default()),
+            totals_60s: minute.and_then(|w| w.totals.as_ref()),
+            chain_totals_60s: minute.filter(|w| w.totals.is_some()).map(|w| &w.chains),
         };
         println!("{}", serde_json::to_string_pretty(&running)?);
     } else {
@@ -295,38 +301,27 @@ fn status(json: bool) -> Result<i32> {
     Ok(0)
 }
 
-/// Totals over a set of metric rows.
-#[derive(Default)]
-struct Totals {
-    requests: u64,
-    errors: u64,
-    rate_limited: u64,
-    failovers: u64,
-    weighted_p50: u64,
+/// One row's numbers: `-` where an older gateway sent no totals, and for
+/// the median of no requests.
+fn totals_cells(totals: Option<MetricsTotals>) -> [String; 4] {
+    let Some(t) = totals else {
+        return ["-", "-", "-", "-"].map(String::from);
+    };
+    let p50 = match t.requests {
+        0 => "-".to_string(),
+        _ => format!("{}ms", t.p50_ms),
+    };
+    [
+        t.requests.to_string(),
+        t.errors.to_string(),
+        t.rate_limited.to_string(),
+        p50,
+    ]
 }
 
-impl Totals {
-    fn add(&mut self, row: &MetricsRow) {
-        self.requests += row.requests;
-        self.errors += row.errors.values().sum::<u64>();
-        self.rate_limited += row.rate_limited;
-        self.failovers += row.failovers;
-        self.weighted_p50 += u64::from(row.p50_ms) * row.requests;
-    }
-
-    /// The request-weighted mean of the per-method medians.
-    fn p50(&self) -> String {
-        match self.requests {
-            0 => "-".to_string(),
-            n => format!("{}ms", self.weighted_p50 / n),
-        }
-    }
-}
-
-fn render_status(status: &Status, minute: &[MetricsRow]) -> String {
+fn render_status(status: &Status, minute: Option<&MetricsWindow>) -> String {
     use std::fmt::Write;
-    let mut all = Totals::default();
-    minute.iter().for_each(|row| all.add(row));
+    let totals = minute.and_then(|w| w.totals);
     let mut out = String::new();
     let _ = writeln!(
         out,
@@ -336,21 +331,25 @@ fn render_status(status: &Status, minute: &[MetricsRow]) -> String {
         status.version,
         chainz_core::fmt::uptime(status.uptime_secs)
     );
+    let count =
+        |n: fn(&MetricsTotals) -> u64| totals.map_or("-".to_string(), |t| n(&t).to_string());
     let _ = writeln!(
         out,
         "last 60s: {} upstream requests, {} errors, {} failovers, {} rate-limited",
-        all.requests, all.errors, all.failovers, all.rate_limited
+        count(|t| t.requests),
+        count(|t| t.errors),
+        count(|t| t.failovers),
+        count(|t| t.rate_limited)
     );
     let header = [
         "CHAIN", "ID", "ACTIVE", "FAILOVER", "HEAD", "REQ", "ERR", "429", "P50",
     ];
     let mut rows: Vec<[String; 9]> = Vec::with_capacity(status.chains.len());
     for chain in &status.chains {
-        let mut totals = Totals::default();
-        minute
-            .iter()
-            .filter(|row| row.chain == chain.chain)
-            .for_each(|row| totals.add(row));
+        let chain_totals = minute
+            .filter(|_| totals.is_some())
+            .map(|w| w.chains.get(&chain.chain).copied().unwrap_or_default());
+        let [requests, errors, rate_limited, p50] = totals_cells(chain_totals);
         let dash = |s: String| if s.is_empty() { "-".to_string() } else { s };
         rows.push([
             chain.chain.clone(),
@@ -358,10 +357,10 @@ fn render_status(status: &Status, minute: &[MetricsRow]) -> String {
             chain.active.clone(),
             dash(chain.failover.join(",")),
             dash(chain.head.map(|h| h.to_string()).unwrap_or_default()),
-            totals.requests.to_string(),
-            totals.errors.to_string(),
-            totals.rate_limited.to_string(),
-            totals.p50(),
+            requests,
+            errors,
+            rate_limited,
+            p50,
         ]);
     }
     out.push('\n');
@@ -393,8 +392,9 @@ fn log(follow: bool, chain: Option<String>, method: Option<String>) -> Result<i3
     net::block_on(async {
         // Filtering happens here, so ask for the whole buffer.
         let mut events = client
-            .events_with(EventsOptions {
-                backlog: EVENTS_BUFFER,
+            .events(EventsOptions {
+                backlog: Backlog::All,
+                after_id: None,
                 follow: false,
             })
             .await?;
@@ -421,16 +421,17 @@ fn log(follow: bool, chain: Option<String>, method: Option<String>) -> Result<i3
             return Ok(());
         }
         let _ = out.flush();
-        // Reconnect with a backlog and skip what was already shown, so no
-        // record falls between the two requests.
+        // Pick up after the last record seen, so none falls between the
+        // two requests.
         let mut events = client
-            .events_with(EventsOptions {
-                backlog: EVENTS_BUFFER,
+            .events(EventsOptions {
+                backlog: Backlog::All,
+                after_id: Some(last_id),
                 follow: true,
             })
             .await?;
         while let Some(record) = events.recv().await {
-            if record.id <= last_id || !matches(&record) {
+            if !matches(&record) {
                 continue;
             }
             if writeln!(out, "{}", render_record(&record)).is_err() || out.flush().is_err() {
@@ -453,14 +454,6 @@ fn render_record(record: &RequestRecord) -> String {
         secs % 60,
         record.at_ms % 1000
     );
-    let outcome = match &record.status {
-        RecordStatus::Ok => "ok".to_string(),
-        RecordStatus::Error {
-            class,
-            code: Some(code),
-        } => format!("{class}({code})"),
-        RecordStatus::Error { class, code: None } => class.to_string(),
-    };
     let attempts = match record.attempts {
         0 | 1 => String::new(),
         n => format!(" ({n} attempts)"),
@@ -471,8 +464,13 @@ fn render_record(record: &RequestRecord) -> String {
         format!(" {}", record.params_summary)
     };
     format!(
-        "{time} {} {}{params} → {}{attempts} {}ms {outcome} {}B",
-        record.chain, record.method, record.upstream, record.latency_ms, record.response_bytes
+        "{time} {} {}{params} → {}{attempts} {}ms {} {}B",
+        record.chain,
+        record.method,
+        record.upstream,
+        record.latency_ms,
+        record.status,
+        record.response_bytes
     )
 }
 
@@ -480,8 +478,7 @@ fn render_record(record: &RequestRecord) -> String {
 mod tests {
     use super::*;
     use chainz_rpc::ErrorClass;
-    use chainz_rpc::control::ChainStatus;
-    use std::collections::BTreeMap;
+    use chainz_rpc::control::{ChainStatus, RecordStatus};
 
     fn record() -> RequestRecord {
         RequestRecord {
@@ -545,30 +542,45 @@ mod tests {
                 },
             ],
         };
-        let row = |method: &str, requests: u64, p50_ms: u32| MetricsRow {
-            chain: "eth".into(),
-            endpoint: "infura".into(),
-            method: method.into(),
-            requests,
-            errors: BTreeMap::from([(ErrorClass::Timeout, 1)]),
-            p50_ms,
-            p95_ms: 0,
-            rate_limited: 2,
-            failovers: 1,
+        let eth = MetricsTotals {
+            requests: 4,
+            errors: 2,
+            rate_limited: 4,
+            failovers: 2,
+            p50_ms: 40,
+            p95_ms: 80,
             bytes: 0,
         };
-        let text = render_status(
-            &status,
-            &[row("eth_call", 3, 40), row("eth_getLogs", 1, 80)],
-        );
+        let window = MetricsWindow {
+            window_secs: 60,
+            rows: vec![],
+            totals: Some(eth),
+            chains: BTreeMap::from([("eth".to_string(), eth)]),
+        };
+        let text = render_status(&status, Some(&window));
         let expected = "\
 chainz serve: running on 127.0.0.1:18545 (pid 42, v2.0.0, up 2m05s)
 last 60s: 4 upstream requests, 2 errors, 2 failovers, 4 rate-limited
 
 CHAIN  ID    ACTIVE  FAILOVER          HEAD      REQ  ERR  429  P50
-eth    1     infura  llama,publicnode  23481220  4    2    4    50ms
+eth    1     infura  llama,publicnode  23481220  4    2    4    40ms
 base   8453  infura  -                 -         0    0    0    -
 ";
         assert_eq!(text, expected);
+        // A 2.0 gateway sends no totals.
+        let old = MetricsWindow {
+            totals: None,
+            chains: BTreeMap::new(),
+            ..window
+        };
+        let text = render_status(&status, Some(&old));
+        assert!(
+            text.contains("last 60s: - upstream requests, - errors"),
+            "{text}"
+        );
+        assert!(
+            text.contains("eth    1     infura  llama,publicnode  23481220  -    -    -    -"),
+            "{text}"
+        );
     }
 }

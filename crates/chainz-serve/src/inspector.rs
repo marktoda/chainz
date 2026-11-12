@@ -11,10 +11,12 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use chainz_rpc::control::{EventRing, EventsOptions, RequestRecord};
+use chainz_rpc::control::{RequestRecord, write_line};
 use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
+
+use crate::control::EventRing;
 
 /// Records queued for the log writer before new ones are dropped.
 const LOG_QUEUE: usize = 8192;
@@ -82,16 +84,9 @@ impl Inspector {
         });
     }
 
-    /// The backlog asked for (oldest first) and, when following, a receiver
-    /// for everything after it.
-    pub fn subscribe(
-        &self,
-        options: EventsOptions,
-    ) -> (
-        Vec<RequestRecord>,
-        Option<broadcast::Receiver<RequestRecord>>,
-    ) {
-        self.ring.subscribe(options)
+    /// The records behind `/_chainz/events`.
+    pub fn events(&self) -> &EventRing {
+        &self.ring
     }
 
     /// Stop logging: the writer task drains what was queued and exits.
@@ -127,10 +122,9 @@ async fn write_log(
             tokio::select! {
                 record = records.recv() => {
                     let Some(record) = record else { break };
-                    let Ok(mut line) = serde_json::to_vec(&record) else {
+                    let Ok(line) = write_line(&record) else {
                         continue;
                     };
-                    line.push(b'\n');
                     out.write_all(&line).await?;
                 }
                 _ = tick.tick() => {
@@ -153,7 +147,8 @@ async fn write_log(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chainz_rpc::control::{EVENTS_BUFFER, RecordStatus};
+    use crate::control::EVENTS_BUFFER;
+    use chainz_rpc::control::{Backlog, EventsOptions, RecordStatus};
 
     fn record(n: u64) -> RequestRecord {
         RequestRecord {
@@ -181,16 +176,18 @@ mod tests {
         for n in 0..(EVENTS_BUFFER as u64 + 5) {
             inspector.push(record(n));
         }
-        let (all, rx) = inspector.subscribe(EventsOptions {
-            backlog: usize::MAX,
+        let (all, rx) = inspector.events().subscribe(EventsOptions {
+            backlog: Backlog::All,
+            after_id: None,
             follow: false,
         });
         assert!(rx.is_none());
         assert_eq!(all.len(), EVENTS_BUFFER);
         assert_eq!(all[0].id, 6);
         assert_eq!(all.last().unwrap().id, EVENTS_BUFFER as u64 + 5);
-        let (last, rx) = inspector.subscribe(EventsOptions {
-            backlog: 2,
+        let (last, rx) = inspector.events().subscribe(EventsOptions {
+            backlog: Backlog::Last(2),
+            after_id: None,
             follow: true,
         });
         assert_eq!(last.len(), 2);
@@ -232,8 +229,9 @@ mod tests {
         }
         assert_eq!(inspector.dropped.load(Ordering::Relaxed), 6);
         // The ring keeps them all regardless.
-        let (all, _) = inspector.subscribe(EventsOptions {
-            backlog: 100,
+        let (all, _) = inspector.events().subscribe(EventsOptions {
+            backlog: Backlog::Last(100),
+            after_id: None,
             follow: false,
         });
         assert_eq!(all.len(), 10);

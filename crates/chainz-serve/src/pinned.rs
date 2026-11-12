@@ -82,7 +82,7 @@ impl PinnedProxy {
             let state = state.clone();
             async move { handle(&state, request).await }
         };
-        let task = tokio::spawn(http::serve_tcp(listener, handler, stopped, DRAIN));
+        let task = tokio::spawn(http::serve(listener, handler, stopped, DRAIN));
         Ok(PinnedProxy {
             addr,
             stop,

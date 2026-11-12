@@ -11,12 +11,10 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Mutex;
 
 use chainz_rpc::ErrorClass;
-use chainz_rpc::control::{MetricsRow, MetricsSnapshot, MetricsWindow};
+use chainz_rpc::control::{MetricsRow, MetricsSnapshot, MetricsTotals, MetricsWindow, Window};
 
-/// The short window, in seconds.
-pub const SHORT_WINDOW: u64 = 60;
-/// The long window, in seconds.
-pub const LONG_WINDOW: u64 = 900;
+const SHORT_WINDOW: u64 = Window::Short.secs();
+const LONG_WINDOW: u64 = Window::Long.secs();
 
 const SHORT_BUCKET: u64 = 5;
 const LONG_BUCKET: u64 = 60;
@@ -147,21 +145,6 @@ struct Series {
 
 type Key = (String, String, String);
 
-/// A one-line overview of the short window.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct Summary {
-    /// Upstream attempts.
-    pub requests: u64,
-    /// Failed attempts.
-    pub errors: u64,
-    /// 429 responses.
-    pub rate_limited: u64,
-    /// Failovers.
-    pub failovers: u64,
-    /// Median attempt latency.
-    pub p50_ms: u32,
-}
-
 /// The gateway's metrics store.
 #[derive(Debug, Default)]
 pub struct Metrics {
@@ -232,51 +215,35 @@ impl Metrics {
         series.long.current(now).refuse(failover);
     }
 
-    /// Both windows at unix time `now` (seconds). Rows are sorted by chain,
-    /// endpoint and method; series with no traffic left are dropped.
+    /// Both windows at unix time `now` (seconds), with totals per window
+    /// and per chain. Rows are sorted by chain, endpoint and method; series
+    /// with no traffic left are dropped.
     pub fn snapshot(&self, now: u64) -> MetricsSnapshot {
         let mut store = self.lock();
-        let series = &mut store.series;
-        let mut short = Vec::new();
-        let mut long = Vec::new();
-        series.retain(|key, s| {
+        let mut short = Totaller::default();
+        let mut long = Totaller::default();
+        store.series.retain(|key, s| {
             if let Some(total) = s.short.total(now) {
-                short.push(row(key, total));
+                short.add(key, total);
             }
             match s.long.total(now) {
                 Some(total) => {
-                    long.push(row(key, total));
+                    long.add(key, total);
                     true
                 }
                 None => false,
             }
         });
-        let sort = |rows: &mut Vec<MetricsRow>| {
-            rows.sort_by(|a, b| {
-                (&a.chain, &a.endpoint, &a.method).cmp(&(&b.chain, &b.endpoint, &b.method))
-            });
-        };
-        sort(&mut short);
-        sort(&mut long);
         MetricsSnapshot {
             at_ms: now * 1000,
-            windows: vec![
-                MetricsWindow {
-                    window_secs: SHORT_WINDOW,
-                    rows: short,
-                },
-                MetricsWindow {
-                    window_secs: LONG_WINDOW,
-                    rows: long,
-                },
-            ],
+            windows: vec![short.finish(Window::Short), long.finish(Window::Long)],
         }
     }
 
     /// Totals over the short window. Series with no traffic left are
     /// dropped here too, so they don't pile up while nobody asks for a
     /// snapshot.
-    pub fn summary(&self, now: u64) -> Summary {
+    pub fn summary(&self, now: u64) -> MetricsTotals {
         let mut store = self.lock();
         store.prune(now);
         let mut all = Bucket::default();
@@ -285,13 +252,51 @@ impl Metrics {
                 all.merge(&total);
             }
         }
-        Summary {
-            requests: all.requests,
-            errors: all.errors.values().sum(),
-            rate_limited: all.rate_limited,
-            failovers: all.failovers,
-            p50_ms: percentile(&mut all.latencies, 50),
+        totals(all)
+    }
+}
+
+/// One window's rows, and their totals overall and per chain.
+#[derive(Default)]
+struct Totaller {
+    rows: Vec<MetricsRow>,
+    all: Option<Bucket>,
+    chains: BTreeMap<String, Bucket>,
+}
+
+impl Totaller {
+    fn add(&mut self, key: &Key, total: Bucket) {
+        self.all.get_or_insert_with(Bucket::default).merge(&total);
+        self.chains.entry(key.0.clone()).or_default().merge(&total);
+        self.rows.push(row(key, total));
+    }
+
+    fn finish(mut self, window: Window) -> MetricsWindow {
+        self.rows.sort_by(|a, b| {
+            (&a.chain, &a.endpoint, &a.method).cmp(&(&b.chain, &b.endpoint, &b.method))
+        });
+        MetricsWindow {
+            window_secs: window.secs(),
+            rows: self.rows,
+            totals: Some(totals(self.all.unwrap_or_default())),
+            chains: self
+                .chains
+                .into_iter()
+                .map(|(chain, bucket)| (chain, totals(bucket)))
+                .collect(),
         }
+    }
+}
+
+fn totals(mut all: Bucket) -> MetricsTotals {
+    MetricsTotals {
+        requests: all.requests,
+        errors: all.errors.values().sum(),
+        rate_limited: all.rate_limited,
+        failovers: all.failovers,
+        p50_ms: percentile(&mut all.latencies, 50),
+        p95_ms: percentile(&mut all.latencies, 95),
+        bytes: all.bytes,
     }
 }
 
@@ -443,6 +448,30 @@ mod tests {
         assert!(row.errors.is_empty());
         let s = m.summary(10);
         assert_eq!((s.requests, s.rate_limited, s.p50_ms), (1, 2, 40));
+    }
+
+    #[test]
+    fn totals_take_percentiles_over_every_sample() {
+        let m = Metrics::default();
+        // 3 fast calls on one method, 1 slow on another: a request-weighted
+        // mean of the medians would say 25 ms; the true median is 10.
+        for _ in 0..3 {
+            m.record(10, "eth", "a", "eth_call", &ok(10));
+        }
+        m.record(10, "eth", "b", "eth_getLogs", &ok(70));
+        m.record(10, "base", "a", "eth_call", &ok(5));
+        let short = m.snapshot(10).windows.remove(0);
+        let all = short.totals.unwrap();
+        assert_eq!((all.requests, all.p50_ms, all.p95_ms), (5, 10, 70));
+        assert_eq!(all.bytes, 50);
+        let eth = short.chains["eth"];
+        assert_eq!((eth.requests, eth.p50_ms, eth.p95_ms), (4, 10, 70));
+        assert_eq!(short.chains["base"].requests, 1);
+        assert_eq!(m.summary(10), all, "the live line agrees with status");
+        // An idle window still says so.
+        let idle = Metrics::default().snapshot(10).windows.remove(0);
+        assert_eq!(idle.totals, Some(MetricsTotals::default()));
+        assert!(idle.chains.is_empty());
     }
 
     #[test]

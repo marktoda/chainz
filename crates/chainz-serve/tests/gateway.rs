@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use chainz_core::runtime::GatewayState;
-use chainz_rpc::control::{EventsOptions, RecordStatus};
+use chainz_rpc::control::{Backlog, EventsOptions, RecordStatus, Window};
 use chainz_rpc::{Capabilities, ErrorClass, HealthStore};
 use common::{Mock, R, Rig, eth_config, eventually, http, probed_twice_since};
 use serde_json::{Value, json};
@@ -232,8 +232,9 @@ async fn killing_the_active_upstream_mid_stream_fails_zero_reads() {
     assert!(failovers > 0);
     let mut records = rig
         .control()
-        .events_with(EventsOptions {
-            backlog: 1000,
+        .events(EventsOptions {
+            backlog: Backlog::All,
+            after_id: None,
             follow: false,
         })
         .await
@@ -836,7 +837,7 @@ async fn inspector_control_api_and_runtime_files() {
 
     // Live events, then some traffic.
     let control = rig.control();
-    let mut live = control.events().await.unwrap();
+    let mut live = control.events(EventsOptions::default()).await.unwrap();
     let balance_of = format!("0x70a08231{}", "00".repeat(32));
     rig.call(
         "eth",
@@ -904,8 +905,9 @@ async fn inspector_control_api_and_runtime_files() {
 
     // Backlog replay, with and without following.
     let mut replay = control
-        .events_with(EventsOptions {
-            backlog: 2,
+        .events(EventsOptions {
+            backlog: Backlog::Last(2),
+            after_id: None,
             follow: false,
         })
         .await
@@ -917,8 +919,9 @@ async fn inspector_control_api_and_runtime_files() {
         "follow=false ends after the backlog"
     );
     let mut tail = control
-        .events_with(EventsOptions {
-            backlog: 1,
+        .events(EventsOptions {
+            backlog: Backlog::Last(1),
+            after_id: None,
             follow: true,
         })
         .await
@@ -955,12 +958,19 @@ async fn inspector_control_api_and_runtime_files() {
             ("eth", "a", 1)
         );
         assert!(call.bytes > 0 && call.errors.is_empty());
+        let totals = window.totals.unwrap();
+        assert_eq!((totals.requests, totals.errors), (6, 0));
+        assert_eq!(window.chains["eth"], totals);
     }
+    assert_eq!(metrics.window(Window::Short).unwrap().window_secs, 60);
 
-    // Reload through the control API; a broken config keeps the old one.
+    // Reload through the control API; a broken config keeps the old one,
+    // and the client hears why.
     control.reload().await.unwrap();
     std::fs::write(Rig::paths(rig.dir.path()).config(), "this is not toml [").unwrap();
-    assert!(control.reload().await.is_err());
+    let error = control.reload().await.unwrap_err().to_string();
+    assert!(error.contains("HTTP 500: "), "{error}");
+    assert!(error.contains("config.toml"), "{error}");
     assert_eq!(
         rig.call("eth", "eth_blockNumber", json!([])).await.status,
         200

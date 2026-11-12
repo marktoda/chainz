@@ -1,6 +1,7 @@
 //! HTTP plumbing shared by the gateway and the pinned proxy: response
 //! helpers, the JSON-RPC replies both proxies send when no upstream
-//! answered, and a loopback TCP server that drains on shutdown.
+//! answered, and the HTTP/1.1 server every listener runs, which drains on
+//! shutdown.
 
 use std::convert::Infallible;
 use std::future::Future;
@@ -17,7 +18,8 @@ use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::{TokioIo, TokioTimer};
 use hyper_util::server::graceful::GracefulShutdown;
-use tokio::net::TcpListener;
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 
@@ -127,15 +129,41 @@ pub(crate) fn retry_after_secs(wait: Duration) -> u64 {
     (wait.as_secs() + u64::from(wait.subsec_nanos() > 0)).max(1)
 }
 
+/// A socket that hands out connections: the gateway's TCP port, the
+/// pinned proxy's, and the control socket.
+pub(crate) trait Listener: Send + 'static {
+    /// One accepted connection.
+    type Stream: AsyncRead + AsyncWrite + Unpin + Send + 'static;
+    /// The next connection.
+    fn accept(&self) -> impl Future<Output = std::io::Result<Self::Stream>> + Send;
+}
+
+impl Listener for TcpListener {
+    type Stream = TcpStream;
+    async fn accept(&self) -> std::io::Result<TcpStream> {
+        let (stream, _) = TcpListener::accept(self).await?;
+        let _ = stream.set_nodelay(true);
+        Ok(stream)
+    }
+}
+
+impl Listener for UnixListener {
+    type Stream = UnixStream;
+    async fn accept(&self) -> std::io::Result<UnixStream> {
+        Ok(UnixListener::accept(self).await?.0)
+    }
+}
+
 /// Serve HTTP/1.1 on `listener` with `handler` until `stopped`, then let
 /// open connections finish for up to `drain`, cut off the rest, and wait
 /// until every connection task has ended.
-pub(crate) async fn serve_tcp<H, F>(
-    listener: TcpListener,
+pub(crate) async fn serve<L, H, F>(
+    listener: L,
     handler: H,
     mut stopped: watch::Receiver<bool>,
     drain: Duration,
 ) where
+    L: Listener,
     H: Fn(Request<Incoming>) -> F + Clone + Send + Sync + 'static,
     F: Future<Output = Response<BoxBody>> + Send + 'static,
 {
@@ -146,12 +174,11 @@ pub(crate) async fn serve_tcp<H, F>(
     loop {
         tokio::select! {
             accepted = listener.accept() => {
-                let Ok((stream, _)) = accepted else {
+                let Ok(stream) = accepted else {
                     // Out of descriptors, most likely: don't spin.
                     tokio::time::sleep(Duration::from_millis(50)).await;
                     continue;
                 };
-                let _ = stream.set_nodelay(true);
                 let handler = handler.clone();
                 let service = service_fn(move |request| {
                     let response = handler(request);
@@ -168,16 +195,6 @@ pub(crate) async fn serve_tcp<H, F>(
         }
     }
     drop(listener);
-    drain_connections(graceful, connections, drain).await;
-}
-
-/// Let open connections finish their requests for up to `drain`, then
-/// cut off the rest and wait until every connection task has ended.
-pub(crate) async fn drain_connections(
-    graceful: GracefulShutdown,
-    mut connections: JoinSet<()>,
-    drain: Duration,
-) {
     let _ = tokio::time::timeout(drain, graceful.shutdown()).await;
     connections.shutdown().await;
 }
@@ -194,7 +211,10 @@ mod tests {
         assert_eq!(limited.status, 429);
         assert_eq!(limited.retry_after, Some(DEFAULT_RETRY_AFTER));
         let body: Value = serde_json::from_slice(&limited.body).unwrap();
-        assert_eq!((body["id"].clone(), body["error"]["code"].clone()), (id.clone(), json!(LIMIT_EXCEEDED)));
+        assert_eq!(
+            (body["id"].clone(), body["error"]["code"].clone()),
+            (id.clone(), json!(LIMIT_EXCEEDED))
+        );
         let waited = reply(RpcError::RateLimited {
             retry_after: Some(Duration::from_secs(9)),
         });

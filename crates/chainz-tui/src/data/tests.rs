@@ -777,10 +777,9 @@ async fn traffic_follows_the_gateway_control_socket() {
     let runtime = chainz_core::runtime::Runtime::at(dir.path().join("runtime"));
     let lock = runtime.acquire_serve_lock().unwrap().unwrap();
     let _published = lock.publish(&serve_info(18545)).unwrap();
-    let server =
-        gw::MockControlServer::start(&runtime.serve_sock_path(), gw::status(), gw::metrics())
-            .await
-            .unwrap();
+    let server = gw::ControlServer::start(&runtime.serve_sock_path(), gw::status(), gw::metrics())
+        .await
+        .unwrap();
 
     // Status and metrics arrive, folded into the dashboard's shape.
     let snapshot = wait_for(&updates, |u| {

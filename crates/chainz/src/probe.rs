@@ -160,7 +160,12 @@ pub async fn probe_chains(
     Ok(out)
 }
 
-async fn probe_one(client: RpcClient, target: Target, chain_id: u64, depth: Depth) -> EndpointProbe {
+async fn probe_one(
+    client: RpcClient,
+    target: Target,
+    chain_id: u64,
+    depth: Depth,
+) -> EndpointProbe {
     let result = chainz_rpc::probe(&client, &target, chain_id).await;
     let capabilities = if depth == Depth::Capabilities && result.is_ok() {
         Some(chainz_rpc::probe_capabilities(&client, &target).await)

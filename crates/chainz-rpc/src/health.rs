@@ -260,14 +260,10 @@ mod tests {
 
     #[test]
     fn samples_classify_like_probes() {
-        let samples: Vec<HealthSample> = [
-            ok(10, 1000),
-            ok(10, 979),
-            err(1, RpcError::Connect),
-        ]
-        .iter()
-        .map(HealthSample::from_probe)
-        .collect();
+        let samples: Vec<HealthSample> = [ok(10, 1000), ok(10, 979), err(1, RpcError::Connect)]
+            .iter()
+            .map(HealthSample::from_probe)
+            .collect();
         assert_eq!(
             classify(&samples),
             vec![

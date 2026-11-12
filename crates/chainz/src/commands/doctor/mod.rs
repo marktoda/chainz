@@ -286,7 +286,10 @@ fn rpc_health(chainz: &mut Chainz, fix: bool, report: &mut Report) -> Result<()>
             Ok(())
         })?;
         for (old, repair) in repairs {
-            report.fixed(&format!("{}: active {old} → {}", repair.chain, repair.active));
+            report.fixed(&format!(
+                "{}: active {old} → {}",
+                repair.chain, repair.active
+            ));
         }
     }
     Ok(())

@@ -14,6 +14,7 @@ chainz-rpc.workspace = true
 chainz-sys.workspace = true
 tokio = { workspace = true, features = ["signal"] }
 bytes.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio", "http1", "server-graceful"] }
@@ -21,6 +22,11 @@ http-body-util = "0.1"
 sha3.workspace = true
 hex.workspace = true
 rand.workspace = true
+
+[features]
+# `testing::ControlServer`: the control handler over canned state, for
+# tests of control clients.
+testing = []
 
 [dev-dependencies]
 tempfile.workspace = true
