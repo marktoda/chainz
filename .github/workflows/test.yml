@@ -113,6 +113,9 @@ jobs:
       - name: Build 0.4 and this commit
         run: |
           cargo build --release --locked -p chainz
+          # v1/ sits inside this workspace's directory; an empty
+          # [workspace] table makes 0.4 its own workspace root.
+          printf '\n[workspace]\n' >> v1/Cargo.toml
           cargo build --release --locked --manifest-path v1/Cargo.toml
 
       - name: Run perf gate
