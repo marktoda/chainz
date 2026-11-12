@@ -12,6 +12,7 @@ use chainz_core::StorePaths;
 use chainz_core::paths;
 use chainz_core::resolve::{self, Policy};
 use chainz_core::runtime::{GatewayState, LOOPBACK, Runtime, ServeInfo};
+use chainz_os::LogMode;
 use chainz_rpc::control::{
     Backlog, ControlClient, EventsOptions, MetricsRow, MetricsTotals, MetricsWindow, RequestRecord,
     Status, Window,
@@ -137,7 +138,7 @@ impl Foreground {
                     "`chainz exec` now routes through the gateway (--direct bypasses it); stop with Ctrl-C or `chainz serve stop`",
                 );
                 // `serve --detach` waits for this: serve.json is out.
-                chainz_os::detached_ready().context("unable to redirect output to the log")?;
+                sys::detached_ready().context("unable to redirect output to the log")?;
             }
             Event::Notice(notice) => self.say(notice),
             Event::Tick(gateway) => {
@@ -168,13 +169,10 @@ impl Foreground {
 fn detach() -> Result<i32> {
     let runtime = Runtime::resolve()?;
     let log_path = paths::serve_log().context("unable to find the state directory")?;
-    if let Some(dir) = log_path.parent() {
-        chainz_os::create_private_dir(dir)?;
-    }
     // The same command line in the background, ready once serve.json is
     // out; the child keeps our working directory, so a relative --log holds.
-    let mut child = chainz_os::launch_detached(&log_path, sys::LogMode::Append)
-        .context("failed to start the gateway")?;
+    let mut child =
+        sys::launch_detached(&log_path, LogMode::Append).context("failed to start the gateway")?;
     match child.wait_ready(Some(START_TIMEOUT)) {
         Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
             let _ = child.kill();

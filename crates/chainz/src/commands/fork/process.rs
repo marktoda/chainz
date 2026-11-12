@@ -189,11 +189,7 @@ fn stop_orphan(record: &ForkRecord) {
 
 /// The fork's log: anvil's output, and the supervisor's when detached.
 pub fn log_path(name: &str) -> Result<PathBuf> {
-    let path = paths::fork_log(name).context("unable to find the state directory")?;
-    if let Some(dir) = path.parent() {
-        chainz_os::create_private_dir(dir).context("unable to create the fork log directory")?;
-    }
-    Ok(path)
+    paths::fork_log(name).context("unable to find the state directory")
 }
 
 /// Log lines shown when anvil fails to start.
@@ -293,7 +289,7 @@ pub fn spawn_anvil(spec: &AnvilSpec<'_>, log: &File) -> Result<Child> {
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log.try_clone()?)
-        .env_remove(chainz_os::DETACHED_ENV)
+        .env_remove(sys::DETACHED_ENV)
         .process_group(0);
     #[cfg(target_os = "linux")]
     {

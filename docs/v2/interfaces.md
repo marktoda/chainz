@@ -8,7 +8,7 @@ means changing every caller in the same commit.
 
 | Crate | Role | Async / network |
 |---|---|---|
-| `chainz-os` | OS primitives: private dirs and files, atomic writes, `flock`, file stamps, the clock, background launch (no chainz dependencies) | none |
+| `chainz-os` | OS primitives: private dirs and files, atomic writes, `flock`, file stamps, the clock (no chainz dependencies) | none |
 | `chainz-core` | config, secrets, migration, resolver, tokenizer, context, labels, runtime registry | none (sync; no tokio, reqwest or hyper) |
 | `chainz-rpc` | JSON-RPC client, probes, endpoint health and ranking, health history, `HttpUpstream`, control protocol, chainlist | tokio + reqwest (rustls) |
 | `chainz-serve` | gateway: `run(paths, runtime, state_dir, Options, on_event)`, embeddable `Gateway::start(GatewayConfig)` | hyper 1 + tokio (multi-thread) |
@@ -140,7 +140,7 @@ subcommands and aliases.
 `paths::fork_log(name)` (`…/forks/<name>.log`); `config path --all` lists
 them.
 
-**Background launch** (`chainz_os`). `launch_detached(log, LogMode)`
+**Background launch** (bin `sys`). `launch_detached(log, LogMode)`
 re-executes the full command line minus `--detach` in a new session, with
 `CHAINZ_DETACHED=1` set, stdin empty, stderr the log, and stdout a pipe.
 The child prints what the user should see, then calls `detached_ready()`

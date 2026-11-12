@@ -15,6 +15,7 @@ use chainz_core::resolve::{self, Policy};
 use chainz_core::runtime::{
     ForkClaim, ForkRecord, LOOPBACK, PortReservation, Runtime, loopback_url,
 };
+use chainz_os::LogMode;
 use chainz_rpc::{HttpUpstream, RetryPolicy, RpcClient, Target};
 use chainz_serve::PinnedProxy;
 use std::fs::File;
@@ -184,7 +185,7 @@ pub fn start(args: ForkArgs) -> Result<i32> {
     if args.detach {
         return detach(&runtime, &name);
     }
-    let detached = chainz_os::is_detached();
+    let detached = sys::is_detached();
 
     process::install_signal_handlers();
     let claim = runtime
@@ -223,7 +224,7 @@ fn already_running(name: &str) -> anyhow::Error {
 /// Its stderr, and later its stdout, is the log.
 fn detach(runtime: &Runtime, name: &str) -> Result<i32> {
     let log_path = process::log_path(name)?;
-    let mut child = chainz_os::launch_detached(&log_path, sys::LogMode::Truncate)
+    let mut child = sys::launch_detached(&log_path, LogMode::Truncate)
         .context("unable to start the background supervisor")?;
     let summary = child
         .wait_ready(None)
@@ -350,9 +351,9 @@ async fn start_fork(supervisor: &mut Supervisor, job: &Job<'_>) -> Result<Runnin
     let log_path = process::log_path(name)?;
     // Detached, `detach` already emptied the log before starting us.
     let mode = if job.detached {
-        sys::LogMode::Append
+        LogMode::Append
     } else {
-        sys::LogMode::Truncate
+        LogMode::Truncate
     };
     let log = sys::open_log(&log_path, mode)?;
     let mut record = spawn_on_free_port(supervisor, job, &proxy.url(), &log, &log_path).await?;
@@ -396,7 +397,7 @@ async fn start_fork(supervisor: &mut Supervisor, job: &Job<'_>) -> Result<Runnin
     );
     if job.detached {
         // Closing the stdout pipe releases the waiting `--detach` parent.
-        chainz_os::detached_ready().context("unable to redirect output to the log")?;
+        sys::detached_ready().context("unable to redirect output to the log")?;
         eprintln!("chainz fork: {name} up; {notice}");
     } else {
         use std::io::Write;
