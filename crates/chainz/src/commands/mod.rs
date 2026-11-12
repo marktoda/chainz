@@ -1,16 +1,16 @@
 //! Command handlers, one module per noun, routed from [`dispatch`]. A
 //! handler returns the process exit code: 0, or the code of a failure it
-//! has already reported itself (`doctor`, `addr find`, `serve status`). Any
+//! has already reported itself (`doctor`, `label 0x…`, `serve status`). Any
 //! other failure is an error: `main` prints it as `error: …` and exits 1,
 //! or with the code a typed error carries (`ui::exit_code`).
 
-mod addr;
 mod chain;
 mod doctor;
 mod edit;
 mod exec;
 mod fork;
 mod init;
+mod label;
 mod serve;
 mod signer;
 mod top;
@@ -42,8 +42,7 @@ pub fn dispatch(opt: Opt) -> Result<i32> {
         Command::Rm(args) => chain::rm(&args),
         Command::Edit(args) => edit::run(&args),
         Command::Signer { cmd } => signer::run(cmd),
-        Command::Addr { cmd } => addr::run(cmd),
-        Command::Label(args) => addr::label(&args),
+        Command::Label { cmd, args } => label::run(cmd, args),
         Command::Var { cmd } => var::run(cmd),
         Command::Doctor(args) => doctor::run(&args),
         Command::Completions(args) => {

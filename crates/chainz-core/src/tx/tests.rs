@@ -314,7 +314,7 @@ fn set_address_refuses_to_overwrite_unless_told_to() {
     let msg = err.to_string();
     assert!(
         msg.contains(&format!("@router is already {A1} on eth"))
-            && msg.contains("chainz addr rm router --chain 'eth'"),
+            && msg.contains("chainz label rm router --chain 'eth'"),
         "{msg}"
     );
     assert_eq!(text(&tx), before);

@@ -111,14 +111,15 @@ pub enum Command {
         cmd: SignerCommand,
     },
 
-    /// Manage the address book
-    Addr {
+    /// Name addresses: `label 0x…` looks one up, `… | chainz label`
+    /// rewrites stdin; add, ls, rm, import
+    #[command(args_conflicts_with_subcommands = true)]
+    Label {
         #[command(subcommand)]
-        cmd: AddrCommand,
+        cmd: Option<LabelCommand>,
+        #[command(flatten)]
+        args: LabelArgs,
     },
-
-    /// Rewrite addresses on stdin as name(0x…)
-    Label(LabelArgs),
 
     /// Manage variables (values live in secrets.toml)
     Var {
@@ -260,11 +261,20 @@ pub struct EditArgs {
     pub path: bool,
 }
 
+/// `label [0x…]`: a reverse lookup, or (no address) the stdin filter.
 #[derive(Debug, Args)]
 pub struct LabelArgs {
-    /// Chain whose labels apply
-    #[arg(long, add = ArgValueCompleter::new(complete::chains_and_forks))]
+    /// The address to look up on every chain (omitted: rewrite addresses
+    /// on stdin as name(0x…))
+    #[arg(value_name = "0x…")]
+    pub address: Option<String>,
+    /// For stdin: the chain whose labels apply (default: the chain context,
+    /// else names that hold on every chain)
+    #[arg(long, conflicts_with = "address", add = ArgValueCompleter::new(complete::chains_and_forks))]
     pub chain: Option<String>,
+    /// JSON output (with an address)
+    #[arg(long, requires = "address")]
+    pub json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -602,21 +612,19 @@ pub struct SignerMigrateArgs {
 }
 
 #[derive(Debug, Subcommand)]
-pub enum AddrCommand {
+pub enum LabelCommand {
     /// Name an address
-    Add(AddrAddArgs),
+    Add(LabelAddArgs),
     /// List labels
-    Ls(AddrLsArgs),
+    Ls(LabelLsArgs),
     /// Remove a label; asks first unless --yes
-    Rm(AddrRmArgs),
-    /// Reverse-look-up an address
-    Find(AddrFindArgs),
+    Rm(LabelRmArgs),
     /// Label contracts from Foundry broadcast output
-    Import(AddrImportArgs),
+    Import(LabelImportArgs),
 }
 
 #[derive(Debug, Args)]
-pub struct AddrAddArgs {
+pub struct LabelAddArgs {
     /// Label name, used as @name
     pub name: String,
     /// The 0x address
@@ -630,7 +638,7 @@ pub struct AddrAddArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct AddrLsArgs {
+pub struct LabelLsArgs {
     /// What @name means on this chain
     #[arg(long, add = ArgValueCompleter::new(complete::chains_and_forks))]
     pub chain: Option<String>,
@@ -646,7 +654,7 @@ pub struct AddrLsArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct AddrRmArgs {
+pub struct LabelRmArgs {
     /// Label name
     #[arg(add = ArgValueCompleter::new(complete::user_labels))]
     pub name: String,
@@ -659,16 +667,7 @@ pub struct AddrRmArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct AddrFindArgs {
-    /// The 0x address
-    pub address: String,
-    /// JSON output
-    #[arg(long)]
-    pub json: bool,
-}
-
-#[derive(Debug, Args)]
-pub struct AddrImportArgs {
+pub struct LabelImportArgs {
     /// run-latest.json files, or directories holding broadcast/
     #[arg(required = true, value_name = "PATH")]
     pub paths: Vec<std::path::PathBuf>,
@@ -689,8 +688,8 @@ pub struct AddrImportArgs {
     pub json: bool,
 }
 
-impl From<&AddrImportArgs> for chainz_core::broadcast::Options {
-    fn from(args: &AddrImportArgs) -> Self {
+impl From<&LabelImportArgs> for chainz_core::broadcast::Options {
+    fn from(args: &LabelImportArgs) -> Self {
         chainz_core::broadcast::Options {
             prefix: args.prefix.clone().unwrap_or_default(),
             only: args.only.clone(),

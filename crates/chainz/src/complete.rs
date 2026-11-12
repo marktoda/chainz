@@ -101,7 +101,7 @@ pub fn chains_and_forks(current: &OsStr) -> Vec<CompletionCandidate> {
     chains(current, true)
 }
 
-/// `addr rm --chain`: configured chains, and `*` for the every-chain entry.
+/// `label rm --chain`: configured chains, and `*` for the every-chain entry.
 pub fn label_scopes(current: &OsStr) -> Vec<CompletionCandidate> {
     let mut out = chains(current, false);
     if current.to_str().is_some_and(|p| "*".starts_with(p)) {

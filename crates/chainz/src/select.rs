@@ -18,7 +18,7 @@ pub struct Missing<'a> {
     pub off_tty: &'a str,
 }
 
-/// How the context commands (and `addr add`) say how to name a chain.
+/// How the context commands (and `label add`) say how to name a chain.
 pub const NAME_A_CHAIN: &str = "set $CHAINZ_CHAIN, or set a default with `chainz use <chain>`";
 
 /// Interactive picker over configured chains. Off a TTY it is a usage
@@ -52,7 +52,7 @@ pub fn pick_chain(
 }
 
 /// Resolve the chain for a context command (exec, shell, env) or
-/// `addr add`: explicit, `$CHAINZ_CHAIN`, default (with a stderr notice),
+/// `label add`: explicit, `$CHAINZ_CHAIN`, default (with a stderr notice),
 /// then a TTY picker.
 pub fn select_target(
     chainz: &Chainz,

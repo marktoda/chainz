@@ -136,7 +136,7 @@ fn chain_arguments_complete_names_and_aliases() {
     assert_set(fish(&sb, &["env", "b"]), &["base"]);
     assert_set(fish(&sb, &["ls", "e"]), &["eth"]);
     assert_set(fish(&sb, &["rm", ""]), &["eth", "base", "mainnet"]);
-    assert_set(fish(&sb, &["addr", "ls", "--chain", "b"]), &["base"]);
+    assert_set(fish(&sb, &["label", "ls", "--chain", "b"]), &["base"]);
     assert_set(fish(&sb, &["label", "--chain=b"]), &["--chain=base"]);
     // `add` takes a chainlist ID or name, not a configured chain.
     assert!(fish(&sb, &["add", "b"]).is_empty());
@@ -204,11 +204,11 @@ fn rpc_completes_the_typed_chain_endpoints() {
 #[test]
 fn completers_follow_the_arguments() {
     let sb = fixture();
-    // Fork-accepting `--chain`s and `edit` get chains; `addr rm --chain`
+    // Fork-accepting `--chain`s and `edit` get chains; `label rm --chain`
     // also offers `*`.
     assert!(has(&fish(&sb, &["edit", "ba"]), "base"));
     assert!(has(&fish(&sb, &["label", "--chain", "ba"]), "base"));
-    assert!(has(&fish(&sb, &["addr", "rm", "x", "--chain", ""]), "*"));
+    assert!(has(&fish(&sb, &["label", "rm", "x", "--chain", ""]), "*"));
     assert!(has(
         &fish(&sb, &["update", "base", "--explorer", ""]),
         "etherscan"
@@ -247,7 +247,7 @@ fn signers_labels_and_vars_complete() {
     );
     assert_set(fish(&sb, &["signer", "rm", "l"]), &["ledger"]);
     assert_set(fish(&sb, &["signer", "rm", "d"]), &["default"]);
-    assert_set(fish(&sb, &["addr", "rm", ""]), &["router"]);
+    assert_set(fish(&sb, &["label", "rm", ""]), &["router"]);
     assert_set(fish(&sb, &["var", "ls", ""]), &["ALCHEMY_KEY", "OTHER"]);
     assert_set(fish(&sb, &["var", "rm", "A"]), &["ALCHEMY_KEY"]);
 }
@@ -375,7 +375,7 @@ fn no_config_completes_nothing_and_never_migrates() {
         &["exec", "base", "--", "@usdc:"],
         &["signer", "rm", ""],
         &["var", "ls", ""],
-        &["addr", "rm", ""],
+        &["label", "rm", ""],
     ] {
         assert!(fish(&sb, words).is_empty(), "{words:?}");
     }

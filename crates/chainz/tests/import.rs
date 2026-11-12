@@ -1,4 +1,4 @@
-//! End-to-end tests for `addr import`: labels from Foundry broadcast
+//! End-to-end tests for `label import`: labels from Foundry broadcast
 //! output. Broadcast trees are written by hand in the shape forge writes
 //! them, inside the sandbox (see `common`).
 
@@ -124,7 +124,7 @@ fn project() -> (Sandbox, PathBuf) {
 }
 
 fn import_json(sb: &Sandbox, args: &[&str]) -> Vec<Value> {
-    let mut all = vec!["addr", "import", "--json"];
+    let mut all = vec!["label", "import", "--json"];
     all.extend_from_slice(args);
     let rows: Value = serde_json::from_str(&sb.ok(&all)).unwrap();
     rows.as_array().unwrap().clone()
@@ -151,7 +151,7 @@ fn pairs(want: &[(&str, &str)]) -> Vec<(String, String)> {
 #[test]
 fn import_walks_a_project_and_skips_what_it_cannot_label() {
     let (sb, proj) = project();
-    let out = sb.run(&["addr", "import", proj.to_str().unwrap()]);
+    let out = sb.run(&["label", "import", proj.to_str().unwrap()]);
     assert!(out.status.success(), "{}", stderr(&out));
     let text = stdout(&out);
     let lines: Vec<&str> = text.lines().collect();
@@ -242,7 +242,7 @@ fn import_json_reports_each_entry() {
 fn import_dry_run_writes_nothing() {
     let (sb, proj) = project();
     let before = sb.config();
-    let text = sb.ok(&["addr", "import", "--dry-run", proj.to_str().unwrap()]);
+    let text = sb.ok(&["label", "import", "--dry-run", proj.to_str().unwrap()]);
     assert!(
         text.contains(&format!("@pool-manager      {POOL}  add\n")),
         "{text}"
@@ -257,8 +257,8 @@ fn import_dry_run_writes_nothing() {
 #[test]
 fn import_collisions_need_force() {
     let (sb, proj) = project();
-    sb.ok(&["addr", "add", "pool-manager", OTHER, "--chain", "base"]);
-    sb.ok(&["addr", "add", "my-hook", HOOK, "--chain", "base"]);
+    sb.ok(&["label", "add", "pool-manager", OTHER, "--chain", "base"]);
+    sb.ok(&["label", "add", "my-hook", HOOK, "--chain", "base"]);
     let file = proj.join("broadcast/DeployPool.s.sol/8453/run-latest.json");
     let file = file.to_str().unwrap();
 
@@ -281,14 +281,14 @@ fn import_collisions_need_force() {
     );
 
     // A dry run with --force says what it would replace.
-    let text = sb.ok(&["addr", "import", file, "--force", "--dry-run"]);
+    let text = sb.ok(&["label", "import", file, "--force", "--dry-run"]);
     assert!(text.contains(&format!("overwrite (was {OTHER})")), "{text}");
     assert!(
         text.contains("Dry run: would add 0, overwrite 1; 1 unchanged, 2 skipped."),
         "{text}"
     );
 
-    let text = sb.ok(&["addr", "import", file, "--force"]);
+    let text = sb.ok(&["label", "import", file, "--force"]);
     assert!(
         text.contains(&format!("overwritten (was {OTHER})")),
         "{text}"
@@ -365,7 +365,7 @@ fn import_prefix_and_only() {
 
     // Nothing matches: nothing to do.
     sb.cmd()
-        .args(["addr", "import", proj.to_str().unwrap(), "--only", "nope"])
+        .args(["label", "import", proj.to_str().unwrap(), "--only", "nope"])
         .assert()
         .success()
         .stdout("No contracts to import in 3 run files.\n");
@@ -387,23 +387,23 @@ fn import_errors_on_paths_without_broadcast_output() {
     sb.seed(&[("base", 8453)]);
     fs::create_dir_all(sb.path("empty/src")).unwrap();
     sb.cmd()
-        .args(["addr", "import", sb.path("empty").to_str().unwrap()])
+        .args(["label", "import", sb.path("empty").to_str().unwrap()])
         .assert()
         .failure()
         .stderr(predicate::str::contains("no Foundry broadcast output"));
     sb.cmd()
-        .args(["addr", "import", sb.path("missing").to_str().unwrap()])
+        .args(["label", "import", sb.path("missing").to_str().unwrap()])
         .assert()
         .failure()
         .stderr(predicate::str::contains("cannot read"));
     fs::write(sb.path("bad.json"), "{\"chain\": 1}").unwrap();
     sb.cmd()
-        .args(["addr", "import", sb.path("bad.json").to_str().unwrap()])
+        .args(["label", "import", sb.path("bad.json").to_str().unwrap()])
         .assert()
         .failure()
         .stderr(predicate::str::contains("is not a Foundry run file"));
     sb.cmd()
-        .args(["addr", "import"])
+        .args(["label", "import"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("<PATH>"));

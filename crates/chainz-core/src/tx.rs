@@ -46,9 +46,9 @@ pub enum SetAddress {
 /// What [`Tx::set_address`] does with an entry that holds another address.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Overwrite {
-    /// Refuse: the user removes the old entry first (`addr add`).
+    /// Refuse: the user removes the old entry first (`label add`).
     Refuse,
-    /// Replace it (`addr import`, which re-imports newer deployments).
+    /// Replace it (`label import`, which re-imports newer deployments).
     Replace,
 }
 
@@ -522,7 +522,7 @@ impl Tx {
                 let on = scope_phrase(scope);
                 let held = old.map_or_else(|| "an invalid value".to_string(), |a| a.to_checksum());
                 bail!(
-                    "@{name} is already {held} {on}; to change it, first run `chainz addr rm {name} --chain '{scope}'`"
+                    "@{name} is already {held} {on}; to change it, first run `chainz label rm {name} --chain '{scope}'`"
                 );
             }
             Some(old) => old.map_or(SetAddress::Added, SetAddress::Replaced),

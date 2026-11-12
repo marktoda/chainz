@@ -1,5 +1,6 @@
-//! End-to-end tests for the address book: `addr …`, `@label` expansion in
-//! `exec`, `label`, and `doctor --tokens`.
+//! End-to-end tests for the address book: `label …` (`label 0x…`, the
+//! stdin filter, add/ls/rm), `@label` expansion in `exec`, and
+//! `doctor --tokens`.
 //!
 //! As in `cli.rs`, every invocation runs inside a sandbox (see `common`).
 
@@ -42,13 +43,13 @@ fn echo(sb: &Sandbox, chain: &str, args: &[&str]) -> String {
     sb.ok(&all).trim_end().to_string()
 }
 
-// ---------------------------------------------------------------- addr
+// --------------------------------------------------------------- label
 
 #[test]
-fn addr_add_ls_find_rm_roundtrip() {
+fn label_add_ls_find_rm_roundtrip() {
     let sb = eth_and_base();
     sb.cmd()
-        .args(["addr", "ls"])
+        .args(["label", "ls"])
         .assert()
         .success()
         .stdout(predicate::str::contains("@default").and(predicate::str::contains("signer")));
@@ -56,7 +57,7 @@ fn addr_add_ls_find_rm_roundtrip() {
     // Per chain, with any input case; stored checksummed.
     sb.cmd()
         .args([
-            "addr",
+            "label",
             "add",
             "MyRouter",
             &ROUTER.to_ascii_lowercase(),
@@ -67,13 +68,13 @@ fn addr_add_ls_find_rm_roundtrip() {
         .success()
         .stdout(format!("Added @myrouter on base: {ROUTER}\n"));
     sb.cmd()
-        .args(["addr", "add", "myrouter", ROUTER_ETH, "--chain", "1"])
+        .args(["label", "add", "myrouter", ROUTER_ETH, "--chain", "1"])
         .assert()
         .success()
         .stdout(format!("Added @myrouter on eth: {ROUTER_ETH}\n"));
     // Every chain, only when asked.
     sb.cmd()
-        .args(["addr", "add", "@my-safe", SAFE, "--all-chains"])
+        .args(["label", "add", "@my-safe", SAFE, "--all-chains"])
         .assert()
         .success()
         .stdout(format!("Added @my-safe on every chain: {SAFE}\n"));
@@ -90,7 +91,7 @@ fn addr_add_ls_find_rm_roundtrip() {
     );
 
     // ls: everything, then one chain's view.
-    let all = sb.ok(&["addr", "ls"]);
+    let all = sb.ok(&["label", "ls"]);
     let lines: Vec<Vec<&str>> = all
         .lines()
         .map(|l| l.split_whitespace().collect())
@@ -106,7 +107,7 @@ fn addr_add_ls_find_rm_roundtrip() {
         ],
         "{all}"
     );
-    let base = sb.ok(&["addr", "ls", "--chain", "base"]);
+    let base = sb.ok(&["label", "ls", "--chain", "base"]);
     assert!(
         base.contains(ROUTER) && !base.contains(ROUTER_ETH),
         "{base}"
@@ -114,7 +115,7 @@ fn addr_add_ls_find_rm_roundtrip() {
     assert!(base.contains(SAFE) && base.contains("@default"), "{base}");
     assert!(!base.contains("@usdc"), "{base}");
     // --builtin adds the registry.
-    let base = sb.ok(&["addr", "ls", "--chain", "base", "--builtin"]);
+    let base = sb.ok(&["label", "ls", "--chain", "base", "--builtin"]);
     assert!(
         base.lines()
             .any(|l| l.starts_with("@usdc ") && l.contains(USDC_BASE) && l.contains("built-in")),
@@ -122,44 +123,44 @@ fn addr_add_ls_find_rm_roundtrip() {
     );
     assert!(!base.contains(USDT_ETH), "{base}");
     // Built-in tokens on the configured chains only, unless --all.
-    let all = sb.ok(&["addr", "ls", "--builtin"]);
+    let all = sb.ok(&["label", "ls", "--builtin"]);
     assert!(all.contains(USDC_BASE) && all.contains(USDT_ETH), "{all}");
     let configured = builtin_tokens()
         .iter()
         .filter(|t| [1, 8453].contains(&t.chain_id))
         .count();
     assert_eq!(all.lines().count(), 1 + 4 + configured, "{all}");
-    let every = sb.ok(&["addr", "ls", "--builtin", "--all"]);
+    let every = sb.ok(&["label", "ls", "--builtin", "--all"]);
     assert_eq!(
         every.lines().count(),
         1 + 4 + builtin_tokens().len(),
         "{every}"
     );
-    sb.cmd().args(["addr", "ls", "--all"]).assert().code(2);
+    sb.cmd().args(["label", "ls", "--all"]).assert().code(2);
 
     // find: every label for the address, with its source.
     sb.cmd()
-        .args(["addr", "find", &ROUTER.to_ascii_lowercase()])
+        .args(["label", &ROUTER.to_ascii_lowercase()])
         .assert()
         .success()
         .stdout("@myrouter on base (user)\n");
     sb.cmd()
-        .args(["addr", "find", SAFE])
+        .args(["label", SAFE])
         .assert()
         .success()
         .stdout("@my-safe on every chain (user)\n");
     sb.cmd()
-        .args(["addr", "find", TEST_ADDRESS])
+        .args(["label", TEST_ADDRESS])
         .assert()
         .success()
         .stdout("@default on every chain (signer)\n");
     sb.cmd()
-        .args(["addr", "find", USDC_BASE])
+        .args(["label", USDC_BASE])
         .assert()
         .success()
         .stdout("@usdc on base (built-in)\n");
     sb.cmd()
-        .args(["addr", "find", UNKNOWN])
+        .args(["label", UNKNOWN])
         .assert()
         .code(1)
         .stdout("")
@@ -167,7 +168,7 @@ fn addr_add_ls_find_rm_roundtrip() {
 
     // rm: one chain's entry, then the whole label.
     sb.cmd()
-        .args(["addr", "rm", "myrouter", "--chain", "base", "--yes"])
+        .args(["label", "rm", "myrouter", "--chain", "base", "--yes"])
         .assert()
         .success()
         .stdout(format!("Removed @myrouter on base ({ROUTER})\n"));
@@ -177,36 +178,36 @@ fn addr_add_ls_find_rm_roundtrip() {
         "{config}"
     );
     sb.cmd()
-        .args(["addr", "rm", "myrouter", "-y"])
+        .args(["label", "rm", "myrouter", "-y"])
         .assert()
         .success()
         .stdout(format!("Removed @myrouter on eth ({ROUTER_ETH})\n"));
     sb.cmd()
-        .args(["addr", "rm", "my-safe", "--chain", "*", "--yes"])
+        .args(["label", "rm", "my-safe", "--chain", "*", "--yes"])
         .assert()
         .success()
         .stdout(format!("Removed @my-safe on every chain ({SAFE})\n"));
     assert!(!sb.config().contains("addresses"), "{}", sb.config());
-    sb.cmd().args(["addr", "find", SAFE]).assert().code(1);
+    sb.cmd().args(["label", SAFE]).assert().code(1);
 }
 
 #[test]
-fn addr_add_defaults_to_the_current_chain_context() {
+fn label_add_defaults_to_the_current_chain_context() {
     let sb = eth_and_base();
     // No --chain, no $CHAINZ_CHAIN, no default, no TTY: a usage error,
     // not a guess.
     sb.cmd()
-        .args(["addr", "add", "myrouter", ROUTER])
+        .args(["label", "add", "myrouter", ROUTER])
         .assert()
         .code(2)
         .stderr(predicate::str::contains("no chain given: pass --chain"))
-        .stderr(predicate::str::contains("Usage: chainz addr add"));
+        .stderr(predicate::str::contains("Usage: chainz label add"));
     assert!(!sb.config().contains("addresses"));
 
     // $CHAINZ_CHAIN (set inside `chainz shell`).
     sb.cmd()
         .env("CHAINZ_CHAIN", "base")
-        .args(["addr", "add", "myrouter", ROUTER])
+        .args(["label", "add", "myrouter", ROUTER])
         .assert()
         .success()
         .stdout(format!("Added @myrouter on base: {ROUTER}\n"))
@@ -214,7 +215,7 @@ fn addr_add_defaults_to_the_current_chain_context() {
     // The default chain, with its stderr notice.
     sb.cmd().args(["use", "eth"]).assert().success();
     sb.cmd()
-        .args(["addr", "add", "myrouter", ROUTER_ETH])
+        .args(["label", "add", "myrouter", ROUTER_ETH])
         .assert()
         .success()
         .stdout(format!("Added @myrouter on eth: {ROUTER_ETH}\n"))
@@ -222,13 +223,13 @@ fn addr_add_defaults_to_the_current_chain_context() {
     // An explicit chain wins over both.
     sb.cmd()
         .env("CHAINZ_CHAIN", "eth")
-        .args(["addr", "add", "other", SAFE, "--chain", "base"])
+        .args(["label", "add", "other", SAFE, "--chain", "base"])
         .assert()
         .success()
         .stdout(format!("Added @other on base: {SAFE}\n"));
     // --chain and --all-chains exclude each other.
     sb.cmd()
-        .args(["addr", "add", "x", SAFE, "--chain", "base", "--all-chains"])
+        .args(["label", "add", "x", SAFE, "--chain", "base", "--all-chains"])
         .assert()
         .failure();
 }
@@ -236,7 +237,7 @@ fn addr_add_defaults_to_the_current_chain_context() {
 #[test]
 fn addr_add_rejects_bad_names_addresses_and_overwrites() {
     let sb = eth_and_base();
-    sb.ok(&["addr", "add", "myrouter", ROUTER, "--chain", "base"]);
+    sb.ok(&["label", "add", "myrouter", ROUTER, "--chain", "base"]);
     let before = sb.config();
     let fails = |args: &[&str], want: &str| {
         sb.cmd()
@@ -258,51 +259,51 @@ fn addr_add_rejects_bad_names_addresses_and_overwrites() {
         "key",
     ] {
         fails(
-            &["addr", "add", name, ROUTER, "--chain", "base"],
+            &["label", "add", name, ROUTER, "--chain", "base"],
             "context token",
         );
     }
     fails(
-        &["addr", "add", "default", ROUTER, "--all-chains"],
+        &["label", "add", "default", ROUTER, "--all-chains"],
         "is a signer",
     );
     fails(
-        &["addr", "add", "my.router", ROUTER, "--chain", "base"],
+        &["label", "add", "my.router", ROUTER, "--chain", "base"],
         "[a-z0-9_-]+",
     );
     // Addresses: malformed, or mixed case with a wrong checksum.
     fails(
-        &["addr", "add", "x", "0x1234", "--chain", "base"],
+        &["label", "add", "x", "0x1234", "--chain", "base"],
         "is not an address",
     );
     fails(
-        &["addr", "add", "x", "vitalik.eth", "--chain", "base"],
+        &["label", "add", "x", "vitalik.eth", "--chain", "base"],
         "is not an address",
     );
     let typo = ROUTER.replace("7E5F", "7e5F");
     fails(
-        &["addr", "add", "x", &typo, "--chain", "base"],
+        &["label", "add", "x", &typo, "--chain", "base"],
         "is not an address",
     );
     fails(
-        &["addr", "add", "x", ROUTER, "--chain", "ghost"],
+        &["label", "add", "x", ROUTER, "--chain", "ghost"],
         "not found",
     );
     // An existing entry is never overwritten silently.
     sb.cmd()
-        .args(["addr", "add", "myrouter", ROUTER_ETH, "--chain", "base"])
+        .args(["label", "add", "myrouter", ROUTER_ETH, "--chain", "base"])
         .assert()
         .failure()
         .stderr(
             predicate::str::contains(format!("@myrouter is already {ROUTER} on base")).and(
-                predicate::str::contains("chainz addr rm myrouter --chain 'base'"),
+                predicate::str::contains("chainz label rm myrouter --chain 'base'"),
             ),
         );
     assert_eq!(sb.config(), before);
     // The same address again is fine.
     sb.cmd()
         .args([
-            "addr",
+            "label",
             "add",
             "myrouter",
             &ROUTER.to_ascii_lowercase(),
@@ -315,15 +316,15 @@ fn addr_add_rejects_bad_names_addresses_and_overwrites() {
     assert_eq!(sb.config(), before);
 
     // rm: only your own labels, and only an exact chain.
-    fails(&["addr", "rm", "usdc"], "built-in token");
-    fails(&["addr", "rm", "default"], "is a signer");
-    fails(&["addr", "rm", "myroutr"], "did you mean myrouter?");
+    fails(&["label", "rm", "usdc"], "built-in token");
+    fails(&["label", "rm", "default"], "is a signer");
+    fails(&["label", "rm", "myroutr"], "did you mean myrouter?");
     fails(
-        &["addr", "rm", "myrouter", "--chain", "bas"],
+        &["label", "rm", "myrouter", "--chain", "bas"],
         "exact chain name",
     );
     fails(
-        &["addr", "rm", "myrouter", "--chain", "eth"],
+        &["label", "rm", "myrouter", "--chain", "eth"],
         "no address on eth",
     );
 }
@@ -332,7 +333,7 @@ fn addr_add_rejects_bad_names_addresses_and_overwrites() {
 fn shadowing_a_builtin_token_is_allowed_and_noted() {
     let sb = eth_and_base();
     sb.cmd()
-        .args(["addr", "add", "usdc", ROUTER, "--chain", "base"])
+        .args(["label", "add", "usdc", ROUTER, "--chain", "base"])
         .assert()
         .success()
         .stderr("⚠ @usdc now shadows the built-in token on base\n");
@@ -340,9 +341,9 @@ fn shadowing_a_builtin_token_is_allowed_and_noted() {
     // Only on that chain.
     let usdc_eth = builtin_token(1, "usdc").unwrap().address.to_string();
     assert_eq!(echo(&sb, "eth", &["@usdc"]), usdc_eth);
-    let found = sb.ok(&["addr", "find", USDC_BASE]);
+    let found = sb.ok(&["label", USDC_BASE]);
     assert_eq!(found, "@usdc on base (built-in, shadowed by your @usdc)\n");
-    let listed = sb.ok(&["addr", "ls", "--builtin"]);
+    let listed = sb.ok(&["label", "ls", "--builtin"]);
     assert!(
         listed
             .lines()
@@ -356,8 +357,8 @@ fn shadowing_a_builtin_token_is_allowed_and_noted() {
 #[test]
 fn exec_expands_user_labels_per_chain_and_for_every_chain() {
     let sb = eth_and_base();
-    sb.ok(&["addr", "add", "myrouter", ROUTER, "--chain", "base"]);
-    sb.ok(&["addr", "add", "my-safe", SAFE, "--all-chains"]);
+    sb.ok(&["label", "add", "myrouter", ROUTER, "--chain", "base"]);
+    sb.ok(&["label", "add", "my-safe", SAFE, "--all-chains"]);
 
     // Per chain: the label resolves where it was added.
     assert_eq!(echo(&sb, "base", &["@myrouter"]), ROUTER);
@@ -376,12 +377,12 @@ fn exec_expands_user_labels_per_chain_and_for_every_chain() {
     assert_eq!(echo(&sb, "base", &["@usdt:eth"]), USDT_ETH);
 
     // A per-chain entry beats "*" on its own chain only.
-    sb.ok(&["addr", "add", "my-safe", ROUTER_ETH, "--chain", "eth"]);
+    sb.ok(&["label", "add", "my-safe", ROUTER_ETH, "--chain", "eth"]);
     assert_eq!(echo(&sb, "eth", &["@my-safe"]), ROUTER_ETH);
     assert_eq!(echo(&sb, "base", &["@my-safe"]), SAFE);
 
     // Removing the label makes the token unknown again.
-    sb.ok(&["addr", "rm", "myrouter", "--yes"]);
+    sb.ok(&["label", "rm", "myrouter", "--yes"]);
     sb.cmd()
         .args(["exec", "base", "--", "echo", "@myrouter"])
         .assert()
@@ -392,7 +393,7 @@ fn exec_expands_user_labels_per_chain_and_for_every_chain() {
 #[test]
 fn exec_errors_when_a_label_has_no_address_on_the_chain() {
     let sb = eth_and_base();
-    sb.ok(&["addr", "add", "myrouter", ROUTER, "--chain", "base"]);
+    sb.ok(&["label", "add", "myrouter", ROUTER, "--chain", "base"]);
     sb.cmd()
         .args(["exec", "eth", "--", "echo", "@myrouter"])
         .assert()
@@ -424,9 +425,9 @@ fn exec_errors_when_a_label_has_no_address_on_the_chain() {
 #[test]
 fn label_rewrites_addresses_for_the_chain() {
     let sb = eth_and_base();
-    sb.ok(&["addr", "add", "myrouter", ROUTER, "--chain", "base"]);
-    sb.ok(&["addr", "add", "pool", ROUTER, "--chain", "eth"]);
-    sb.ok(&["addr", "add", "my-safe", SAFE, "--all-chains"]);
+    sb.ok(&["label", "add", "myrouter", ROUTER, "--chain", "base"]);
+    sb.ok(&["label", "add", "pool", ROUTER, "--chain", "eth"]);
+    sb.ok(&["label", "add", "my-safe", SAFE, "--all-chains"]);
     let input = format!(
         "to {ROUTER} from {} token {USDC_BASE} safe {SAFE}\nword 0x000000000000000000000000{} other {UNKNOWN}\n",
         TEST_ADDRESS.to_ascii_lowercase(),
@@ -691,7 +692,7 @@ fn doctor_tokens_fails_on_any_mismatch() {
         ("op", 10, "http://127.0.0.1:1"),
     ]);
     // A shadowing user label is a note.
-    sb.ok(&["addr", "add", "weth", ROUTER, "--chain", "base"]);
+    sb.ok(&["label", "add", "weth", ROUTER, "--chain", "base"]);
     let out = sb.cmd().args(["doctor", "--tokens"]).assert().code(1);
     let out = String::from_utf8(out.get_output().stdout.clone()).unwrap();
     let line = |name: &str| {
@@ -754,13 +755,13 @@ fn doctor_tokens_and_fix_conflict() {
 }
 
 #[test]
-fn addr_ls_and_find_json_and_rm_by_chain_alias() {
+fn label_ls_and_find_json_and_rm_by_chain_alias() {
     let sb = eth_and_base();
     sb.ok(&["update", "base", "--alias", "basechain"]);
-    sb.ok(&["addr", "add", "router", ROUTER, "--chain", "base"]);
-    sb.ok(&["addr", "add", "usdc", ROUTER, "--chain", "base"]);
+    sb.ok(&["label", "add", "router", ROUTER, "--chain", "base"]);
+    sb.ok(&["label", "add", "usdc", ROUTER, "--chain", "base"]);
 
-    let rows: Value = serde_json::from_str(&sb.ok(&["addr", "ls", "--json"])).unwrap();
+    let rows: Value = serde_json::from_str(&sb.ok(&["label", "ls", "--json"])).unwrap();
     let router = rows
         .as_array()
         .unwrap()
@@ -774,13 +775,13 @@ fn addr_ls_and_find_json_and_rm_by_chain_alias() {
     );
     // The built-in @usdc on base is hidden by the user's label.
     let found: Value =
-        serde_json::from_str(&sb.ok(&["addr", "find", USDC_BASE, "--json"])).unwrap();
+        serde_json::from_str(&sb.ok(&["label", USDC_BASE, "--json"])).unwrap();
     assert_eq!(
         found,
         json!([{"name": "usdc", "scope": "base", "chain_id": 8453, "address": USDC_BASE,
                 "source": "built-in", "shadowed": true}])
     );
-    let found: Value = serde_json::from_str(&sb.ok(&["addr", "find", ROUTER, "--json"])).unwrap();
+    let found: Value = serde_json::from_str(&sb.ok(&["label", ROUTER, "--json"])).unwrap();
     let names: Vec<&str> = found
         .as_array()
         .unwrap()
@@ -790,19 +791,19 @@ fn addr_ls_and_find_json_and_rm_by_chain_alias() {
     assert_eq!(names, ["router", "usdc"], "{found}");
     // Nothing found: an empty array, and exit 1 as in text mode.
     sb.cmd()
-        .args(["addr", "find", UNKNOWN, "--json"])
+        .args(["label", UNKNOWN, "--json"])
         .assert()
         .code(1)
         .stdout("[]\n");
 
     // --chain takes an alias (exact, like a name or ID; never a prefix).
     sb.cmd()
-        .args(["addr", "rm", "router", "--chain", "basechain", "-y"])
+        .args(["label", "rm", "router", "--chain", "basechain", "-y"])
         .assert()
         .success()
         .stdout(format!("Removed @router on base ({ROUTER})\n"));
     sb.cmd()
-        .args(["addr", "rm", "usdc", "--chain", "basech"])
+        .args(["label", "rm", "usdc", "--chain", "basech"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("exact chain name"));

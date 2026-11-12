@@ -88,7 +88,7 @@ pub enum Policy {
     /// An ID or the exact name: destructive commands (`rm`).
     Exact,
     /// An ID, the exact name, or an alias (any case, implicit ones too),
-    /// never a prefix: `addr rm --chain`.
+    /// never a prefix: `label rm --chain`.
     ExactOrAlias,
 }
 

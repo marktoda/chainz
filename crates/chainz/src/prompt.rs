@@ -69,7 +69,7 @@ pub fn confirm_or_yes(
 }
 
 /// The one confirmation every `rm` goes through (`rm`,
-/// `addr rm`, `var rm`, `signer rm`): `--yes` removes without asking; on a
+/// `label rm`, `var rm`, `signer rm`): `--yes` removes without asking; on a
 /// terminal, ask "Remove {what}?" (default no; declining cancels); off
 /// one, fail naming `--yes`. `command` is the command as typed after
 /// `chainz`, for that error.

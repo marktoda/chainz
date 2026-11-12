@@ -1,9 +1,10 @@
-//! `addr …` and `label`: the address book. Names for addresses, per chain
-//! or for every chain, and the reverse-label filter over stdin.
+//! `label …`: the address book. Names for addresses, per chain or for
+//! every chain; `label 0x…`, the reverse lookup; and `label` alone, the
+//! reverse-label filter over stdin.
 
 use crate::args::parse_address;
 use crate::cli::{
-    AddrAddArgs, AddrCommand, AddrFindArgs, AddrImportArgs, AddrLsArgs, AddrRmArgs, LabelArgs,
+    LabelAddArgs, LabelArgs, LabelCommand, LabelImportArgs, LabelLsArgs, LabelRmArgs, usage_error,
 };
 use crate::load::open;
 use crate::select::{Missing, NAME_A_CHAIN, note_default, select_target};
@@ -23,13 +24,16 @@ use serde::Serialize;
 use std::io;
 use std::path::PathBuf;
 
-pub fn run(cmd: AddrCommand) -> Result<i32> {
+pub fn run(cmd: Option<LabelCommand>, args: LabelArgs) -> Result<i32> {
     match cmd {
-        AddrCommand::Add(args) => add(&args),
-        AddrCommand::Ls(args) => ls(&args),
-        AddrCommand::Rm(args) => rm(&args),
-        AddrCommand::Find(args) => find(&args),
-        AddrCommand::Import(args) => import(&args),
+        Some(LabelCommand::Add(args)) => add(&args),
+        Some(LabelCommand::Ls(args)) => ls(&args),
+        Some(LabelCommand::Rm(args)) => rm(&args),
+        Some(LabelCommand::Import(args)) => import(&args),
+        None => match &args.address {
+            Some(address) => find(address, args.json),
+            None => filter(&args),
+        },
     }
 }
 
@@ -55,7 +59,7 @@ fn chain_id(config: &Config, target: &ChainRef) -> Result<u64> {
         .ok_or_else(|| anyhow!("chain '{}' is not configured", target.name()))
 }
 
-fn add(args: &AddrAddArgs) -> Result<i32> {
+fn add(args: &LabelAddArgs) -> Result<i32> {
     let mut chainz = open()?;
     let name = label_name(&args.name);
     let address = parse_address(&args.address, "address")?;
@@ -66,7 +70,7 @@ fn add(args: &AddrAddArgs) -> Result<i32> {
     } else {
         let off_tty = format!("pass --chain (or --all-chains), {NAME_A_CHAIN}");
         let missing = Missing {
-            command: &["addr", "add"],
+            command: &["label", "add"],
             off_tty: &off_tty,
         };
         match select_target(
@@ -151,7 +155,7 @@ impl Row {
     }
 }
 
-fn ls(args: &AddrLsArgs) -> Result<i32> {
+fn ls(args: &LabelLsArgs) -> Result<i32> {
     let (builtin, json) = (args.builtin, args.json);
     let chainz = open()?;
     let config = chainz.config();
@@ -194,7 +198,7 @@ fn ls(args: &AddrLsArgs) -> Result<i32> {
         } else {
             " (--builtin lists the built-in tokens)"
         };
-        println!("No labels. Add one with `chainz addr add <name> <address>`{hint}.");
+        println!("No labels. Add one with `chainz label add <name> <address>`{hint}.");
         return Ok(0);
     }
     let cells: Vec<[String; 4]> = rows
@@ -216,7 +220,7 @@ fn ls(args: &AddrLsArgs) -> Result<i32> {
     Ok(0)
 }
 
-fn rm(args: &AddrRmArgs) -> Result<i32> {
+fn rm(args: &LabelRmArgs) -> Result<i32> {
     let mut chainz = open()?;
     let config = chainz.config();
     let name = label_name(&args.name);
@@ -248,7 +252,7 @@ fn rm(args: &AddrRmArgs) -> Result<i32> {
         .iter()
         .map(|(scope, address)| format!("{} ({address})", scope_phrase(scope)))
         .collect();
-    let mut command = format!("addr rm {}", args.name);
+    let mut command = format!("label rm {}", args.name);
     if let Some(chain) = &args.chain {
         command.push_str(&format!(" --chain {chain}"));
     }
@@ -265,11 +269,11 @@ fn rm(args: &AddrRmArgs) -> Result<i32> {
     Ok(0)
 }
 
-fn find(args: &AddrFindArgs) -> Result<i32> {
-    let json = args.json;
+/// `label 0x…`: every label that names the address, on any chain.
+fn find(address: &str, json: bool) -> Result<i32> {
     let chainz = open()?;
     let config = chainz.config();
-    let address = parse_address(&args.address, "address")?;
+    let address = parse_address(address, "address")?;
     let index = LabelIndex::new(config);
     let rows: Vec<Row> = addrbook::find(config, &address)
         .into_iter()
@@ -303,7 +307,7 @@ fn find(args: &AddrFindArgs) -> Result<i32> {
     Ok(0)
 }
 
-/// One `addr import` entry, as `--json` prints it.
+/// One `label import` entry, as `--json` prints it.
 #[derive(Serialize)]
 struct ImportRow {
     /// The configured chain (else the chain's well-known name or ID).
@@ -346,9 +350,9 @@ impl ImportRow {
     }
 }
 
-/// `addr import`: label the contracts in Foundry broadcast output. Every
+/// `label import`: label the contracts in Foundry broadcast output. Every
 /// label is written in one transaction (planned again under the lock).
-fn import(args: &AddrImportArgs) -> Result<i32> {
+fn import(args: &LabelImportArgs) -> Result<i32> {
     let (dry_run, json) = (args.dry_run, args.json);
     let options = &broadcast::Options::from(args);
     let mut chainz = open()?;
@@ -482,8 +486,14 @@ fn import(args: &AddrImportArgs) -> Result<i32> {
 
 /// `chainz label [--chain C]`: stdin to stdout, addresses rewritten as
 /// `name(0x…)`. With no chain context, only names that hold on every
-/// chain are used.
-pub fn label(args: &LabelArgs) -> Result<i32> {
+/// chain are used. Stdin on a terminal is a usage error, not a hang.
+fn filter(args: &LabelArgs) -> Result<i32> {
+    if io::IsTerminal::is_terminal(&io::stdin()) {
+        return Err(usage_error(
+            &["label"],
+            "pass an address to look up, or pipe text to label (`cast logs … | chainz label`)",
+        ));
+    }
     let chainz = open()?;
     let config = chainz.config();
     let runtime = Runtime::resolve()?;

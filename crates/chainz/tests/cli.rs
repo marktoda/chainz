@@ -74,8 +74,8 @@ fn a_closed_stdout_exits_quietly() {
     for args in [
         &["ls", "eth"][..],
         &["var", "ls"],
-        &["addr", "ls"],
-        &["addr", "ls", "--builtin"],
+        &["label", "ls"],
+        &["label", "ls", "--builtin"],
         &["ls"],
     ] {
         let mut child = sb
@@ -707,8 +707,8 @@ fn chain_rm_names_its_labels_and_the_default() {
     let sb = Sandbox::new();
     sb.seed(&[("eth", 1), ("arb", 42161)]);
     sb.ok(&["use", "arb"]);
-    sb.ok(&["addr", "add", "myrouter", TEST_ADDRESS_2, "--chain", "arb"]);
-    sb.ok(&["addr", "add", "pool", TEST_ADDRESS, "--chain", "arb"]);
+    sb.ok(&["label", "add", "myrouter", TEST_ADDRESS_2, "--chain", "arb"]);
+    sb.ok(&["label", "add", "pool", TEST_ADDRESS, "--chain", "arb"]);
     let out = sb.run(&["rm", "arb"]);
     assert_eq!(out.status.code(), Some(1));
     let err = stderr(&out);
@@ -1972,6 +1972,11 @@ fn removed_spellings_are_unknown() {
         &["rpc", "add", "eth", "http://x.invalid", "--no-check"],
         &["rpc", "rm", "eth", "local", "-y"],
         &["rpc", "discover", "eth"],
+        &["addr", "ls"],
+        &["addr", "find", TEST_ADDRESS],
+        &["label", "find", TEST_ADDRESS],
+        &["label", TEST_ADDRESS, "--chain", "eth"],
+        &["config", "path"],
     ] {
         let out = sb.run(argv);
         assert_eq!(out.status.code(), Some(2), "{argv:?}: {}", stderr(&out));

@@ -169,7 +169,7 @@ fn listings() {
         ("var-ls.txt", &["var", "ls"]),
         ("var-ls-verbose.txt", &["var", "ls", "-v"]),
         ("var-ls.json", &["var", "ls", "--json"]),
-        ("addr-ls.json", &["addr", "ls", "--json"]),
+        ("label-ls.json", &["label", "ls", "--json"]),
     ] {
         // The sample time is the run's own: pin it to a fixed time, so the
         // JSON goldens stay JSON.
@@ -245,10 +245,10 @@ fn add_rpc_keeps_comments_and_order() {
 }
 
 #[test]
-fn addr_add_keeps_comments_and_order() {
+fn label_add_keeps_comments_and_order() {
     let sb = commented_sandbox();
     sb.ok(&[
-        "addr",
+        "label",
         "add",
         "router",
         "0x3333333333333333333333333333333333333333",
@@ -256,13 +256,13 @@ fn addr_add_keeps_comments_and_order() {
         "base",
     ]);
     sb.ok(&[
-        "addr",
+        "label",
         "add",
         "vault",
         "0x4444444444444444444444444444444444444444",
         "--all-chains",
     ]);
-    golden("edit/addr-add.config.toml", &sb.config());
+    golden("edit/label-add.config.toml", &sb.config());
 }
 
 // ---------------------------------------------------------------- migration

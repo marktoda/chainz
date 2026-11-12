@@ -1,7 +1,7 @@
 //! Foundry broadcast output (`broadcast/**/run-latest.json`) as address-book
 //! labels: finding run files ([`find_runs`]), reading the contracts they
 //! deployed ([`parse`]), and planning the labels to write ([`plan`]) for
-//! `chainz addr import`.
+//! `chainz label import`.
 //!
 //! A run file records one `forge script --broadcast` run on one chain:
 //!
