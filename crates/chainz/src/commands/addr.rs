@@ -3,9 +3,10 @@
 
 use super::{note_default, open, parse_address, runtime, select_target};
 use crate::cli::AddrCommand;
-use crate::ui;
+use crate::{ui, view};
 use anyhow::{Context, Result, bail};
 use chainz_core::addrbook::{self, Labeler};
+use chainz_core::broadcast::{self, Action, Planned};
 use chainz_core::edit::{self, ALL_CHAINS, SetAddress};
 use chainz_core::labels::{Label, LabelIndex, LabelScope, LabelSource, builtin_tokens};
 use chainz_core::model::Config;
@@ -13,6 +14,7 @@ use chainz_core::resolve::{self, ChainRef, Source};
 use chainz_core::{Address, names};
 use serde::Serialize;
 use std::io;
+use std::path::PathBuf;
 
 pub fn run(cmd: AddrCommand) -> Result<i32> {
     match cmd {
@@ -29,6 +31,21 @@ pub fn run(cmd: AddrCommand) -> Result<i32> {
         } => ls(chain.as_deref(), builtin, json),
         AddrCommand::Rm { name, chain } => rm(&name, chain.as_deref()),
         AddrCommand::Find { address, json } => find(&address, json),
+        AddrCommand::Import {
+            paths,
+            dry_run,
+            prefix,
+            only,
+            force,
+            json,
+        } => {
+            let options = broadcast::Options {
+                prefix: prefix.unwrap_or_default(),
+                only,
+                force,
+            };
+            import(&paths, &options, dry_run, json)
+        }
     }
 }
 
@@ -301,6 +318,189 @@ fn find(address: &str, json: bool) -> Result<i32> {
             String::new()
         };
         println!("@{} on {on} ({}{note})", row.name, row.source);
+    }
+    Ok(0)
+}
+
+/// One `addr import` entry, as `--json` prints it.
+#[derive(Serialize)]
+struct ImportRow {
+    /// The configured chain (else the chain's well-known name or ID).
+    chain: String,
+    chain_id: u64,
+    name: Option<String>,
+    address: Option<Address>,
+    /// `added`, `unchanged`, `overwritten` or `skipped`.
+    action: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+    /// The address an overwritten label held.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    previous: Option<Address>,
+    contract: Option<String>,
+    file: PathBuf,
+}
+
+impl ImportRow {
+    fn new(config: &Config, p: Planned) -> Self {
+        let (reason, previous) = match &p.action {
+            Action::Skip(why) => (Some(why.clone()), None),
+            Action::Overwrite(old) => (None, Some(*old)),
+            Action::Add | Action::Unchanged => (None, None),
+        };
+        ImportRow {
+            chain: p
+                .chain
+                .clone()
+                .unwrap_or_else(|| chain_label(config, p.chain_id)),
+            chain_id: p.chain_id,
+            name: p.name,
+            address: p.address,
+            action: p.action.as_str(),
+            reason,
+            previous,
+            contract: p.contract,
+            file: p.file,
+        }
+    }
+}
+
+/// `addr import`: label the contracts in Foundry broadcast output. Every
+/// label is written in one transaction (planned again under the lock).
+fn import(
+    paths: &[PathBuf],
+    options: &broadcast::Options,
+    dry_run: bool,
+    json: bool,
+) -> Result<i32> {
+    let mut chainz = open()?;
+    let files = broadcast::find_runs(paths)?;
+    let mut runs = Vec::new();
+    for file in &files {
+        runs.extend(broadcast::read(file)?);
+    }
+    let mut planned = broadcast::plan(chainz.config(), &runs, options);
+    if !dry_run && planned.iter().any(|p| p.action.writes()) {
+        planned = chainz.transact(|tx| {
+            let planned = broadcast::plan(&tx.config()?, &runs, options);
+            for p in planned.iter().filter(|p| p.action.writes()) {
+                let (Some(name), Some(chain), Some(address)) = (&p.name, &p.chain, &p.address)
+                else {
+                    unreachable!("a planned write has a name, chain and address");
+                };
+                edit::set_address(&mut tx.doc, name, chain, address, true)?;
+            }
+            Ok(planned)
+        })?;
+    }
+    let config = chainz.config();
+    if json {
+        let rows: Vec<ImportRow> = planned
+            .into_iter()
+            .map(|p| ImportRow::new(config, p))
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(0);
+    }
+    if planned.is_empty() {
+        let runs = match files.len() {
+            1 => "1 run file".to_string(),
+            n => format!("{n} run files"),
+        };
+        println!("No contracts to import in {runs}.");
+        return Ok(0);
+    }
+    let count = |action: &str| {
+        planned
+            .iter()
+            .filter(|p| p.action.as_str() == action)
+            .count()
+    };
+    let (added, unchanged, overwritten, skipped) = (
+        count("added"),
+        count("unchanged"),
+        count("overwritten"),
+        count("skipped"),
+    );
+    let rows: Vec<[String; 4]> = planned
+        .iter()
+        .map(|p| {
+            let result = match &p.action {
+                Action::Add if dry_run => "add".to_string(),
+                Action::Add => "added".to_string(),
+                Action::Unchanged => ui::dim("unchanged"),
+                Action::Overwrite(old) if dry_run => format!("overwrite (was {old})"),
+                Action::Overwrite(old) => format!("overwritten (was {old})"),
+                Action::Skip(why) => ui::emph(&format!("skipped: {why}")),
+            };
+            [
+                p.chain
+                    .clone()
+                    .unwrap_or_else(|| chain_label(config, p.chain_id)),
+                p.name
+                    .as_ref()
+                    .map_or_else(|| "-".to_string(), |n| format!("@{n}")),
+                p.address.map_or_else(|| "-".to_string(), |a| a.to_string()),
+                result,
+            ]
+        })
+        .collect();
+    print!(
+        "{}",
+        view::table(&["CHAIN", "NAME", "ADDRESS", "RESULT"], &rows)
+    );
+    let mut rest = Vec::new();
+    if unchanged > 0 {
+        rest.push(format!("{unchanged} unchanged"));
+    }
+    if skipped > 0 {
+        rest.push(format!("{skipped} skipped"));
+    }
+    let rest = if rest.is_empty() {
+        String::new()
+    } else {
+        format!("; {}", rest.join(", "))
+    };
+    let overwrote = |verb: &str| {
+        if overwritten > 0 {
+            format!(", {verb} {overwritten}")
+        } else {
+            String::new()
+        }
+    };
+    if dry_run {
+        println!(
+            "\nDry run: would add {added}{}{rest}. Nothing written.",
+            overwrote("overwrite")
+        );
+    } else {
+        let labels = if added == 1 { "label" } else { "labels" };
+        println!("\nAdded {added} {labels}{}{rest}.", overwrote("overwrote"));
+    }
+    let shadowed: Vec<String> = planned
+        .iter()
+        .filter(|p| p.action.writes())
+        .filter_map(|p| {
+            let name = p.name.as_deref()?;
+            builtin_tokens()
+                .iter()
+                .any(|t| t.name == name && t.chain_id == p.chain_id && Some(t.address) != p.address)
+                .then(|| format!("@{name} on {}", chain_label(config, p.chain_id)))
+        })
+        .collect();
+    if !shadowed.is_empty() {
+        eprintln!(
+            "{}",
+            ui::warn(&format!(
+                "{} the built-in token: {}",
+                if dry_run {
+                    "would shadow"
+                } else {
+                    "now shadows"
+                },
+                shadowed.join(", ")
+            ))
+        );
     }
     Ok(0)
 }

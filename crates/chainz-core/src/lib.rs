@@ -6,6 +6,7 @@
 
 pub mod addrbook;
 pub mod address;
+pub mod broadcast;
 pub mod context;
 pub mod edit;
 pub mod extract;

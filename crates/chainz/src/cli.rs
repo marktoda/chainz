@@ -510,6 +510,27 @@ pub enum AddrCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Label contracts from Foundry broadcast output
+    Import {
+        /// run-latest.json files, or directories holding broadcast/
+        #[arg(required = true, value_name = "PATH")]
+        paths: Vec<std::path::PathBuf>,
+        /// Show the plan; write nothing
+        #[arg(long)]
+        dry_run: bool,
+        /// Prepend to every name (e.g. `v4-`)
+        #[arg(long, value_name = "STR")]
+        prefix: Option<String>,
+        /// Only these contracts (contract or label names, comma-separated)
+        #[arg(long, value_name = "NAME,...", value_delimiter = ',')]
+        only: Vec<String>,
+        /// Replace labels that hold a different address on the chain
+        #[arg(long)]
+        force: bool,
+        /// JSON output
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]

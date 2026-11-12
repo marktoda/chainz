@@ -39,6 +39,9 @@ A ground-up rewrite as a local multichain workbench. The design is in
   with replay guards and orphan-proof supervision.
 - Address book: `addr add/ls/rm/find`, built-in major-token labels on every
   configured chain, and `label` to annotate addresses in any output.
+  `addr import` labels the contracts in Foundry broadcast output
+  (`run-latest.json`) on the chain each run used, with `--dry-run`,
+  `--prefix`, `--only`, `--force` and `--json`.
 - `rpc bench` and `rpc discover` probe, rank and tag endpoints.
   `doctor --tokens` verifies the built-in token registry on chain.
 - Foundry keystore signers (`--backend keystore`), exported as `ETH_KEYSTORE`.
