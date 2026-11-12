@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use chainz_core::runtime::Runtime;
+use chainz_core::store::Notice;
 use chainz_core::{Chainz, LoadMode};
 use chainz_rpc::HealthStore;
 use ratatui::Terminal;
@@ -244,6 +245,7 @@ impl Dashboard {
             Ok(chainz) => {
                 self.chainz = chainz;
                 self.start();
+                self.say_notices();
             }
             Err(error) => {
                 let text = format!("config not reloaded: {error:#}");
@@ -275,6 +277,23 @@ impl Dashboard {
                 self.app.notify(text, true, now_ms());
             }
         }
+        self.say_notices();
+    }
+
+    /// Show what reading or writing the config had to say (a migration, a
+    /// file whose permissions could not be tightened) in the footer:
+    /// nothing else would, the dashboard holds the terminal.
+    fn say_notices(&mut self) {
+        let notices = self.chainz.take_notices();
+        if notices.is_empty() {
+            return;
+        }
+        let warning = notices.iter().any(|n| matches!(n, Notice::Permissions(_)));
+        let text: Vec<String> = notices
+            .iter()
+            .map(|n| n.to_string().lines().collect::<Vec<_>>().join(" "))
+            .collect();
+        self.app.notify(text.join(" · "), warning, now_ms());
     }
 
     /// Hand the terminal to `chainz shell <chain>` and take it back.
@@ -468,6 +487,28 @@ mod tests {
         assert!(notice.error && notice.text.starts_with("config not reloaded"));
         dash.rt.shutdown_background();
     }
+
+    #[test]
+    fn what_a_reload_had_to_say_is_shown() {
+        let dir = crate::data::testing::short_tempdir();
+        let paths = StorePaths::in_dir(dir.path().join("config"));
+        write_config(&paths, "version = 2\n");
+        let chainz = Chainz::open_at(paths.clone(), LoadMode::Strict).unwrap();
+        let store = HealthStore::load(dir.path()).unwrap();
+        let runtime = Runtime::at(dir.path().join("runtime"));
+        let mut dash = Dashboard::new(chainz, runtime, store, false, None).unwrap();
+
+        // The config is replaced by a v1 one: the reload migrates it.
+        std::fs::remove_file(paths.config()).unwrap();
+        std::fs::write(paths.dir().join("config.json"), V1_CONFIG).unwrap();
+        dash.reload();
+        let notice = dash.app.notice.as_ref().expect("a notice");
+        assert!(notice.text.contains("wrote"), "{}", notice.text);
+        assert!(!notice.text.contains('\n'), "{}", notice.text);
+        dash.rt.shutdown_background();
+    }
+
+    const V1_CONFIG: &str = r#"{"chains": [], "variables": {}}"#;
 
     #[test]
     fn sigterm_and_sighup_ask_the_loop_to_quit() {
