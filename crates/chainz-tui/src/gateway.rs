@@ -251,7 +251,9 @@ pub(crate) mod testing {
     }
 
     /// A window with the totals a current gateway sends: here, its rows
-    /// added up (percentiles aside).
+    /// added up. The percentiles stand in for the gateway's (over every
+    /// sample): the busiest row's median and the worst p95, so the golden
+    /// files pin both fields with nonzero values.
     pub(crate) fn metrics_window(window_secs: u64, rows: Vec<MetricsRow>) -> MetricsWindow {
         let mut totals = MetricsTotals::default();
         for row in &rows {
@@ -260,7 +262,12 @@ pub(crate) mod testing {
             totals.rate_limited += row.rate_limited;
             totals.failovers += row.failovers;
             totals.bytes += row.bytes;
+            totals.p95_ms = totals.p95_ms.max(row.p95_ms);
         }
+        totals.p50_ms = rows
+            .iter()
+            .max_by_key(|r| r.requests)
+            .map_or(0, |r| r.p50_ms);
         MetricsWindow {
             window_secs,
             rows,

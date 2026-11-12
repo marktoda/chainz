@@ -350,6 +350,10 @@ pub struct MetricsRow {
 
 /// Many [`MetricsRow`]s together. The percentiles are over every sample,
 /// not an average of the rows' percentiles.
+///
+/// `chainz top --once --json` prints these fields as they are (flattened
+/// into each window), so renaming or adding one changes that output too;
+/// chainz-tui's golden files pin it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MetricsTotals {
     /// Upstream attempts sent.
