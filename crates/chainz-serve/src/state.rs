@@ -336,8 +336,8 @@ impl Stamps {
     /// The files as they are now.
     pub fn take(paths: &StorePaths, state_dir: Option<&Path>) -> Stamps {
         Stamps {
-            config: FileStamp::of(&paths.config),
-            secrets: FileStamp::of(&paths.secrets),
+            config: FileStamp::of(paths.config()),
+            secrets: FileStamp::of(paths.secrets()),
             health: state_dir.and_then(|dir| FileStamp::of(&HealthStore::path(dir))),
         }
     }

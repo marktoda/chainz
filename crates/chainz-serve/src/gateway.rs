@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -11,12 +11,10 @@ use chainz_core::StorePaths;
 use chainz_core::runtime::{
     DEFAULT_PORT, GatewayAddr, GatewayState, LOOPBACK, Published, Runtime, ServeInfo, ServeLock,
 };
-use chainz_rpc::control::{ChainStatus, MetricsSnapshot, MetricsTotals, SocketPath, Status};
+use chainz_rpc::control::{MetricsSnapshot, MetricsTotals, SocketPath, Status};
 use chainz_rpc::{HttpUpstream, RpcClient};
-use http_body_util::{BodyExt, Limited};
 use hyper::body::Incoming;
-use hyper::header::{ALLOW, CONTENT_TYPE, HOST, HeaderValue};
-use hyper::{Method, Request, Response, StatusCode};
+use hyper::{Request, Response};
 use serde_json::Value;
 use tokio::net::{TcpListener, UnixListener};
 use tokio::sync::{broadcast, watch};
@@ -24,14 +22,12 @@ use tokio::task::{JoinHandle, JoinSet};
 
 use crate::auth;
 use crate::control::{self, ControlState, EventRing};
-use crate::http::{self, BoxBody, Reply, is_json, json, plain};
+use crate::http::{self, BoxBody, Reply};
 use crate::inspector::Inspector;
 use crate::router::Router;
-use crate::state::Snapshot;
-use chainz_sys::{FileStamp, now_secs};
+use crate::state::{Snapshot, Stamps};
+use chainz_sys::now_secs;
 
-/// Largest request body accepted.
-const MAX_REQUEST_BODY: usize = 32 * 1024 * 1024;
 /// A chain with no request for this many seconds is idle: its pool is
 /// probed [`IDLE_PROBE_FACTOR`] times less often.
 const PROBE_IDLE_AFTER: u64 = 300;
@@ -158,17 +154,7 @@ impl Shared {
             pid: self.info.pid,
             port: self.info.port,
             uptime_secs: self.started.elapsed().as_secs(),
-            chains: snapshot
-                .chains
-                .iter()
-                .map(|chain| ChainStatus {
-                    chain: chain.name.clone(),
-                    chain_id: chain.id,
-                    active: chain.active_name.clone(),
-                    failover: chain.failover_names.clone(),
-                    head: chain.head(),
-                })
-                .collect(),
+            chains: snapshot.chains.iter().map(|chain| chain.status()).collect(),
         }
     }
 }
@@ -179,11 +165,11 @@ impl ControlState for Shared {
     }
 
     fn metrics(&self) -> MetricsSnapshot {
-        self.router.metrics.snapshot(now_secs())
+        self.router.metrics(now_secs())
     }
 
     fn events(&self) -> &EventRing {
-        self.router.inspector.events()
+        self.router.events()
     }
 
     async fn reload(&self) -> Result<()> {
@@ -230,10 +216,8 @@ impl Gateway {
             };
             bail!(crate::AlreadyRunning(running));
         };
-        // Stamped before the load, so the watcher sees a change made while
-        // it runs.
-        let stamps = Stamps::take(&config.paths, config.state_dir.as_deref());
         let snapshot = Snapshot::load(&config.paths, config.state_dir.as_deref(), None)?;
+        let stamps = snapshot.stamps;
         let warnings = snapshot.warnings.clone();
 
         let address = SocketAddr::from((LOOPBACK, config.port));
@@ -290,7 +274,7 @@ impl Gateway {
             Ok(published) => published,
             Err(error) => {
                 let _ = std::fs::remove_file(&sock);
-                shared.router.inspector.close_log();
+                shared.router.close_log();
                 if let Some(writer) = log_writer {
                     let _ = writer.await;
                 }
@@ -372,7 +356,7 @@ impl Gateway {
 
     /// Totals over the last minute.
     pub fn summary(&self) -> MetricsTotals {
-        self.shared.router.metrics.summary(now_secs())
+        self.shared.router.summary(now_secs())
     }
 
     /// Notices (reloads, warnings) as they happen.
@@ -409,7 +393,7 @@ impl Gateway {
                 }
             }
         }
-        self.shared.router.inspector.close_log();
+        self.shared.router.close_log();
         if let Some(mut writer) = self.log_writer.take()
             && tokio::time::timeout(LOG_WRITER_WAIT, &mut writer)
                 .await
@@ -433,52 +417,33 @@ impl Drop for Gateway {
     }
 }
 
-/// One proxied request: auth, then routing. No CORS headers are ever sent.
+/// One proxied request: auth, then routing.
 async fn proxy(shared: &Shared, request: Request<Incoming>) -> Response<BoxBody> {
-    let host = request.headers().get(HOST).and_then(|h| h.to_str().ok());
-    if !auth::host_allowed(host, shared.addr.port) {
-        return plain(StatusCode::FORBIDDEN, "forbidden\n");
-    }
-    if request.method() != Method::POST {
-        let mut response = plain(StatusCode::METHOD_NOT_ALLOWED, "POST only\n");
-        response
-            .headers_mut()
-            .insert(ALLOW, HeaderValue::from_static("POST"));
-        return response;
-    }
-    if !is_json(request.headers().get(CONTENT_TYPE)) {
-        return plain(
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            "content-type must be application/json\n",
-        );
-    }
-    let path = request.uri().path().to_string();
-    let Some(path) = GatewayAddr::parse_path(&path) else {
-        return plain(StatusCode::FORBIDDEN, "forbidden\n");
+    // `/<token>/<chain>[/<endpoint>]`, and the chain must exist.
+    let authorize = |path: &str| {
+        let Some(path) = GatewayAddr::parse_path(path) else {
+            return Err(http::forbidden());
+        };
+        let (Some(chain_ref), pin) = (path.chain, path.endpoint) else {
+            return Err(http::forbidden());
+        };
+        if !auth::token_matches(path.token, &shared.addr.token) {
+            return Err(http::forbidden());
+        }
+        let Some(chain) = shared.router.chain(chain_ref) else {
+            let reply = Reply::error(404, &Value::Null, -32000, "unknown chain");
+            return Err(Box::new(reply.into_response()));
+        };
+        Ok((chain, pin.map(str::to_string)))
     };
-    let (Some(chain_ref), pin) = (path.chain, path.endpoint) else {
-        return plain(StatusCode::FORBIDDEN, "forbidden\n");
-    };
-    if !auth::token_matches(path.token, &shared.addr.token) {
-        return plain(StatusCode::FORBIDDEN, "forbidden\n");
+    match http::guard(request, shared.addr.port, authorize).await {
+        Ok(((chain, pin), body)) => shared
+            .router
+            .handle(chain, pin.as_deref(), body)
+            .await
+            .into_response(),
+        Err(response) => *response,
     }
-    let snapshot = shared.router.snapshot();
-    let Some(chain) = snapshot.chain(chain_ref) else {
-        let reply = Reply::error(404, &Value::Null, -32000, "unknown chain");
-        return json(StatusCode::NOT_FOUND, reply.body);
-    };
-    let body = match Limited::new(request.into_body(), MAX_REQUEST_BODY)
-        .collect()
-        .await
-    {
-        Ok(body) => body.to_bytes(),
-        Err(_) => return plain(StatusCode::PAYLOAD_TOO_LARGE, "request body too large\n"),
-    };
-    shared
-        .router
-        .handle(&snapshot, chain, pin, body)
-        .await
-        .into_response()
 }
 
 /// Probe every failover pool's heads and keep the per-chain high-water
@@ -505,9 +470,9 @@ async fn probe_loop(
         // Each probed chain's best head this round.
         let mut best: HashMap<usize, Option<u64>> = HashMap::new();
         for (index, chain) in snapshot.chains.iter().enumerate() {
-            if chain.failover.is_empty() || chain.active.is_err() {
+            let Some(pool) = chain.probe_pool() else {
                 continue;
-            }
+            };
             let busy = chain
                 .last_used()
                 .is_some_and(|t| now.saturating_sub(t) < PROBE_IDLE_AFTER);
@@ -516,11 +481,11 @@ async fn probe_loop(
             }
             chain.mark_probed();
             best.insert(index, None);
-            for endpoint in chain.pool() {
+            for endpoint in pool {
                 let client = client.clone();
-                let chain_id = chain.id;
+                let chain_id = chain.id();
                 round.spawn(async move {
-                    let result = chainz_rpc::probe(&client, &endpoint.target, chain_id).await;
+                    let result = chainz_rpc::probe(&client, endpoint.target(), chain_id).await;
                     endpoint.set_head(result.head);
                     (index, result.head)
                 });
@@ -551,24 +516,6 @@ async fn probe_loop(
     }
 }
 
-/// The files the watcher follows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Stamps {
-    config: Option<FileStamp>,
-    secrets: Option<FileStamp>,
-    health: Option<FileStamp>,
-}
-
-impl Stamps {
-    fn take(paths: &StorePaths, state_dir: Option<&Path>) -> Stamps {
-        Stamps {
-            config: FileStamp::of(paths.config()),
-            secrets: FileStamp::of(paths.secrets()),
-            health: state_dir.and_then(|dir| FileStamp::of(&dir.join("health.json"))),
-        }
-    }
-}
-
 /// Reload when `config.toml` or `secrets.toml` changes, and refresh
 /// capability tags when the health store changes. `seen` is what the files
 /// looked like when the running config was loaded.
@@ -592,7 +539,15 @@ async fn watch_loop(
             && let Some(dir) = shared.state_dir.clone()
         {
             let snapshot = shared.router.snapshot();
-            let _ = tokio::task::spawn_blocking(move || snapshot.refresh_capabilities(&dir)).await;
+            let refreshed =
+                tokio::task::spawn_blocking(move || snapshot.refresh_capabilities(&dir))
+                    .await
+                    .unwrap_or_else(|e| Err(std::io::Error::other(e)));
+            if let Err(error) = refreshed {
+                shared.notice(format!(
+                    "warning: can't refresh capability tags from health.json: {error}"
+                ));
+            }
         }
         seen = now;
     }
