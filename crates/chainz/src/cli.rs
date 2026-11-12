@@ -848,6 +848,31 @@ mod tests {
     use super::{HELP_GROUPS, Opt};
     use clap::{CommandFactory, Parser};
 
+    /// Hidden flags are for maintainers: the README (for users) never
+    /// mentions one.
+    #[test]
+    fn the_readme_documents_no_hidden_flag() {
+        let readme = include_str!("../../../README.md");
+        let mut hidden = Vec::new();
+        for sub in Opt::command().get_subcommands() {
+            for arg in sub.get_arguments().filter(|a| a.is_hide_set()) {
+                if let Some(long) = arg.get_long() {
+                    hidden.push(format!("{} --{long}", sub.get_name()));
+                }
+            }
+        }
+        assert!(
+            hidden.contains(&"doctor --tokens".to_string()),
+            "{hidden:?}"
+        );
+        for flag in &hidden {
+            assert!(
+                !readme.contains(flag.as_str()),
+                "README.md documents {flag}"
+            );
+        }
+    }
+
     /// Every `--reveal` says the same thing, then what it shows there.
     #[test]
     fn every_reveal_reads_the_same() {

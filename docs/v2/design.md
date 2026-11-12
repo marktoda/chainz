@@ -343,7 +343,7 @@ The address book holds a name for an address, scoped globally or per chain. It w
 **Built-in token registry.** A `tokens.toml` compiled into the binary, keyed by chain ID and covering every chain chainz knows a short name for. A token appears on a chain only where it really exists: `weth` (or the chain's wrapped native token, also `wnative`), `usdc` (native Circle USDC), `usdce` (bridged, where different), `usdt`, `dai`, `wbtc`.
 
 - **Fields:** each entry carries `address`, `symbol`, `decimals` and `source`, a URL to the issuer's or chain's official address list.
-- **Checking:** `doctor --tokens` verifies every entry that exists on chain: code present, and `symbol()` and `decimals()` match. Registry mistakes are caught before they cost you.
+- **Checking:** `doctor --tokens` (a maintainer check, hidden from help) verifies every entry that exists on chain: code present, and `symbol()` and `decimals()` match. Registry mistakes are caught before they cost you.
 
 **Commands**
 

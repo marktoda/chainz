@@ -270,8 +270,7 @@ chainz label import .                     # label contracts from Foundry broadca
 Built-in labels cover major tokens
 (`weth`, `usdc`, `usdce`, `usdt`, `wbtc`, `dai`) where they exist. Your own
 labels take precedence; `chainz doctor` notes each label that shadows a
-built-in token. `chainz doctor --tokens` verifies the built-in registry on
-chain.
+built-in token.
 
 `chainz label import PATH…` labels the contracts a `forge script --broadcast`
 deployed. PATH is a `run-latest.json` (or any run file, named explicitly) or a
