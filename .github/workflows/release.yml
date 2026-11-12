@@ -50,7 +50,7 @@ jobs:
           }
 
       - name: Verify CHANGELOG.md has this version's notes
-        run: scripts/release-notes.sh "${GITHUB_REF_NAME#v}" > /dev/null
+        run: scripts/release-notes.sh --release "${GITHUB_REF_NAME#v}" > /dev/null
 
       - name: Install strace (exec structural test)
         run: sudo apt-get update && sudo apt-get install -y strace
@@ -79,6 +79,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          scripts/release-notes.sh "${GITHUB_REF_NAME#v}" > "${RUNNER_TEMP}/notes.md"
+          scripts/release-notes.sh --release "${GITHUB_REF_NAME#v}" > "${RUNNER_TEMP}/notes.md"
           gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --verify-tag \
             --title "chainz ${GITHUB_REF_NAME#v}" --notes-file "${RUNNER_TEMP}/notes.md"
