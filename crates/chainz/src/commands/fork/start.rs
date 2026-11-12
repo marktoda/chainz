@@ -11,7 +11,9 @@ use chainz_core::fmt::{group, short_address};
 use chainz_core::forks;
 use chainz_core::labels;
 use chainz_core::model::{Chain, Config};
-use chainz_core::runtime::{ForkClaim, ForkRecord, LOOPBACK, Runtime, loopback_url};
+use chainz_core::runtime::{
+    ForkClaim, ForkRecord, LOOPBACK, PortReservation, Runtime, loopback_url,
+};
 use chainz_rpc::{HttpUpstream, RetryPolicy, RpcClient, Target};
 use chainz_serve::PinnedProxy;
 use std::fs::File;
@@ -25,13 +27,33 @@ use std::time::{Duration, Instant};
 const FIRST_PORT: u16 = 8601;
 /// How long anvil may take to come up (it fetches the fork block first).
 const READY_TIMEOUT: Duration = Duration::from_secs(120);
-/// How many auto-allocated ports a fork tries when another process wins
-/// the race for one.
-const PORT_ATTEMPTS: u32 = 5;
+/// How many auto-allocated ports a fork tries. Each lost attempt means
+/// another program (or another user's or runtime dir's chainz, which the
+/// reservation does not see) bound that port first, and the next attempt
+/// starts above it, so this only stops a fork walking the whole port range
+/// should anvil ever report "in use" for something else.
+const PORT_ATTEMPTS: u32 = 64;
 
 /// The first port from `start` upward that is not busy.
 fn first_free_port(start: u16, mut busy: impl FnMut(u16) -> bool) -> Option<u16> {
     (start..=u16::MAX).find(|port| !busy(*port))
+}
+
+/// The first port from `from` upward that no other chainz process has
+/// reserved and nothing listens on, reserved for us.
+fn reserve_free_port(runtime: &Runtime, from: u16) -> Result<PortReservation> {
+    let mut reservation = None;
+    first_free_port(from, |port| {
+        if port_busy(port) {
+            return true;
+        }
+        reservation = runtime.reserve_port(port).transpose();
+        reservation.is_none()
+    })
+    .ok_or_else(|| anyhow!("no free port from {FIRST_PORT} upward"))?;
+    reservation
+        .expect("reserved the port found")
+        .context("unable to reserve a port")
 }
 
 /// Whether something already listens on the loopback port.
@@ -169,7 +191,11 @@ pub fn start(args: ForkArgs) -> Result<i32> {
         .claim_fork(&name)
         .context("unable to claim the fork name")?
         .ok_or_else(|| already_running(&name))?;
-    let mut supervisor = Supervisor { anvil: None, claim };
+    let mut supervisor = Supervisor {
+        anvil: None,
+        claim,
+        port: None,
+    };
     let job = Job {
         chainz: &chainz,
         runtime: &runtime,
@@ -240,12 +266,13 @@ struct Job<'a> {
     detached: bool,
 }
 
-/// Owns the claim on the name and the anvil child. Dropping it stops
-/// anvil, then releases the claim (which removes the fork's files), on
-/// every exit path.
+/// Owns the claim on the name, the anvil child and its port. Dropping it
+/// stops anvil, then releases the claim (which removes the fork's files)
+/// and the port, on every exit path.
 struct Supervisor {
     anvil: Option<Child>,
     claim: ForkClaim,
+    port: Option<PortReservation>,
 }
 
 impl Drop for Supervisor {
@@ -383,10 +410,13 @@ async fn start_fork(supervisor: &mut Supervisor, job: &Job<'_>) -> Result<Runnin
 }
 
 /// Spawn anvil on `--port`, or on the first free port from
-/// [`FIRST_PORT`] up, and wait until it serves. Another process can take an
-/// auto-allocated port between the check and anvil's bind (parallel forks
-/// do): then the next port is tried, up to five times. Registers each
-/// anvil (not yet ready) as it is spawned, and returns the record.
+/// [`FIRST_PORT`] up, and wait until it serves. The port is reserved
+/// first ([`Runtime::reserve_port`]), so no other chainz process of ours
+/// picks it; anything else can still bind an auto-allocated port before
+/// anvil does (anvil binds only after fetching the fork's first block):
+/// then the next port up is tried. `--port` is used as given, or it is an
+/// error. Registers each anvil (not yet ready) as it is spawned, and
+/// returns the record.
 async fn spawn_on_free_port(
     supervisor: &mut Supervisor,
     job: &Job<'_>,
@@ -406,20 +436,16 @@ async fn spawn_on_free_port(
     let mut attempt = 0;
     loop {
         attempt += 1;
-        let port = match options.port {
-            Some(port) => port,
-            None => {
-                let taken: Vec<u16> = runtime
-                    .forks()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter(|e| e.live && e.name != name)
-                    .filter_map(|e| e.record.ok().flatten().map(|r| r.port))
-                    .collect();
-                first_free_port(from, |p| taken.contains(&p) || port_busy(p))
-                    .ok_or_else(|| anyhow!("no free port from {FIRST_PORT} upward"))?
-            }
+        let reservation = match options.port {
+            Some(port) => runtime
+                .reserve_port(port)
+                .context("unable to reserve the port")?
+                .ok_or_else(|| anyhow!("port {port} is already in use by another fork"))?,
+            None => reserve_free_port(runtime, from)?,
         };
+        let port = reservation.port();
+        // Releases the port of an attempt that lost it.
+        supervisor.port = Some(reservation);
         let log_start = log.metadata().map(|m| m.len()).unwrap_or(0);
         let spec = process::AnvilSpec {
             fork_url,
@@ -454,8 +480,12 @@ async fn spawn_on_free_port(
                 // already have let go of it again): take the next.
                 let lost_port =
                     port_busy(port) || log_contains(log_path, log_start, "Address already in use");
-                if options.port.is_none() && attempt < PORT_ATTEMPTS && lost_port {
-                    from = port.saturating_add(1);
+                if options.port.is_none()
+                    && attempt < PORT_ATTEMPTS
+                    && lost_port
+                    && let Some(next) = port.checked_add(1)
+                {
+                    from = next;
                     continue;
                 }
                 bail!(
@@ -572,7 +602,8 @@ rpcs.a = "https://a"
         );
         assert_eq!(first_free_port(u16::MAX, |_| true), None);
         assert_eq!(first_free_port(u16::MAX, |_| false), Some(u16::MAX));
-        // A port with a listener is busy; once released it is free again.
+        // A port with a listener is busy (whether it is free once released
+        // is up to every other process on the machine, so not asserted).
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         assert!(port_busy(port));
@@ -580,8 +611,26 @@ rpcs.a = "https://a"
             first_free_port(port, port_busy).map(|p| p > port),
             Some(true)
         );
+    }
+
+    #[test]
+    fn a_free_port_is_one_no_other_fork_has_reserved() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = Runtime::at(dir.path());
+        // The listener keeps `port` busy for the whole test, so the ports
+        // compared are ours to reason about, not free ones that another
+        // process could take: `taken` is reserved but not bound.
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let Some(next) = port.checked_add(1) else {
+            return;
+        };
+        let first = reserve_free_port(&rt, port).unwrap();
+        assert!(first.port() >= next, "skips the bound port");
+        let second = reserve_free_port(&rt, port).unwrap();
+        assert!(second.port() > first.port(), "skips the reserved port");
+        drop(first);
         drop(listener);
-        assert!(!port_busy(port));
     }
 
     #[test]
