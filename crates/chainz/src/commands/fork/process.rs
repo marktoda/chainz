@@ -280,6 +280,13 @@ impl AnvilSpec<'_> {
 /// fires when the *thread* that forked exits.
 pub fn spawn_anvil(spec: &AnvilSpec<'_>, log: &File) -> Result<Child> {
     use std::os::unix::process::CommandExt;
+    // SAFETY: plain syscalls with no arguments.
+    #[cfg(target_os = "linux")]
+    debug_assert_eq!(
+        unsafe { libc::gettid() },
+        unsafe { libc::getpid() },
+        "anvil must be spawned from the main thread"
+    );
     let mut command = Command::new(ANVIL);
     command
         .args(spec.args())
