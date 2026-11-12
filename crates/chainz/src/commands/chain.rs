@@ -366,7 +366,8 @@ pub fn rm(args: &RmArgs) -> Result<i32> {
         &mut Tty,
         args.yes,
         &Removal::of(
-            &format!("rm {}", args.chain),
+            &["rm"],
+            &args.chain,
             &format!("chain '{name}' ({})", with.join("; ")),
         ),
     )?;

@@ -50,48 +50,26 @@ fn confirm(message: &str, default: bool) -> Result<bool> {
     )
 }
 
-/// What declining, or having no TTY to ask on, means for [`confirm_or_yes`].
-#[derive(Clone, Copy, Debug)]
-pub enum Consent<'a> {
-    /// Something that can't be undone: off a TTY it is an error naming
-    /// `hint` (what to pass instead); declining is [`ui::cancelled`].
-    Destructive { hint: &'a str },
-    /// An optional extra: off a TTY it is skipped and `note` says how to
-    /// get it; declining skips it.
-    Proposal { note: &'a str },
-}
-
-/// Whether to go ahead: `--yes` accepts without asking; otherwise ask
-/// through `ask` when it is interactive (default no), and off a terminal
-/// follow `consent`.
-pub fn confirm_or_yes(
-    ask: &mut dyn Ask,
-    yes: bool,
-    message: &str,
-    consent: Consent<'_>,
-) -> Result<bool> {
+/// Whether to take an optional extra step: `--yes` accepts without asking;
+/// on a terminal, ask (default no); off one, skip it and print `note`
+/// (how to get it).
+pub fn propose(ask: &mut dyn Ask, yes: bool, message: &str, note: &str) -> Result<bool> {
     if yes {
         return Ok(true);
     }
     if !ask.is_interactive() {
-        return match consent {
-            Consent::Destructive { hint } => bail!("{hint}"),
-            Consent::Proposal { note } => {
-                println!("{}", ui::dim(note));
-                Ok(false)
-            }
-        };
+        println!("{}", ui::dim(note));
+        return Ok(false);
     }
-    match (ask.confirm(message, false)?, consent) {
-        (true, _) => Ok(true),
-        (false, Consent::Destructive { .. }) => Err(ui::cancelled()),
-        (false, Consent::Proposal { .. }) => Ok(false),
-    }
+    ask.confirm(message, false)
 }
 
 /// A removal [`confirm_removal`] asks about.
 pub struct Removal<'a> {
-    /// The command as typed after `chainz`, for the error off a terminal.
+    /// The subcommand (`["var", "rm"]`), for the usage error off a
+    /// terminal.
+    pub path: &'static [&'static str],
+    /// The command as typed after `chainz`, for that error's message.
     pub command: String,
     /// What going ahead does: `removes variable 'X'`.
     pub does: String,
@@ -103,10 +81,11 @@ pub struct Removal<'a> {
 }
 
 impl Removal<'_> {
-    /// Removing `what` (`variable 'X'`) with `chainz {command}`.
-    pub fn of(command: &str, what: &str) -> Self {
+    /// Removing `what` (`variable 'X'`) with `chainz {path} {args}`.
+    pub fn of(path: &'static [&'static str], args: &str, what: &str) -> Self {
         Removal {
-            command: command.to_string(),
+            path,
+            command: format!("{} {args}", path.join(" ")),
             does: format!("removes {what}"),
             question: format!("Remove {what}?"),
             flags: &[],
@@ -118,7 +97,7 @@ impl Removal<'_> {
 /// rm`, `signer rm`): `--yes` (with every flag in `removal.flags`) removes
 /// without asking; otherwise, on a terminal, ask the question (default
 /// no; declining cancels); off one, or with `--yes` but a flag missing,
-/// fail naming every missing flag.
+/// it is a usage error (exit 2) naming every missing flag.
 pub fn confirm_removal(ask: &mut dyn Ask, yes: bool, removal: &Removal<'_>) -> Result<()> {
     let mut missing: Vec<&str> = removal
         .flags
@@ -129,22 +108,25 @@ pub fn confirm_removal(ask: &mut dyn Ask, yes: bool, removal: &Removal<'_>) -> R
     if !yes {
         missing.push("--yes");
     }
-    let hint = format!(
-        "`chainz {}` {}; pass {} to confirm",
-        removal.command,
-        removal.does,
-        missing.join(" ")
-    );
-    if yes && !missing.is_empty() {
-        bail!("{hint}");
+    if missing.is_empty() {
+        return Ok(());
     }
-    confirm_or_yes(
-        ask,
-        yes,
-        &removal.question,
-        Consent::Destructive { hint: &hint },
-    )
-    .map(drop)
+    if yes || !ask.is_interactive() {
+        return Err(crate::cli::usage_error(
+            removal.path,
+            &format!(
+                "`chainz {}` {}; pass {} to confirm",
+                removal.command,
+                removal.does,
+                missing.join(" ")
+            ),
+        ));
+    }
+    if ask.confirm(&removal.question, false)? {
+        Ok(())
+    } else {
+        Err(ui::cancelled())
+    }
 }
 
 /// What Esc means in a picker ([`Ask::choose`]).
@@ -360,12 +342,14 @@ mod tests {
     #[test]
     fn removals_ask_or_need_yes() {
         use script::{Answer::Yes, Script};
-        let x = Removal::of("var rm X", "variable 'X'");
+        let x = Removal::of(&["var", "rm"], "X", "variable 'X'");
         confirm_removal(&mut Script::off_tty(), true, &x).unwrap();
         let err = confirm_removal(&mut Script::off_tty(), false, &x).unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            "`chainz var rm X` removes variable 'X'; pass --yes to confirm"
+        assert_eq!(ui::exit_code(&err), 2);
+        assert!(
+            err.to_string()
+                .contains("`chainz var rm X` removes variable 'X'; pass --yes to confirm"),
+            "{err}"
         );
         let mut script = Script::new([Yes(true), Yes(false)]);
         confirm_removal(&mut script, false, &x).unwrap();
@@ -389,22 +373,14 @@ mod tests {
     }
 
     #[test]
-    fn yes_skips_the_prompt_and_no_tty_needs_it() {
+    fn a_proposal_is_skipped_off_a_terminal() {
         use script::{Answer::Yes, Script};
-        let destructive = Consent::Destructive { hint: "pass --yes" };
-        let proposal = Consent::Proposal { note: "skipped" };
         let off_tty = &mut Script::off_tty();
-        assert!(confirm_or_yes(off_tty, true, "sure?", destructive).unwrap());
-        assert!(confirm_or_yes(off_tty, true, "sure?", proposal).unwrap());
-        let err = confirm_or_yes(off_tty, false, "sure?", destructive).unwrap_err();
-        assert_eq!(err.to_string(), "pass --yes");
-        assert!(!confirm_or_yes(off_tty, false, "sure?", proposal).unwrap());
-        // On a terminal: asked; declining a destructive step cancels.
-        let mut script = Script::new([Yes(true), Yes(false), Yes(false)]);
-        assert!(confirm_or_yes(&mut script, false, "sure?", destructive).unwrap());
-        let err = confirm_or_yes(&mut script, false, "sure?", destructive).unwrap_err();
-        assert!(ui::is_cancelled(&err));
-        assert!(!confirm_or_yes(&mut script, false, "sure?", proposal).unwrap());
+        assert!(propose(off_tty, true, "sure?", "skipped").unwrap());
+        assert!(!propose(off_tty, false, "sure?", "skipped").unwrap());
+        let mut script = Script::new([Yes(true), Yes(false)]);
+        assert!(propose(&mut script, false, "sure?", "skipped").unwrap());
+        assert!(!propose(&mut script, false, "sure?", "skipped").unwrap());
     }
 }
 

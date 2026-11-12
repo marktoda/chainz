@@ -283,8 +283,8 @@ the same for what is already there.
 - Secrets are masked unless you pass `--reveal`, and only the parts that
   could be secret: `https://mainnet.infura.io/v3/[REDACTED]`.
 - Exit codes: 0 on success; 1 for an error, or a problem the command
-  reports (`doctor`); 2 for a usage error, including a missing argument off
-  a terminal; from `exec`, the command's own status, 126 when it can't run
+  reports (`doctor`); 2 for a usage error, including a missing argument or
+  `--yes` off a terminal; from `exec`, the command's own status, 126 when it can't run
   and 127 when it doesn't exist; 130 for a cancelled prompt. A foreground
   `fork` exits 130 after Ctrl-C and 143 after `fork stop`.
 

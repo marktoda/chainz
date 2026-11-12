@@ -255,7 +255,7 @@ fn rm(args: &LabelRmArgs) -> Result<i32> {
         .iter()
         .map(|(scope, address)| format!("{} ({address})", scope_phrase(scope)))
         .collect();
-    let mut command = format!("label rm {}", args.name);
+    let mut command = args.name.clone();
     if args.all_chains {
         command.push_str(" --all-chains");
     } else if let Some(chain) = &args.chain {
@@ -264,7 +264,11 @@ fn rm(args: &LabelRmArgs) -> Result<i32> {
     crate::prompt::confirm_removal(
         &mut crate::prompt::Tty,
         args.yes,
-        &crate::prompt::Removal::of(&command, &format!("@{name} {}", entries.join(", "))),
+        &crate::prompt::Removal::of(
+            &["label", "rm"],
+            &command,
+            &format!("@{name} {}", entries.join(", ")),
+        ),
     )?;
     let removed = chainz.transact(|tx| tx.remove_address(&name, scope.as_deref()))?;
     for (scope, address) in removed {

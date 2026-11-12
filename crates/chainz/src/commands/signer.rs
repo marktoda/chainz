@@ -265,6 +265,7 @@ fn removal_consent(
     };
     let unassign = [("--unassign", args.unassign)];
     let removal = prompt::Removal {
+        path: &["signer", "rm"],
         command: format!("signer rm {name}"),
         does: does.join(" and "),
         question,
@@ -386,9 +387,10 @@ mod tests {
     fn signer_rm_asks_once_or_names_every_flag() {
         let key = Signer::new(Backend::Plaintext, None);
         let err = |args: &SignerRmArgs, users: &str| {
-            removal_consent(&mut Script::off_tty(), "deployer", &key, users, args)
-                .unwrap_err()
-                .to_string()
+            let err =
+                removal_consent(&mut Script::off_tty(), "deployer", &key, users, args).unwrap_err();
+            assert_eq!(ui::exit_code(&err), 2, "a usage error");
+            err.to_string().lines().next().unwrap().to_string()
         };
         let both = err(&args(false, false), "base, op");
         assert!(

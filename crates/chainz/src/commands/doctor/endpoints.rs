@@ -4,7 +4,7 @@
 use super::{Finding, Groups, Report};
 use crate::net;
 use crate::probe::{self, Depth, Repair, health_problem};
-use crate::prompt::{self, Consent, Tty};
+use crate::prompt::{self, Tty};
 use crate::ui;
 use crate::view;
 use anyhow::Result;
@@ -201,13 +201,11 @@ pub(super) fn endpoints(
     );
     let write_failover = !repair.failover.is_empty()
         && repair.failover != c.failover
-        && prompt::confirm_or_yes(
+        && prompt::propose(
             &mut Tty,
             yes,
             "Write the proposed failover list?",
-            Consent::Proposal {
-                note: "failover list not written (pass --yes, or confirm on a TTY)",
-            },
+            "failover list not written (pass --yes, or confirm on a TTY)",
         )?;
     let old = c.rpc.clone();
     chainz.transact(|tx| repair.apply(tx, write_failover))?;

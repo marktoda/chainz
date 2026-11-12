@@ -172,7 +172,7 @@ fn label_add_ls_find_rm_roundtrip() {
     sb.cmd()
         .args(["label", "rm", "other-safe", "--all-chains"])
         .assert()
-        .code(1)
+        .code(2)
         .stderr(predicate::str::contains(
             "`chainz label rm other-safe --all-chains` removes @other-safe on every chain",
         ));

@@ -182,7 +182,8 @@ fn rm(args: &VarRmArgs) -> Result<i32> {
         &mut prompt::Tty,
         args.yes,
         &prompt::Removal::of(
-            &format!("var rm {name}"),
+            &["var", "rm"],
+            name,
             &format!("variable '{name}' (its value is kept nowhere else)"),
         ),
     )?;

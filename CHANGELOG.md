@@ -113,7 +113,7 @@ See the [README](https://github.com/marktoda/chainz#readme) for each.
   `--show`). Only the credential-shaped parts of a URL or header are
   masked, and `var ls --json` is masked too.
 - Errors print as `error: …`. Usage errors, including a missing argument
-  off a terminal, exit 2; `exec` exits 127 when the command doesn't exist
+  or `--yes` off a terminal, exit 2; `exec` exits 127 when the command doesn't exist
   and 126 when it can't run. See the README for every exit code.
 - Commands that write say what changed (`active endpoint: alchemy →
   infura`), or "No changes".

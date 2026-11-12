@@ -25,7 +25,7 @@ fn rm_names_its_labels_and_the_default() {
     sb.ok(&["label", "add", "myrouter", TEST_ADDRESS_2, "--chain", "arb"]);
     sb.ok(&["label", "add", "pool", TEST_ADDRESS, "--chain", "arb"]);
     let out = sb.run(&["rm", "arb"]);
-    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(out.status.code(), Some(2));
     let err = stderr(&out);
     assert!(
         err.contains("removes chain 'arb' (1 endpoint; labels @myrouter, @pool; it is the default chain); pass --yes"),
