@@ -775,9 +775,12 @@ impl<'a> Expander<'a> {
             ContextToken::Chain => ExpandedArg::public(chain.to_string()),
             ContextToken::Wallet => {
                 let signer = scope.signer().ok_or_else(|| anyhow!(no_signer(chain)))?;
-                let address = signer
-                    .address
-                    .ok_or_else(|| anyhow!(crate::signer::no_cached_address(&signer.name)))?;
+                let address = signer.address.ok_or_else(|| {
+                    anyhow!(crate::signer::no_cached_address(
+                        &signer.name,
+                        signer.backend
+                    ))
+                })?;
                 ExpandedArg::public(address.to_string())
             }
             ContextToken::Explorer => {

@@ -158,7 +158,9 @@ it ran on; `--dry-run` shows the plan.
 
 A Foundry keystore made by `cast wallet new` has no address field; pass
 `--address "$(cast wallet address --keystore PATH)"`. `signer migrate`
-moves plaintext keys into safe storage. Give keys and variable values on
+moves plaintext keys into safe storage; `signer migrate NAME --to BACKEND`
+with the signer's own backend unlocks it once to cache a missing address.
+Give keys and variable values on
 stdin (`--stdin`): an argument works but warns, since it shows in shell
 history and `ps`.
 
@@ -311,7 +313,8 @@ once:
 - Known URL credentials (Infura, Alchemy) and verifier keys move into
   variables in `secrets.toml`; anything else is reported.
 - Signers keep their backend and address; keyring entries need no
-  re-entry.
+  re-entry. A signer that 0.4 stored without an address is reported, with
+  the `signer migrate` command that caches one.
 - `config.json` is renamed to `config.v1.json.bak` once the new files are
   written, so you can go back.
 

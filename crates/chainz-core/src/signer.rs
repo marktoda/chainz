@@ -27,10 +27,24 @@ pub const DISABLE_KEYRING_VAR: &str = "CHAINZ_DISABLE_KEYRING";
 
 /// The one wording for a signer that has no cached address, which
 /// `@wallet`, `@<signer>`, `ETH_FROM` and `fork --fund` need.
-pub fn no_cached_address(name: &str) -> String {
-    format!(
-        "signer '{name}' has no cached address; re-add it with `chainz signer rm {name}` and `chainz signer add {name}`"
-    )
+///
+/// The fix depends on the backend: removing a signer whose key chainz holds
+/// deletes that key, so for those the hint is `signer migrate`, which
+/// unlocks the key once and caches its address. Only a reference (keystore
+/// file, 1Password item) survives `signer rm`.
+pub fn no_cached_address(name: &str, backend: Backend) -> String {
+    let fix = match backend {
+        Backend::Keyring | Backend::Encrypted => format!(
+            "run `chainz signer migrate {name} --to {backend}` to unlock it once and cache its address"
+        ),
+        Backend::Plaintext => format!(
+            "run `chainz signer migrate {name}`, which moves it into safe storage and caches its address"
+        ),
+        Backend::Keystore | Backend::OnePassword => format!(
+            "re-add it with `chainz signer rm {name}` and `chainz signer add {name}` (the {backend} item itself stays)"
+        ),
+    };
+    format!("signer '{name}' has no cached address; {fix}")
 }
 
 /// External key storage.
@@ -357,6 +371,19 @@ impl Chainz {
             .map(|e| format!("the old keyring entry for '{name}' remains: {e:#}")))
     }
 
+    /// Cache `address` as signer `name`'s address (after unlocking its key
+    /// proved it).
+    pub fn cache_signer_address(&mut self, name: &str, address: Address) -> Result<()> {
+        let mut signer = self
+            .config()
+            .signers
+            .get(name)
+            .cloned()
+            .ok_or_else(|| anyhow!("signer '{name}' not found"))?;
+        signer.address = Some(address);
+        self.transact(|tx| tx.set_signer(name, &signer))
+    }
+
     /// Remove signer `name` (record and key material in one transaction),
     /// then delete its external key material.
     pub fn remove_signer(
@@ -540,6 +567,43 @@ mod tests {
 
     const KEY: &str = "0000000000000000000000000000000000000000000000000000000000000001";
     const ADDR: &str = "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf";
+
+    /// `signer rm` deletes a key chainz holds, so the hint for those
+    /// backends must never suggest it.
+    #[test]
+    fn the_no_address_hint_never_removes_a_held_key() {
+        for backend in [Backend::Keyring, Backend::Encrypted, Backend::Plaintext] {
+            let hint = no_cached_address("cold", backend);
+            assert!(!hint.contains("signer rm"), "{hint}");
+            assert!(hint.contains("`chainz signer migrate cold"), "{hint}");
+        }
+        for backend in [Backend::Keystore, Backend::OnePassword] {
+            let hint = no_cached_address("cold", backend);
+            assert!(hint.contains("`chainz signer rm cold`"), "{hint}");
+        }
+    }
+
+    #[test]
+    fn caching_an_address_keeps_the_key() {
+        let mut store = crate::testing::TempStore::new(
+            "version = 2\n\n[signers.cold]\nbackend = \"plaintext\"\n",
+            Some(&format!("[signers.cold]\nprivate_key = \"{KEY}\"\n")),
+        );
+        let addr: Address = ADDR.parse().unwrap();
+        store.chainz.cache_signer_address("cold", addr).unwrap();
+        let reopened = Chainz::open_at(store.paths(), crate::store::LoadMode::Strict).unwrap();
+        assert_eq!(reopened.config().signers["cold"].address, Some(addr));
+        let b = mem(false, false);
+        let key = unlock(
+            &b,
+            &b,
+            "cold",
+            &reopened.config().signers["cold"],
+            reopened.secrets().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(key.as_str(), KEY);
+    }
 
     fn mem(keyring: bool, interactive: bool) -> MemoryKeyBackend {
         MemoryKeyBackend {

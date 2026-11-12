@@ -15,7 +15,7 @@
 //! reserved (enforced by validation).
 
 use crate::address::Address;
-use crate::model::Config;
+use crate::model::{Backend, Config};
 use crate::names;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -188,10 +188,12 @@ pub enum LabelError {
         chain_id: u64,
     },
     /// The name is a signer without a cached address.
-    #[error("{}", crate::signer::no_cached_address(name))]
+    #[error("{}", crate::signer::no_cached_address(name, *backend))]
     NoCachedAddress {
         /// The signer's name.
         name: String,
+        /// Where its key lives (the fix depends on it).
+        backend: Backend,
     },
 }
 
@@ -214,8 +216,8 @@ struct Reverse {
 #[derive(Debug, Default)]
 pub struct LabelIndex {
     user: HashMap<String, Entry>,
-    /// Every signer, with its cached address if it has one.
-    signers: HashMap<String, Option<Address>>,
+    /// Every signer: its cached address, or its backend when it has none.
+    signers: HashMap<String, Result<Address, Backend>>,
     /// User labels, then signers, in config order.
     configured: Vec<Label>,
     reverse: OnceLock<Reverse>,
@@ -263,7 +265,9 @@ impl LabelIndex {
         }
         for (name, signer) in &config.signers {
             let name = name.to_ascii_lowercase();
-            index.signers.insert(name.clone(), signer.address);
+            index
+                .signers
+                .insert(name.clone(), signer.address.ok_or(signer.backend));
             if let Some(address) = signer.address {
                 index.configured.push(Label {
                     name,
@@ -329,7 +333,7 @@ impl LabelIndex {
             }
         }
         match self.signers.get(&name) {
-            Some(Some(address)) => {
+            Some(Ok(address)) => {
                 return Ok(Label {
                     name,
                     address: *address,
@@ -337,7 +341,7 @@ impl LabelIndex {
                     scope: LabelScope::AllChains,
                 });
             }
-            Some(None) => return Err(LabelError::NoCachedAddress { name }),
+            Some(&Err(backend)) => return Err(LabelError::NoCachedAddress { name, backend }),
             None => {}
         }
         if let Some(token) = builtin_token(chain_id, &name) {
@@ -500,11 +504,13 @@ eth = "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf"
         assert_eq!(
             err,
             LabelError::NoCachedAddress {
-                name: "cold".into()
+                name: "cold".into(),
+                backend: Backend::Keyring,
             }
         );
         assert!(
-            err.to_string().contains("`chainz signer add cold`"),
+            err.to_string()
+                .contains("`chainz signer migrate cold --to keyring`"),
             "{err}"
         );
         assert!(index.labels().all(|l| l.name != "cold"));

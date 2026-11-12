@@ -445,7 +445,7 @@ fn migrate_key(
                 "signer '{name}' had an invalid cached address, which was dropped"
             ));
         }
-        attention.push(crate::signer::no_cached_address(name));
+        attention.push(crate::signer::no_cached_address(name, signer.backend));
     }
     signer.address = address;
     Ok((signer, secret))

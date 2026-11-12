@@ -395,7 +395,7 @@ fn signers(config: &Config, report: &mut Report) {
             b => report.ok(&format!("signer '{name}' ({b})")),
         }
         if s.address.is_none() {
-            report.note(&chainz_core::signer::no_cached_address(name));
+            report.note(&chainz_core::signer::no_cached_address(name, s.backend));
         }
     }
 }
