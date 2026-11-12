@@ -64,14 +64,14 @@ pub fn exit_code(error: &anyhow::Error) -> i32 {
 }
 
 /// Print a command's error on stderr: `Cancelled` for a cancellation,
-/// nothing for a closed stdout (`chainz … | head`), else `Error: …`.
+/// nothing for a closed stdout (`chainz … | head`), else `error: …`.
 pub fn report(error: &anyhow::Error) {
     if is_cancelled(error) {
         eprintln!("Cancelled");
     } else if let Some(usage) = error.downcast_ref::<clap::Error>() {
         let _ = usage.print();
     } else if !is_broken_pipe(error) {
-        eprintln!("Error: {error:#}");
+        eprintln!("error: {error:#}");
     }
 }
 

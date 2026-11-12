@@ -178,6 +178,8 @@ changed before 2.0.0; they are listed under Removed and Changed.
   `chainz` binary. The exec path cannot reach the network, and CI checks
   that with `strace`. The internals were restructured before release so
   each rule has one owner and no crate or module depends on itself.
+- Errors print as `error: …`, the prefix clap's usage errors (and cargo
+  and Foundry) use; they printed `Error: …`.
 
 - Writes say what changed: `chain set` and `update` print each change as
   a transition (`active endpoint: alchemy → infura`) with its side effects

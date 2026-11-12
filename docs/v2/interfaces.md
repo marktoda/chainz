@@ -63,7 +63,7 @@ v1 spellings that still work are listed in the README. Usage lines in
 errors are rendered from the clap definition.
 
 Exit codes: 0 on success, also when stdout closes early (`chainz … | head`);
-1 for an error (`Error: …` on stderr) or a result the command reports
+1 for an error (`error: …` on stderr) or a result the command reports
 itself (`doctor` found problems, `addr find` matched nothing, `serve status`
 found no gateway, a fork's anvil died); 2 for a usage error, a missing
 argument off a terminal included (always `cli::usage_error(path, message)`,
@@ -731,7 +731,7 @@ names the file. `ErrorClass::phrase()` is the class in a sentence
    (`EndpointView`, `marker`, `table`, `QUICK_START`).
    The return value is the exit code: 0, or the code of a failure the
    handler reported itself (`doctor`, `addr find`, `serve status`). An `Err`
-   prints `Error: …` and exits 1, or with the code of a `ui::ExitCode` in
+   prints `error: …` and exits 1, or with the code of a `ui::ExitCode` in
    its chain (exec uses 127/126) or a clap usage error (2);
    `ui::cancelled()` exits 130 and a broken stdout pipe exits 0, all in
    `main` through `ui::report`/`ui::exit_code`.

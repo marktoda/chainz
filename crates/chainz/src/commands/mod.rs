@@ -1,7 +1,7 @@
 //! Command handlers, one module per noun, routed from [`dispatch`]. A
 //! handler returns the process exit code: 0, or the code of a failure it
 //! has already reported itself (`doctor`, `addr find`, `serve status`). Any
-//! other failure is an error: `main` prints it as `Error: …` and exits 1,
+//! other failure is an error: `main` prints it as `error: …` and exits 1,
 //! or with the code a typed error carries (`ui::exit_code`).
 
 mod addr;
