@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use chainz_core::labels::LabelIndex;
-use chainz_core::model::{Chain, Endpoint};
-use chainz_core::{Chainz, LoadMode, StorePaths};
+use chainz_core::model::{Chain, Config, Endpoint};
+use chainz_core::{Chainz, LoadMode, StorePaths, resolve};
 use chainz_rpc::control::ChainStatus;
 use chainz_rpc::health::FAILOVER_LAG;
 use chainz_rpc::{Capabilities, HealthStore, Target};
@@ -344,11 +344,13 @@ impl Stamps {
 }
 
 /// Everything the router needs, built from one read of the config.
-#[derive(Debug)]
 pub struct Snapshot {
     /// Served chains, in config order.
     pub chains: Vec<Arc<ChainState>>,
-    lookup: HashMap<String, usize>,
+    /// The config read, to resolve chain references as the CLI does.
+    config: Config,
+    /// Chain name → index into `chains`.
+    index: HashMap<String, usize>,
     /// Reverse labels for the inspector.
     pub labels: LabelIndex,
     /// Endpoints that can't be routed, as `chain.endpoint: reason`
@@ -357,6 +359,17 @@ pub struct Snapshot {
     pub warnings: Vec<String>,
     /// The files as they were just before they were read.
     pub stamps: Stamps,
+}
+
+impl std::fmt::Debug for Snapshot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Snapshot")
+            .field("chains", &self.chains)
+            .field("labels", &self.labels)
+            .field("warnings", &self.warnings)
+            .field("stamps", &self.stamps)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Snapshot {
@@ -384,7 +397,7 @@ impl Snapshot {
                 .ok()
         });
         let mut chains = Vec::with_capacity(config.chains.len());
-        let mut lookup = HashMap::new();
+        let mut index = HashMap::with_capacity(config.chains.len());
         for (name, chain) in &config.chains {
             // The same chain: same name and same ID. A chain whose ID
             // changed starts afresh (its heads and filters are another
@@ -442,12 +455,7 @@ impl Snapshot {
                 .iter()
                 .filter_map(|f| endpoints.get(f)?.as_ref().ok().cloned())
                 .collect();
-            let index = chains.len();
-            lookup.insert(name.to_ascii_lowercase(), index);
-            for alias in &chain.aliases {
-                lookup.entry(alias.to_ascii_lowercase()).or_insert(index);
-            }
-            lookup.entry(chain.id.to_string()).or_insert(index);
+            index.insert(name.clone(), chains.len());
             chains.push(Arc::new(ChainState {
                 name: name.clone(),
                 id: chain.id,
@@ -461,20 +469,19 @@ impl Snapshot {
         }
         Ok(Snapshot {
             chains,
-            lookup,
+            index,
             labels: LabelIndex::new(config),
+            config: config.clone(),
             warnings,
             stamps,
         })
     }
 
-    /// A chain by name, alias or ID (case-insensitive, exact).
+    /// A chain by ID, name or alias (any case), never a prefix: core's
+    /// [`resolve::exact`], so a gateway path names what the CLI would.
     pub fn chain(&self, reference: &str) -> Option<&Arc<ChainState>> {
-        let index = match self.lookup.get(reference) {
-            Some(index) => *index,
-            None => *self.lookup.get(&reference.to_ascii_lowercase())?,
-        };
-        self.chains.get(index)
+        let (name, _) = resolve::exact(&self.config, reference).ok()??;
+        self.chains.get(*self.index.get(name)?)
     }
 
     /// Re-read capability tags from the health store.
@@ -491,7 +498,8 @@ impl Snapshot {
     }
 }
 
-/// Expand an endpoint's `${VAR}`s into a target plus its fingerprint.
+/// An endpoint as a target plus its fingerprint, through core's config→RPC
+/// bridge (`${VAR}`s expanded, never the gateway itself).
 fn build_target(
     chainz: &Chainz,
     chain_name: &str,
@@ -499,12 +507,12 @@ fn build_target(
     endpoint_name: &str,
     endpoint: &Endpoint,
 ) -> Result<(Target, String)> {
-    let expanded = chainz.expand_endpoint(chain_name, chain.id, endpoint_name, endpoint)?;
-    let mut fingerprint = format!("{}\n{}", chain.id, expanded.url);
-    for (name, value) in &expanded.headers {
+    let route = chainz.direct_route(chain_name, chain.id, endpoint_name, endpoint)?;
+    let mut fingerprint = format!("{}\n{}", route.chain_id, route.url);
+    for (name, value) in &route.headers {
         fingerprint.push_str(&format!("\n{name}: {value}"));
     }
-    let target = Target::new(chain.id, endpoint_name, &expanded.url, &expanded.headers)?;
+    let target = Target::new(route.chain_id, &route.endpoint, &route.url, &route.headers)?;
     Ok((target, fingerprint))
 }
 

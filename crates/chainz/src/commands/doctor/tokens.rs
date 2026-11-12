@@ -126,30 +126,25 @@ pub fn run() -> Result<i32> {
 
 /// One chain to check.
 struct Job {
-    /// The endpoint's provider (its host's registrable name).
+    /// The endpoint's provider (its host's registrable domain).
     provider: String,
     chain_id: u64,
     target: Target,
     tokens: Vec<&'static BuiltinToken>,
 }
 
-/// The endpoint to ask, with its provider: the chain's active one, or
-/// (when that is a websocket, which the client cannot use) its first HTTP
-/// endpoint, failover list first. Errors never include a URL.
+/// The endpoint to ask, with its provider: the chain's first HTTP
+/// endpoint in preference order (the active one unless it is a websocket,
+/// which the client cannot use). Errors never include a URL.
 fn endpoint(chainz: &Chainz, name: &str, chain: &Chain) -> Result<(String, Target), String> {
-    let candidates = std::iter::once(&chain.rpc)
-        .chain(chain.failover.iter())
-        .chain(chain.rpcs.keys());
-    for ep in candidates {
-        if let Some(endpoint) = chain.rpcs.get(ep)
-            && !endpoint.is_websocket()
-        {
-            return net::target(chainz, name, chain.id, ep, endpoint)
-                .map(|target| (names::endpoint_name_for_url(&endpoint.url), target))
-                .map_err(|e| format!("{e:#}"));
-        }
-    }
-    Err("no HTTP endpoint".to_string())
+    let Some((ep, endpoint)) = chain.endpoints_by_preference(true).into_iter().next() else {
+        return Err("no HTTP endpoint".to_string());
+    };
+    let provider = names::provider_of(&endpoint.url)
+        .unwrap_or_else(|| names::endpoint_name_for_url(&endpoint.url));
+    net::target(chainz, name, chain.id, ep, endpoint)
+        .map(|target| (provider, target))
+        .map_err(|e| format!("{e:#}"))
 }
 
 async fn check_chains(jobs: Vec<Job>) -> Vec<(u64, Outcome)> {

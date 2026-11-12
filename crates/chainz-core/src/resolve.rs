@@ -153,8 +153,9 @@ pub fn configured<'c>(
 }
 
 /// [`Policy::Prefix`]'s exact matches only: an ID (an unknown ID is an
-/// error), then a name or alias in any case.
-fn exact<'c>(config: &'c Config, query: &str) -> Result<Option<(&'c str, &'c Chain)>> {
+/// error), then a name or alias in any case. The gateway resolves its URL
+/// paths this way, so they name the chains the CLI's references do.
+pub fn exact<'c>(config: &'c Config, query: &str) -> Result<Option<(&'c str, &'c Chain)>> {
     if let Ok(id) = query.parse::<u64>() {
         return match config.chain_by_id(id) {
             Some(found) => Ok(Some(found)),
