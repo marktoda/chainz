@@ -2,7 +2,6 @@
 //! every chain; `label 0x…`, the reverse lookup; and `label` alone, the
 //! reverse-label filter over stdin.
 
-use crate::args::parse_address;
 use crate::cli::{
     LabelAddArgs, LabelArgs, LabelCommand, LabelImportArgs, LabelLsArgs, LabelRmArgs, usage_error,
 };
@@ -24,6 +23,13 @@ use serde::Serialize;
 use std::io;
 use std::path::PathBuf;
 
+/// An address argument; the error repeats what was given.
+fn parse_address(input: &str) -> Result<Address> {
+    input
+        .parse()
+        .with_context(|| format!("address '{input}' is not an address"))
+}
+
 pub fn run(cmd: Option<LabelCommand>, args: LabelArgs) -> Result<i32> {
     match cmd {
         Some(LabelCommand::Add(args)) => add(&args),
@@ -35,14 +41,6 @@ pub fn run(cmd: Option<LabelCommand>, args: LabelArgs) -> Result<i32> {
             None => filter(&args),
         },
     }
-}
-
-/// `usdc` from `usdc`, `@usdc` or `USDC`.
-fn label_name(input: &str) -> String {
-    input
-        .strip_prefix('@')
-        .unwrap_or(input)
-        .to_ascii_lowercase()
 }
 
 fn scope_label(config: &Config, scope: LabelScope) -> String {
@@ -61,8 +59,8 @@ fn chain_id(config: &Config, target: &ChainRef) -> Result<u64> {
 
 fn add(args: &LabelAddArgs) -> Result<i32> {
     let mut chainz = open()?;
-    let name = label_name(&args.name);
-    let address = parse_address(&args.address, "address")?;
+    let name = names::label_name(&args.name);
+    let address = parse_address(&args.address)?;
     // Fail on a bad name before asking which chain.
     names::check_label_name(&name, chainz.config().signers.keys().map(String::as_str))?;
     let scope = if args.all_chains {
@@ -105,14 +103,15 @@ fn add(args: &LabelAddArgs) -> Result<i32> {
         SetAddress::Added | SetAddress::Replaced(_) => println!("Added @{name} {on}: {address}"),
     }
     let config = chainz.config();
+    let scope = match config.chains.get(&scope) {
+        Some(chain) => LabelScope::Chain(chain.id),
+        None => LabelScope::AllChains,
+    };
     let shadowed: Vec<String> = LabelIndex::new(config)
-        .shadowed_tokens()
-        .filter(|(t, winner)| t.name == name && winner.address == address)
-        .filter(|(t, _)| match config.chains.get(&scope) {
-            Some(chain) => chain.id == t.chain_id,
-            None => config.chain_by_id(t.chain_id).is_some(),
-        })
-        .map(|(t, _)| config.chain_display(t.chain_id))
+        .shadows(&name, scope, &address)
+        .into_iter()
+        .filter(|t| config.chain_by_id(t.chain_id).is_some())
+        .map(|t| config.chain_display(t.chain_id))
         .collect();
     if !shadowed.is_empty() {
         eprintln!(
@@ -222,7 +221,7 @@ fn ls(args: &LabelLsArgs) -> Result<i32> {
 fn rm(args: &LabelRmArgs) -> Result<i32> {
     let mut chainz = open()?;
     let config = chainz.config();
-    let name = label_name(&args.name);
+    let name = names::label_name(&args.name);
     if !config.addresses.contains_key(&name) {
         if config.signers.contains_key(&name) {
             bail!("@{name} is a signer, not a label; remove it with `chainz signer rm {name}`");
@@ -277,7 +276,7 @@ fn rm(args: &LabelRmArgs) -> Result<i32> {
 fn find(address: &str, json: bool) -> Result<i32> {
     let chainz = open()?;
     let config = chainz.config();
-    let address = parse_address(address, "address")?;
+    let address = parse_address(address)?;
     let index = LabelIndex::new(config);
     let rows: Vec<Row> = addrbook::find(config, &address)
         .into_iter()
@@ -460,15 +459,16 @@ fn import(args: &LabelImportArgs) -> Result<i32> {
         let labels = if added == 1 { "label" } else { "labels" };
         println!("\nAdded {added} {labels}{}{rest}.", overwrote("overwrote"));
     }
+    let index = LabelIndex::new(config);
     let shadowed: Vec<String> = planned
         .iter()
         .filter(|p| p.action.write().is_some())
         .filter_map(|p| {
-            let name = p.name.as_deref()?;
-            // A per-chain label always hides the built-in token of its name.
-            labels::builtin_token(p.chain_id, name)
-                .is_some_and(|t| Some(t.address) != p.address)
-                .then(|| format!("@{name} on {}", config.chain_display(p.chain_id)))
+            let (name, address) = (p.name.as_deref()?, p.address.as_ref()?);
+            let hides = !index
+                .shadows(name, LabelScope::Chain(p.chain_id), address)
+                .is_empty();
+            hides.then(|| format!("@{name} on {}", config.chain_display(p.chain_id)))
         })
         .collect();
     if !shadowed.is_empty() {

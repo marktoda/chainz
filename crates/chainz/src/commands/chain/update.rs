@@ -2,7 +2,6 @@
 //! TTY, from the v1-style menu. Either way it is one
 //! `ChainEdit` applied in one transaction.
 
-use crate::args::parse_headers;
 use crate::cli::{UpdateArgs, usage_error};
 use crate::load::open;
 use crate::probe::check;
@@ -21,7 +20,12 @@ pub fn update(args: &UpdateArgs) -> Result<i32> {
     let command: &[&str] = &["update"];
     let mut chainz = open()?;
     // Usage and the chain first: stdin is read only for a valid command.
-    let mut flags = build_edit(args, parse_headers(&args.headers)?);
+    let headers = args
+        .headers
+        .iter()
+        .map(|h| ChainEdit::parse_header(h))
+        .collect::<Result<_>>()?;
+    let mut flags = build_edit(args, headers);
     let menu_wanted = flags.is_empty() && !args.api_key_stdin && args.api_key.is_none();
     if !Tty.is_interactive() && (args.chain.is_none() || menu_wanted) {
         return Err(usage_error(

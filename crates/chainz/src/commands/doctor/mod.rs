@@ -385,9 +385,7 @@ fn signers(config: &Config, report: &mut Report) {
             b => report.ok(&format!("signer '{name}' ({b})")),
         }
         if s.address.is_none() {
-            report.note(&format!(
-                "signer '{name}' has no cached address (@wallet and ETH_FROM are unavailable)"
-            ));
+            report.note(&chainz_core::signer::no_cached_address(name));
         }
     }
 }

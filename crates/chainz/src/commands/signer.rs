@@ -1,7 +1,6 @@
 //! `signer …`: key references with cached addresses. Key material is only
 //! read here (add, migrate) and by `exec --expose-key`.
 
-use crate::args::parse_address;
 use crate::cli::{
     JsonArgs, SignerAddArgs, SignerCommand, SignerMigrateArgs, SignerRmArgs, usage_error,
 };
@@ -80,7 +79,10 @@ pub fn add(
     let address = args
         .address
         .as_deref()
-        .map(|a| parse_address(a, "--address"))
+        .map(|a| {
+            a.parse::<Address>()
+                .with_context(|| format!("--address '{a}' is not an address"))
+        })
         .transpose()?;
     let provision = match kind {
         Backend::Keystore => {

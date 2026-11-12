@@ -6,7 +6,6 @@
 //! talk to the network build a single-threaded tokio runtime on demand
 //! through [`net::block_on`].
 
-mod args;
 mod cli;
 mod commands;
 mod complete;

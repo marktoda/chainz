@@ -6,6 +6,7 @@ use anyhow::{Result, anyhow, bail};
 use chainz_core::Address;
 use chainz_core::labels::{self, LabelIndex, NATIVE_DECIMALS};
 use chainz_core::model::Config;
+use chainz_core::names;
 use chainz_rpc::abi::{self, units};
 use chainz_rpc::{BlockId, RpcClient, Target};
 use serde_json::{Value, json};
@@ -57,7 +58,7 @@ fn parse_spec(spec: &str) -> Result<Vec<(String, String)>> {
         let (name, amount) = part.split_once('=').ok_or_else(|| {
             anyhow!("--fund: '{part}' is not NAME=AMOUNT (e.g. usdc=10000,weth=5)")
         })?;
-        let name = name.trim().trim_start_matches('@').to_ascii_lowercase();
+        let name = names::label_name(name.trim());
         let amount = amount.trim();
         if name.is_empty() || amount.is_empty() {
             bail!("--fund: '{part}' is not NAME=AMOUNT (e.g. usdc=10000,weth=5)");
