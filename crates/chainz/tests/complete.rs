@@ -136,6 +136,9 @@ fn chain_arguments_complete_names_and_aliases() {
     assert_set(fish(&sb, &["env", "b"]), &["base"]);
     assert_set(fish(&sb, &["ls", "e"]), &["eth"]);
     assert_set(fish(&sb, &["rm", ""]), &["eth", "base", "mainnet"]);
+    assert_set(fish(&sb, &["update", "b"]), &["base"]);
+    assert_set(fish(&sb, &["doctor", "e"]), &["eth"]);
+    assert_set(fish(&sb, &["edit", "e"]), &["eth"]);
     assert_set(fish(&sb, &["label", "ls", "--chain", "b"]), &["base"]);
     assert_set(fish(&sb, &["label", "--chain=b"]), &["--chain=base"]);
     // `add` takes a chainlist ID or name, not a configured chain.
