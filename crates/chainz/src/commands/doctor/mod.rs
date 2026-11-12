@@ -212,24 +212,34 @@ fn files(chainz: &Chainz, fix: bool, report: &mut Report) {
     for (what, path) in locations(chainz) {
         println!("  {}", ui::dim(&format!("{what:<8} {}", path.display())));
     }
-    for (path, want) in [
-        (&p.dir(), chainz_os::PRIVATE_DIR_MODE),
-        (&p.secrets(), chainz_os::PRIVATE_FILE_MODE),
-        (&p.config(), chainz_os::PRIVATE_FILE_MODE),
-    ] {
-        let Some(m) = mode(path) else { continue };
-        if !chainz_os::is_private_mode(m) {
-            let msg = format!("{} is mode {m:o}, expected {want:o}", path.display());
-            report.problem(&msg);
-            if !fix {
-                report.would_chmod += 1;
-            } else {
-                use std::os::unix::fs::PermissionsExt;
-                match std::fs::set_permissions(path, std::fs::Permissions::from_mode(want)) {
-                    Ok(()) => report.fixed(&msg),
-                    Err(e) => report.note(&format!("could not chmod {}: {e}", path.display())),
-                }
+    let dir = p.dir();
+    if let Some(m) = mode(dir).filter(|m| !chainz_os::is_private_mode(*m)) {
+        let msg = format!(
+            "{} is mode {m:o}, expected {:o}",
+            dir.display(),
+            chainz_os::PRIVATE_DIR_MODE
+        );
+        report.problem(&msg);
+        if !fix {
+            report.would_chmod += 1;
+        } else {
+            match chainz_os::create_private_dir(dir) {
+                Ok(()) => report.fixed(&msg),
+                Err(e) => report.note(&format!("could not chmod {}: {e}", dir.display())),
             }
+        }
+    }
+    // Loading tightened config.toml, and reading secrets.toml tightens it,
+    // when they are the user's own: a mode still loose after that is one
+    // chainz could not change (the reason is on stderr).
+    let _ = chainz.secrets();
+    for path in [p.secrets(), p.config()] {
+        if let Some(m) = mode(path).filter(|m| !chainz_os::is_private_mode(*m)) {
+            report.problem(&format!(
+                "{} is mode {m:o}, expected {:o}, and could not be tightened",
+                path.display(),
+                chainz_os::PRIVATE_FILE_MODE
+            ));
         }
     }
     if chainz.exists()
