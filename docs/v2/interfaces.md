@@ -490,7 +490,10 @@ server both use it.
   `redact::REDACTED`; an unparseable URL fails closed. `extract` owns the
   credential shapes; `extract::manual_credential(url)` is the detector for
   what only a person can move (migration notes and `doctor`). `redact` and
-  `summarize` stay as the stricter `Debug` and compact views.
+  `summarize` stay as the stricter `Debug` and compact views. The bin's
+  `view::EndpointView` applies `url`/`header` once for `chain show`, `ls
+  --json` and `rpc ls` (whose JSON rows are an `EndpointView`, so they
+  carry `websocket`, plus health); the compact `ls` column uses `summarize`.
 - Shared helpers, so crates don't keep private copies:
   `chainz_core::fmt::{group, uptime, short_address}` (thousands separators,
   `42s`/`12m05s`/`2h03m`/`3d04h`, `short_address(&Address)` → `0x1234…abcd`);
@@ -506,13 +509,26 @@ server both use it.
 
 ## Bin crate: adding a command handler
 
-1. The clap surface lives in `crates/chainz/src/cli.rs`. Add flags only for
-   your own command.
+1. The clap surface lives in `crates/chainz/src/cli.rs`: one `…Args`
+   struct per command, documented positionals, and conversions to core
+   options (`From<&ContextArgs> for ExecOptions`, `From<BackendArg> for
+   Backend`) done there once. Declare value completion on the argument
+   (`#[arg(add = ArgValueCompleter::new(complete::signers))]`), never by
+   command path. Removed commands and flags get no hidden aliases.
 2. Put the handler in a module, for example `commands/serve.rs` with
-   `pub fn run(...) -> anyhow::Result<i32>`, and route it in
-   `commands::dispatch`. The return value is the exit code. An `Err` prints
-   `Error: …` and exits 1, or with the code of a `ui::ExitCode` in its chain
-(exec uses 127/126). `ui::cancelled()` exits 130.
+   `pub fn run(args: &ServeArgs) -> anyhow::Result<i32>`, and route it in
+   `commands::dispatch` (that module only dispatches). Shared helpers live
+   outside `commands/`: `load` (open the store, notices to stderr),
+   `select` (chain picker, `$CHAINZ_CHAIN`/default), `args` (address and
+   header parsing), `prompt` (`is_tty`, `confirm_or_yes(yes, msg,
+   Consent::{Destructive, Proposal})`, the `Ask` seam that interactive
+   flows take so tests script them), `net` (`block_on`, `join_indexed`),
+   `probe`, `view` (`EndpointView`, `marker`, `table`, `QUICK_START`).
+   The return value is the exit code: 0, or the code of a failure the
+   handler reported itself (`doctor`, `addr find`). An `Err` prints
+   `Error: …` and exits 1, or with the code of a `ui::ExitCode` in its
+   chain (exec uses 127/126); `ui::cancelled()` exits 130 and a broken
+   stdout pipe exits 0, all in `main` through `ui::report`/`ui::exit_code`.
 3. Network work goes through `net::block_on(async { … })`, which creates a
    current-thread tokio runtime. A long-running server (`serve`, `top`) can
    build a multi-threaded runtime in its own crate. `exec`, `env`, `ls`, and

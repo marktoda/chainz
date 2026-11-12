@@ -97,31 +97,38 @@ chainz fork CHAIN [--block N] [--port P] [--name NAME] [--chain-id N] [--fund [S
                                      # SPEC: usdc=10000,weth=5; `ls` and `stop` are reserved names
 chainz fork ls | stop NAME|--all
 
+# setup and editing
+chainz init                          # TTY wizard: chains, a signer, an Etherscan key, a default
+chainz update [CHAIN] [flags]        # same as `chain set`
+chainz edit [CHAIN]                  # $EDITOR on config.toml (or one chain's table), validated on save
+
 # management
 chainz chain ls [--json] [--reveal]
-chainz chain add [CHAIN_ID|NAME] [--name N] [--rpc URL]... [--signer S]
+chainz chain add [CHAIN_ID|NAME] [--name N] [--url URL]... [--signer S | --no-signer]
 chainz chain show CHAIN [--json] [--reveal]
-chainz chain edit CHAIN              # $EDITOR on that chain's TOML table, validated on save
-chainz chain rename CHAIN NEW | alias CHAIN ALIAS... | rm CHAIN
+chainz chain set [CHAIN] [--signer S | --no-signer] [--rpc NAME|URL] [--header 'k: v']... [--clear-headers]
+                 [--failover A,B | --no-failover] [--explorer E | --no-explorer] [--api-key-stdin]
+                 [--name NEW] [--alias A]... [--rm-alias A]...   # no flags on a TTY: a menu
+chainz chain rm CHAIN
 chainz rpc ls [CHAIN]                # endpoints, with latest health
-chainz rpc add CHAIN URL [--name N] [--header 'k: v']... [--failover]
-chainz rpc use CHAIN NAME | rm CHAIN NAME
-chainz rpc bench [CHAIN] [--fix]     # rank and tag endpoints; --fix activates the best and proposes a failover list
-chainz rpc discover CHAIN            # pull public RPCs from chainlist, probe, offer to add
-chainz signer add NAME [--stdin] [--backend keyring|encrypted|1password|keystore|plaintext]
-chainz signer ls | rm NAME | migrate [NAME|--all] [--to BACKEND]
+chainz rpc add CHAIN URL [--name N] [--header 'k: v']... [--failover | --activate]
+chainz rpc rm CHAIN NAME
+chainz rpc bench [CHAIN] [--fix [--yes]]   # rank and tag endpoints; --fix activates the best and proposes a failover list
+chainz rpc discover CHAIN [--yes]    # pull public RPCs from chainlist, probe, offer to add
+chainz signer add NAME [--stdin] [--backend keyring|encrypted|1password|keystore|plaintext] [--no-attach]
+chainz signer ls | rm NAME [--detach] [--yes] | migrate [NAME|--all] [--to BACKEND]
 chainz addr add NAME ADDRESS [--chain C | --all-chains]
 chainz addr ls [--chain C] [--builtin] | rm NAME [--chain C] | find 0x…
 chainz label [--chain C]             # stdin filter: 0x… → name(0x…)
 chainz var set NAME [--stdin] | get NAME [--reveal] | ls | rm NAME
 chainz doctor [--fix] [--tokens]
-chainz config path | edit | migrate [--dry-run]
+chainz config path [--all] | migrate [--dry-run]
 chainz completions SHELL
 ```
 
-**Renames from v1:** `key` becomes `signer` (it holds keystore and 1Password references, not only raw keys). `list` becomes `ls`, with `list` kept as an alias. `update` splits into `chain`, `rpc` and `signer` subcommands. `--show-secrets` and `--show` both become `--reveal`. `init` goes away: the first `chain add` creates the config, and `chainz` run with no arguments on an empty config prints a three-line quick start.
+**Renames from v1:** `key` becomes `signer` (it holds keystore and 1Password references, not only raw keys). `list` becomes `ls`, with `list` kept as an alias. `update` is `chain set`: one verb for every chain setting, flag-driven or, with no flags on a TTY, v1's menu (RPC / Signer / Explorer / Name / Aliases / Done), applied in one write. `--show-secrets` and `--show` both become `--reveal`. `init` stays as a TTY wizard; off a TTY it prints the quick start, as `chainz` with no arguments does on an empty config. The first signer attaches to every chain without one, and `chain add` attaches the only signer and the `etherscan` explorer when it exists.
 
-**Interactive vs scripted:** any command missing a required argument opens a picker on a TTY and fails with a precise usage message otherwise. No command ever blocks on a hidden prompt in a pipeline.
+**Interactive vs scripted:** pickers open where the design needs a choice (`exec`/`shell`/`env`/`use` with no chain, `chain add` with no chain, `chain set` with no chain); off a TTY those fail with a precise usage message. `--yes` means "accept without asking" everywhere. No command ever blocks on a hidden prompt in a pipeline.
 
 ## Config v2
 
@@ -281,12 +288,12 @@ One `rpc` module gives every feature the same client, the same idea of endpoint 
 
 **Inspector.** Every request becomes a record: time, chain, method, a short params summary (with addresses shown as labels, such as `eth_call → @usdc.balanceOf`), upstream endpoint, attempts, latency, status and response size. The last 10,000 records are kept in memory. `--log FILE` appends JSONL. `chainz serve log -f --chain base --method eth_call` tails it in the terminal.
 
-**Control API** on a unix socket, `serve.sock` in the runtime dir (mode `0600`), never on the TCP port: `status` (version, uptime, chains), `metrics` (JSON snapshot), `events` (a stream of request records) and `reload`. This API is the contract `serve status`, `serve log` and the dashboard are built against; its types live in `chainz_rpc::control`, with a mock server for client tests. Clients give up after 5 s, so a wedged gateway can't hang them.
+**Control API** on a unix socket, `serve.sock` in the runtime dir (mode `0600`), never on the TCP port: `status` (version, uptime, chains), `metrics` (JSON snapshot), `events` (a stream of request records) and `reload`. This API is the contract `serve status`, `serve log` and the dashboard are built against; its types live in `chainz_rpc::control`; client tests run against the real control handler over canned state (`chainz-serve`'s `testing` feature). Clients give up after 5 s, so a wedged gateway can't hang them.
 
 **Lifecycle.** It runs in the foreground with a live one-line summary, or with `--detach` as a background process.
 
 - **Liveness:** the gateway holds an exclusive `flock` on `serve.lock` for its whole life. `exec` tries the lock without blocking. If it gets the lock, no gateway is running and `exec` goes direct. This replaces a PID check, which PID reuse can fool.
-- **Config changes:** the gateway watches `config.toml` and reloads on change, so `chainz rpc use` takes effect immediately.
+- **Config changes:** the gateway watches `config.toml` and reloads on change, so `chainz chain set --rpc` takes effect immediately.
 - **Shutdown:** `serve stop` sends SIGTERM, and in-flight requests drain for up to 5 seconds.
 
 ## Dashboard: `chainz top`
@@ -417,7 +424,7 @@ Top, serve and fork share one RPC layer, and top reads serve through its control
 | `chainz-tui` | `chainz top` | rpc, ratatui, crossterm |
 | `chainz` (bin) | clap surface, pickers, output formatting, `exec`/`shell`/`env`, `fork` supervisor | all of the above |
 
-**Config writes go through `toml_edit`**: each record is serialized from the typed model and merged into the existing table, so `chainz rpc use` or the dashboard's `s` key changes one value and keeps your comments, ordering and formatting. Validation is unchanged from v1: one `Config::validate`, run before every write, with an atomic rename.
+**Config writes go through `toml_edit`**: each record is serialized from the typed model and merged into the existing table, so `chainz chain set --rpc` or the dashboard's `s` key changes one value and keeps your comments, ordering and formatting. Validation is unchanged from v1: one `Config::validate`, run before every write, with an atomic rename.
 
 **Locking and write order.** Reads take no lock: each file is replaced by an atomic rename, so a reader always sees a whole file. Writes take an exclusive file lock, re-read both files, apply the change, validate, and then write.
 
@@ -446,19 +453,19 @@ The foundation is built serially and its interfaces are frozen. Then four featur
 1. Workspace split; `chainz-core` model, TOML config with `toml_edit`, `secrets.toml`, validation, locking and write ordering.
 2. v1 migration with `config migrate --dry-run`, tested against a fixture that mirrors the real config's shape: 17 chains, 149 endpoints including 16 with headers and 24 websocket, inline-key URLs, 8 literal verifier keys, 3 keyring signers, 4 variables.
 3. The exec contract: resolver, token grammar, environment table with the v1 aliases, `execvp`, `--explain`, `env`, `shell`. The performance gate is switched on here, not at the end.
-4. `chainz-rpc`: client, probe, ranking, capability tags, health history, and the **`Upstream` trait** (send one request to a chosen endpoint with retry policy) that both the gateway and the fork proxy implement against. Doctor and `rpc bench` move onto it.
+4. `chainz-rpc`: client, probe, ranking, capability tags, health history, and **`HttpUpstream`** (send one request to a chosen endpoint under a retry policy; a concrete type, not a trait), which both the gateway and the fork proxy use. Doctor and `rpc bench` move onto it.
 5. **The whole clap tree as stubs.** Every command in the CLI surface exists and returns `not yet implemented`, so the streams fill in handlers without all editing one file.
 6. **A minimal token registry:** `weth` and `usdc` for the 17 chains, enough for the dashboard and forks. The Address book stream extends it.
-7. Interfaces: `LabelIndex` (resolve and reverse) and the `Runtime` registry (`serve.lock`, `serve.json`, `forks/*.json`) are frozen. The control API types (`Status`, `MetricsSnapshot`, `RequestRecord`) are **provisional**, with a mock server; the Gateway stream owns them and may change them, telling the Dashboard stream when it does.
+7. Interfaces: `LabelIndex` (resolve and reverse) and the `Runtime` registry (`serve.lock`, `serve.json`, `forks/*.json`) are frozen. The control API types (`Status`, `MetricsSnapshot`, `RequestRecord`) are **provisional** (tested against the real handler); the Gateway stream owns them and may change them, telling the Dashboard stream when it does.
 
 **Phase 1: features (parallel)**
 
 | Stream | Builds | Consumes | Done when |
 | --- | --- | --- | --- |
-| Gateway | `chainz-serve` over `Upstream`: auth, failover pool, adaptive limiter, inspector, `serve log`, exec auto-routing | `Upstream`, control types (owner) | `rl.ts` quotes run through it; killing the active upstream mid-run fails zero reads; a send never leaves the active endpoint |
-| Dashboard | `chainz-tui`, all four tabs, `--once --json` | rpc, control API mock, label index, minimal tokens | all 17 chains render live; the traffic tab works against a real `serve` |
+| Gateway | `chainz-serve` over `HttpUpstream`: auth, failover pool, adaptive limiter, inspector, `serve log`, exec auto-routing | `HttpUpstream`, control types (owner) | `rl.ts` quotes run through it; killing the active upstream mid-run fails zero reads; a send never leaves the active endpoint |
+| Dashboard | `chainz-tui`, all four tabs, `--once --json` | rpc, control API test server, label index, minimal tokens | all 17 chains render live; the traffic tab works against a real `serve` |
 | Address book | `addr` commands, full `tokens.toml` with sources, `doctor --tokens`, `chainz label` | label index | `doctor --tokens` passes for every registry entry |
-| Forks | `fork` supervisor and its pinned-endpoint proxy over `Upstream`, registry, funding, `fork ls/stop`, replay guards | `Upstream`, runtime, label index, minimal tokens | `fork base --fund usdc=1000` then `cast send --unlocked` works end to end; killing the supervisor leaves no anvil running |
+| Forks | `fork` supervisor and its pinned-endpoint proxy over `HttpUpstream`, registry, funding, `fork ls/stop`, replay guards | `HttpUpstream`, runtime, label index, minimal tokens | `fork base --fund usdc=1000` then `cast send --unlocked` works end to end; killing the supervisor leaves no anvil running |
 
 **Phase 2: integration and release.** Merge the streams. Run the migration on the real config (dry run, compare, then migrate). Turn on the performance budget in CI. Rewrite the README around the five nouns. Publish 2.0.0 with a migration note in the changelog.
 
@@ -495,7 +502,7 @@ An independent Fable 5.2 reviewer read the first draft against the v1 source, th
 | 11 | Should-fix | Two files are not atomic as a pair | Fixed in Architecture: secrets written first, fail closed on a missing variable |
 | 12 | Should-fix | A 5 ms absolute CI gate will flake, and "links only core" means nothing in one binary | Fixed: a relative gate plus an `strace` structural test; the claim restated as compile-time API separation |
 | 13 | Should-fix | The CLI tree is missing flags; `--fund` shape; `fork CHAIN` collides with `fork ls` | Fixed in CLI surface |
-| 14 | Should-fix | Phase 0 freeze point: streams collide on the forwarder, the clap tree and tokens; control types frozen too early | Fixed in Delivery plan: an `Upstream` trait, clap stubs, a minimal token registry, provisional control types, perf gate in phase 0 |
+| 14 | Should-fix | Phase 0 freeze point: streams collide on the forwarder, the clap tree and tokens; control types frozen too early | Fixed in Delivery plan: one `HttpUpstream` type, clap stubs, a minimal token registry, provisional control types, perf gate in phase 0 |
 | 15 | Nit | Over-engineered for a personal tool (capability probing, two metric windows, Windows); two template syntaxes | Mostly accepted: one `${…}` syntax with the environment first; Windows is now an open question. Capability probing stays because fork pinning and gateway routing depend on it |
 
 
