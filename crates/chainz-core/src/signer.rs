@@ -371,17 +371,26 @@ impl Chainz {
             .map(|e| format!("the old keyring entry for '{name}' remains: {e:#}")))
     }
 
-    /// Cache `address` as signer `name`'s address (after unlocking its key
-    /// proved it).
-    pub fn cache_signer_address(&mut self, name: &str, address: Address) -> Result<()> {
+    /// Unlock signer `name`'s key once and cache the address it derives,
+    /// leaving the key where it is (a v1 encrypted key arrives without
+    /// an address). Returns the address.
+    pub fn cache_signer_address(
+        &mut self,
+        keys: &dyn KeyBackend,
+        prompter: &dyn Prompter,
+        name: &str,
+    ) -> Result<Address> {
         let mut signer = self
             .config()
             .signers
             .get(name)
             .cloned()
             .ok_or_else(|| anyhow!("signer '{name}' not found"))?;
+        let key = unlock(keys, prompter, name, &signer, self.secrets()?)?;
+        let address = Address::from_private_key(&key)?;
         signer.address = Some(address);
-        self.transact(|tx| tx.set_signer(name, &signer))
+        self.transact(|tx| tx.set_signer(name, &signer))?;
+        Ok(address)
     }
 
     /// Remove signer `name` (record and key material in one transaction),
@@ -583,26 +592,41 @@ mod tests {
         }
     }
 
+    /// The hint for an encrypted signer without an address leads here
+    /// (`signer migrate NAME --to encrypted`): one password, the address
+    /// cached, and secrets.toml left byte for byte.
     #[test]
     fn caching_an_address_keeps_the_key() {
-        let mut store = crate::testing::TempStore::new(
-            "version = 2\n\n[signers.cold]\nbackend = \"plaintext\"\n",
-            Some(&format!("[signers.cold]\nprivate_key = \"{KEY}\"\n")),
+        let b = mem(false, true);
+        b.prompts
+            .borrow_mut()
+            .extend(["pw".to_string(), "pw".to_string()]);
+        let secret = provision(&b, &b, "cold", KEY, Backend::Encrypted)
+            .unwrap()
+            .secret
+            .unwrap();
+        let secrets = format!(
+            "[signers.cold]\n{}",
+            toml_edit::ser::to_string(&secret).unwrap()
         );
-        let addr: Address = ADDR.parse().unwrap();
-        store.chainz.cache_signer_address("cold", addr).unwrap();
-        let reopened = Chainz::open_at(store.paths(), crate::store::LoadMode::Strict).unwrap();
-        assert_eq!(reopened.config().signers["cold"].address, Some(addr));
-        let b = mem(false, false);
-        let key = unlock(
-            &b,
-            &b,
-            "cold",
-            &reopened.config().signers["cold"],
-            reopened.secrets().unwrap(),
-        )
-        .unwrap();
-        assert_eq!(key.as_str(), KEY);
+        let store = crate::testing::TempStore::new(
+            "version = 2\n\n[signers.cold]\nbackend = \"encrypted\"\n",
+            Some(&secrets),
+        );
+        let secrets_path = store.paths().secrets().to_path_buf();
+        let before = std::fs::read(&secrets_path).unwrap();
+        let mut chainz = store.chainz;
+
+        b.prompts.borrow_mut().push("wrong".into());
+        assert!(chainz.cache_signer_address(&b, &b, "cold").is_err());
+        assert_eq!(chainz.config().signers["cold"].address, None);
+
+        b.prompts.borrow_mut().push("pw".into());
+        let addr = chainz.cache_signer_address(&b, &b, "cold").unwrap();
+        assert_eq!(addr.to_string(), ADDR);
+        assert!(b.prompts.borrow().is_empty(), "asked for one password only");
+        assert_eq!(chainz.config().signers["cold"].address, Some(addr));
+        assert_eq!(std::fs::read(&secrets_path).unwrap(), before);
     }
 
     fn mem(keyring: bool, interactive: bool) -> MemoryKeyBackend {

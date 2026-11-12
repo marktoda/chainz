@@ -351,15 +351,12 @@ fn migrate_one(
         println!("'{name}' is already {target}");
         return Ok(());
     }
-    let key = signer::unlock(backend, &Terminal, name, &old, chainz.secrets()?)?;
     if old.backend == target {
-        // Staying put: unlocking once is enough to cache the address
-        // (v1 encrypted keys arrive without one).
-        let address = Address::from_private_key(&key)?;
-        chainz.cache_signer_address(name, address)?;
+        let address = chainz.cache_signer_address(backend, &Terminal, name)?;
         println!("'{name}' is already {target}; cached its address {address}");
         return Ok(());
     }
+    let key = signer::unlock(backend, &Terminal, name, &old, chainz.secrets()?)?;
     let provision = signer::provision(backend, &Terminal, name, &key, target)?;
     if let Some(warning) = chainz.install_signer(backend, name, &provision)? {
         eprintln!("{}", ui::warn(&warning));
