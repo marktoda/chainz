@@ -73,7 +73,7 @@ fn start(args: ServeArgs) -> Result<i32> {
         bail!(chainz_serve::AlreadyRunning(Some(info)));
     }
     if args.detach {
-        return detach(&args);
+        return detach();
     }
     chainz_serve::run(chainz_serve::Options {
         port: args.port,
@@ -84,54 +84,17 @@ fn start(args: ServeArgs) -> Result<i32> {
 
 /// Start the gateway as a background process, logging to the state dir,
 /// and wait until it is serving.
-fn detach(args: &ServeArgs) -> Result<i32> {
-    use std::process::{Command, Stdio};
+fn detach() -> Result<i32> {
     let runtime = runtime()?;
     let state = paths::state_dir().context("unable to find the state directory")?;
     chainz_sys::create_private_dir(&state)?;
     let log_path = state.join("serve.log");
-    let log = sys::open_log(&log_path, sys::LogMode::Append)?;
-
-    let exe = std::env::current_exe().context("can't find the chainz executable")?;
-    let mut command = Command::new(exe);
-    command
-        .arg("serve")
-        .arg("--port")
-        .arg(args.port.to_string());
-    if let Some(file) = &args.log {
-        // The child keeps our working directory, so a relative path holds.
-        command.arg("--log").arg(file);
-    }
-    command
-        .stdin(Stdio::null())
-        .stdout(log.try_clone()?)
-        .stderr(log);
-    // Its own session: the terminal's Ctrl-C and hangup don't reach it.
-    sys::detach(&mut command);
-    let mut child = command.spawn().context("failed to start the gateway")?;
-
-    let deadline = Instant::now() + START_TIMEOUT;
-    loop {
-        if let Some(exit) = child.try_wait()? {
-            bail!(
-                "the gateway exited during startup ({exit}); see {}",
-                log_path.display()
-            );
-        }
-        if let GatewayState::Up(info) = gateway(&runtime)?
-            && info.pid == child.id()
-        {
-            println!(
-                "{}",
-                ui::success(&format!(
-                    "chainz serve: running on {LOOPBACK}:{} (pid {})",
-                    info.port, info.pid
-                ))
-            );
-            println!("{}", ui::dim(&format!("log: {}", log_path.display())));
-            return Ok(0);
-        }
-        if Instant::now() > deadline {
+    // The same command line in the background, ready once serve.json is
+    // out; the child keeps our working directory, so a relative --log holds.
+    let mut child = chainz_sys::launch_detached(&log_path, sys::LogMode::Append)
+        .context("failed to start the gateway")?;
+    match child.wait_ready(Some(START_TIMEOUT)) {
+        Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
             let _ = child.kill();
             bail!(
                 "the gateway did not come up within {} s; see {}",
@@ -139,8 +102,28 @@ fn detach(args: &ServeArgs) -> Result<i32> {
                 log_path.display()
             );
         }
-        std::thread::sleep(Duration::from_millis(20));
+        ready => {
+            ready.context("lost the background gateway")?;
+        }
     }
+    if let GatewayState::Up(info) = gateway(&runtime)?
+        && info.pid == child.pid()
+    {
+        println!(
+            "{}",
+            ui::success(&format!(
+                "chainz serve: running on {LOOPBACK}:{} (pid {})",
+                info.port, info.pid
+            ))
+        );
+        println!("{}", ui::dim(&format!("log: {}", log_path.display())));
+        return Ok(0);
+    }
+    let exit = child.wait()?;
+    bail!(
+        "the gateway exited during startup ({exit}); see {}",
+        log_path.display()
+    )
 }
 
 fn stop() -> Result<i32> {

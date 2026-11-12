@@ -275,6 +275,7 @@ pub fn spawn_anvil(spec: &AnvilSpec<'_>, log: &File) -> Result<Child> {
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log.try_clone()?)
+        .env_remove(chainz_sys::DETACHED_ENV)
         .process_group(0);
     #[cfg(target_os = "linux")]
     {
@@ -313,20 +314,6 @@ pub fn stop_child(child: &mut Child) {
     }) {
         signal_anvil(pid, libc::SIGKILL);
         let _ = child.wait();
-    }
-}
-
-/// Point this process's stdout and stderr at `log` (detached supervisor,
-/// once the summary is out). Closing the inherited stdout pipe is what
-/// tells the waiting parent the fork is up.
-pub fn redirect_output(log: &File) {
-    use std::io::Write;
-    use std::os::fd::AsRawFd;
-    let _ = io::stdout().flush();
-    // SAFETY: dup2 onto the standard descriptors.
-    unsafe {
-        libc::dup2(log.as_raw_fd(), 1);
-        libc::dup2(log.as_raw_fd(), 2);
     }
 }
 

@@ -115,6 +115,8 @@ async fn foreground(config: GatewayConfig) -> Result<()> {
     say(
         "`chainz exec` now routes through the gateway (--direct bypasses it); stop with Ctrl-C or `chainz serve stop`",
     );
+    // `serve --detach` waits for this: serve.json is out.
+    chainz_sys::detached_ready().context("unable to redirect output to the log")?;
 
     let mut ticker = tokio::time::interval(Duration::from_secs(1));
     loop {

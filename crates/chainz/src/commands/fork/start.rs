@@ -22,8 +22,6 @@ use std::time::{Duration, Instant};
 
 /// Fork ports are allocated from here upward.
 const FIRST_PORT: u16 = 8601;
-/// Set in the re-exec'd background supervisor of `--detach`.
-const SUPERVISOR_ENV: &str = "CHAINZ_FORK_SUPERVISOR";
 /// How long anvil may take to come up (it fetches the fork block first).
 const READY_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -123,10 +121,10 @@ pub fn start(args: ForkArgs) -> Result<i32> {
         _ => {}
     }
 
-    let detached = std::env::var_os(SUPERVISOR_ENV).is_some();
-    if args.detach && !detached {
+    if args.detach {
         return detach(&runtime, &name);
     }
+    let detached = chainz_sys::is_detached();
 
     process::install_signal_handlers();
     let claim = runtime
@@ -155,42 +153,28 @@ fn already_running(name: &str) -> anyhow::Error {
     )
 }
 
-/// `--detach`: re-exec this command as a background supervisor in its own
-/// session and return once it has registered the fork. The child's stdout
-/// is a pipe it closes after printing the summary; its stderr is the log.
+/// `--detach`: run this command again as a background supervisor and
+/// return once it is ready: it prints the summary, then closes the pipe.
+/// Its stderr, and later its stdout, is the log.
 fn detach(runtime: &Runtime, name: &str) -> Result<i32> {
-    use std::io::Read;
-    use std::process::{Command, Stdio};
     let log_path = process::log_path(name)?;
-    let log = sys::open_log(&log_path, sys::LogMode::Truncate)?;
-    let exe = std::env::current_exe().context("unable to find the chainz binary")?;
-    let mut command = Command::new(exe);
-    command
-        .args(std::env::args_os().skip(1))
-        .env(SUPERVISOR_ENV, "1")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(log);
-    sys::detach(&mut command);
-    let mut child = command
-        .spawn()
+    let mut child = chainz_sys::launch_detached(&log_path, sys::LogMode::Truncate)
         .context("unable to start the background supervisor")?;
-    let mut summary = String::new();
-    if let Some(mut stdout) = child.stdout.take() {
-        let _ = stdout.read_to_string(&mut summary);
-    }
+    let summary = child
+        .wait_ready(None)
+        .context("lost the background supervisor")?;
     print!("{summary}");
     let registered = runtime
         .fork(name)
         .ok()
         .flatten()
-        .is_some_and(|record| record.pid == child.id());
+        .is_some_and(|record| record.pid == child.pid());
     if registered {
         eprintln!(
             "{}",
             ui::dim(&format!(
                 "detached (pid {}); log {}; stop with `chainz fork stop {name}`",
-                child.id(),
+                child.pid(),
                 log_path.display()
             ))
         );
@@ -341,7 +325,7 @@ async fn start_fork(supervisor: &mut Supervisor, job: &Job<'_>) -> Result<Runnin
     );
     if job.detached {
         // Closing the stdout pipe releases the waiting `--detach` parent.
-        process::redirect_output(&log);
+        chainz_sys::detached_ready().context("unable to redirect output to the log")?;
         eprintln!("chainz fork: {name} up; {notice}");
     } else {
         use std::io::Write;

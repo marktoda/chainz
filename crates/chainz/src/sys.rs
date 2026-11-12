@@ -1,5 +1,5 @@
-//! Process plumbing shared by the background servers (`serve --detach`,
-//! `fork`): private log files, detaching from the terminal, signals.
+//! Process plumbing shared by the background servers (`serve`, `fork`):
+//! private log files and signals. Detaching is `chainz_sys::launch_detached`.
 
 use anyhow::{Context, Result};
 use std::fs::File;
@@ -11,22 +11,6 @@ pub use chainz_sys::LogMode;
 pub fn open_log(path: &Path, mode: LogMode) -> Result<File> {
     chainz_sys::open_private_log(path, mode)
         .with_context(|| format!("unable to open {}", path.display()))
-}
-
-/// Start `command` in a new session (`setsid`): no controlling terminal,
-/// its own process group, so the terminal's Ctrl-C and hangup never reach
-/// it.
-pub fn detach(command: &mut std::process::Command) {
-    use std::os::unix::process::CommandExt;
-    // SAFETY: setsid is async-signal-safe.
-    unsafe {
-        command.pre_exec(|| {
-            if libc::setsid() == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
 }
 
 /// Send `signal` to process `pid` (or, negative, to a process group).
