@@ -97,6 +97,12 @@ impl std::fmt::Debug for RpcClient {
     }
 }
 
+impl Default for RpcClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RpcClient {
     /// A client with a 10 s request timeout and a 5 s connect timeout.
     pub fn new() -> Self {
