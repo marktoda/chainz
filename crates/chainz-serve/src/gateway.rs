@@ -20,10 +20,10 @@ use chainz_rpc::control::{
     ChainStatus, EVENTS_PATH, EventsOptions, METRICS_PATH, RELOAD_PATH, RequestRecord, STATUS_PATH,
     SocketPath, Status,
 };
-use chainz_rpc::{HttpUpstream, RpcClient, Upstream};
+use chainz_rpc::{HttpUpstream, RpcClient};
 use http_body_util::{BodyExt, Limited};
 use hyper::body::{Body, Frame, Incoming};
-use hyper::header::{ALLOW, CONTENT_TYPE, HOST, HeaderValue, RETRY_AFTER};
+use hyper::header::{ALLOW, CONTENT_TYPE, HOST, HeaderValue};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
@@ -35,10 +35,10 @@ use tokio::sync::{broadcast, watch};
 use tokio::task::{JoinHandle, JoinSet};
 
 use crate::auth;
-use crate::http::{self, BoxBody, is_json, json, plain, retry_after_secs};
+use crate::http::{self, BoxBody, Reply, is_json, json, plain};
 use crate::inspector::Inspector;
 use crate::metrics::Summary;
-use crate::router::{Reply, Router};
+use crate::router::Router;
 use crate::state::Snapshot;
 use chainz_sys::{FileStamp, now_secs};
 
@@ -72,10 +72,6 @@ pub struct GatewayConfig {
     pub port: u16,
     /// Append request records to this file as JSONL.
     pub log: Option<PathBuf>,
-    /// Where requests are forwarded.
-    pub upstream: Arc<dyn Upstream>,
-    /// Client for head probes.
-    pub client: RpcClient,
     /// Per-attempt upstream timeout.
     pub timeout: Duration,
     /// How often each failover pool's heads are probed.
@@ -98,17 +94,13 @@ impl GatewayConfig {
     /// The production defaults: 30 s upstream timeout, probes every 5 s,
     /// config checked every 500 ms, 5 s drain.
     pub fn new(paths: StorePaths, runtime: Runtime, state_dir: Option<PathBuf>) -> Self {
-        let timeout = Duration::from_secs(30);
-        let client = RpcClient::with_timeout(timeout);
         GatewayConfig {
             paths,
             runtime,
             state_dir,
             port: DEFAULT_PORT,
             log: None,
-            upstream: Arc::new(HttpUpstream::new(client.clone())),
-            client,
-            timeout,
+            timeout: Duration::from_secs(30),
             probe_interval: Duration::from_secs(5),
             watch_interval: Duration::from_millis(500),
             drain: DRAIN,
@@ -271,8 +263,11 @@ impl Gateway {
             port,
             token: auth::new_token(),
         };
+        // One pool for forwarding and head probes, under the per-attempt
+        // timeout.
+        let client = RpcClient::with_timeout(config.timeout);
         let shared = Arc::new(Shared {
-            router: Router::new(snapshot, config.upstream, inspector, config.timeout),
+            router: Router::new(snapshot, HttpUpstream::new(client.clone()), inspector),
             paths: config.paths,
             state_dir: config.state_dir,
             info: ServeInfo::new(&addr, now_secs()),
@@ -319,7 +314,7 @@ impl Gateway {
             )),
             tokio::spawn(probe_loop(
                 shared.clone(),
-                config.client,
+                client,
                 config.probe_interval,
                 stopped.clone(),
             )),
@@ -465,15 +460,11 @@ async fn proxy(shared: &Shared, request: Request<Incoming>) -> Response<BoxBody>
         Ok(body) => body.to_bytes(),
         Err(_) => return plain(StatusCode::PAYLOAD_TOO_LARGE, "request body too large\n"),
     };
-    let reply = shared.router.handle(&snapshot, chain, pin, body).await;
-    let status = StatusCode::from_u16(reply.status).unwrap_or(StatusCode::BAD_GATEWAY);
-    let mut response = json(status, reply.body);
-    if let Some(wait) = reply.retry_after {
-        response
-            .headers_mut()
-            .insert(RETRY_AFTER, HeaderValue::from(retry_after_secs(wait)));
-    }
-    response
+    shared
+        .router
+        .handle(&snapshot, chain, pin, body)
+        .await
+        .into_response()
 }
 
 /// Serve the control API on the unix socket until stopped.

@@ -8,7 +8,7 @@ use crate::{net, ui};
 use anyhow::{Result, anyhow, bail};
 use chainz_core::extract::Moved;
 use chainz_core::model::Endpoint;
-use chainz_core::redact::{self, redact};
+use chainz_core::redact::redact;
 use chainz_core::tx::EndpointRole;
 use chainz_core::{Chainz, names};
 use chainz_rpc::chainlist;
