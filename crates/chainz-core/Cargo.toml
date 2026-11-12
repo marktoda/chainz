@@ -17,7 +17,7 @@ indexmap.workspace = true
 toml_edit.workspace = true
 toml.workspace = true
 url.workspace = true
-k256 = { version = "0.13", default-features = false, features = ["ecdsa", "std"] }
+k256 = { version = "0.14", default-features = false, features = ["ecdsa", "std"] }
 sha3.workspace = true
 hex.workspace = true
 dirs = "6"

@@ -68,8 +68,8 @@ impl Address {
         let bytes = parse_private_key(private_key)?;
         let secret = k256::SecretKey::from_slice(&bytes[..]).map_err(|_| PrivateKeyError)?;
         let point = {
-            use k256::elliptic_curve::sec1::ToEncodedPoint;
-            secret.public_key().to_encoded_point(false)
+            use k256::elliptic_curve::sec1::ToSec1Point;
+            secret.public_key().to_sec1_point(false)
         };
         let hash = Keccak256::digest(&point.as_bytes()[1..]);
         let mut out = [0u8; 20];
