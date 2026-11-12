@@ -78,6 +78,7 @@ impl Runtime {
     pub fn claim_fork(&self, name: &str) -> io::Result<Option<ForkClaim>>; // None = a live fork has it
     pub fn fork(&self, name: &str) -> io::Result<Option<ForkRecord>>;     // live and ready only
     pub fn fork_live(&self, name: &str) -> io::Result<bool>;
+    pub fn reserve_port(&self, port: u16) -> io::Result<Option<PortReservation>>; // None: another chainz has it
     pub fn forks(&self) -> io::Result<Vec<ForkEntry>>;                    // read-only, with liveness
     pub fn reap_forks(&self, stop_orphan: impl FnMut(&ForkRecord)) -> io::Result<Vec<String>>;
     pub fn reap_fork(&self, name: &str, stop_orphan: impl FnMut(&ForkRecord)) -> io::Result<bool>;
@@ -99,6 +100,7 @@ pub struct ForkEntry { pub name: String, pub live: bool, pub supervisor: Option<
                        pub record: Result<Option<ForkRecord>, String> }
 impl ForkEntry { pub fn ready(&self) -> Option<&ForkRecord> }
 impl ForkClaim { pub fn name(&self) -> &str; pub fn register(&self, record: &ForkRecord) -> io::Result<()> }
+impl PortReservation { pub fn port(&self) -> u16 }
 ```
 
 | File | Written by | Meaning |
@@ -108,6 +110,7 @@ impl ForkClaim { pub fn name(&self) -> &str; pub fn register(&self, record: &For
 | `serve.sock` | gateway | control socket (0600) |
 | `forks/<name>.lock` | fork supervisor | exclusive `flock` for the fork's whole life (`O_CLOEXEC`: anvil never inherits it); holds the supervisor's PID |
 | `forks/<name>.json` | fork supervisor | `ForkRecord`: written when anvil spawns, `ready` once the fork serves |
+| `ports/<port>.lock` | fork supervisor | exclusive `flock` on anvil's port, taken before anvil spawns and held for the fork's whole life: two chainz processes never pick one port |
 
 Records carry a `format`; a reader refuses a format it does not know (an
 error, never "not running"). Liveness is always the lock, never a PID check.

@@ -10,6 +10,7 @@
 //! | `serve.sock` | gateway | control API unix socket (mode 0600) |
 //! | `forks/<name>.lock` | fork supervisor | exclusive `flock` held for the fork's whole life; holds its PID |
 //! | `forks/<name>.json` | fork supervisor | [`ForkRecord`] |
+//! | `ports/<port>.lock` | fork supervisor | exclusive `flock` on its anvil's port, from before anvil is spawned for the fork's whole life |
 //!
 //! Liveness of the gateway and of each fork is its lock, never a PID check: `exec` makes one
 //! non-blocking `flock` attempt; if it gets the lock, no gateway runs.
@@ -27,7 +28,7 @@ use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 
 mod fork_registry;
-pub use fork_registry::{ForkClaim, ForkEntry, ForkRecord};
+pub use fork_registry::{ForkClaim, ForkEntry, ForkRecord, PortReservation};
 
 /// The address every chainz server binds and hands out (IPv4 only).
 pub const LOOPBACK: Ipv4Addr = Ipv4Addr::LOCALHOST;

@@ -1,4 +1,5 @@
-//! The fork registry: `forks/<name>.lock` and `forks/<name>.json`.
+//! The fork registry: `forks/<name>.lock` and `forks/<name>.json`, and
+//! the fork port reservations, `ports/<port>.lock`.
 //!
 //! A fork's supervisor holds an exclusive `flock` on `forks/<name>.lock`
 //! for the fork's whole life, the same model as `serve.lock`: liveness is
@@ -130,6 +131,49 @@ impl Drop for ForkClaim {
     }
 }
 
+/// A fork supervisor's hold on its anvil's port: the lock on
+/// `ports/<port>.lock`, taken before anvil is spawned and kept for the
+/// fork's whole life, so two chainz processes never pick the same port
+/// (anvil binds it only after fetching the fork's first block, long after
+/// the port was seen free). Dropping it removes the file, then releases
+/// the port.
+#[derive(Debug)]
+pub struct PortReservation {
+    _file: File,
+    lock: PathBuf,
+    port: u16,
+}
+
+impl PortReservation {
+    /// The reserved port.
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+}
+
+impl Drop for PortReservation {
+    fn drop(&mut self) {
+        // Best effort, while the lock is still ours.
+        let _ = remove_if_exists(&self.lock);
+    }
+}
+
+/// One non-blocking attempt at an exclusive lock on the file at `path`
+/// (created 0600): `Ok(None)` when someone else holds it. Retried when the
+/// holder before us removed the file after we opened it, since a lock on a
+/// file nobody else will see would rule nothing out.
+fn lock_path(path: &Path) -> io::Result<Option<File>> {
+    loop {
+        let file = chainz_sys::open_private(path)?;
+        if !chainz_sys::try_lock(&file)? {
+            return Ok(None);
+        }
+        if same_file(&file, path)? {
+            return Ok(Some(file));
+        }
+    }
+}
+
 /// How often, and how long apart, a claim retries a lock that a reader is
 /// probing (a probe holds a shared lock for microseconds).
 const CLAIM_ATTEMPTS: u32 = 50;
@@ -186,18 +230,12 @@ impl Runtime {
         let lock = self.fork_lock_path(name);
         let attempts = if patient { CLAIM_ATTEMPTS } else { 1 };
         for attempt in 1..=attempts {
-            let file = chainz_sys::open_private(&lock)?;
-            if !chainz_sys::try_lock(&file)? {
+            let Some(file) = lock_path(&lock)? else {
                 if attempt < attempts {
                     std::thread::sleep(CLAIM_RETRY);
                 }
                 continue;
-            }
-            // The holder before us may have removed the file after we
-            // opened it: then the lock is on a file nobody else will see.
-            if !same_file(&file, &lock)? {
-                continue;
-            }
+            };
             return Ok(Some(ForkClaim {
                 file,
                 record: self.fork_record_path(name),
@@ -206,6 +244,27 @@ impl Runtime {
             }));
         }
         Ok(None)
+    }
+
+    /// `ports/`.
+    fn ports_dir(&self) -> PathBuf {
+        self.dir.join("ports")
+    }
+
+    /// Reserve loopback `port` for this process's anvil: `Ok(None)` when
+    /// another chainz process holds it (a fork that runs, or is starting,
+    /// on it). One non-blocking attempt. The reservation says nothing
+    /// about other programs: the caller still checks the port is free.
+    pub fn reserve_port(&self, port: u16) -> io::Result<Option<PortReservation>> {
+        self.ensure_dir()?;
+        let dir = self.ports_dir();
+        chainz_sys::create_private_dir(&dir)?;
+        let lock = dir.join(format!("{port}.lock"));
+        Ok(lock_path(&lock)?.map(|file| PortReservation {
+            _file: file,
+            lock,
+            port,
+        }))
     }
 
     /// Claim `name` for this process (a fork supervisor): `Ok(None)` when a
@@ -402,6 +461,22 @@ mod tests {
         assert!(rt.claim_fork("base-fork").unwrap().is_some(), "free again");
         assert!(rt.fork("../x").unwrap().is_none());
         assert!(rt.claim_fork("../x").is_err());
+    }
+
+    #[test]
+    fn a_port_is_reserved_by_one_process_at_a_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = Runtime::at(dir.path());
+        let held = rt.reserve_port(8601).unwrap().expect("free");
+        assert_eq!(held.port(), 8601);
+        // A second open file description is refused, as another process is.
+        assert!(rt.reserve_port(8601).unwrap().is_none(), "taken");
+        assert!(rt.reserve_port(8602).unwrap().is_some(), "per port");
+        // Port locks are not fork names.
+        assert!(rt.forks().unwrap().is_empty());
+        drop(held);
+        assert!(std::fs::read_dir(rt.ports_dir()).unwrap().next().is_none());
+        assert!(rt.reserve_port(8601).unwrap().is_some(), "free again");
     }
 
     #[test]
