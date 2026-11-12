@@ -6,9 +6,9 @@ use crate::args::parse_headers;
 use crate::cli::{ChainSetArgs, usage_error};
 use crate::load::open;
 use crate::probe::check;
-use crate::prompt::{self, Ask, StdinTrim, Tty, read_stdin_secret};
+use crate::prompt::{self, Ask, Esc, StdinTrim, Tty, read_stdin_secret};
 use crate::select::{Missing, pick_chain};
-use crate::view;
+use crate::{ui, view};
 use anyhow::Result;
 use chainz_core::model::{Config, Explorer};
 use chainz_core::resolve::{self, Policy};
@@ -133,11 +133,20 @@ fn print_report(report: &EditReport) {
 /// The menu's entries, in order.
 const MENU: [&str; 6] = ["RPC", "Signer", "Explorer", "Name", "Aliases", "Done"];
 
+/// The index of `Done` in [`MENU`].
+const DONE: usize = MENU.len() - 1;
+
 /// The v1-style menu over chain `name`: each pick edits one field of the
 /// patch, and `Done` returns it (nothing is written until then).
+///
+/// Every picker starts on the field's value (pending, else current), so
+/// Enter keeps it. Esc in a picker goes back to the menu with that field
+/// unchanged; Esc in the menu leaves it, after asking when edits are
+/// pending. After an edit the cursor is on `Done`.
 pub(super) fn menu(ask: &mut dyn Ask, config: &Config, name: &str) -> Result<ChainEdit> {
     let chain = &config.chains[name];
     let mut edit = ChainEdit::default();
+    let mut cursor = 0;
     loop {
         let shown = Shown::of(config, name, &edit);
         let items: Vec<String> = MENU
@@ -150,9 +159,30 @@ pub(super) fn menu(ask: &mut dyn Ask, config: &Config, name: &str) -> Result<Cha
                 shown.aliases.clone(),
             ])
             .map(|(entry, now)| format!("{entry:<9} {now}"))
-            .chain(std::iter::once(MENU[5].to_string()))
+            .chain(std::iter::once(MENU[DONE].to_string()))
             .collect();
-        match ask.select(&format!("Change {name}"), &items, 0)? {
+        let Some(pick) = ask.choose(&format!("Change {name}"), &items, cursor, Esc::Exit)? else {
+            let pending = pending_fields(&edit);
+            if pending.is_empty()
+                || ask.confirm(
+                    &format!(
+                        "Discard {} pending change{} ({})?",
+                        pending.len(),
+                        if pending.len() == 1 { "" } else { "s" },
+                        pending.join(", ")
+                    ),
+                    false,
+                )?
+            {
+                return Err(ui::cancelled());
+            }
+            continue;
+        };
+        if pick == DONE {
+            return Ok(edit);
+        }
+        let before = edit.clone();
+        match pick {
             0 => {
                 let mut options: Vec<String> = chain
                     .rpcs
@@ -166,7 +196,17 @@ pub(super) fn menu(ask: &mut dyn Ask, config: &Config, name: &str) -> Result<Cha
                     })
                     .collect();
                 options.push("Enter a URL…".to_string());
-                let pick = ask.select("Active RPC", &options, 0)?;
+                let current = match edit.rpc_choice(name, chain) {
+                    Ok(Some(RpcChoice::Existing(ep))) => chain.rpcs.get_index_of(&ep),
+                    Ok(Some(RpcChoice::New(..))) => Some(chain.rpcs.len()),
+                    _ => chain.rpcs.get_index_of(&chain.rpc),
+                };
+                let Some(pick) =
+                    ask.choose("Active RPC", &options, current.unwrap_or(0), Esc::Back)?
+                else {
+                    cursor = pick;
+                    continue;
+                };
                 edit.rpc = match chain.rpcs.get_index(pick) {
                     Some((ep, _)) if *ep == chain.rpc => None,
                     Some((ep, _)) => Some(ep.clone()),
@@ -186,7 +226,15 @@ pub(super) fn menu(ask: &mut dyn Ask, config: &Config, name: &str) -> Result<Cha
                     })
                     .collect();
                 options.push("No signer".to_string());
-                let pick = ask.select("Signer", &options, 0)?;
+                let current = edit.signer.as_ref().unwrap_or(&chain.signer);
+                let current = current
+                    .as_ref()
+                    .and_then(|s| config.signers.get_index_of(s))
+                    .unwrap_or(config.signers.len());
+                let Some(pick) = ask.choose("Signer", &options, current, Esc::Back)? else {
+                    cursor = pick;
+                    continue;
+                };
                 let signer = config.signers.get_index(pick).map(|(n, _)| n.clone());
                 edit.signer = (signer != chain.signer).then_some(signer);
             }
@@ -197,7 +245,15 @@ pub(super) fn menu(ask: &mut dyn Ask, config: &Config, name: &str) -> Result<Cha
                 }
                 let mut options = names.clone();
                 options.push("No explorer".to_string());
-                let pick = ask.select("Explorer", &options, 0)?;
+                let current = edit.explorer.as_ref().unwrap_or(&chain.explorer);
+                let current = current
+                    .as_ref()
+                    .and_then(|e| names.iter().position(|n| n == e))
+                    .unwrap_or(names.len());
+                let Some(pick) = ask.choose("Explorer", &options, current, Esc::Back)? else {
+                    cursor = pick;
+                    continue;
+                };
                 let explorer = names.get(pick).cloned();
                 edit.api_key = None;
                 if explorer.is_some()
@@ -214,7 +270,7 @@ pub(super) fn menu(ask: &mut dyn Ask, config: &Config, name: &str) -> Result<Cha
                 let new = new.trim();
                 edit.name = (!new.is_empty() && new != name).then(|| new.to_string());
             }
-            4 => {
+            _ => {
                 let current = shown.aliases_list(chain);
                 let answer = ask.text("Aliases (comma-separated)", Some(&current.join(", ")))?;
                 let wanted: Vec<String> = answer
@@ -236,9 +292,26 @@ pub(super) fn menu(ask: &mut dyn Ask, config: &Config, name: &str) -> Result<Cha
                     .cloned()
                     .collect();
             }
-            _ => return Ok(edit),
         }
+        cursor = if edit == before { pick } else { DONE };
     }
+}
+
+/// The menu fields `edit` changes, for "discard N pending changes (…)?".
+fn pending_fields(edit: &ChainEdit) -> Vec<&'static str> {
+    [
+        ("RPC", edit.rpc.is_some()),
+        ("signer", edit.signer.is_some()),
+        ("explorer", edit.explorer.is_some() || edit.api_key.is_some()),
+        ("name", edit.name.is_some()),
+        (
+            "aliases",
+            !edit.add_aliases.is_empty() || !edit.remove_aliases.is_empty(),
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(field, pending)| pending.then_some(field))
+    .collect()
 }
 
 /// What the menu shows for each field: the chain's value, or the pending
@@ -306,72 +379,7 @@ impl Shown {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::VecDeque;
-
-    /// Scripted answers, in order; running out is a test failure.
-    #[derive(Default)]
-    struct Script {
-        answers: VecDeque<Answer>,
-        asked: Vec<String>,
-    }
-
-    enum Answer {
-        Pick(usize),
-        Text(&'static str),
-        Yes(bool),
-    }
-
-    impl Script {
-        fn new(answers: impl IntoIterator<Item = Answer>) -> Self {
-            Script {
-                answers: answers.into_iter().collect(),
-                asked: Vec::new(),
-            }
-        }
-
-        fn next(&mut self, message: &str) -> Answer {
-            self.asked.push(message.to_string());
-            self.answers
-                .pop_front()
-                .unwrap_or_else(|| panic!("no scripted answer for '{message}'"))
-        }
-    }
-
-    impl Ask for Script {
-        fn is_interactive(&self) -> bool {
-            true
-        }
-        fn multi_select(&mut self, message: &str, _: &[String], _: &[bool]) -> Result<Vec<usize>> {
-            panic!("'{message}' is not scripted")
-        }
-        fn select(&mut self, message: &str, items: &[String], _: usize) -> Result<usize> {
-            match self.next(message) {
-                Answer::Pick(i) => {
-                    assert!(i < items.len(), "'{message}' has no item {i}: {items:?}");
-                    Ok(i)
-                }
-                _ => panic!("'{message}' is a select"),
-            }
-        }
-        fn text(&mut self, message: &str, _: Option<&str>) -> Result<String> {
-            match self.next(message) {
-                Answer::Text(t) => Ok(t.to_string()),
-                _ => panic!("'{message}' is a text"),
-            }
-        }
-        fn secret(&mut self, message: &str) -> Result<Zeroizing<String>> {
-            match self.next(message) {
-                Answer::Text(t) => Ok(Zeroizing::new(t.to_string())),
-                _ => panic!("'{message}' is a secret"),
-            }
-        }
-        fn confirm(&mut self, message: &str, _: bool) -> Result<bool> {
-            match self.next(message) {
-                Answer::Yes(yes) => Ok(yes),
-                _ => panic!("'{message}' is a confirm"),
-            }
-        }
-    }
+    use crate::prompt::script::{Answer, Script};
 
     fn config() -> Config {
         Config::parse(
@@ -446,6 +454,99 @@ path = "/o"
             Pick(5),
         ]);
         assert!(menu(&mut script, &config(), "eth").unwrap().is_empty());
+    }
+
+    /// The picker defaults are the current values: Enter in each changes
+    /// nothing (it used to start on the first item, so Enter switched).
+    #[test]
+    fn enter_in_every_picker_keeps_the_current_value() {
+        let config = Config::parse(
+            r#"
+version = 2
+[chains.eth]
+id = 1
+signer = "ops"
+explorer = "blockscout"
+rpc = "infura"
+[chains.eth.rpcs]
+llama = "https://eth.llamarpc.com"
+infura = "https://mainnet.infura.io/v3/${INFURA_KEY}"
+[explorers.blockscout]
+api = "https://blockscout.example/api"
+[signers.deployer]
+backend = "keystore"
+path = "/k"
+[signers.ops]
+backend = "keystore"
+path = "/o"
+"#,
+        )
+        .unwrap();
+        let mut script = Script::new([
+            Pick(0),
+            Answer::Enter, // Active RPC
+            Pick(1),
+            Answer::Enter, // Signer
+            Pick(2),
+            Answer::Enter, // Explorer
+            Yes(false),    // no API key
+            Pick(5),
+        ]);
+        assert!(menu(&mut script, &config, "eth").unwrap().is_empty());
+        // Menu, RPC (infura), menu, Signer (ops), menu, Explorer
+        // (blockscout), menu.
+        assert_eq!(script.defaults, [0, 1, 0, 1, 1, 0, 2]);
+        // No signer, no explorer: the "No …" entries.
+        let mut script = Script::new([Pick(1), Answer::Enter, Pick(2), Answer::Enter, Pick(5)]);
+        let mut bare = config.clone();
+        let eth = bare.chains.get_mut("eth").unwrap();
+        eth.signer = None;
+        eth.explorer = None;
+        assert!(menu(&mut script, &bare, "eth").unwrap().is_empty());
+        // (etherscan is offered after blockscout.)
+        assert_eq!(script.defaults, [0, 2, 1, 2, 2]);
+    }
+
+    #[test]
+    fn esc_in_a_picker_goes_back_and_keeps_pending_edits() {
+        let mut script = Script::new([
+            Pick(3),
+            Text("ethereum"), // Name
+            Pick(1),
+            Answer::Esc, // Signer: back
+            Pick(0),
+            Pick(1), // infura
+            Answer::Enter, // the cursor is on Done
+        ]);
+        let edit = menu(&mut script, &config(), "eth").unwrap();
+        assert_eq!(edit.name.as_deref(), Some("ethereum"));
+        assert_eq!(edit.rpc.as_deref(), Some("infura"));
+        assert_eq!(edit.signer, None);
+        // After the rename: Done; after Esc in Signer: Signer; after the
+        // RPC pick: Done.
+        assert_eq!(script.defaults, [0, 5, 0, 1, 0, 5]);
+    }
+
+    #[test]
+    fn esc_in_the_menu_asks_before_discarding() {
+        // Nothing pending: Esc leaves at once.
+        let err = menu(&mut Script::new([Answer::Esc]), &config(), "eth").unwrap_err();
+        assert!(ui::is_cancelled(&err));
+        // Pending: asked; declining goes back to the menu.
+        let mut script = Script::new([
+            Pick(3),
+            Text("ethereum"),
+            Answer::Esc,
+            Yes(false),
+            Pick(5),
+        ]);
+        let edit = menu(&mut script, &config(), "eth").unwrap();
+        assert_eq!(edit.name.as_deref(), Some("ethereum"));
+        assert_eq!(script.asked[3], "Discard 1 pending change (name)?");
+        // Accepting discards them.
+        let mut script = Script::new([Pick(3), Text("ethereum"), Answer::Esc, Yes(true)]);
+        let err = menu(&mut script, &config(), "eth").unwrap_err();
+        assert!(ui::is_cancelled(&err));
     }
 
     #[test]

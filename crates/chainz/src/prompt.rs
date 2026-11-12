@@ -40,13 +40,19 @@ pub enum Consent<'a> {
     Proposal { note: &'a str },
 }
 
-/// Whether to go ahead: `--yes` accepts without asking; otherwise ask on
-/// a TTY (default no), and off a TTY follow `consent`.
-pub fn confirm_or_yes(yes: bool, message: &str, consent: Consent<'_>) -> Result<bool> {
+/// Whether to go ahead: `--yes` accepts without asking; otherwise ask
+/// through `ask` when it is interactive (default no), and off a terminal
+/// follow `consent`.
+pub fn confirm_or_yes(
+    ask: &mut dyn Ask,
+    yes: bool,
+    message: &str,
+    consent: Consent<'_>,
+) -> Result<bool> {
     if yes {
         return Ok(true);
     }
-    if !is_tty() {
+    if !ask.is_interactive() {
         return match consent {
             Consent::Destructive { hint } => bail!("{hint}"),
             Consent::Proposal { note } => {
@@ -55,10 +61,29 @@ pub fn confirm_or_yes(yes: bool, message: &str, consent: Consent<'_>) -> Result<
             }
         };
     }
-    match (confirm(message, false)?, consent) {
+    match (ask.confirm(message, false)?, consent) {
         (true, _) => Ok(true),
         (false, Consent::Destructive { .. }) => Err(ui::cancelled()),
         (false, Consent::Proposal { .. }) => Ok(false),
+    }
+}
+
+/// What Esc means in a picker ([`Ask::choose`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Esc {
+    /// Leave the flow (the picker's hint says "ESC to exit").
+    Exit,
+    /// Go back one step, as in a `chain set` menu's sub-picker ("ESC:
+    /// back").
+    Back,
+}
+
+impl Esc {
+    fn hint(self) -> &'static str {
+        match self {
+            Esc::Exit => "ESC to exit",
+            Esc::Back => "ESC: back",
+        }
     }
 }
 
@@ -69,8 +94,21 @@ pub trait Ask {
     /// stderr are both terminals). Off a terminal a flow takes its
     /// non-interactive path instead of asking.
     fn is_interactive(&self) -> bool;
-    /// Pick one of `items`.
-    fn select(&mut self, message: &str, items: &[String], default: usize) -> Result<usize>;
+    /// Pick one of `items`, starting on `default`; `None` when the user
+    /// pressed Esc (`esc` says what that means, for the hint).
+    fn choose(
+        &mut self,
+        message: &str,
+        items: &[String],
+        default: usize,
+        esc: Esc,
+    ) -> Result<Option<usize>>;
+    /// Pick one of `items`, starting on `default`; Esc is
+    /// [`ui::cancelled`].
+    fn select(&mut self, message: &str, items: &[String], default: usize) -> Result<usize> {
+        self.choose(message, items, default, Esc::Exit)?
+            .ok_or_else(ui::cancelled)
+    }
     /// Pick any of `items` (`defaults` says which start picked).
     fn multi_select(
         &mut self,
@@ -94,8 +132,20 @@ impl Ask for Tty {
         is_tty()
     }
 
-    fn select(&mut self, message: &str, items: &[String], default: usize) -> Result<usize> {
-        select(message, items, default)
+    fn choose(
+        &mut self,
+        message: &str,
+        items: &[String],
+        default: usize,
+        esc: Esc,
+    ) -> Result<Option<usize>> {
+        terminal_prompt(
+            FuzzySelect::new()
+                .with_prompt(format!("{message} ({})", esc.hint()))
+                .items(items)
+                .default(default)
+                .interact_opt(),
+        )
     }
 
     fn multi_select(
@@ -131,18 +181,6 @@ impl Ask for Tty {
     fn confirm(&mut self, message: &str, default: bool) -> Result<bool> {
         confirm(message, default)
     }
-}
-
-/// Pick one of `items`.
-fn select(message: &str, items: &[String], default: usize) -> Result<usize> {
-    terminal_prompt(
-        FuzzySelect::new()
-            .with_prompt(format!("{message} (ESC to exit)"))
-            .items(items)
-            .default(default)
-            .interact_opt(),
-    )?
-    .ok_or_else(ui::cancelled)
 }
 
 /// How a value piped on stdin is normalized before use.
@@ -252,14 +290,132 @@ mod tests {
 
     #[test]
     fn yes_skips_the_prompt_and_no_tty_needs_it() {
+        use script::{Answer::Yes, Script};
         let destructive = Consent::Destructive { hint: "pass --yes" };
         let proposal = Consent::Proposal { note: "skipped" };
-        assert!(confirm_or_yes(true, "sure?", destructive).unwrap());
-        assert!(confirm_or_yes(true, "sure?", proposal).unwrap());
-        if !is_tty() {
-            let err = confirm_or_yes(false, "sure?", destructive).unwrap_err();
-            assert_eq!(err.to_string(), "pass --yes");
-            assert!(!confirm_or_yes(false, "sure?", proposal).unwrap());
+        let off_tty = &mut Script::off_tty();
+        assert!(confirm_or_yes(off_tty, true, "sure?", destructive).unwrap());
+        assert!(confirm_or_yes(off_tty, true, "sure?", proposal).unwrap());
+        let err = confirm_or_yes(off_tty, false, "sure?", destructive).unwrap_err();
+        assert_eq!(err.to_string(), "pass --yes");
+        assert!(!confirm_or_yes(off_tty, false, "sure?", proposal).unwrap());
+        // On a terminal: asked; declining a destructive step cancels.
+        let mut script = Script::new([Yes(true), Yes(false), Yes(false)]);
+        assert!(confirm_or_yes(&mut script, false, "sure?", destructive).unwrap());
+        let err = confirm_or_yes(&mut script, false, "sure?", destructive).unwrap_err();
+        assert!(ui::is_cancelled(&err));
+        assert!(!confirm_or_yes(&mut script, false, "sure?", proposal).unwrap());
+    }
+}
+
+/// Scripted answers for tests of interactive flows.
+#[cfg(test)]
+pub(crate) mod script {
+    use super::{Ask, Esc};
+    use anyhow::Result;
+    use std::collections::VecDeque;
+    use zeroize::Zeroizing;
+
+    /// One answer.
+    #[derive(Debug)]
+    pub(crate) enum Answer {
+        /// Pick item `i` (a select).
+        Pick(usize),
+        /// Press enter on a select: its default.
+        Enter,
+        /// Press Esc on a select.
+        Esc,
+        /// Type this (a text or a secret).
+        Text(&'static str),
+        /// Yes or no (a confirm).
+        Yes(bool),
+    }
+
+    /// Answers every question in order; running out, or a question of
+    /// the wrong kind, is a test failure. Records what was asked.
+    pub(crate) struct Script {
+        answers: VecDeque<Answer>,
+        interactive: bool,
+        /// Every question asked, in order.
+        pub(crate) asked: Vec<String>,
+        /// The default each select started on, in order.
+        pub(crate) defaults: Vec<usize>,
+    }
+
+    impl Script {
+        pub(crate) fn new(answers: impl IntoIterator<Item = Answer>) -> Self {
+            Script {
+                answers: answers.into_iter().collect(),
+                interactive: true,
+                asked: Vec::new(),
+                defaults: Vec::new(),
+            }
+        }
+
+        /// No terminal: nothing may be asked.
+        pub(crate) fn off_tty() -> Self {
+            Script {
+                interactive: false,
+                ..Script::new([])
+            }
+        }
+
+        /// Whether every answer was used.
+        pub(crate) fn done(&self) -> bool {
+            self.answers.is_empty()
+        }
+
+        fn next(&mut self, message: &str) -> Answer {
+            assert!(self.interactive, "'{message}' asked off a terminal");
+            self.asked.push(message.to_string());
+            self.answers
+                .pop_front()
+                .unwrap_or_else(|| panic!("no scripted answer for '{message}'"))
+        }
+    }
+
+    impl Ask for Script {
+        fn is_interactive(&self) -> bool {
+            self.interactive
+        }
+        fn choose(
+            &mut self,
+            message: &str,
+            items: &[String],
+            default: usize,
+            _: Esc,
+        ) -> Result<Option<usize>> {
+            self.defaults.push(default);
+            match self.next(message) {
+                Answer::Pick(i) => {
+                    assert!(i < items.len(), "'{message}' has no item {i}: {items:?}");
+                    Ok(Some(i))
+                }
+                Answer::Enter => Ok(Some(default)),
+                Answer::Esc => Ok(None),
+                other => panic!("'{message}' is a select, not {other:?}"),
+            }
+        }
+        fn multi_select(&mut self, message: &str, _: &[String], _: &[bool]) -> Result<Vec<usize>> {
+            panic!("'{message}' is a multi-select: not scripted")
+        }
+        fn text(&mut self, message: &str, _: Option<&str>) -> Result<String> {
+            match self.next(message) {
+                Answer::Text(t) => Ok(t.to_string()),
+                other => panic!("'{message}' is a text, not {other:?}"),
+            }
+        }
+        fn secret(&mut self, message: &str) -> Result<Zeroizing<String>> {
+            match self.next(message) {
+                Answer::Text(t) => Ok(Zeroizing::new(t.to_string())),
+                other => panic!("'{message}' is a secret, not {other:?}"),
+            }
+        }
+        fn confirm(&mut self, message: &str, _: bool) -> Result<bool> {
+            match self.next(message) {
+                Answer::Yes(yes) => Ok(yes),
+                other => panic!("'{message}' is a confirm, not {other:?}"),
+            }
         }
     }
 }

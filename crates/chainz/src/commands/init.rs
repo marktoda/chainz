@@ -187,40 +187,7 @@ mod tests {
     use super::*;
     use anyhow::bail;
 
-    /// Answers every question from a list, in order.
-    struct Script(Vec<&'static str>);
-
-    impl Script {
-        fn next(&mut self) -> &'static str {
-            assert!(!self.0.is_empty(), "out of scripted answers");
-            self.0.remove(0)
-        }
-    }
-
-    impl Ask for Script {
-        fn is_interactive(&self) -> bool {
-            true
-        }
-        fn select(&mut self, _: &str, _: &[String], _: usize) -> Result<usize> {
-            Ok(self.next().parse()?)
-        }
-        fn multi_select(&mut self, _: &str, _: &[String], _: &[bool]) -> Result<Vec<usize>> {
-            self.next().split(',').map(|i| Ok(i.parse()?)).collect()
-        }
-        fn text(&mut self, _: &str, _: Option<&str>) -> Result<String> {
-            Ok(self.next().to_string())
-        }
-        fn secret(&mut self, _: &str) -> Result<Zeroizing<String>> {
-            Ok(Zeroizing::new(self.next().to_string()))
-        }
-        fn confirm(&mut self, _: &str, _: bool) -> Result<bool> {
-            match self.next() {
-                "y" => Ok(true),
-                "n" => Ok(false),
-                other => bail!("not y/n: {other}"),
-            }
-        }
-    }
+    use crate::prompt::script::{Answer::*, Script};
 
     fn config(extra: &str) -> Config {
         Config::parse(&format!(
@@ -250,7 +217,7 @@ api = "https://blockscout.example/api"
     #[test]
     fn etherscan_goes_on_chains_without_an_explorer_with_one_key() {
         let config = config("");
-        let mut script = Script(vec!["y", " KEY "]);
+        let mut script = Script::new([Yes(true), Text(" KEY ")]);
         let key = etherscan_key(&config, &mut script).unwrap().unwrap();
         assert_eq!(key.as_str(), "KEY");
         let edits = etherscan_edits(&config, key);
@@ -263,12 +230,12 @@ api = "https://blockscout.example/api"
         }
         // Declined, or an empty key: nothing.
         assert!(
-            etherscan_key(&config, &mut Script(vec!["n"]))
+            etherscan_key(&config, &mut Script::new([Yes(false)]))
                 .unwrap()
                 .is_none()
         );
         assert!(
-            etherscan_key(&config, &mut Script(vec!["y", "  "]))
+            etherscan_key(&config, &mut Script::new([Yes(true), Text("  ")]))
                 .unwrap()
                 .is_none()
         );
@@ -276,17 +243,17 @@ api = "https://blockscout.example/api"
 
     #[test]
     fn default_chain_is_asked_only_when_there_is_a_choice() {
-        let mut script = Script(vec!["2"]);
+        let mut script = Script::new([Pick(2)]);
         assert_eq!(
             pick_default(&config(""), &mut script).unwrap().as_deref(),
             Some("op")
         );
         assert_eq!(
-            pick_default(&config(""), &mut Script(vec!["3"])).unwrap(),
+            pick_default(&config(""), &mut Script::new([Pick(3)])).unwrap(),
             None
         );
         assert_eq!(
-            pick_default(&config("default = \"base\""), &mut Script(vec![])).unwrap(),
+            pick_default(&config("default = \"base\""), &mut Script::new([])).unwrap(),
             None
         );
     }
@@ -319,15 +286,15 @@ api = "https://blockscout.example/api"
         let mut chainz = Chainz::open_at(paths, chainz_core::LoadMode::Strict).unwrap();
         // Name, key, then the encryption password twice: no terminal.
         let key = "0x4c0883a69102937d6231471b5dbb6204fe512961708279f22a82e1d1b1c2f8f2";
-        let mut script = Script(vec!["y", " ops ", key, "pw", "pw"]);
+        let mut script = Script::new([Yes(true), Text(" ops "), Text(key), Text("pw"), Text("pw")]);
         add_signer(&mut chainz, &NoKeyring, &mut script).unwrap();
-        assert!(script.0.is_empty(), "unasked: {:?}", script.0);
+        assert!(script.done(), "unasked answers left");
         assert_eq!(chainz.config().signers["ops"].backend, Backend::Encrypted);
         // Declined: nothing is asked after.
         let dir = tempfile::tempdir().unwrap();
         let paths = chainz_core::StorePaths::in_dir(dir.path().join("chainz"));
         let mut chainz = Chainz::open_at(paths, chainz_core::LoadMode::Strict).unwrap();
-        add_signer(&mut chainz, &NoKeyring, &mut Script(vec!["n"])).unwrap();
+        add_signer(&mut chainz, &NoKeyring, &mut Script::new([Yes(false)])).unwrap();
         assert!(chainz.config().signers.is_empty());
     }
 

@@ -237,6 +237,7 @@ fn rm(backend: &dyn KeyBackend, args: &SignerRmArgs) -> Result<i32> {
             "`signer rm {name}` deletes {material}, which can't be undone; pass --yes to confirm"
         );
         prompt::confirm_or_yes(
+            &mut prompt::Tty,
             args.yes,
             &format!("Remove signer '{name}' and delete {material}? This can't be undone"),
             Consent::Destructive { hint: &hint },

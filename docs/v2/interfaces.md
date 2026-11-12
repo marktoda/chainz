@@ -709,9 +709,11 @@ names the file. `ErrorClass::phrase()` is the class in a sentence
    `commands::dispatch` (that module only dispatches). Shared helpers live
    outside `commands/`: `load` (open the store, notices to stderr),
    `select` (chain picker, `$CHAINZ_CHAIN`/default), `args` (address and
-   header parsing), `prompt` (`is_tty`, `confirm_or_yes(yes, msg,
+   header parsing), `prompt` (`is_tty`, `confirm_or_yes(ask, yes, msg,
    Consent::{Destructive, Proposal})`, the `Ask` seam that interactive
-   flows take so tests script them), `net` (`block_on`, `join_indexed`,
+   flows take so tests script them with `prompt::script::Script`;
+   `Ask::choose` reports Esc as `None`, `Ask::select` as a cancellation),
+   `net` (`block_on`, `join_indexed`,
    `to_target`, `health_store`, `chainlist`), `probe`, `view`
    (`EndpointView`, `marker`, `table`, `QUICK_START`).
    The return value is the exit code: 0, or the code of a failure the

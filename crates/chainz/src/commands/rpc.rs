@@ -197,6 +197,7 @@ fn bench(args: &BenchArgs) -> Result<i32> {
         }
         if repairs.iter().any(|r| !r.failover.is_empty()) {
             write_failover = prompt::confirm_or_yes(
+                &mut Tty,
                 args.yes,
                 "Write the proposed failover lists?",
                 Consent::Proposal {

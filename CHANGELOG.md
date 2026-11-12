@@ -186,6 +186,12 @@ changed before 2.0.0; they are listed under Removed and Changed.
 
 ### Fixed
 
+- The `chain set`/`update` menu: every picker starts on the current value
+  (it started on the first item, so Enter switched the RPC or signer); Esc
+  in a picker goes back to the menu with the pending edits kept (it
+  cancelled the whole edit), and its hint says `ESC: back`; Esc in the menu
+  asks before discarding pending changes; after an edit the cursor is on
+  Done.
 - Every command exits quietly (exit 0) when its reader goes away: `rpc ls
   | head`, `var ls | head` and `addr ls | head` panicked.
 - `chain add NAME` and `rpc discover` paired probe results with the wrong

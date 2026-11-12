@@ -99,8 +99,10 @@ chainz update                                     # on a terminal: pick a chain,
 ```
 
 With no flags on a terminal, `chain set` opens a menu (RPC, Signer,
-Explorer, Name, Aliases, Done) and applies your choices together. Off a
-terminal it needs flags. `chainz edit [CHAIN]` opens config.toml (or one
+Explorer, Name, Aliases, Done) and applies your choices together. Each
+picker starts on the current value, so Enter keeps it; Esc in a picker goes
+back to the menu, and Esc in the menu asks before discarding pending
+changes. Off a terminal it needs flags. `chainz edit [CHAIN]` opens config.toml (or one
 chain's table) in `$EDITOR` for everything else.
 
 ## exec: run a tool with chain context
