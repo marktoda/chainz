@@ -1290,6 +1290,37 @@ fn rpc_bench_fix_activates_the_best_and_yes_writes_failover() {
     sb.cmd().args(["rpc", "bench", "--yes"]).assert().code(2);
 }
 
+/// Every endpoint down: no latencies, nothing ranked, `--fix` says so, and
+/// the exit code tells scripts.
+#[test]
+fn rpc_bench_with_every_endpoint_down_fails() {
+    let sb = Sandbox::new();
+    sb.write_config(
+        "version = 2\n[chains.uni]\nid = 130\nrpc = \"a\"\n[chains.uni.rpcs]\na = \"http://127.0.0.1:1\"\nb = \"http://127.0.0.1:1/b\"\n",
+    );
+    for fix in [false, true] {
+        let args: &[&str] = if fix {
+            &["rpc", "bench", "uni", "--fix"]
+        } else {
+            &["rpc", "bench", "uni"]
+        };
+        let out = sb.run(args);
+        let text = stdout(&out);
+        assert_eq!(out.status.code(), Some(1), "{text}");
+        assert!(text.contains("(0 of 2 answered)"), "{text}");
+        assert!(text.contains("✗ connection failed"), "{text}");
+        assert!(!text.contains("ms"), "{text}");
+        let lines: Vec<&str> = text.lines().filter(|l| l.contains("✗")).collect();
+        assert!(
+            lines[0].contains(" a ") && lines[1].contains(" b "),
+            "{text}"
+        );
+        assert!(text.contains("no healthy endpoint on uni"), "{text}");
+        assert_eq!(text.contains("nothing to fix"), fix, "{text}");
+    }
+    assert!(sb.config().contains("rpc = \"a\""));
+}
+
 #[test]
 fn rpc_discover_lists_off_a_tty_and_yes_adds_the_live_ones() {
     let sb = Sandbox::new();

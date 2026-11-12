@@ -196,27 +196,59 @@ pub fn health_problem(h: &Health) -> Option<String> {
     }
 }
 
-/// Print `probes` ranked best-first, one line each: role marker, name,
-/// probe latency, health, capability tags.
+/// How many of `probes` answered, and of how many.
+pub fn answered(probes: &ChainProbes) -> (usize, usize) {
+    let ok = probes.probes.iter().filter(|p| p.result.is_ok()).count();
+    (ok, probes.probes.len())
+}
+
+/// Print `probes` best-first, one line each: role marker, name, probe
+/// latency, health, capability tags. Endpoints that failed come last, in
+/// config order, with `–` for a latency and what went wrong.
 pub fn print_ranked(chain: &Chain, probes: &ChainProbes, ranking: &Ranking, store: &HealthStore) {
-    for &i in &ranking.order {
-        let p = &probes.probes[i];
-        let tags = store
-            .capabilities(p.chain_id, &p.endpoint)
-            .map(|c| c.tags().join(" "))
-            .unwrap_or_default();
-        println!(
-            "  {} {:<18} {:>6}ms  {:<10} {}",
-            view::marker(
-                chain.rpc == p.endpoint,
-                chain.failover.contains(&p.endpoint)
-            ),
-            p.endpoint,
-            p.result.latency.as_millis(),
-            health_label(&ranking.health[i]),
-            ui::dim(&tags)
-        );
+    for line in ranked_lines(chain, probes, ranking, store) {
+        println!("{line}");
     }
+}
+
+fn ranked_lines(
+    chain: &Chain,
+    probes: &ChainProbes,
+    ranking: &Ranking,
+    store: &HealthStore,
+) -> Vec<String> {
+    ranking
+        .order
+        .iter()
+        .map(|&i| {
+            let p = &probes.probes[i];
+            let marker = view::marker(
+                chain.rpc == p.endpoint,
+                chain.failover.contains(&p.endpoint),
+            );
+            match ranking.health[i] {
+                Health::Failing(class) => format!(
+                    "  {marker} {:<18} {:>8}  {}",
+                    p.endpoint,
+                    "–",
+                    ui::fail(class.phrase())
+                ),
+                ref health => {
+                    let tags = store
+                        .capabilities(p.chain_id, &p.endpoint)
+                        .map(|c| c.tags().join(" "))
+                        .unwrap_or_default();
+                    format!(
+                        "  {marker} {:<18} {:>6}ms  {:<10} {}",
+                        p.endpoint,
+                        p.result.latency.as_millis(),
+                        health_label(health),
+                        ui::dim(&tags)
+                    )
+                }
+            }
+        })
+        .collect()
 }
 
 /// A change to a chain's endpoints, proposed from a ranking.
@@ -345,6 +377,35 @@ mod tests {
         };
         let ranking = none.ranking(&HealthStore::empty());
         assert_eq!(Repair::propose("eth", &c, &none, &ranking), None);
+    }
+
+    /// Dead endpoints show no latency (a refusal in 0ms read as the
+    /// fastest) and come after every endpoint that answered.
+    #[test]
+    fn dead_endpoints_are_listed_last_without_a_latency() {
+        let c = chain(&[("slow", false), ("down", false), ("fast", false)]);
+        let probes = ChainProbes {
+            chain: "eth".into(),
+            probes: vec![
+                probe("slow", 90, Some(100)),
+                probe("down", 0, None),
+                probe("fast", 10, Some(100)),
+            ],
+        };
+        let ranking = probes.ranking(&HealthStore::empty());
+        let lines = ranked_lines(&c, &probes, &ranking, &HealthStore::empty());
+        assert!(
+            lines[0].contains("fast") && lines[0].contains("10ms"),
+            "{lines:?}"
+        );
+        assert!(lines[1].contains("slow"), "{lines:?}");
+        assert!(lines[2].contains("down"), "{lines:?}");
+        assert!(
+            lines[2].contains("–") && lines[2].contains("✗ timed out"),
+            "{lines:?}"
+        );
+        assert!(!lines[2].contains("ms"), "{lines:?}");
+        assert_eq!(answered(&probes), (2, 3));
     }
 
     #[test]

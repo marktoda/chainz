@@ -161,8 +161,9 @@ pub fn classify<O: Observation>(observations: &[O]) -> Vec<Health> {
 pub struct Ranking {
     /// The health of each observation, by index.
     pub health: Vec<Health>,
-    /// Indices best-first: healthy < lagging < failing; within a class by
-    /// latency; ties by index.
+    /// Indices best-first: healthy < lagging < failing; healthy and
+    /// lagging by latency, ties by index; failing ones are not ranked
+    /// (they come last, by index: how fast a refusal came says nothing).
     pub order: Vec<usize>,
 }
 
@@ -178,11 +179,14 @@ impl Ranking {
         let health = classify(observations);
         let mut order: Vec<usize> = (0..observations.len()).collect();
         order.sort_by_key(|&i| {
-            let latency = p50
-                .get(i)
-                .copied()
-                .flatten()
-                .unwrap_or_else(|| observations[i].latency());
+            let latency = match health[i] {
+                Health::Failing(_) => Duration::ZERO,
+                _ => p50
+                    .get(i)
+                    .copied()
+                    .flatten()
+                    .unwrap_or_else(|| observations[i].latency()),
+            };
             (health[i].order(), latency, i)
         });
         Ranking { health, order }
@@ -315,6 +319,9 @@ mod tests {
         // p50 overrides probe latency where present; short p50 slice is fine.
         let p50 = [None, None, Some(Duration::from_millis(5))];
         assert_eq!(Ranking::with_p50(&r, &p50).order, vec![2, 3, 4, 1, 0]);
+        // Failures are not ranked by how fast they failed: index order.
+        let down = [err(9, RpcError::Connect), err(1, RpcError::Timeout)];
+        assert_eq!(Ranking::new(&down).order, vec![0, 1]);
         // Nothing healthy: no best healthy endpoint.
         let failing = Ranking::new(&[err(1, RpcError::Timeout)]);
         assert_eq!((failing.best(), failing.best_healthy()), (Some(0), None));

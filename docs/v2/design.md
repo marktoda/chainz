@@ -113,7 +113,7 @@ chainz chain rm CHAIN
 chainz rpc ls [CHAIN] [--json] [--reveal]   # endpoints, with latest health
 chainz rpc add CHAIN URL [--name N] [--header 'k: v']... [--failover | --activate] [--no-check]
 chainz rpc rm CHAIN NAME
-chainz rpc bench [CHAIN] [--fix [-y]]       # rank and tag endpoints; --fix activates the best and proposes a failover list
+chainz rpc bench [CHAIN] [--fix [-y]]       # rank and tag endpoints; --fix activates the best and proposes a failover list; exit 1 when a chain has no live endpoint
 chainz rpc discover CHAIN [--refresh] [-y]  # pull public RPCs from chainlist, probe, offer to add
 chainz signer add NAME [--stdin] [--backend keyring|encrypted|1password|keystore|plaintext]
                   [--path P] [--vault V --item I] [--address A] [--no-attach]
@@ -258,7 +258,7 @@ One `rpc` module gives every feature the same client, the same idea of endpoint 
 - **Client:** a JSON-RPC 2.0 client over a shared `reqwest` connection pool (HTTP/2, rustls), with per-endpoint headers, batch requests and typed helpers: `chain_id`, `check_chain_id`, `block_number`, `get_block`, `get_balance`, `call`. Errors are `Timeout`, `Connect`, `RateLimited { retry_after }`, `Http(status)`, `Rpc { code, message }`, `ChainMismatch`, `InvalidResponse`, `BodyRead` (a body cut off mid-read), `InvalidEndpoint` or `Unsupported`; `is_transient` and `is_rate_limited` are the only retry predicates. Error text never includes the URL or header values. The client never follows a redirect.
 - **Probe:** a health probe is `eth_chainId` plus `eth_blockNumber` in one batch, under a 4-second deadline. It records latency, head height and the error class. An endpoint more than 20 blocks behind the best head for its chain is marked `lagging`, a state v1 couldn't detect.
 - **Capabilities** (probed by `rpc bench`, cached in the state dir): archive (`eth_getBalance` at block 1), `debug_traceTransaction`, `trace_block`, the largest `eth_getLogs` range accepted, and websocket support. `rpc ls` and the dashboard's Endpoints tab show these as tags; the gateway and forks route by them.
-- **Ranking:** healthy before lagging before failing; within a class, by p50 latency over the recent window. `rpc bench --fix` and `doctor --fix` set `rpc = <best>` through the normal transactional config write.
+- **Ranking:** healthy before lagging before failing; healthy and lagging endpoints by p50 latency over the recent window. Failing endpoints are not ranked: they come last in config order, and `rpc bench` shows them with no latency and what went wrong, prints "N of M answered" per chain, and exits 1 when some chain has no endpoint that answered. `rpc bench --fix` and `doctor --fix` set `rpc = <best>` through the normal transactional config write.
 - **Health history:** probes append to a small ring buffer per endpoint in the state dir (`health.json`; a corrupt file is moved aside to `health.json.corrupt`, never overwritten). The dashboard reads it to draw sparklines and `rpc bench` ranks by its p50; the gateway reads only the capability tags from it.
 
 ## Gateway: `chainz serve`

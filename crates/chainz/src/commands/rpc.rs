@@ -151,6 +151,8 @@ fn rm(args: &RpcRmArgs) -> Result<i32> {
     Ok(0)
 }
 
+/// `rpc bench`: probe, rank and print each chain's endpoints. Exit 1
+/// when some chain has no endpoint that answered.
 fn bench(args: &BenchArgs) -> Result<i32> {
     let mut chainz = open()?;
     let chains = chains_for(&chainz, args.chain.as_deref())?;
@@ -162,16 +164,32 @@ fn bench(args: &BenchArgs) -> Result<i32> {
         &mut store,
     ))?;
     let mut repairs: Vec<Repair> = Vec::new();
+    let mut all_down = false;
     for p in &probed {
         let c = &chainz.config().chains[&p.chain];
-        println!("{}", ui::section(&p.chain));
         if p.probes.is_empty() {
+            println!("{}", ui::section(&p.chain));
             println!("  no HTTP endpoints to probe");
             continue;
         }
+        let (ok, total) = probe::answered(p);
+        println!(
+            "{}  {}",
+            ui::section(&p.chain),
+            ui::dim(&format!("({ok} of {total} answered)"))
+        );
+        all_down |= ok == 0;
         let ranking = p.ranking(&store);
         probe::print_ranked(c, p, &ranking, &store);
         let Some(repair) = Repair::propose(&p.chain, c, p, &ranking) else {
+            let fix = if args.fix { ", nothing to fix" } else { "" };
+            println!(
+                "  {}",
+                ui::warn(&format!(
+                    "no healthy endpoint on {}{fix}; check your network, or `chainz rpc discover {}`",
+                    p.chain, p.chain
+                ))
+            );
             continue;
         };
         if args.fix {
@@ -186,7 +204,7 @@ fn bench(args: &BenchArgs) -> Result<i32> {
             );
         }
     }
-    if args.fix {
+    if args.fix && !repairs.is_empty() {
         let mut write_failover = false;
         for r in &repairs {
             println!(
@@ -217,7 +235,7 @@ fn bench(args: &BenchArgs) -> Result<i32> {
             Ok(())
         })?;
     }
-    Ok(0)
+    Ok(if all_down { 1 } else { 0 })
 }
 
 fn discover(args: &DiscoverArgs) -> Result<i32> {

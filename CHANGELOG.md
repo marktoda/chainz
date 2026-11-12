@@ -186,6 +186,12 @@ changed before 2.0.0; they are listed under Removed and Changed.
 
 ### Fixed
 
+- `rpc bench` showed dead endpoints with a `0ms` latency and ranked them by
+  how fast they failed. They now come last in config order, with `–` and
+  what went wrong (`✗ connection failed`); each chain says how many
+  endpoints answered, a chain with no healthy endpoint says so (with
+  `--fix`: nothing to fix), and the exit code is 1 when a chain has no
+  endpoint that answered.
 - Re-adding a URL whose key an earlier write moved into a variable (an
   Alchemy or Infura URL) no longer adds `alchemy-2`, `alchemy-3`…: endpoint
   URLs are compared with the variables expanded, so `rpc add` refuses it by
