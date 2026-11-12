@@ -29,7 +29,13 @@ fn context_for(
         command: &[command],
         off_tty: &off_tty,
     };
-    let target = select_target(chainz, runtime, args.chain.as_deref(), &missing)?;
+    let target = select_target(
+        chainz,
+        runtime,
+        args.chain.as_deref(),
+        &mut crate::prompt::Tty,
+        &missing,
+    )?;
     context::build(chainz, runtime, &target, &opts)
 }
 

@@ -6,7 +6,7 @@ use crate::cli::{
     LabelAddArgs, LabelArgs, LabelCommand, LabelImportArgs, LabelLsArgs, LabelRmArgs, usage_error,
 };
 use crate::load::open;
-use crate::select::{Missing, NAME_A_CHAIN, note_default, select_target};
+use crate::select::{Missing, NAME_A_CHAIN, chosen, select_target};
 use crate::{ui, view};
 use anyhow::{Context, Result, anyhow, bail};
 use chainz_core::addrbook::{self, Labeler};
@@ -15,7 +15,7 @@ use chainz_core::labels::{
     self, ALL_CHAINS, Label, LabelIndex, LabelScope, LabelSource, scope_phrase,
 };
 use chainz_core::model::Config;
-use chainz_core::resolve::{self, ChainRef, Policy, Source};
+use chainz_core::resolve::{self, ChainRef, Policy};
 use chainz_core::runtime::Runtime;
 use chainz_core::tx::SetAddress;
 use chainz_core::{Address, names};
@@ -75,6 +75,7 @@ fn add(args: &LabelAddArgs) -> Result<i32> {
             &chainz,
             &Runtime::resolve()?,
             args.chain.as_deref(),
+            &mut crate::prompt::Tty,
             &missing,
         )? {
             ChainRef::Configured(name) => name,
@@ -503,16 +504,10 @@ fn filter(args: &LabelArgs) -> Result<i32> {
     let chainz = open()?;
     let config = chainz.config();
     let runtime = Runtime::resolve()?;
-    let labeler =
-        match resolve::select(config, Some(&runtime), args.chain.as_deref(), chainz.env())? {
-            Some((target, source)) => {
-                if source == Source::Default {
-                    note_default(target.name());
-                }
-                Labeler::for_chain(config, chain_id(config, &target)?)
-            }
-            None => Labeler::any_chain(config),
-        };
+    let labeler = match chosen(&chainz, &runtime, args.chain.as_deref())? {
+        Some(target) => Labeler::for_chain(config, chain_id(config, &target)?),
+        None => Labeler::any_chain(config),
+    };
     // A reader that went away (`… | chainz label | head`) is not an
     // error: `main` exits 0 on a broken pipe.
     labeler

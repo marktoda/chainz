@@ -6,7 +6,7 @@ use crate::cli::{UpdateArgs, usage_error};
 use crate::load::open;
 use crate::probe::check;
 use crate::prompt::{self, Ask, Esc, StdinTrim, Tty, read_stdin_secret};
-use crate::select::{Missing, pick_chain};
+use crate::select::pick_chain;
 use crate::{ui, view};
 use anyhow::Result;
 use chainz_core::model::{Config, Explorer, RpcChoice};
@@ -37,15 +37,7 @@ pub fn update(args: &UpdateArgs) -> Result<i32> {
         Some(query) => resolve::configured(chainz.config(), query, Policy::Prefix)?
             .0
             .to_string(),
-        None => pick_chain(
-            &chainz,
-            &mut Tty,
-            "Chain to change",
-            &Missing {
-                command,
-                off_tty: "pass the chain to change",
-            },
-        )?,
+        None => pick_chain(&chainz, &mut Tty, "Chain to change")?,
     };
     flags.api_key = api_key(args)?;
     let edit = if menu_wanted {

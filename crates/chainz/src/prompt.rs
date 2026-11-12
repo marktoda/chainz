@@ -289,7 +289,7 @@ pub struct Terminal;
 
 impl chainz_core::signer::Prompter for Terminal {
     fn is_interactive(&self) -> bool {
-        std::io::stderr().is_terminal()
+        is_tty()
     }
 
     fn secret(&self, prompt: &str) -> Result<Zeroizing<String>> {
