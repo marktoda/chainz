@@ -191,12 +191,7 @@ impl Tx {
         if let Some(failover) = &edit.failover {
             let chain = &self.config()?.chains[name];
             for f in failover {
-                if !chain.rpcs.contains_key(f) {
-                    bail!("chain '{name}' has no endpoint '{f}'");
-                }
-                if *f == chain.rpc {
-                    bail!("'{f}' is the active endpoint of '{name}'; it cannot also be failover");
-                }
+                chain.check_failover(name, f)?;
             }
             self.set_failover(name, failover)?;
             report.changes.push(match failover.is_empty() {
@@ -208,10 +203,8 @@ impl Tx {
         self.edit_explorer(name, edit, &mut report)?;
 
         if let Some(signer) = &edit.signer {
-            if let Some(signer) = signer
-                && !config.signers.contains_key(signer)
-            {
-                bail!("signer '{signer}' not found; add it with `chainz signer add {signer}`");
+            if let Some(signer) = signer {
+                config.check_signer(signer)?;
             }
             self.update_chain(name, |c| {
                 c.signer = signer.clone();
@@ -234,9 +227,7 @@ impl Tx {
             }
             for alias in &edit.add_aliases {
                 let alias = alias.trim();
-                if names::is_chain_id_like(alias) {
-                    bail!("alias '{alias}' is a number; numbers mean chain IDs");
-                }
+                names::check_alias(alias)?;
                 if alias.eq_ignore_ascii_case(name)
                     || aliases.iter().any(|a| a.eq_ignore_ascii_case(alias))
                 {

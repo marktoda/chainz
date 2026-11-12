@@ -805,10 +805,13 @@ fn rejects_unforkable_chains_bad_names_and_bad_fund_specs_up_front() {
     fails(&["fork", "local", "--name", "stop"], "subcommand");
     fails(&["fork", "local", "--name", "local"], "configured chain");
     fails(&["fork", "local", "--name", "devnet"], "alias of");
-    fails(&["fork", "local", "--name", "31337"], "invalid fork name");
+    fails(
+        &["fork", "local", "--name", "31337"],
+        "fork name '31337' must match",
+    );
     fails(
         &["fork", "local", "--name", "Has Space"],
-        "invalid fork name",
+        "fork name 'Has Space' must match",
     );
     fails(
         &["fork", "local", "--fund", "udsc=1"],

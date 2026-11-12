@@ -90,6 +90,15 @@ pub fn short_name(chain_id: u64) -> Option<&'static str> {
         .map(|(_, name)| *name)
 }
 
+/// Why `alias` cannot be a chain alias, if it cannot: a number would
+/// mean a chain ID.
+pub fn check_alias(alias: &str) -> anyhow::Result<()> {
+    if is_chain_id_like(alias) {
+        anyhow::bail!("alias '{alias}' is a number; numbers mean chain IDs");
+    }
+    Ok(())
+}
+
 /// Whether `text` reads as a chain ID: all digits. Numbers always mean
 /// chain IDs, so no chain name or alias may be one.
 pub fn is_chain_id_like(text: &str) -> bool {
@@ -102,18 +111,31 @@ pub fn is_valid_chain_name(name: &str) -> bool {
     is_name(name) && !is_chain_id_like(name)
 }
 
+/// The pattern chain, fork, endpoint, explorer and signer names match.
+const NAME_PATTERN: &str = "[a-z0-9][a-z0-9_-]*";
+
 /// Why `name` cannot be a chain name, if it cannot (see
 /// [`is_valid_chain_name`]).
 pub fn check_chain_name(name: &str) -> anyhow::Result<()> {
+    check_chain_like("chain", name)
+}
+
+/// [`check_chain_name`] for a `kind` of name that follows the chain-name
+/// rules (a fork's).
+pub(crate) fn check_chain_like(kind: &str, name: &str) -> anyhow::Result<()> {
     if !is_valid_chain_name(name) {
-        anyhow::bail!("chain name '{name}' must match [a-z0-9][a-z0-9_-]* and not be all digits");
+        anyhow::bail!("{kind} name '{name}' must match {NAME_PATTERN} and not be all digits");
     }
     Ok(())
 }
 
-/// Whether `name` is a valid endpoint or explorer name: `[a-z0-9][a-z0-9_-]*`.
-pub(crate) fn is_valid_endpoint_name(name: &str) -> bool {
-    is_name(name)
+/// Why `name` cannot be an endpoint or explorer name (`kind`), if it
+/// cannot: it must match `[a-z0-9][a-z0-9_-]*`.
+pub(crate) fn check_name(kind: &str, name: &str) -> anyhow::Result<()> {
+    if !is_name(name) {
+        anyhow::bail!("{kind} name '{name}' must match {NAME_PATTERN}");
+    }
+    Ok(())
 }
 
 /// Whether `name` is a valid label name: `[a-z0-9_-]+`, lowercase only
@@ -137,9 +159,7 @@ pub(crate) fn is_reserved_token(name: &str) -> bool {
 /// `[a-z0-9][a-z0-9_-]*` and are not reserved token names,
 /// because every signer is also the label `@<name>`.
 pub fn check_signer_name(name: &str) -> anyhow::Result<()> {
-    if !is_name(name) {
-        anyhow::bail!("signer name '{name}' must match [a-z0-9][a-z0-9_-]*");
-    }
+    check_name("signer", name)?;
     if is_reserved_token(name) {
         anyhow::bail!("signer name '{name}' is reserved for the token @{name}; pick another name");
     }
@@ -156,8 +176,14 @@ pub fn check_label_name<'a>(
     if !is_valid_label_name(name) {
         anyhow::bail!("label name '{name}' must match [a-z0-9_-]+");
     }
-    if is_reserved_token(name) {
-        anyhow::bail!("'{name}' is a context token (@{name}) and cannot be used as a label");
+    match token(name) {
+        Some(Token::Context) => {
+            anyhow::bail!("'{name}' is a context token (@{name}) and cannot be used as a label")
+        }
+        Some(Token::Deprecated(_) | Token::Removed(_)) => anyhow::bail!(
+            "'{name}' is reserved (@{name} was a context token) and cannot be used as a label"
+        ),
+        None => {}
     }
     if signers.into_iter().any(|s| s.eq_ignore_ascii_case(name)) {
         anyhow::bail!(

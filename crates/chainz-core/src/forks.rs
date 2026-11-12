@@ -36,11 +36,7 @@ pub fn check_fork_name(config: &Config, name: &str) -> Result<()> {
     if RESERVED_FORK_NAMES.contains(&name) {
         bail!("a fork can't be named '{name}': it is a `chainz fork` subcommand");
     }
-    if !names::is_valid_chain_name(name) {
-        bail!(
-            "invalid fork name '{name}': use lowercase letters, digits, '-' and '_', not digits only"
-        );
-    }
+    names::check_chain_like("fork", name)?;
     for (chain_name, chain) in &config.chains {
         if chain_name.eq_ignore_ascii_case(name) {
             bail!("fork name '{name}' is taken by a configured chain; pick another with --name");
@@ -93,7 +89,7 @@ rpcs.a = "https://a"
         // Shape: a chain ID must never resolve to a fork, and the name is
         // a file name in the registry.
         for bad in ["8453", "", "Base", "a b", "a/b", "../x", "a.b", "-x", "@x"] {
-            assert!(check(bad).unwrap_err().contains("invalid"), "{bad:?}");
+            assert!(check(bad).unwrap_err().contains("must match"), "{bad:?}");
         }
     }
 

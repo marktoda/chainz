@@ -504,9 +504,16 @@ impl Config {
         if let Some((existing, _)) = self.chain_by_id(id) {
             anyhow::bail!("chain ID {id} is already configured as '{existing}'");
         }
-        if let Some(signer) = signer
-            && !self.signers.contains_key(signer)
-        {
+        match signer {
+            Some(signer) => self.check_signer(signer),
+            None => Ok(()),
+        }
+    }
+
+    /// Why a chain cannot use signer `signer`, if it cannot: it is not
+    /// configured.
+    pub fn check_signer(&self, signer: &str) -> anyhow::Result<()> {
+        if !self.signers.contains_key(signer) {
             anyhow::bail!("signer '{signer}' not found; add it with `chainz signer add {signer}`");
         }
         Ok(())
@@ -532,6 +539,25 @@ impl Chain {
     /// case. The chain's own name (its key) is not checked.
     pub fn matches_alias(&self, query: &str) -> bool {
         self.aliases.iter().any(|a| a.eq_ignore_ascii_case(query))
+    }
+
+    /// Why endpoint `endpoint` cannot be in the failover list of this chain
+    /// (named `name`), if it cannot: it is not one of the chain's
+    /// endpoints, it is a websocket (the gateway routes HTTP only), or it
+    /// is the active endpoint.
+    pub fn check_failover(&self, name: &str, endpoint: &str) -> anyhow::Result<()> {
+        match self.rpcs.get(endpoint) {
+            None => {
+                anyhow::bail!("chain '{name}' failover endpoint '{endpoint}' is not in its rpcs")
+            }
+            Some(e) if e.is_websocket() => anyhow::bail!(
+                "chain '{name}' failover endpoint '{endpoint}' is a websocket; the gateway routes HTTP only"
+            ),
+            Some(_) if *endpoint == self.rpc => {
+                anyhow::bail!("chain '{name}' lists its active endpoint '{endpoint}' as failover")
+            }
+            Some(_) => Ok(()),
+        }
     }
 
     /// The endpoint at `url`, if this chain has one. URLs that differ only

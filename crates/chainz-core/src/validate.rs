@@ -22,10 +22,8 @@ pub fn issues(config: &Config, secrets: Option<&Secrets>) -> Vec<String> {
     }
 
     for (name, explorer) in &config.explorers {
-        if !names::is_valid_endpoint_name(name) {
-            err(format!(
-                "explorer name '{name}' must match [a-z0-9][a-z0-9_-]*"
-            ));
+        if let Err(e) = names::check_name("explorer", name) {
+            err(e.to_string());
         }
         if explorer.api.trim().is_empty() {
             err(format!("explorer '{name}' has an empty api URL"));
@@ -54,10 +52,8 @@ pub fn issues(config: &Config, secrets: Option<&Secrets>) -> Vec<String> {
                 err(format!("chain '{name}' has an empty or invalid alias"));
                 continue;
             }
-            if names::is_chain_id_like(n) {
-                err(format!(
-                    "chain '{name}' alias '{n}' is a number; numbers mean chain IDs"
-                ));
+            if let Err(e) = names::check_alias(n) {
+                err(format!("chain '{name}' {e}"));
             }
             if let Some(other) = taken.insert(n.to_ascii_lowercase(), name.clone())
                 && other != *name
@@ -77,19 +73,8 @@ pub fn issues(config: &Config, secrets: Option<&Secrets>) -> Vec<String> {
             ));
         }
         for (i, f) in chain.failover.iter().enumerate() {
-            match chain.rpcs.get(f) {
-                None => err(format!(
-                    "chain '{name}' failover endpoint '{f}' is not in its rpcs"
-                )),
-                Some(e) if e.is_websocket() => err(format!(
-                    "chain '{name}' failover endpoint '{f}' is a websocket; the gateway routes HTTP only"
-                )),
-                Some(_) => {}
-            }
-            if *f == chain.rpc {
-                err(format!(
-                    "chain '{name}' lists its active endpoint '{f}' as failover"
-                ));
+            if let Err(e) = chain.check_failover(name, f) {
+                err(e.to_string());
             }
             if chain.failover[..i].contains(f) {
                 err(format!(
@@ -98,10 +83,8 @@ pub fn issues(config: &Config, secrets: Option<&Secrets>) -> Vec<String> {
             }
         }
         for (ep_name, endpoint) in &chain.rpcs {
-            if !names::is_valid_endpoint_name(ep_name) {
-                err(format!(
-                    "chain '{name}' endpoint name '{ep_name}' must match [a-z0-9][a-z0-9_-]*"
-                ));
+            if let Err(e) = names::check_name("endpoint", ep_name) {
+                err(format!("chain '{name}' {e}"));
             }
             if let Err(e) = model::Endpoint::check_url_text(&endpoint.url) {
                 err(format!("chain '{name}' endpoint '{ep_name}': {e}"));
