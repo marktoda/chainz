@@ -69,7 +69,7 @@
         },
         {
           "name": "stream",
-          "url": "wss://eth.example.org/ws/hunter2",
+          "url": "wss://eth.example.org/ws/[REDACTED]",
           "active": false,
           "websocket": true,
           "status": "websocket",

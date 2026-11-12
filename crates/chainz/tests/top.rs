@@ -28,7 +28,7 @@ rpc = "main"
 [chains.live.rpcs]
 main = "{rpc}/v3/${{RPC_KEY}}"
 spare = "http://127.0.0.1:1/spare"
-stream = "wss://live.example.org/ws/hunter2hunter2hunter2"
+stream = "wss://live.example.org/ws/hunter2"
 
 [chains.dead]
 id = 8453
@@ -197,7 +197,7 @@ fn once_json_prints_one_snapshot() {
 
     // Secrets: the variable was expanded for the request and nowhere else.
     assert!(
-        !stdout.contains("s3cr3t-key") && !stdout.contains("hunter2hunter2hunter2"),
+        !stdout.contains("s3cr3t-key") && !stdout.contains("hunter2"),
         "{stdout}"
     );
     // The template is shown as configured: it names the secret, it is not
@@ -232,7 +232,7 @@ fn reveal_controls_url_redaction() {
     // --reveal shows the config value: templates stay unexpanded.
     assert_eq!(
         url_of(&["--once", "--json", "--reveal"], 2),
-        "wss://live.example.org/ws/hunter2hunter2hunter2"
+        "wss://live.example.org/ws/hunter2"
     );
     let revealed = url_of(&["--once", "--json", "--reveal"], 0);
     assert_eq!(revealed, format!("{}/v3/${{RPC_KEY}}", rpc.url()));

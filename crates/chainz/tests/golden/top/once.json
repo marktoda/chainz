@@ -55,7 +55,7 @@
         },
         {
           "name": "stream",
-          "url": "wss://live.example.org/ws/hunter2",
+          "url": "wss://live.example.org/ws/[REDACTED]",
           "active": false,
           "websocket": true,
           "status": "websocket",
