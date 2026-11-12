@@ -9,6 +9,7 @@
 //! environment (`env`, `exec` and its subshell, `exec --expose-key`), and `top --reveal`.
 
 use crate::ui;
+use chainz_core::labels::{LabelIndex, LabelSource};
 use chainz_core::model::{Chain, Config, Endpoint};
 use chainz_core::{fmt, names, redact};
 use chainz_rpc::health;
@@ -153,8 +154,12 @@ pub struct ChainView {
     pub rpc_url: String,
     pub failover: Vec<String>,
     pub signer: Option<String>,
+    /// The signer's cached address.
+    pub wallet: Option<chainz_core::Address>,
     pub explorer: Option<String>,
     pub default: bool,
+    /// Your labels that resolve on this chain (signers aside), by name.
+    pub labels: Vec<String>,
     pub endpoints: Vec<EndpointView>,
 }
 
@@ -219,8 +224,19 @@ impl ChainView {
                 .unwrap_or_default(),
             failover: chain.failover.clone(),
             signer: chain.signer.clone(),
+            wallet: chain
+                .signer
+                .as_ref()
+                .and_then(|s| config.signers.get(s))
+                .and_then(|s| s.address),
             explorer: chain.explorer.clone(),
             default: config.default.as_deref() == Some(name),
+            labels: LabelIndex::new(config)
+                .labels_on(chain.id)
+                .into_iter()
+                .filter(|l| !matches!(l.source, LabelSource::Signer))
+                .map(|l| l.name)
+                .collect(),
             endpoints: chain
                 .rpcs
                 .iter()
@@ -322,10 +338,10 @@ pub fn table_lines<R: AsRef<[String]>>(headers: &[&str], rows: &[R]) -> Vec<Stri
     out
 }
 
-/// One chain in full (`ls CHAIN`): its settings, `extra` rows (wallet,
-/// labels), then its endpoints with their latest health (as of `now_ms`)
-/// and headers, and the legend of the role markers.
-pub fn show(view: &ChainView, extra: &[(String, String)], now_ms: u64) -> String {
+/// One chain in full (`ls CHAIN`): its settings, wallet and labels, then
+/// its endpoints with their latest health (as of `now_ms`) and headers,
+/// and the legend of the role markers.
+pub fn show(view: &ChainView, now_ms: u64) -> String {
     let mut out = String::new();
     let aliases = if view.aliases.is_empty() {
         String::new()
@@ -356,8 +372,12 @@ pub fn show(view: &ChainView, extra: &[(String, String)], now_ms: u64) -> String
         or_dash(view.explorer.as_deref().unwrap_or_default())
     );
     let _ = writeln!(out, "  failover  {}", or_dash(&view.failover.join(", ")));
-    for (k, v) in extra {
-        let _ = writeln!(out, "  {k:<9} {v}");
+    if let Some(wallet) = view.wallet {
+        let _ = writeln!(out, "  wallet    {wallet}");
+    }
+    if !view.labels.is_empty() {
+        let labels: Vec<String> = view.labels.iter().map(|l| format!("@{l}")).collect();
+        let _ = writeln!(out, "  labels    {}", labels.join(" "));
     }
     let _ = writeln!(out);
     out.push_str(&endpoint_table(&view.endpoints, now_ms));

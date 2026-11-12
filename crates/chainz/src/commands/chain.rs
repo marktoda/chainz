@@ -11,7 +11,6 @@ use crate::prompt::{Ask, Removal, Tty};
 use crate::{net, ui, view};
 use anyhow::{Context, Result, anyhow, bail};
 use chainz_core::Chainz;
-use chainz_core::labels::{LabelIndex, LabelSource};
 use chainz_core::model::{Chain, Endpoint};
 use chainz_core::names;
 use chainz_core::resolve::{self, Policy};
@@ -90,23 +89,7 @@ fn show(chainz: &Chainz, query: &str, args: &ListArgs) -> Result<i32> {
         println!("{}", serde_json::to_string_pretty(&v)?);
         return Ok(0);
     }
-    let mut extra = Vec::new();
-    if let Some(signer) = chain.signer.as_ref().and_then(|s| config.signers.get(s))
-        && let Some(address) = signer.address
-    {
-        extra.push(("wallet".to_string(), address.to_string()));
-    }
-    let index = LabelIndex::new(config);
-    let labels: Vec<String> = index
-        .labels_on(chain.id)
-        .into_iter()
-        .filter(|l| !matches!(l.source, LabelSource::Signer))
-        .map(|l| format!("@{}", l.name))
-        .collect();
-    if !labels.is_empty() {
-        extra.push(("labels".to_string(), labels.join(" ")));
-    }
-    print!("{}", view::show(&v, &extra, chainz_os::now_ms()));
+    print!("{}", view::show(&v, chainz_os::now_ms()));
     Ok(0)
 }
 
