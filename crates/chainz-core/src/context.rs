@@ -355,7 +355,9 @@ fn rpc_context(
     let gateway = if opts.direct || endpoint.is_websocket() {
         None
     } else {
-        runtime.gateway_url(chain_name, opts.rpc.as_deref())
+        runtime
+            .gateway_url(chain_name, opts.rpc.as_deref())
+            .context("a gateway is running, but its record can't be read (--direct bypasses it)")?
     };
     Ok(match gateway {
         Some(url) => RpcContext {

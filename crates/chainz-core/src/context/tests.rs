@@ -1,5 +1,5 @@
 use super::*;
-use crate::runtime::ServeInfo;
+use crate::runtime::{GatewayAddr, ServeInfo};
 use crate::store::{LoadMode, StorePaths};
 
 const CONFIG: &str = r#"
@@ -171,16 +171,12 @@ fn unresolved_variables_fail_closed_naming_the_variable() {
 #[test]
 fn gateway_seam_routes_through_serve_unless_direct() {
     let f = fixture();
-    let _lock = f.runtime.acquire_serve_lock().unwrap().unwrap();
-    f.runtime
-        .write_serve_info(&ServeInfo {
-            pid: 1,
-            port: 18545,
-            token: "t0k".into(),
-            started_at: 0,
-            version: "x".into(),
-        })
-        .unwrap();
+    let lock = f.runtime.acquire_serve_lock().unwrap().unwrap();
+    let addr = GatewayAddr {
+        port: 18545,
+        token: "t0k".into(),
+    };
+    let _published = lock.publish(&ServeInfo::new(&addr, 0)).unwrap();
     let opts = ExecOptions {
         rpc: Some("gw".into()),
         ..Default::default()
