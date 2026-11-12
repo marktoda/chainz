@@ -29,7 +29,7 @@ use crate::probe::ProbeResult;
 /// An endpoint more than this many blocks behind the best head among its
 /// peers is lagging.
 pub const ENDPOINT_LAG: u64 = 20;
-/// A chain whose head is more than this many blocks behind is lagging.
+/// A chain whose head is this many blocks behind or more is lagging.
 pub const CHAIN_LAG: u64 = 3;
 /// A failover endpoint must be within this many blocks of the chain's head
 /// high-water mark to take a read.
