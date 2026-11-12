@@ -228,7 +228,7 @@ fn rm(backend: &dyn KeyBackend, args: &SignerRmArgs) -> Result<i32> {
     }
     println!("Removed signer '{name}'");
     if !removed.unassigned.is_empty() {
-        warn_signerless(&removed.unassigned);
+        warn_signerless(&removed.unassigned, &format!("'{name}' was removed"));
     }
     Ok(0)
 }
@@ -284,12 +284,18 @@ fn removal_consent(
     Ok(!users.is_empty())
 }
 
-/// Say that `chains` have no signer now, and how to attach one.
-pub fn warn_signerless(chains: &[String]) {
+/// Warn that `chains` have no signer (`why`), naming the command that
+/// attaches one: after a write that leaves chains signerless (`signer rm
+/// --unassign`, `chain add` with several signers to choose from).
+pub fn warn_signerless(chains: &[String], why: &str) {
+    let target = match chains {
+        [one] => one.as_str(),
+        _ => "<chain>",
+    };
     eprintln!(
         "{}",
         ui::warn(&format!(
-            "{} now {} no signer; attach one with `chainz chain set <chain> --signer <name>`",
+            "{} {} no signer ({why}); attach one with `chainz chain set {target} --signer <name>`",
             chains.join(", "),
             if chains.len() == 1 { "has" } else { "have" }
         ))

@@ -516,6 +516,43 @@ fn chain_add_by_hand_checks_chain_id() {
         .stderr(predicate::str::contains("RPC check failed"));
 }
 
+/// `chain add` attaches only an only signer; with several it says the
+/// chain has none and how to attach one.
+#[test]
+fn chain_add_with_several_signers_names_the_fix() {
+    let sb = Sandbox::new();
+    sb.seed(&[("eth", 1)]);
+    sb.cmd()
+        .args(["signer", "add", "two", "--backend", "plaintext", "--stdin"])
+        .write_stdin(TEST_KEY_2)
+        .assert()
+        .success();
+    let out = sb.run(&[
+        "chain",
+        "add",
+        "base",
+        "--url",
+        "http://127.0.0.1:1",
+        "--no-check",
+    ]);
+    assert!(out.status.success());
+    let err = stderr(&out);
+    assert!(
+        err.contains("base has no signer (2 signers to choose from: default, two); attach one with `chainz chain set base --signer <name>`"),
+        "{err}"
+    );
+    let out = sb.run(&[
+        "chain",
+        "add",
+        "op",
+        "--url",
+        "http://127.0.0.1:1",
+        "--no-check",
+        "--no-signer",
+    ]);
+    assert!(!stderr(&out).contains("no signer"), "{}", stderr(&out));
+}
+
 /// With `--url` the chain is an ID or a built-in short name, resolved
 /// offline: chainlist is never downloaded.
 #[test]
@@ -1647,7 +1684,9 @@ fn signer_rm_needs_yes_off_a_tty_and_names_every_flag_at_once() {
     let out = sb.run(&["key", "rm", "default", "--unassign", "-y"]);
     assert!(out.status.success());
     assert!(
-        stderr(&out).contains("eth, base now have no signer; attach one with `chainz chain set"),
+        stderr(&out).contains(
+            "eth, base have no signer ('default' was removed); attach one with `chainz chain set <chain> --signer <name>`"
+        ),
         "{}",
         stderr(&out)
     );

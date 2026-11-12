@@ -69,8 +69,9 @@ On a terminal, `chainz init` walks through the same steps.
 ```
 
 The first signer you add attaches to every chain that has none, and
-`chain add` attaches the only signer (`--no-signer` skips it) and the
-`etherscan` explorer once it is configured. With `--url` (`chainz chain add
+`chain add` attaches the only signer (`--no-signer` skips it; with several
+it attaches none and names the command that does) and the `etherscan`
+explorer once it is configured. With `--url` (`chainz chain add
 42161 --url https://…`, or a built-in short name such as `arb`) `chain add`
 never downloads chainlist; any other name needs the chain ID and `--name`.
 More setup:

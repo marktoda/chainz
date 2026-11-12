@@ -188,6 +188,10 @@ changed before 2.0.0; they are listed under Removed and Changed.
   says when it replaced the value of the shared key variable, and `edit
   CHAIN` lists what changed, a chain ID change included.
 
+- A write that leaves a chain without a signer says so and names the fix
+  (`chainz chain set CHAIN --signer <name>`): `chain add` when there are
+  several signers to choose from, and `signer rm --unassign`.
+
 ### Removed
 
 - Windows support.
