@@ -82,7 +82,7 @@ fn clip(text: String) -> String {
 fn summarize_call(call: &Call, chain_id: u64, labels: &LabelIndex) -> String {
     let p = &call.params;
     let addr = |v: Option<&Value>| address(v, chain_id, labels);
-    let block = classify::block_param(call);
+    let block = classify::state_block_param(call);
     match classify::params(&call.method) {
         Params::RawTx => match p.get(0).and_then(Value::as_str).and_then(raw_tx_hash) {
             Some(hash) => format!("tx {hash}"),

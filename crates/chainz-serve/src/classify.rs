@@ -94,8 +94,11 @@ pub struct Method {
     pub name: &'static str,
     /// How it may be routed.
     pub kind: Kind,
-    /// The position of its block parameter, if it takes one.
-    pub block_param: Option<usize>,
+    /// The position of the block whose state it reads, which decides
+    /// archive routing ([`needs`]). `None` for a method that names a block
+    /// without reading state at it: `eth_getBlockByNumber` and the other
+    /// [`Params::Block`] methods, `eth_feeHistory`.
+    pub state_block: Option<usize>,
     /// What its params look like.
     pub params: Params,
 }
@@ -129,11 +132,11 @@ pub enum Params {
     RawTx,
 }
 
-const fn method(name: &'static str, kind: Kind, block_param: Option<usize>) -> Method {
+const fn method(name: &'static str, kind: Kind, state_block: Option<usize>) -> Method {
     Method {
         name,
         kind,
-        block_param,
+        state_block,
         params: Params::Other,
     }
 }
@@ -257,7 +260,7 @@ pub fn needs(call: &Call, head: Option<u64>) -> Needs {
 
 /// The block number a state read is pinned to, when it names one.
 fn state_block(call: &Call) -> Option<u64> {
-    let param = block_param(call)?;
+    let param = state_block_param(call)?;
     let text = match param {
         Value::String(s) => s.as_str(),
         Value::Object(obj) => obj.get("blockNumber")?.as_str()?,
@@ -269,9 +272,10 @@ fn state_block(call: &Call) -> Option<u64> {
     u64::try_from(chainz_rpc::hex::parse_quantity(text).ok()?).ok()
 }
 
-/// A call's block parameter, when its method takes one and it was given.
-pub fn block_param(call: &Call) -> Option<&Value> {
-    call.params.get(lookup(&call.method)?.block_param?)
+/// The block parameter whose state a call reads ([`Method::state_block`]),
+/// when its method has one and it was given.
+pub fn state_block_param(call: &Call) -> Option<&Value> {
+    call.params.get(lookup(&call.method)?.state_block?)
 }
 
 /// The filter ID a [`Kind::FilterUse`] call refers to.
@@ -288,6 +292,15 @@ mod tests {
         match parse(v.to_string().as_bytes()).unwrap() {
             Parsed::Single(c) => c,
             Parsed::Batch(_) => panic!("batch"),
+        }
+    }
+
+    /// A block-shaped method reads no state at its block: fetching an old
+    /// block needs no archive node.
+    #[test]
+    fn block_methods_read_no_state_at_their_block() {
+        for m in METHODS.iter().filter(|m| m.params == Params::Block) {
+            assert_eq!(m.state_block, None, "{}", m.name);
         }
     }
 
