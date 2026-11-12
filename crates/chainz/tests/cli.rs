@@ -582,7 +582,7 @@ fn output_redacts_credentials_unless_revealed() {
 }
 
 #[test]
-fn rpc_add_with_header_and_use_and_rm() {
+fn rpc_add_with_header_activate_and_rm() {
     let sb = Sandbox::new();
     sb.seed(&[("eth", 1)]);
     sb.cmd()

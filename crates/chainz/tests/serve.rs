@@ -168,7 +168,7 @@ fn exec_routes_through_a_running_gateway_and_direct_bypasses_it() {
     let explain = sb.ok(&["exec", "eth", "--explain", "--", "true"]);
     assert!(!explain.contains(&token), "{explain}");
 
-    // `chainz rpc use` reaches the running gateway.
+    // `chainz chain set --rpc` reaches the running gateway.
     sb.ok(&["chain", "set", "eth", "--rpc", "alt"]);
     wait_until("the gateway to pick up `chain set --rpc`", WAIT, || {
         rpc(&gateway, "eth_gasPrice") == "alt"
