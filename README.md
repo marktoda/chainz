@@ -134,8 +134,9 @@ run the command directly. Chainz overhead is about 3 ms.
 | `@usdc:arb` | a label on another chain |
 | `@@` | a literal `@` |
 
-An unknown token is an error with a suggestion (`@udsc` → did you mean
-`@usdc`?), never passed through. `--explain` prints the context, exported
+An argument that is only an unknown token is an error with a suggestion
+(`@udsc` → did you mean `@usdc`?); inside a longer argument
+(`foo@bar.com`, `@uniswap/v3-core`) an unknown token is left as it is. `--explain` prints the context, exported
 names and rewritten argv without running anything (with `--expose-key` it
 shows `RAW_PRIVATE_KEY` redacted and never unlocks the key).
 
@@ -183,10 +184,13 @@ chainz top             # interactive
 chainz top --once      # one snapshot; add --json for scripts
 ```
 
-One row per chain: head block, block age and time, gas price, active endpoint
-and latency, recent health, and your signer's balances. When the gateway
-runs, a traffic pane streams its requests. Live forks appear as rows marked
-`fork`.
+Four tabs: Chains (head block, block age and time, base fee, active
+endpoint and latency, recent health), Endpoints (every endpoint of a chain,
+with health and capability tags; `s` activates one), Balances (each
+signer's native and major-token balances, one Multicall3 call per chain)
+and Traffic (the gateway's live requests and totals, while `serve` runs).
+Through the gateway, the endpoint shown is the one it actually serves
+from. Forks are not shown.
 
 ## fork: disposable anvil forks
 
@@ -260,7 +264,7 @@ Chainz needs a signer's address often and its key almost never. Only
 
 | Backend | Key lives in |
 | --- | --- |
-| `keyring` (default) | the OS keyring |
+| `keyring` (default) | the OS keyring (`encrypted` is the default where there is none) |
 | `encrypted` | `secrets.toml`, password-encrypted |
 | `1password` | a 1Password item (`--vault`, `--item`) |
 | `keystore` | a Foundry keystore file, unlocked by cast or forge |
@@ -269,9 +273,11 @@ Chainz needs a signer's address often and its key almost never. Only
 `chainz signer migrate` moves plaintext keys into safe storage
 (`--all` for every plaintext signer; a failure doesn't stop the rest).
 `chainz signer rm` deletes the key material too, so it asks first; off a
-terminal pass `--yes`; a signer chains still use needs `--unassign`. Pass keys and variable values on stdin (`--stdin`):
-a secret given as an argument works but warns, since it lands in shell
-history and `ps`.
+terminal pass `--yes`. A signer that chains still use needs `--unassign`,
+which removes it from those chains.
+
+Pass keys and variable values on stdin (`--stdin`): a secret given as an
+argument works but warns, since it lands in shell history and `ps`.
 
 ## Configuration
 
@@ -312,8 +318,11 @@ address = "0x…"
 base = "0x…"
 ```
 
-`${NAME}` resolves from the environment, then `secrets.toml`, then built-ins
-(`${CHAIN_ID}`, `${CHAIN}`). An unresolved reference is an error.
+`${NAME}` resolves from the built-ins (`${CHAIN_ID}`, `${CHAIN}`), then the
+environment, then `secrets.toml`. Inside a chainz context (`chainz shell`,
+`eval "$(chainz env …)"`) the exec contract's own variables are not read
+from the environment, so a nested `chainz exec` never inherits the outer
+chain's keys. An unresolved reference is an error.
 `chainz edit` and `chainz edit eth` validate on save.
 `chainz doctor` flags literal credentials in URLs, and `doctor --fix` moves
 them into variables. `chain add --url`, `chain set --rpc URL` and `rpc add` do the same as they
@@ -324,9 +333,15 @@ say what they moved.
 deletes key material, `rpc bench --fix --yes` also writes the proposed
 failover lists, `rpc discover --yes` adds every endpoint that answered.
 Off a terminal chainz never prompts: it reports and tells you which flag
-to pass. Listing
-commands take `--json` (`ls`, `rpc ls`, `signer ls`, `var ls`, `addr ls`,
-`addr find`, `fork ls`, `serve status`).
+to pass. Listing commands take `--json` (`ls`, `chain show`, `rpc ls`,
+`signer ls`, `var ls`, `addr ls`, `addr find`, `addr import`, `fork ls`,
+`serve status`, `top --once`). Secrets are shown only with `--reveal`;
+otherwise only the credential-shaped parts of a URL or header are masked
+(`https://mainnet.infura.io/v3/[REDACTED]`), and anything chainz can't
+parse is masked whole.
+
+Exit codes: 0 on success, 1 for an error, 2 for a usage error (a missing
+argument off a terminal included), 130 for a cancelled prompt.
 
 ## Migrating from v1
 
@@ -345,9 +360,12 @@ migrates once, under a lock:
 Preview first with `chainz config migrate --dry-run`. The v1 names
 `CHAIN_NAME`, `@chainname`, `@verification_url` and `@verifier_api_key` keep
 working for one release, with a warning. `@key` is gone; use `--expose-key`.
-The v1 command spellings still work: `list` and `remove` (for `ls` and
-`rm`), `key …` (for `signer …`), `--type private-key`/`one-password`, and
-`var get --show`.
+Some v1 spellings still work: `chainz list`, `list` and `remove` under
+each noun (`chain remove eth`, not `chainz remove eth`), `chainz update`
+(now `chain set`, with v1's menu when given no flags), `chainz init`,
+`key …` (for `signer …`), `--type private-key`/`one-password`, and
+`var get --show`. The other top-level v1 commands moved under `chain`:
+`chain add`, `chain show`, `chain rm`.
 
 ## Development
 
