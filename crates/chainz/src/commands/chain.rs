@@ -17,7 +17,7 @@ use chainz_core::names;
 use chainz_core::resolve::{self, Policy};
 use chainz_core::tx::{Attach, EndpointRole};
 use chainz_rpc::ProbeResult;
-use chainz_rpc::chainlist::{self, ChainlistEntry};
+use chainz_rpc::chainlist::{self, ChainlistEntry, ChainlistError, Registry};
 
 /// `ls [CHAIN]`: config only (hot path, no network). The table reads no
 /// more than the config; one chain in full and `--json` add the recorded
@@ -104,41 +104,19 @@ fn show(chainz: &Chainz, query: &str, args: &ListArgs) -> Result<i32> {
     Ok(0)
 }
 
-fn find_in_chainlist<'a>(entries: &'a [ChainlistEntry], query: &str) -> Result<&'a ChainlistEntry> {
-    if let Ok(id) = query.parse::<u64>() {
-        return entries.iter().find(|e| e.chain_id == id).ok_or_else(|| {
-            anyhow!("chain ID {id} is not on chainlist; pass --name and --url to add it by hand")
-        });
+/// The chainlist entry `query` names: a built-in short name (`arb`) first,
+/// then [`Registry::lookup`].
+fn find_in_chainlist<'a>(registry: &'a Registry, query: &str) -> Result<&'a ChainlistEntry> {
+    if let Some(entry) = names::builtin_chain_id(query).and_then(|id| registry.find(id).ok()) {
+        return Ok(entry);
     }
-    let q = query.to_ascii_lowercase();
-    if let Some(id) = names::builtin_chain_id(query)
-        && let Some(e) = entries.iter().find(|e| e.chain_id == id)
-    {
-        return Ok(e);
-    }
-    if let Some(e) = entries
-        .iter()
-        .find(|e| e.name.eq_ignore_ascii_case(query) || e.short_name.eq_ignore_ascii_case(query))
-    {
-        return Ok(e);
-    }
-    let matches: Vec<&ChainlistEntry> = entries
-        .iter()
-        .filter(|e| e.name.to_ascii_lowercase().contains(&q))
-        .collect();
-    match matches.as_slice() {
-        [one] => Ok(one),
-        [] => bail!("'{query}' is not on chainlist; pass a chain ID"),
-        many => bail!(
-            "'{query}' matches {} chainlist entries ({}…); pass a chain ID",
-            many.len(),
-            many.iter()
-                .take(5)
-                .map(|e| format!("{} {}", e.chain_id, e.name))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-    }
+    registry.lookup(query).map_err(|e| {
+        let hint = match e {
+            ChainlistError::NotFound(_) => "pass --name and --url to add it by hand",
+            _ => "pass a chain ID",
+        };
+        anyhow!("{e}; {hint}")
+    })
 }
 
 /// Where `add` gets the chain from, decided from the arguments
@@ -218,22 +196,21 @@ impl Found {
 
 /// Look the chain up as `source` says.
 fn find_chain(args: &AddArgs, source: ChainSource, ask: &mut dyn Ask) -> Result<Found> {
-    let cache = chainz_core::paths::cache_dir()?;
     if let ChainSource::Offline { id } = source {
-        let cached = chainlist::read_cache(&cache)
+        let cached = chainlist::read_cache(&chainz_core::paths::cache_dir()?)
             .and_then(|all| all.into_iter().find(|e| e.chain_id == id));
         return Ok(Found::Offline { id, cached });
     }
-    let registry = net::chainlist(&cache, args.refresh).context(ChainlistUnavailable)?;
-    let all = registry.entries;
+    let registry = net::chainlist(args.refresh).context(ChainlistUnavailable)?;
     let entry = match &args.chain {
-        Some(q) => find_in_chainlist(&all, q)?.clone(),
+        Some(q) => find_in_chainlist(&registry, q)?.clone(),
         None => {
-            let items: Vec<String> = all
+            let items: Vec<String> = registry
+                .entries
                 .iter()
                 .map(|e| format!("{} ({})", e.name, e.chain_id))
                 .collect();
-            all[ask.select("Chain to add", &items, 0)?].clone()
+            registry.entries[ask.select("Chain to add", &items, 0)?].clone()
         }
     };
     Ok(Found::Listed(entry))
@@ -264,17 +241,8 @@ pub fn add(chainz: &mut Chainz, args: &AddArgs, ask: &mut dyn Ask) -> Result<i32
     };
     match &found {
         Found::Listed(entry) if args.urls.is_empty() => {
-            // Only URLs that make valid endpoints; websockets are kept but
-            // not probed.
-            let public: Vec<String> = chainlist::public_rpcs(entry)
-                .into_iter()
-                .filter(|u| Endpoint::check_url(u).is_ok())
-                .collect();
-            let http: Vec<String> = public
-                .iter()
-                .filter(|u| Endpoint::new(u.as_str()).is_http())
-                .cloned()
-                .collect();
+            // Websockets are added too, but not probed.
+            let http = chainlist::public_http_rpcs(entry);
             if http.is_empty() {
                 bail!(
                     "chainlist lists no public HTTP RPC for {}; pass --url URL",
@@ -288,7 +256,7 @@ pub fn add(chainz: &mut Chainz, args: &AddArgs, ask: &mut dyn Ask) -> Result<i32
             let probed = probe_urls(id, &http);
             let chosen = choose_active(&probed, &entry.name, ask)?;
             push(&mut urls, chosen);
-            for url in &public {
+            for url in &chainlist::public_rpcs(entry) {
                 push(&mut urls, url);
             }
         }

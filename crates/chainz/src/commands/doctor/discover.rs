@@ -17,12 +17,12 @@ use chainz_rpc::chainlist;
 pub fn run(chainz: &mut Chainz, chain: &str, refresh: bool, yes: bool) -> Result<()> {
     let c = chainz.config().chains[chain].clone();
     println!("{}", ui::section(&format!("discover {chain}")));
-    let registry = net::chainlist(&chainz_core::paths::cache_dir()?, refresh)?;
+    let registry = net::chainlist(refresh)?;
     let entry = registry.find(c.id)?;
     let vars = &chainz.secrets()?.vars;
-    let fresh: Vec<String> = chainlist::public_rpcs(entry)
+    let fresh: Vec<String> = chainlist::public_http_rpcs(entry)
         .into_iter()
-        .filter(|u| Endpoint::new(u.as_str()).is_http() && c.endpoint_at(u, vars).is_none())
+        .filter(|u| c.endpoint_at(u, vars).is_none())
         .collect();
     if fresh.is_empty() {
         println!("Every public chainlist RPC for '{chain}' is already configured");

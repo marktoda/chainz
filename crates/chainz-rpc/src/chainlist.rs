@@ -42,8 +42,21 @@ pub enum ChainlistError {
     #[error("the chain registry is malformed")]
     Parse,
     /// No entry with that chain ID.
-    #[error("chain ID {0} is not in the chain registry")]
+    #[error("chain ID {0} is not on chainlist")]
     NotFound(u64),
+    /// No entry's name or short name matches the query.
+    #[error("'{0}' is not on chainlist")]
+    NoMatch(String),
+    /// The query is part of several entries' names.
+    #[error("'{query}' matches {count} chainlist entries ({sample}…)")]
+    Ambiguous {
+        /// What was looked up.
+        query: String,
+        /// How many entries match.
+        count: usize,
+        /// The first few, `ID name` each.
+        sample: String,
+    },
 }
 
 /// The registry as it was read.
@@ -64,6 +77,40 @@ impl Registry {
             .find(|e| e.chain_id == chain_id)
             .ok_or(ChainlistError::NotFound(chain_id))
     }
+
+    /// The entry `query` names: a chain ID, else an entry whose name or
+    /// short name is `query` (ignoring case), else the one entry whose
+    /// name contains it.
+    pub fn lookup(&self, query: &str) -> Result<&ChainlistEntry, ChainlistError> {
+        if let Ok(id) = query.parse::<u64>() {
+            return self.find(id);
+        }
+        if let Some(entry) = self.entries.iter().find(|e| {
+            e.name.eq_ignore_ascii_case(query) || e.short_name.eq_ignore_ascii_case(query)
+        }) {
+            return Ok(entry);
+        }
+        let needle = query.to_ascii_lowercase();
+        let matches: Vec<&ChainlistEntry> = self
+            .entries
+            .iter()
+            .filter(|e| e.name.to_ascii_lowercase().contains(&needle))
+            .collect();
+        match matches.as_slice() {
+            [one] => Ok(one),
+            [] => Err(ChainlistError::NoMatch(query.to_string())),
+            many => Err(ChainlistError::Ambiguous {
+                query: query.to_string(),
+                count: many.len(),
+                sample: many
+                    .iter()
+                    .take(5)
+                    .map(|e| format!("{} {}", e.chain_id, e.name))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            }),
+        }
+    }
 }
 
 /// All registry entries: the cache when it is fresh (and `refresh` is false),
@@ -80,25 +127,35 @@ pub fn read_cache(cache_dir: &Path) -> Option<Vec<ChainlistEntry>> {
 }
 
 /// Public RPC URLs usable without credentials: entries containing `${` are
-/// dropped; `http(s)` and `ws(s)` URLs are kept, in registry order, without
-/// duplicates.
+/// dropped; well-formed `http(s)` and `ws(s)` URLs with a host are kept, in
+/// registry order, without duplicates.
 pub fn public_rpcs(entry: &ChainlistEntry) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for url in &entry.rpc {
         let url = url.trim();
-        if url.contains("${") {
+        if url.contains("${") || url.contains(char::is_whitespace) {
             continue;
         }
-        let ok = url.split_once("://").is_some_and(|(scheme, _)| {
-            Target::SCHEMES
-                .iter()
-                .any(|s| s.eq_ignore_ascii_case(scheme))
+        let ok = url::Url::parse(url).is_ok_and(|parsed| {
+            Target::SCHEMES.contains(&parsed.scheme()) && parsed.host().is_some()
         });
         if ok && !out.iter().any(|u| u == url) {
             out.push(url.to_string());
         }
     }
     out
+}
+
+/// The `http(s)` URLs of [`public_rpcs`]: the ones chainz can probe.
+pub fn public_http_rpcs(entry: &ChainlistEntry) -> Vec<String> {
+    public_rpcs(entry)
+        .into_iter()
+        .filter(|u| {
+            u.split_once("://").is_some_and(|(scheme, _)| {
+                scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")
+            })
+        })
+        .collect()
 }
 
 async fn fetch_all_from(
@@ -193,7 +250,7 @@ mod tests {
 
     const SAMPLE: &str = r#"[
       {"name":"Ethereum Mainnet","chainId":1,"shortName":"eth",
-       "rpc":["https://mainnet.infura.io/v3/${INFURA_API_KEY}","https://eth.llamarpc.com","wss://eth.example.org","ftp://nope","https://eth.llamarpc.com"],
+       "rpc":["https://mainnet.infura.io/v3/${INFURA_API_KEY}","https://eth.llamarpc.com","wss://eth.example.org","ftp://nope","https://eth.llamarpc.com","https://","HTTPS://Upper.example"],
        "nativeCurrency":{"name":"Ether","symbol":"ETH","decimals":18},"extra":true},
       {"name":"Bare","chainId":8453},
       {"name":"Broken","chainId":"not-a-number"}
@@ -222,8 +279,39 @@ mod tests {
         let entries = parse(SAMPLE.as_bytes()).unwrap();
         assert_eq!(
             public_rpcs(&entries[0]),
-            vec!["https://eth.llamarpc.com", "wss://eth.example.org"]
+            vec![
+                "https://eth.llamarpc.com",
+                "wss://eth.example.org",
+                "HTTPS://Upper.example"
+            ]
         );
+        assert_eq!(
+            public_http_rpcs(&entries[0]),
+            vec!["https://eth.llamarpc.com", "HTTPS://Upper.example"]
+        );
+    }
+
+    #[test]
+    fn lookup_by_id_name_or_unique_part() {
+        let entries = parse(
+            br#"[{"name":"Ethereum Mainnet","chainId":1,"shortName":"eth"},
+                 {"name":"Base","chainId":8453,"shortName":"base"},
+                 {"name":"Base Sepolia Testnet","chainId":84532,"shortName":"basesep"}]"#,
+        )
+        .unwrap();
+        let registry = Registry {
+            entries,
+            cache_warning: None,
+        };
+        let id = |q: &str| registry.lookup(q).map(|e| e.chain_id);
+        assert_eq!(id("8453").unwrap(), 8453);
+        assert_eq!(id("ETH").unwrap(), 1);
+        assert_eq!(id("base").unwrap(), 8453);
+        assert_eq!(id("sepolia").unwrap(), 84532);
+        assert!(matches!(id("5"), Err(ChainlistError::NotFound(5))));
+        assert!(matches!(id("nope"), Err(ChainlistError::NoMatch(_))));
+        let err = id("as").unwrap_err().to_string();
+        assert!(err.contains("matches 2 chainlist entries"), "{err}");
     }
 
     #[tokio::test]

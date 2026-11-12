@@ -7,9 +7,8 @@ use chainz_core::Chainz;
 use chainz_core::model::Endpoint;
 use chainz_core::route::Route;
 use chainz_rpc::Target;
-use chainz_rpc::chainlist::{self, ChainlistError, Registry};
+use chainz_rpc::chainlist::{self, Registry};
 use std::future::Future;
-use std::path::Path;
 
 use crate::ui;
 
@@ -59,11 +58,12 @@ pub fn to_target(route: &Route) -> Result<Target> {
         .map_err(|e| anyhow!("chain '{}' endpoint '{}': {e}", route.chain, route.endpoint))
 }
 
-/// The chain registry (chainid.network), from the cache under `cache` when
-/// it is fresh and `refresh` is off; a download that could not be cached
-/// is said on stderr.
-pub fn chainlist(cache: &Path, refresh: bool) -> Result<Registry, ChainlistError> {
-    let registry = block_on(chainlist::fetch_all(cache, refresh))?;
+/// The chain registry (chainid.network), from the cache directory when it
+/// is fresh and `refresh` is off; a download that could not be cached is
+/// said on stderr.
+pub fn chainlist(refresh: bool) -> Result<Registry> {
+    let cache = chainz_core::paths::cache_dir()?;
+    let registry = block_on(chainlist::fetch_all(&cache, refresh))?;
     if let Some(warning) = &registry.cache_warning {
         eprintln!("{}", ui::warn(warning));
     }
