@@ -6,7 +6,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::common::{
-    Answer, Mock, Response, Rig, eth_config, eventually, http, named, probed_twice_since,
+    Answer, Mock, Response, Rig, eth_config, eventually, eventually_returns, http, named,
+    probed_twice_since,
 };
 use chainz_core::runtime::GatewayState;
 use chainz_rpc::control::{Backlog, EventsOptions, RecordStatus, Window};
@@ -717,14 +718,12 @@ async fn capability_tags_steer_debug_trace_and_old_block_reads() {
             ..Default::default()
         },
     );
-    let mut answer = String::new();
-    for _ in 0..100 {
-        answer = who(rig.call("eth", "trace_block", json!(["latest"])).await);
-        if answer == "c" {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    let rig = &rig;
+    let answer = eventually_returns(
+        move || async move { who(rig.call("eth", "trace_block", json!(["latest"])).await) },
+        |answer| answer == "c",
+    )
+    .await;
     assert_eq!(answer, "c");
 }
 

@@ -171,6 +171,23 @@ pub fn eventually(condition: impl FnMut() -> bool) -> impl Future<Output = ()> {
     }
 }
 
+/// [`eventually`] for a condition that needs a request: run `attempt`
+/// until `done` accepts its result (or 5 s pass), and return the last one.
+pub async fn eventually_returns<T, F, Fut>(mut attempt: F, done: impl Fn(&T) -> bool) -> T
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = T>,
+{
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let value = attempt().await;
+        if done(&value) || std::time::Instant::now() > deadline {
+            return value;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 /// A one-chain config: `eth` (ID 1) with the given active endpoint,
 /// failover list and endpoints.
 pub fn eth_config(active: &str, failover: &[&str], endpoints: &[(&str, String)]) -> String {
