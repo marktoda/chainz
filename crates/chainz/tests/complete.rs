@@ -242,7 +242,7 @@ fn signers_labels_and_vars_complete() {
         &["default", "ledger"],
     );
     assert_set(fish(&sb, &["signer", "rm", "l"]), &["ledger"]);
-    assert_set(fish(&sb, &["key", "rm", "d"]), &["default"]);
+    assert_set(fish(&sb, &["signer", "rm", "d"]), &["default"]);
     assert_set(fish(&sb, &["addr", "rm", ""]), &["router"]);
     assert_set(fish(&sb, &["var", "get", ""]), &["ALCHEMY_KEY", "OTHER"]);
     assert_set(fish(&sb, &["var", "rm", "A"]), &["ALCHEMY_KEY"]);

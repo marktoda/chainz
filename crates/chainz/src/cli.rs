@@ -65,7 +65,6 @@ pub enum Command {
     Use(UseArgs),
 
     /// List chains (alias of `chain ls`)
-    #[command(visible_alias = "list")]
     Ls(ListArgs),
 
     /// Live dashboard of chains, endpoints, balances and gateway traffic
@@ -111,7 +110,6 @@ pub enum Command {
     },
 
     /// Manage signers (key references with cached addresses)
-    #[command(alias = "key")]
     Signer {
         #[command(subcommand)]
         cmd: SignerCommand,
@@ -277,8 +275,9 @@ pub struct DoctorArgs {
     /// Repair what can be repaired (dead active RPCs, literal credentials)
     #[arg(long)]
     pub fix: bool,
-    /// Verify the built-in token registry on chain (checks only)
-    #[arg(long, conflicts_with = "fix")]
+    /// Verify the built-in token registry on chain (checks only; for
+    /// maintainers)
+    #[arg(long, hide = true, conflicts_with = "fix")]
     pub tokens: bool,
     /// List each finding of a group (one cause on many chains)
     #[arg(short, long)]
@@ -363,7 +362,6 @@ pub struct ForkArgs {
 #[derive(Debug, Subcommand)]
 pub enum ForkCommand {
     /// List live forks
-    #[command(visible_alias = "list")]
     Ls(JsonArgs),
     /// Stop a fork
     Stop(ForkStopArgs),
@@ -382,7 +380,6 @@ pub struct ForkStopArgs {
 #[derive(Debug, Subcommand)]
 pub enum ChainCommand {
     /// List chains
-    #[command(visible_alias = "list")]
     Ls(ListArgs),
     /// Add a chain from chainlist (by ID or name) or by hand
     Add(ChainAddArgs),
@@ -391,7 +388,6 @@ pub enum ChainCommand {
     /// Change a chain's settings (also `chainz update`); a menu with no flags
     Set(ChainSetArgs),
     /// Remove a chain (exact name or ID) and its labels; asks first unless --yes
-    #[command(visible_alias = "remove")]
     Rm(ChainRmArgs),
 }
 
@@ -505,12 +501,10 @@ pub struct ChainSetArgs {
 #[derive(Debug, Subcommand)]
 pub enum RpcCommand {
     /// List endpoints with their latest health
-    #[command(visible_alias = "list")]
     Ls(RpcLsArgs),
     /// Add an endpoint
     Add(RpcAddArgs),
     /// Remove an endpoint; asks first unless --yes
-    #[command(visible_alias = "remove")]
     Rm(RpcRmArgs),
     /// Probe, rank and tag endpoints
     Bench(BenchArgs),
@@ -599,12 +593,9 @@ pub struct DiscoverArgs {
 pub enum BackendArg {
     Keyring,
     Encrypted,
-    /// `one-password` is the v1 name
-    #[value(name = "1password", alias = "one-password")]
+    #[value(name = "1password")]
     OnePassword,
     Keystore,
-    /// `private-key` is the v1 name
-    #[value(alias = "private-key")]
     Plaintext,
 }
 
@@ -640,11 +631,9 @@ pub enum SignerCommand {
     /// Add a signer
     Add(SignerAddArgs),
     /// List signers (never shows key material)
-    #[command(visible_alias = "list")]
     Ls(JsonArgs),
     /// Remove a signer and delete its key material (keyring entry or
     /// secrets.toml entry); asks first unless --yes
-    #[command(visible_alias = "remove")]
     Rm(SignerRmArgs),
     /// Move keys into safe storage
     Migrate(SignerMigrateArgs),
@@ -661,7 +650,7 @@ pub struct SignerAddArgs {
     #[arg(long, hide = true, conflicts_with = "stdin")]
     pub key: Option<String>,
     /// Where the key lives (default: keyring, else encrypted)
-    #[arg(long, value_enum, alias = "type")]
+    #[arg(long, value_enum)]
     pub backend: Option<BackendArg>,
     /// Keystore file (keystore backend)
     #[arg(long)]
@@ -711,10 +700,8 @@ pub enum AddrCommand {
     /// Name an address
     Add(AddrAddArgs),
     /// List labels
-    #[command(visible_alias = "list")]
     Ls(AddrLsArgs),
     /// Remove a label; asks first unless --yes
-    #[command(visible_alias = "remove")]
     Rm(AddrRmArgs),
     /// Reverse-look-up an address
     Find(AddrFindArgs),
@@ -813,10 +800,8 @@ pub enum VarCommand {
     /// Show a variable (redacted unless --reveal)
     Get(VarGetArgs),
     /// List variables
-    #[command(visible_alias = "list")]
     Ls(VarLsArgs),
     /// Remove a variable and its value; asks first unless --yes
-    #[command(visible_alias = "remove")]
     Rm(VarRmArgs),
 }
 
@@ -838,14 +823,14 @@ pub struct VarGetArgs {
     #[arg(add = ArgValueCompleter::new(complete::vars))]
     pub name: String,
     /// Print the value
-    #[arg(long, alias = "show")]
+    #[arg(long)]
     pub reveal: bool,
 }
 
 #[derive(Debug, Args)]
 pub struct VarLsArgs {
     /// Print the values
-    #[arg(long, alias = "show")]
+    #[arg(long)]
     pub reveal: bool,
     /// List every config record that uses each variable
     #[arg(short, long)]

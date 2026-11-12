@@ -1768,7 +1768,7 @@ fn signer_migrate_off_a_tty_changes_nothing_and_reports_each_failure() {
     assert_eq!(unchanged(&sb), before);
 
     sb.cmd()
-        .args(["key", "add", "second", "--type", "private-key", "--stdin"])
+        .args(["signer", "add", "second", "--backend", "plaintext", "--stdin"])
         .write_stdin(TEST_KEY_2)
         .assert()
         .success();
@@ -1848,15 +1848,15 @@ fn signer_rm_needs_yes_off_a_tty_and_names_every_flag_at_once() {
         .arg(keystore_file(&sb))
         .assert()
         .success();
-    let out = sb.run(&["signer", "remove", "ks"]);
+    let out = sb.run(&["signer", "rm", "ks"]);
     assert!(
         stderr(&out).contains("(keystore kept); pass --yes"),
         "{}",
         stderr(&out)
     );
-    sb.ok(&["signer", "remove", "ks", "--yes"]);
+    sb.ok(&["signer", "rm", "ks", "--yes"]);
     // Unassigning says which chains are left without a signer.
-    let out = sb.run(&["key", "rm", "default", "--unassign", "-y"]);
+    let out = sb.run(&["signer", "rm", "default", "--unassign", "-y"]);
     assert!(out.status.success());
     assert!(
         stderr(&out).contains(
@@ -1903,46 +1903,29 @@ fn secrets_given_as_arguments_are_warned_about() {
         .stderr("");
 }
 
+/// Removed and v1 spellings are unknown: clap's usage error (exit 2),
+/// never a hidden alias.
 #[test]
-fn v1_command_names_still_work() {
+fn removed_spellings_are_unknown() {
     let sb = Sandbox::new();
     sb.seed(&[("eth", 1)]);
-    assert!(sb.ok(&["list"]).contains("eth"));
-    assert!(sb.ok(&["chain", "list"]).contains("eth"));
-    assert!(sb.ok(&["rpc", "list"]).contains("local"));
-    assert!(sb.ok(&["key", "list"]).contains("default"));
-    sb.cmd()
-        .args(["var", "set", "TOKEN", "--stdin"])
-        .write_stdin("hunter2")
-        .assert()
-        .success();
-    assert!(sb.ok(&["var", "list", "--show"]).contains("hunter2"));
-    assert_eq!(sb.ok(&["var", "get", "TOKEN", "--show"]), "hunter2\n");
-    sb.ok(&["var", "remove", "TOKEN", "-y"]);
-    assert!(!sb.ok(&["var", "list"]).contains("TOKEN"));
-    sb.cmd()
-        .args([
-            "key",
-            "add",
-            "one",
-            "--type",
-            "one-password",
-            "--vault",
-            "v",
-            "--item",
-            "i",
-            "--address",
-            TEST_ADDRESS_2,
-        ])
-        .assert()
-        .success();
-    assert!(
-        sb.config().contains("backend = \"1password\""),
-        "{}",
-        sb.config()
-    );
-    sb.ok(&["key", "remove", "one", "-y"]);
-    sb.ok(&["chain", "remove", "eth", "-y"]);
+    for argv in [
+        &["list"][..],
+        &["key", "ls"],
+        &["signer", "list"],
+        &["signer", "remove", "default", "-y"],
+        &["var", "list"],
+        &["var", "remove", "X", "-y"],
+        &["var", "ls", "--show"],
+        &["signer", "add", "x", "--type", "keystore"],
+        &["signer", "add", "x", "--backend", "one-password"],
+        &["signer", "add", "x", "--backend", "private-key", "--stdin"],
+    ] {
+        let out = sb.run(argv);
+        assert_eq!(out.status.code(), Some(2), "{argv:?}: {}", stderr(&out));
+    }
+    // `doctor --tokens` still runs for maintainers, but is not listed.
+    assert!(!sb.ok(&["doctor", "--help"]).contains("--tokens"));
 }
 
 #[test]

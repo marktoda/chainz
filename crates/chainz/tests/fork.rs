@@ -429,7 +429,7 @@ fn fork_through_proxy_registers_funds_lists_and_stops() {
     assert!(listing.starts_with("NAME"), "{listing}");
     // `fork list --json`: the record, its URL and height.
     let listed: Value =
-        serde_json::from_str(&stdout(&sb.run(&["fork", "list", "--json"]))).unwrap();
+        serde_json::from_str(&stdout(&sb.run(&["fork", "ls", "--json"]))).unwrap();
     assert_eq!(listed[0]["name"], "local-fork", "{listed}");
     assert_eq!(listed[0]["port"], port);
     assert_eq!(listed[0]["url"], format!("http://127.0.0.1:{port}"));
@@ -838,9 +838,8 @@ fn rejects_unforkable_chains_bad_names_and_bad_fund_specs_up_front() {
     fails(&["fork", "zk"], "anvil does not support zkSync Era");
     fails(&["fork", "324"], "anvil does not support zkSync Era");
     fails(&["fork", "nope"], "not found");
-    // `ls`/`list` and `stop` are subcommands, so they can't be fork names.
+    // `ls` and `stop` are subcommands, so they can't be fork names.
     fails(&["fork", "local", "--name", "ls"], "subcommand");
-    fails(&["fork", "local", "--name", "list"], "subcommand");
     fails(&["fork", "local", "--name", "stop"], "subcommand");
     fails(&["fork", "local", "--name", "local"], "configured chain");
     fails(&["fork", "local", "--name", "devnet"], "alias of");

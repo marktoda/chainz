@@ -760,7 +760,7 @@ fn addr_ls_and_find_json_and_rm_by_chain_alias() {
     sb.ok(&["addr", "add", "router", ROUTER, "--chain", "base"]);
     sb.ok(&["addr", "add", "usdc", ROUTER, "--chain", "base"]);
 
-    let rows: Value = serde_json::from_str(&sb.ok(&["addr", "list", "--json"])).unwrap();
+    let rows: Value = serde_json::from_str(&sb.ok(&["addr", "ls", "--json"])).unwrap();
     let router = rows
         .as_array()
         .unwrap()
@@ -797,7 +797,7 @@ fn addr_ls_and_find_json_and_rm_by_chain_alias() {
 
     // --chain takes an alias (exact, like a name or ID; never a prefix).
     sb.cmd()
-        .args(["addr", "remove", "router", "--chain", "basechain", "-y"])
+        .args(["addr", "rm", "router", "--chain", "basechain", "-y"])
         .assert()
         .success()
         .stdout(format!("Removed @router on base ({ROUTER})\n"));
