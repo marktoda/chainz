@@ -17,7 +17,7 @@ pub(crate) const CONFIG_VERSION: u32 = 2;
 /// The whole config file.
 #[derive(Clone, Default, Deserialize)]
 pub struct Config {
-    /// Must be [`CONFIG_VERSION`].
+    /// Must be `CONFIG_VERSION` (2).
     #[serde(default)]
     pub version: u32,
     /// Default chain name, set by `chainz use`.
@@ -301,7 +301,7 @@ pub(crate) const KEYRING_SERVICE: &str = "chainz";
 /// A key reference plus its cached public address. Holds no key material.
 ///
 /// A flat record rather than an enum tagged by backend: which optional
-/// fields a backend takes is the one table [`Backend::fields`], checked by
+/// fields a backend takes is the one table `Backend::fields`, checked by
 /// validation, so a mistake gets a message naming the signer and field
 /// (and `doctor` can still load the file to list every problem).
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -312,7 +312,7 @@ pub struct Signer {
     /// Cached address: `@wallet`, `ETH_FROM` and balances never unlock.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub address: Option<Address>,
-    /// Keyring service (default [`KEYRING_SERVICE`]).
+    /// Keyring service (default `chainz`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service: Option<String>,
     /// Keyring username (default: the signer name).
@@ -422,7 +422,7 @@ impl Signer {
 
 impl Config {
     /// Parse `config.toml` text. Errors quote the source line; show them
-    /// through [`crate::redact::toml_error`].
+    /// through the store, which redacts them.
     pub fn parse(text: &str) -> Result<Self, toml::de::Error> {
         toml::from_str(text)
     }

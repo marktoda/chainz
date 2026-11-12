@@ -4,7 +4,7 @@
 //! chain selection and the context all build on it.
 
 /// `CHAINZ_CHAIN`: the chain (or fork) a context runs. Its presence also
-/// marks "inside a chainz context" (see [`crate::secrets::VarResolver`])
+/// marks "inside a chainz context" (see `secrets::VarResolver`)
 /// and selects the chain when no argument does.
 pub const CHAINZ_CHAIN: &str = "CHAINZ_CHAIN";
 

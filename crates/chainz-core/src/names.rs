@@ -137,7 +137,7 @@ pub(crate) fn is_reserved_token(name: &str) -> bool {
 }
 
 /// Why `name` cannot be a signer name, if it cannot: signer names match
-/// `[a-z0-9][a-z0-9_-]*` and are not [reserved token names](is_reserved_token),
+/// `[a-z0-9][a-z0-9_-]*` and are not reserved token names,
 /// because every signer is also the label `@<name>`.
 pub fn check_signer_name(name: &str) -> anyhow::Result<()> {
     if !is_name(name) {

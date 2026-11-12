@@ -1,6 +1,6 @@
 //! Credential-safe presentation of endpoint URLs and header values.
 //!
-//! The display policy is [`url`] and [`header`]: `${VAR}` templates, hosts
+//! The display policy is [`url()`] and [`header()`]: `${VAR}` templates, hosts
 //! and ordinary paths print verbatim, only credential-shaped parts are
 //! masked as [`REDACTED`], and anything unparseable fails closed. `reveal` prints the value as stored.
 //!

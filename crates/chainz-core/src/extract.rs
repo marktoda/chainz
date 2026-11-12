@@ -8,7 +8,7 @@
 //!   endpoint URL;
 //! - a literal header value that looks like a credential (16 or more
 //!   characters), or that `ETH_RPC_HEADERS` cannot carry (a comma or line
-//!   break), see [`header_needs_extraction`];
+//!   break), see `header_needs_extraction`;
 //! - a literal explorer key.
 //!
 //! What cannot move automatically, [`manual_credential`] finds: user info,
@@ -137,7 +137,7 @@ pub(crate) fn is_literal(value: &str) -> bool {
 /// A literal credential in `url` that extraction cannot move (only a
 /// person can): user info, a key-like query value, or a long mixed
 /// alphanumeric path segment. A known Infura/Alchemy key is not one
-/// ([`extract_endpoint`] moves it). The kind found, if any.
+/// (`extract_endpoint` moves it). The kind found, if any.
 pub fn manual_credential(url: &str) -> Option<&'static str> {
     if crate::urls::known_key(url).is_some() {
         return None;
@@ -327,8 +327,8 @@ impl SecretPlan {
 
 /// Plan moving every literal secret in `config` into variables, reusing
 /// `existing` variables (`secrets.toml`'s `[vars]`) that hold the same
-/// value. Used by `doctor --fix`; `rpc add` can call [`extract_endpoint`]
-/// directly for the one endpoint it writes.
+/// value. Used by `doctor --fix`; `rpc add` and `chain add` extract only
+/// the endpoints they write ([`Tx::extract_secrets`](crate::tx::Tx::extract_secrets)).
 pub fn plan_secret_extraction(config: &Config, existing: &IndexMap<String, String>) -> SecretPlan {
     let mut vars = VarTable::with_vars(existing);
     let mut endpoints = Vec::new();

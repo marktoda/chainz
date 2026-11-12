@@ -4,7 +4,7 @@
 //! re-scanned, so a value containing `${…}` is inserted literally. An
 //! unresolved `${NAME}` is an error; it is never passed through.
 //!
-//! Lookup order (see [`crate::secrets::VarResolver`]): the built-ins
+//! Lookup order (see `secrets::VarResolver`): the built-ins
 //! `${CHAIN_ID}` and `${CHAIN}` first, then the process environment, then
 //! `secrets.toml`. Built-ins come first because chainz itself exports
 //! `CHAIN_ID` into child shells; letting the environment win would make a

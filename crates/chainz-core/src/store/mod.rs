@@ -246,7 +246,7 @@ impl Chainz {
 
     /// Expand the URL and header values of `endpoint`, named `endpoint_name`
     /// on chain `chain_name` (ID `chain_id`): the built-ins `${CHAIN}` and
-    /// `${CHAIN_ID}`, then variables as [`VarResolver`] looks them up
+    /// `${CHAIN_ID}`, then variables as `VarResolver` looks them up
     /// (`secrets.toml` is read only if needed). The chain need not be
     /// configured yet (`chain add` checks an endpoint before writing it).
     /// Errors name the chain, endpoint, header and variable, never a value.
