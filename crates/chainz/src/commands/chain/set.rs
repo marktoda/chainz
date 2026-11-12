@@ -3,31 +3,30 @@
 //! `ChainEdit` applied in one transaction.
 
 use crate::args::parse_headers;
-use crate::cli::ChainSetArgs;
+use crate::cli::{ChainSetArgs, usage_error};
 use crate::load::open;
 use crate::probe::check;
 use crate::prompt::{self, Ask, StdinTrim, Tty, is_tty, read_stdin_secret};
 use crate::select::pick_chain;
 use crate::view;
-use anyhow::{Result, bail};
+use anyhow::Result;
 use chainz_core::model::{Config, Explorer};
 use chainz_core::resolve::{self, Policy};
 use chainz_core::tx::{ChainEdit, EditReport};
 use zeroize::Zeroizing;
 
-/// What `chain set` with no flags says off a TTY.
-const USAGE: &str = "usage: chainz chain set <CHAIN> [--signer NAME | --no-signer] \
-[--rpc NAME|URL] [--header 'NAME: VALUE']... [--clear-headers] \
-[--failover A,B | --no-failover] [--explorer NAME | --no-explorer] \
-[--api-key-stdin] [--name NEW] [--alias A]... [--rm-alias A]... \
-(with no flags on a terminal, a menu)";
-
-/// `chain set` / `update`.
-pub fn set(args: &ChainSetArgs) -> Result<i32> {
+/// `chain set`, or `update` (`command` is how it was invoked:
+/// `["chain", "set"]` or `["update"]`).
+pub fn set(args: &ChainSetArgs, command: &[&str]) -> Result<i32> {
     let mut chainz = open()?;
-    let flags = edit_from_flags(args)?;
-    if !is_tty() && (args.chain.is_none() || flags.is_empty()) {
-        bail!("{USAGE}");
+    // Usage and the chain first: stdin is read only for a valid command.
+    let mut flags = build_edit(args, parse_headers(&args.headers)?, None);
+    let menu_wanted = flags.is_empty() && !args.api_key_stdin && args.api_key.is_none();
+    if !is_tty() && (args.chain.is_none() || menu_wanted) {
+        return Err(usage_error(
+            command,
+            "off a terminal, name a chain and at least one change (on a terminal, no flags open a menu)",
+        ));
     }
     let name = match &args.chain {
         Some(query) => resolve::configured(chainz.config(), query, Policy::Prefix)?
@@ -35,7 +34,8 @@ pub fn set(args: &ChainSetArgs) -> Result<i32> {
             .to_string(),
         None => pick_chain(&chainz, "Chain to change")?,
     };
-    let edit = if flags.is_empty() {
+    flags.api_key = api_key(args)?;
+    let edit = if menu_wanted {
         menu(&mut Tty, chainz.config(), &name)?
     } else {
         flags
@@ -52,21 +52,20 @@ pub fn set(args: &ChainSetArgs) -> Result<i32> {
     Ok(0)
 }
 
-/// The patch the flags ask for (empty when there are none). Reads the API
-/// key from stdin for `--api-key-stdin`.
-fn edit_from_flags(args: &ChainSetArgs) -> Result<ChainEdit> {
-    let api_key = if args.api_key_stdin {
+/// The API key the flags give: read from stdin for `--api-key-stdin`.
+fn api_key(args: &ChainSetArgs) -> Result<Option<Zeroizing<String>>> {
+    Ok(if args.api_key_stdin {
         Some(read_stdin_secret("API key", StdinTrim::Whitespace)?)
     } else if let Some(key) = &args.api_key {
         prompt::warn_secret_argument("an API key", "--api-key-stdin");
         Some(Zeroizing::new(key.clone()))
     } else {
         None
-    };
-    Ok(build_edit(args, parse_headers(&args.headers)?, api_key))
+    })
 }
 
-/// [`edit_from_flags`] once the header and key values are read.
+/// The patch the flags ask for (empty when there are none), once the
+/// header and key values are read.
 fn build_edit(
     args: &ChainSetArgs,
     headers: Vec<(String, String)>,

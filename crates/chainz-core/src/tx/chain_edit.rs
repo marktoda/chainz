@@ -10,7 +10,7 @@ use anyhow::{Result, anyhow, bail};
 use zeroize::Zeroizing;
 
 /// A patch to one chain. `None` (or empty) leaves a field alone.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ChainEdit {
     /// `--signer NAME` (`Some(Some)`) or `--no-signer` (`Some(None)`).
     pub signer: Option<Option<String>>,
@@ -30,8 +30,8 @@ pub struct ChainEdit {
     /// built-in [`Explorer::etherscan`] when it is not configured.
     pub explorer: Option<Option<String>>,
     /// `--api-key`: the key for the chain's explorer (after `explorer`
-    /// applies), stored in `secrets.toml` and shared by every chain using
-    /// that explorer.
+    /// applies), stored (trimmed) in `secrets.toml` and shared by every
+    /// chain using that explorer.
     pub api_key: Option<Zeroizing<String>>,
     /// `--name NEW`: rename the chain (applied last).
     pub name: Option<String>,
@@ -44,16 +44,7 @@ pub struct ChainEdit {
 impl ChainEdit {
     /// Whether the patch changes nothing.
     pub fn is_empty(&self) -> bool {
-        self.signer.is_none()
-            && self.rpc.is_none()
-            && self.headers.is_empty()
-            && !self.clear_headers
-            && self.failover.is_none()
-            && self.explorer.is_none()
-            && self.api_key.is_none()
-            && self.name.is_none()
-            && self.add_aliases.is_empty()
-            && self.remove_aliases.is_empty()
+        *self == ChainEdit::default()
     }
 
     /// The endpoint `--rpc` would add to `chain` (named `name`), with the
@@ -361,6 +352,10 @@ impl Tx {
             ));
         }
         if let Some(key) = &edit.api_key {
+            let key = key.trim();
+            if key.is_empty() {
+                bail!("the API key is empty");
+            }
             let config = self.config()?;
             let explorer_name = config.chains[name].explorer.clone().ok_or_else(|| {
                 anyhow!("chain '{name}' has no explorer to set a key for; pass --explorer")

@@ -28,7 +28,7 @@ pub fn run(cmd: ChainCommand) -> Result<i32> {
             add(&mut chainz, &args, &mut crate::prompt::Tty)
         }
         ChainCommand::Show(args) => show(&args),
-        ChainCommand::Set(args) => set(&args),
+        ChainCommand::Set(args) => set(&args, &["chain", "set"]),
         ChainCommand::Rm(args) => rm(&args),
     }
 }
@@ -160,7 +160,10 @@ impl ChainSource {
             },
             Some(_) => Ok(ChainSource::Chainlist),
             None if is_tty() => Ok(ChainSource::Chainlist),
-            None => bail!("usage: chainz chain add <CHAIN_ID|NAME> [--url URL]..."),
+            None => Err(crate::cli::usage_error(
+                &["chain", "add"],
+                "off a terminal, name the chain to add (its ID or name)",
+            )),
         }
     }
 }

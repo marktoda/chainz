@@ -1597,8 +1597,8 @@ fn chain_add_without_a_chain_off_a_tty_is_a_usage_error_before_any_fetch() {
     sb.cmd()
         .args(["chain", "add"])
         .assert()
-        .failure()
-        .stderr(predicate::str::contains("usage: chainz chain add"))
+        .code(2)
+        .stderr(predicate::str::contains("Usage: chainz chain add"))
         .stderr(predicate::str::contains("chainlist").not());
     assert!(!sb.cache_file("chains.json").exists());
 }
@@ -1607,17 +1607,37 @@ fn chain_add_without_a_chain_off_a_tty_is_a_usage_error_before_any_fetch() {
 fn chain_set_off_a_tty_needs_a_chain_and_flags() {
     let sb = Sandbox::new();
     sb.seed(&[("eth", 1)]);
-    for args in [
-        &["chain", "set", "eth"][..],
-        &["update"],
-        &["update", "--no-signer"],
+    for (args, usage) in [
+        (&["chain", "set", "eth"][..], "Usage: chainz chain set"),
+        (&["update"], "Usage: chainz update"),
+        (&["update", "--no-signer"], "Usage: chainz update"),
     ] {
         sb.cmd()
             .args(args)
             .assert()
+            .code(2)
+            .stderr(predicate::str::contains(usage))
+            .stderr(predicate::str::contains("--help"));
+    }
+    // A usage error or an unknown chain is reported before stdin is read
+    // (an empty stdin would fail as "API key from stdin was empty").
+    for (args, error) in [
+        (
+            &["chain", "set", "--api-key-stdin"][..],
+            "Usage: chainz chain set",
+        ),
+        (
+            &["chain", "set", "nope", "--api-key-stdin"],
+            "chain 'nope' not found",
+        ),
+    ] {
+        sb.cmd()
+            .args(args)
+            .write_stdin("")
+            .assert()
             .failure()
-            .stderr(predicate::str::contains("usage: chainz chain set"))
-            .stderr(predicate::str::contains("--signer"));
+            .stderr(predicate::str::contains(error))
+            .stderr(predicate::str::contains("from stdin").not());
     }
 }
 

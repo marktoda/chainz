@@ -5,7 +5,8 @@
 //!
 //! Errors that pick their own exit code are typed here: [`Cancelled`]
 //! (130) and [`ExitCode`] (for example 127 for a command that does not
-//! exist). `main` maps them.
+//! exist); a `clap::Error` (a handler's usage error) prints as clap's do
+//! and exits 2. `main` maps them.
 
 use console::style;
 
@@ -55,6 +56,8 @@ pub fn exit_code(error: &anyhow::Error) -> i32 {
         0
     } else if let Some(exit) = error.downcast_ref::<ExitCode>() {
         exit.code
+    } else if let Some(usage) = error.downcast_ref::<clap::Error>() {
+        usage.exit_code()
     } else {
         1
     }
@@ -65,6 +68,8 @@ pub fn exit_code(error: &anyhow::Error) -> i32 {
 pub fn report(error: &anyhow::Error) {
     if is_cancelled(error) {
         eprintln!("Cancelled");
+    } else if let Some(usage) = error.downcast_ref::<clap::Error>() {
+        let _ = usage.print();
     } else if !is_broken_pipe(error) {
         eprintln!("Error: {error:#}");
     }

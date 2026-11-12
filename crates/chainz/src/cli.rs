@@ -1,12 +1,14 @@
 //! The whole CLI surface (clap definitions only). Handlers live in
-//! `commands/`, one module per command; each takes its `…Args` struct, and
-//! conversions to core options happen here, once. Dynamic completion is
+//! `commands/`, one module per command; each takes its `…Args` struct.
+//! Conversions to core options happen here, or in the handler when they
+//! need I/O (reading a key from stdin, say). Dynamic completion is
 //! declared on the arguments (`add = complete::…`, see `complete`).
+//! [`usage_error`] words a handler's own usage errors the way clap does.
 
 use crate::complete;
 use chainz_core::context::ExecOptions;
 use chainz_core::model::Backend;
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::engine::ArgValueCompleter;
 
 #[derive(Debug, Parser)]
@@ -19,6 +21,21 @@ use clap_complete::engine::ArgValueCompleter;
 pub struct Opt {
     #[command(subcommand)]
     pub cmd: Option<Command>,
+}
+
+/// A usage error for the subcommand at `path` (`["chain", "set"]`), worded
+/// like clap's own: the message, the subcommand's usage line, and a
+/// pointer to `--help`. It exits 2, as clap's do (see `ui::exit_code`).
+pub fn usage_error(path: &[&str], message: &str) -> anyhow::Error {
+    let mut command = Opt::command();
+    command.build();
+    let mut sub = &mut command;
+    for name in path {
+        sub = sub
+            .find_subcommand_mut(name)
+            .unwrap_or_else(|| panic!("no subcommand '{name}'"));
+    }
+    anyhow::Error::new(sub.error(clap::error::ErrorKind::MissingRequiredArgument, message))
 }
 
 #[derive(Debug, Subcommand)]

@@ -36,7 +36,7 @@ pub fn dispatch(opt: Opt) -> Result<i32> {
         Command::Serve { cmd, args } => serve::run(cmd, args),
         Command::Fork { cmd, args } => fork::run(cmd, args),
         Command::Init => init::run(),
-        Command::Update(args) => chain::set(&args),
+        Command::Update(args) => chain::set(&args, &["update"]),
         Command::Edit(args) => edit::run(&args),
         Command::Chain { cmd } => chain::run(cmd),
         Command::Rpc { cmd } => rpc::run(cmd),

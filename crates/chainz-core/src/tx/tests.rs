@@ -453,7 +453,7 @@ fn edit_chain_applies_one_patch() {
         headers: vec![("x-tag".into(), "chainz".into())],
         failover: Some(vec!["a".into()]),
         explorer: Some(Some("etherscan".into())),
-        api_key: Some(zeroize::Zeroizing::new("es-key".into())),
+        api_key: Some(zeroize::Zeroizing::new(" es-key\n".into())),
         add_aliases: vec!["Mainnet".into(), "eth".into()],
         name: Some("mainnet-eth".into()),
         ..ChainEdit::default()
