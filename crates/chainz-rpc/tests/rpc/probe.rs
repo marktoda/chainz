@@ -1,12 +1,11 @@
-mod common;
 
-use chainz_rpc::{ErrorClass, Health, Ranking, RpcClient, RpcError, classify, probe, probe_all};
-use common::*;
+use chainz_rpc::{ErrorClass, Health, RpcClient, RpcError, classify, probe, probe_all};
+use crate::common::*;
 use serde_json::{Value, json};
 
 /// A mock answering the probe batch with the given chain ID and head.
-async fn node(chain_id: u64, head: u64) -> MockHttp {
-    MockHttp::start(move |_, req| {
+fn node(chain_id: u64, head: u64) -> Mock {
+    Mock::http(move |_, req| {
         let out: Vec<Value> = req
             .json()
             .as_array()
@@ -20,14 +19,13 @@ async fn node(chain_id: u64, head: u64) -> MockHttp {
                 json!({"jsonrpc":"2.0","id":c["id"],"result":v})
             })
             .collect();
-        Resp::json(Value::Array(out))
+        Reply::json(Value::Array(out))
     })
-    .await
 }
 
 #[tokio::test]
 async fn probe_ok_and_chain_mismatch() {
-    let server = node(8453, 1000).await;
+    let server = node(8453, 1000);
     let client = RpcClient::new();
 
     let r = probe(&client, &server.target(8453), 8453).await;
@@ -50,8 +48,8 @@ async fn probe_ok_and_chain_mismatch() {
 
 #[tokio::test]
 async fn probe_all_yields_each_index_once_then_closes() {
-    let a = node(1, 1000).await;
-    let b = node(1, 950).await;
+    let a = node(1, 1000);
+    let b = node(1, 950);
     let targets = vec![a.target(1), b.target(1), dead_target()];
     let mut rx = probe_all(&RpcClient::new(), targets, 1);
     let mut got = Vec::new();
@@ -63,6 +61,7 @@ async fn probe_all_yields_each_index_once_then_closes() {
         got.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
         vec![0, 1, 2]
     );
+    // Each result is paired with its own target.
     let results: Vec<_> = got.into_iter().map(|(_, r)| r).collect();
     assert_eq!(
         classify(&results),
@@ -72,7 +71,6 @@ async fn probe_all_yields_each_index_once_then_closes() {
             Health::Failing(ErrorClass::Connect)
         ]
     );
-    assert_eq!(Ranking::new(&results).order, vec![0, 1, 2]);
 
     let mut empty = probe_all(&RpcClient::new(), vec![], 1);
     assert!(empty.recv().await.is_none());

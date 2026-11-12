@@ -1,10 +1,9 @@
-mod common;
 
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use chainz_rpc::{HttpUpstream, RetryPolicy, RpcClient, RpcError};
-use common::*;
+use crate::common::*;
 use serde_json::json;
 
 const BODY: &str = r#"{"jsonrpc":"2.0","id":7,"method":"eth_blockNumber","params":[]}"#;
@@ -17,12 +16,12 @@ fn fast_policy() -> RetryPolicy {
     }
 }
 
-async fn send(server: &MockHttp, policy: &RetryPolicy) -> Result<Bytes, RpcError> {
+async fn send(server: &Mock, policy: &RetryPolicy) -> Result<Bytes, RpcError> {
     send_with(server, policy, RpcClient::new()).await
 }
 
 async fn send_with(
-    server: &MockHttp,
+    server: &Mock,
     policy: &RetryPolicy,
     client: RpcClient,
 ) -> Result<Bytes, RpcError> {
@@ -33,13 +32,13 @@ async fn send_with(
         .await
 }
 
-fn ok(req: &Req) -> Resp {
-    Resp::result(req, json!("0x10"))
+fn ok(req: &Request) -> Reply {
+    Reply::result(req, json!("0x10"))
 }
 
 #[tokio::test]
 async fn forwards_body_and_headers_verbatim() {
-    let server = MockHttp::start(|_, req| ok(req)).await;
+    let server = Mock::http(|_, req| ok(req));
     let r = send(&server, &RetryPolicy::none()).await.unwrap();
     assert_eq!(server.hits(), 1);
     let req = &server.requests()[0];
@@ -57,14 +56,13 @@ async fn forwards_body_and_headers_verbatim() {
 
 #[tokio::test]
 async fn short_429_is_waited_out_on_same_target() {
-    let server = MockHttp::start(|i, req| {
+    let server = Mock::http(|i, req| {
         if i == 0 {
-            Resp::status(429).header("Retry-After", "1")
+            Reply::status(429).header("Retry-After", "1")
         } else {
             ok(req)
         }
-    })
-    .await;
+    });
     let start = Instant::now();
     send(&server, &fast_policy()).await.unwrap();
     assert!(start.elapsed() >= Duration::from_secs(1));
@@ -73,14 +71,14 @@ async fn short_429_is_waited_out_on_same_target() {
 
 #[tokio::test]
 async fn missing_retry_after_uses_backoff() {
-    let server = MockHttp::start(|i, req| if i == 0 { Resp::status(429) } else { ok(req) }).await;
+    let server = Mock::http(|i, req| if i == 0 { Reply::status(429) } else { ok(req) });
     send(&server, &fast_policy()).await.unwrap();
     assert_eq!(server.hits(), 2);
 }
 
 #[tokio::test]
 async fn long_429_returns_rate_limited_without_waiting() {
-    let server = MockHttp::start(|_, _| Resp::status(429).header("Retry-After", "30")).await;
+    let server = Mock::http(|_, _| Reply::status(429).header("Retry-After", "30"));
     let start = Instant::now();
     let err = send(&server, &fast_policy()).await.unwrap_err();
     assert!(start.elapsed() < Duration::from_secs(2));
@@ -95,11 +93,11 @@ async fn long_429_returns_rate_limited_without_waiting() {
 
 #[tokio::test]
 async fn gateway_status_is_retried_then_exhausted() {
-    let server = MockHttp::start(|i, req| if i < 2 { Resp::status(503) } else { ok(req) }).await;
+    let server = Mock::http(|i, req| if i < 2 { Reply::status(503) } else { ok(req) });
     send(&server, &fast_policy()).await.unwrap();
     assert_eq!(server.hits(), 3);
 
-    let server = MockHttp::start(|_, _| Resp::status(502)).await;
+    let server = Mock::http(|_, _| Reply::status(502));
     let err = send(&server, &fast_policy()).await.unwrap_err();
     assert_eq!(err, RpcError::Http(502));
     assert_eq!(server.hits(), 3);
@@ -107,7 +105,7 @@ async fn gateway_status_is_retried_then_exhausted() {
 
 #[tokio::test]
 async fn non_retryable_status_fails_after_one_attempt() {
-    let server = MockHttp::start(|_, _| Resp::status(400)).await;
+    let server = Mock::http(|_, _| Reply::status(400));
     let err = send(&server, &fast_policy()).await.unwrap_err();
     assert_eq!(err, RpcError::Http(400));
     assert_eq!(server.hits(), 1);
@@ -116,10 +114,10 @@ async fn non_retryable_status_fails_after_one_attempt() {
 #[tokio::test]
 async fn policy_none_makes_a_single_attempt() {
     for resp in [
-        Resp::status(503),
-        Resp::status(429).header("Retry-After", "0"),
+        Reply::status(503),
+        Reply::status(429).header("Retry-After", "0"),
     ] {
-        let server = MockHttp::start(move |_, _| resp.clone()).await;
+        let server = Mock::http(move |_, _| resp.clone());
         let err = send(&server, &RetryPolicy::none()).await.unwrap_err();
         assert!(matches!(
             err,
@@ -131,14 +129,13 @@ async fn policy_none_makes_a_single_attempt() {
 
 #[tokio::test]
 async fn timeouts_and_connect_errors_are_retried() {
-    let server = MockHttp::start(|i, req| {
+    let server = Mock::http(|i, req| {
         if i == 0 {
             ok(req).delay(Duration::from_secs(5))
         } else {
             ok(req)
         }
-    })
-    .await;
+    });
     // The per-attempt timeout is the client's.
     send_with(
         &server,
@@ -166,11 +163,11 @@ async fn timeouts_and_connect_errors_are_retried() {
 
 #[tokio::test]
 async fn a_body_cut_off_mid_read_is_transient() {
-    let server = MockHttp::start(|i, req| if i == 0 { ok(req).cut() } else { ok(req) }).await;
+    let server = Mock::http(|i, req| if i == 0 { ok(req).cut() } else { ok(req) });
     send(&server, &fast_policy()).await.unwrap();
     assert_eq!(server.hits(), 2, "retried on the same endpoint");
 
-    let server = MockHttp::start(|_, req| ok(req).cut()).await;
+    let server = Mock::http(|_, req| ok(req).cut());
     let err = send(&server, &RetryPolicy::none()).await.unwrap_err();
     assert_eq!(err, RpcError::BodyRead);
     assert!(err.is_transient());

@@ -6,19 +6,6 @@ use std::collections::BTreeMap;
 use chainz_rpc::ErrorClass;
 use chainz_rpc::control::*;
 
-/// A temp dir short enough for a unix socket path (SUN_LEN is ~104-108
-/// bytes; a deep `$TMPDIR` would overflow it).
-fn socket_dir() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    if dir.path().join("serve.sock").as_os_str().len() < 100 {
-        return dir;
-    }
-    tempfile::Builder::new()
-        .prefix("cz")
-        .tempdir_in("/tmp")
-        .unwrap()
-}
-
 #[test]
 fn record_status_serde_shape() {
     let status = RecordStatus::Error {
@@ -55,7 +42,7 @@ fn record_status_serde_shape() {
 #[tokio::test]
 async fn an_error_answer_carries_its_body() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let dir = socket_dir();
+    let dir = chainz_testkit::short_tempdir();
     let socket = dir.path().join("serve.sock");
     let listener = tokio::net::UnixListener::bind(&socket).unwrap();
     let serve = tokio::spawn(async move {
