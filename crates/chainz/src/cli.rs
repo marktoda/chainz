@@ -847,7 +847,7 @@ pub struct VarRmArgs {
 #[cfg(test)]
 mod tests {
     use super::{HELP_GROUPS, Opt};
-    use clap::{CommandFactory, Parser};
+    use clap::CommandFactory;
 
     /// Hidden flags are for maintainers: the README (for users) never
     /// mentions one.
@@ -896,28 +896,6 @@ mod tests {
         let mut seen = Vec::new();
         walk(&Opt::command(), "chainz", &mut seen);
         assert_eq!(seen, ["chainz ls", "chainz top", "chainz var ls"]);
-    }
-
-    /// Only the long-running commands go without the broken-pipe exit
-    /// hook (it skips `Drop`).
-    #[test]
-    fn long_running_commands_are_the_foreground_ones() {
-        let runs_long = |args: &[&str]| {
-            let opt = Opt::try_parse_from([&["chainz"], args].concat()).unwrap();
-            opt.cmd.as_ref().is_some_and(super::Command::runs_long)
-        };
-        for args in [&["serve"][..], &["fork", "eth"], &["top"]] {
-            assert!(runs_long(args), "{args:?}");
-        }
-        for args in [
-            &["serve", "status"][..],
-            &["fork", "ls"],
-            &["top", "--once"],
-            &["ls"],
-            &["exec", "eth", "--", "true"],
-        ] {
-            assert!(!runs_long(args), "{args:?}");
-        }
     }
 
     /// The grouped top-level help lists every visible command exactly

@@ -390,19 +390,7 @@ mod tests {
     }
 
     #[test]
-    fn health_words() {
-        let ms = Some(Duration::from_millis(42));
-        let cell = view::health_cell;
-        assert_eq!(cell(Some(Health::Healthy), ms), "42ms");
-        assert_eq!(
-            cell(Some(Health::Lagging { behind: 30 }), ms),
-            "42ms lag 30"
-        );
-        assert_eq!(
-            cell(Some(Health::Failing(chainz_rpc::ErrorClass::Timeout)), ms),
-            "✗ timed out"
-        );
-        assert_eq!(cell(None, None), "-");
+    fn health_problems_are_worded_for_doctor() {
         assert_eq!(health_problem(&Health::Healthy), None);
         assert_eq!(
             health_problem(&Health::Failing(chainz_rpc::ErrorClass::Connect)).unwrap(),

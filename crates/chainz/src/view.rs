@@ -435,6 +435,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn health_cells_show_latency_lag_or_the_failure() {
+        let ms = Some(Duration::from_millis(42));
+        assert_eq!(health_cell(Some(Health::Healthy), ms), "42ms");
+        assert_eq!(
+            health_cell(Some(Health::Lagging { behind: 30 }), ms),
+            "42ms lag 30"
+        );
+        assert_eq!(
+            health_cell(Some(Health::Failing(ErrorClass::Timeout)), ms),
+            "✗ timed out"
+        );
+        assert_eq!(health_cell(None, None), "-");
+    }
+
+    #[test]
     fn long_names_keep_the_endpoint_columns_aligned() {
         console::set_colors_enabled(false);
         let mut rpcs = indexmap::IndexMap::new();

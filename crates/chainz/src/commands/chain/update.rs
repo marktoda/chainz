@@ -569,40 +569,27 @@ path = "/o"
     }
 
     #[test]
-    fn flags_build_the_same_patch() {
-        let args = UpdateArgs {
-            chain: Some("eth".into()),
-            signer: Some("ops".into()),
-            rpc: Some("infura".into()),
-            failover: vec!["llama".into()],
-            no_explorer: true,
-            name: Some("ethereum".into()),
-            aliases: vec!["l1".into()],
-            rm_aliases: vec!["mainnet".into()],
-            clear_headers: true,
-            ..UpdateArgs::default()
-        };
-        let headers = vec![("x-team".to_string(), "${TEAM}".to_string())];
-        let edit = build_edit(&args, headers.clone());
-        assert_eq!(edit.signer, Some(Some("ops".to_string())));
-        assert_eq!(edit.rpc.as_deref(), Some("infura"));
-        assert_eq!(edit.failover, Some(vec!["llama".to_string()]));
-        assert_eq!(edit.explorer, Some(None));
-        assert_eq!(edit.headers, headers);
-        assert!(edit.clear_headers);
-        assert_eq!(edit.name.as_deref(), Some("ethereum"));
-        assert_eq!(edit.add_aliases, ["l1"]);
-        assert_eq!(edit.remove_aliases, ["mainnet"]);
-
-        let none = build_edit(&UpdateArgs::default(), Vec::new());
-        assert!(none.is_empty());
+    fn a_value_sets_a_no_flag_clears_and_neither_keeps() {
+        // Field-by-field wiring is covered end to end; this is the
+        // three-way rule for flags that come in set/clear pairs.
+        assert!(build_edit(&UpdateArgs::default(), Vec::new()).is_empty());
         let clear = UpdateArgs {
             no_signer: true,
             no_failover: true,
+            no_explorer: true,
             ..UpdateArgs::default()
         };
         let edit = build_edit(&clear, Vec::new());
         assert_eq!(edit.signer, Some(None));
         assert_eq!(edit.failover, Some(Vec::new()));
+        assert_eq!(edit.explorer, Some(None));
+        let set = UpdateArgs {
+            signer: Some("ops".into()),
+            failover: vec!["llama".into()],
+            ..UpdateArgs::default()
+        };
+        let edit = build_edit(&set, Vec::new());
+        assert_eq!(edit.signer, Some(Some("ops".to_string())));
+        assert_eq!(edit.failover, Some(vec!["llama".to_string()]));
     }
 }

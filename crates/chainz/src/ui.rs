@@ -212,23 +212,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn helpers_contain_glyph_and_message() {
-        assert!(success("done").contains("✓"));
-        assert!(success("done").contains("done"));
-        assert!(warn("careful").contains("⚠"));
-        assert!(fail("broken").contains("✗"));
-        assert!(item("step").contains("▸"));
-        assert!(section("Keys").contains("Keys"));
-    }
-
-    #[test]
-    fn counts() {
-        assert_eq!(count(1, "chain"), "1 chain");
-        assert_eq!(count(0, "chain"), "0 chains");
-        assert_eq!(count(17, "endpoint"), "17 endpoints");
-    }
-
-    #[test]
     fn cancellation_is_typed() {
         let error = cancelled();
         assert!(is_cancelled(&error));

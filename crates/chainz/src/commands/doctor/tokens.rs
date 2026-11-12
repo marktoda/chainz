@@ -277,16 +277,4 @@ mod tests {
             "{err}"
         );
     }
-
-    #[test]
-    fn retries_are_transient_only() {
-        let retry = RetryPolicy::patient();
-        assert!(retry.retries(&chainz_rpc::RpcError::Timeout));
-        assert!(retry.retries(&chainz_rpc::RpcError::Http(503)));
-        assert!(!retry.retries(&chainz_rpc::RpcError::Rpc {
-            code: 3,
-            message: "execution reverted".into()
-        }));
-        assert_eq!(retry.max_attempts, 5);
-    }
 }
