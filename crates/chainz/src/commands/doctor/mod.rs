@@ -1,14 +1,19 @@
-//! `doctor [--fix]`: files, invariants, literal credentials, signers and
-//! RPC health. Messages never echo URLs, header values or secrets.
-//! `doctor --tokens` checks the built-in token registry instead.
+//! `doctor [CHAIN] [--fix]`: files, invariants, literal credentials,
+//! signers and endpoint health: the active endpoint of every chain, or,
+//! for one chain, every endpoint ranked (with `--discover`, public ones
+//! from chainlist first). Messages never echo URLs, header values or
+//! secrets. `doctor --tokens` checks the built-in token registry instead.
 
+mod discover;
 mod tokens;
 
 use crate::cli::DoctorArgs;
 use crate::load::open_lenient;
 use crate::probe::{self, Depth, Repair, health_problem};
+use crate::prompt::{self, Consent, Tty};
 use crate::{net, ui};
 use anyhow::Result;
+use chainz_core::resolve::{self, Policy};
 use chainz_core::extract::{self, Location};
 use chainz_core::labels::LabelIndex;
 use chainz_core::model::{Backend, Config};
@@ -94,6 +99,20 @@ pub fn run(args: &DoctorArgs) -> Result<i32> {
         return tokens::run();
     }
     let mut chainz = open_lenient()?;
+    let chain = match &args.chain {
+        Some(query) => Some(
+            resolve::configured(chainz.config(), query, Policy::Prefix)?
+                .0
+                .to_string(),
+        ),
+        None => None,
+    };
+    if args.discover
+        && let Some(chain) = &chain
+    {
+        discover::run(&mut chainz, chain, args.refresh, args.yes)?;
+        println!();
+    }
     let mut report = Report {
         verbose: args.verbose,
         ..Report::default()
@@ -136,18 +155,23 @@ pub fn run(args: &DoctorArgs) -> Result<i32> {
     println!("{}", ui::section("signers"));
     signers(chainz.config(), &mut report);
 
-    println!("{}", ui::section("rpc"));
-    rpc_health(&mut chainz, fix, &mut report)?;
+    match &chain {
+        None => {
+            println!("{}", ui::section("rpc"));
+            rpc_health(&mut chainz, fix, &mut report)?;
+        }
+        Some(chain) => endpoints(&mut chainz, chain, fix, args.yes, &mut report)?,
+    }
 
     println!();
-    println!("{}", report.summary(fix));
+    println!("{}", report.summary(fix, chain.as_deref()));
     Ok(if report.problems > report.fixed { 1 } else { 0 })
 }
 
 impl Report {
     /// The closing line: no problems, how many were fixed, or what
     /// `--fix` would do.
-    fn summary(&self, fix: bool) -> String {
+    fn summary(&self, fix: bool, chain: Option<&str>) -> String {
         if self.problems == 0 {
             return ui::success("no problems found");
         }
@@ -167,10 +191,11 @@ impl Report {
         if would.is_empty() {
             ui::fail(&format!("{problems}; `--fix` can't repair these"))
         } else {
-            ui::fail(&format!(
-                "{problems}; `chainz doctor --fix` would {}",
-                would.join(", ")
-            ))
+            let command = match chain {
+                Some(chain) => format!("chainz doctor {chain} --fix"),
+                None => "chainz doctor --fix".to_string(),
+            };
+            ui::fail(&format!("{problems}; `{command}` would {}", would.join(", ")))
         }
     }
 }
@@ -391,11 +416,14 @@ fn rpc_health(chainz: &mut Chainz, fix: bool, report: &mut Report) -> Result<()>
     let mut failing: Groups<(Finding, Option<Repair>)> = Groups::new();
     for p in &probed {
         let c = &chainz.config().chains[&p.chain];
+        unprobed(p, report);
         let Some(active) = p.index_of(&c.rpc) else {
-            report.note(&format!(
-                "{}: active endpoint '{}' is a websocket (not probed)",
-                p.chain, c.rpc
-            ));
+            if c.active().is_some_and(|e| e.is_websocket()) {
+                report.note(&format!(
+                    "{}: active endpoint '{}' is a websocket (not probed)",
+                    p.chain, c.rpc
+                ));
+            }
             continue;
         };
         let ranking = p.ranking(&store);
@@ -444,8 +472,8 @@ fn rpc_health(chainz: &mut Chainz, fix: bool, report: &mut Report) -> Result<()>
         }
     }
     if !repairs.is_empty() {
-        // Only the active endpoint: doctor leaves failover lists to
-        // `rpc bench --fix`.
+        // Only the active endpoint: failover lists are left to
+        // `doctor CHAIN --fix`, which ranks every endpoint.
         chainz.transact(|tx| {
             for (_, repair) in &repairs {
                 repair.apply(tx, false)?;
@@ -458,6 +486,101 @@ fn rpc_health(chainz: &mut Chainz, fix: bool, report: &mut Report) -> Result<()>
                 repair.chain, repair.active
             ));
         }
+    }
+    Ok(())
+}
+
+/// Endpoints that could not be probed (a `${VAR}` set nowhere, say): a
+/// problem each, since every command that uses them fails the same way.
+fn unprobed(probes: &probe::ChainProbes, report: &mut Report) {
+    for (_, why) in &probes.unprobed {
+        report.problem(&format!("not probed: {why}"));
+    }
+}
+
+/// `doctor CHAIN`: probe, rank and tag every endpoint of `chain`. A chain
+/// with no endpoint that answered is a problem, and so is a failing
+/// active endpoint. With `fix`, the best endpoint becomes active and the
+/// proposed failover list is written when confirmed (or `yes`).
+fn endpoints(
+    chainz: &mut Chainz,
+    chain: &str,
+    fix: bool,
+    yes: bool,
+    report: &mut Report,
+) -> Result<()> {
+    let mut store = net::health_store();
+    let probed = net::block_on(probe::probe_chains(
+        chainz,
+        &[chain.to_string()],
+        Depth::Capabilities,
+        &mut store,
+    ))?;
+    let p = &probed[0];
+    let c = &chainz.config().chains[chain];
+    let (ok, probed_total) = probe::answered(p);
+    let total = probed_total + p.unprobed.len();
+    println!(
+        "{}  {}",
+        ui::section(&format!("endpoints of {chain}")),
+        ui::dim(&format!("({ok} of {total} answered)"))
+    );
+    unprobed(p, report);
+    if p.probes.is_empty() {
+        if p.unprobed.is_empty() {
+            report.note(&format!("{chain} has no HTTP endpoint to probe"));
+        }
+        return Ok(());
+    }
+    let ranking = p.ranking(&store);
+    probe::print_ranked(c, p, &ranking, &store);
+    let failing = p
+        .index_of(&c.rpc)
+        .and_then(|active| health_problem(&ranking.health[active]));
+    if let Some(problem) = &failing {
+        report.problem(&format!("{chain}: active endpoint '{}' {problem}", c.rpc));
+    }
+    let Some(repair) = Repair::propose(chain, c, p, &ranking) else {
+        report.problem(&format!(
+            "no healthy endpoint on {chain}; check your network, or `chainz doctor {chain} --discover`"
+        ));
+        return Ok(());
+    };
+    if !fix {
+        if repair.active != c.rpc {
+            if failing.is_some() {
+                report.would_switch += 1;
+            }
+            println!(
+                "  {}",
+                ui::dim(&format!("best: {} (--fix activates it)", repair.active))
+            );
+        }
+        return Ok(());
+    }
+    println!(
+        "{chain}: active → {}; proposed failover: {}",
+        repair.active,
+        if repair.failover.is_empty() {
+            "-".into()
+        } else {
+            repair.failover.join(", ")
+        }
+    );
+    let write_failover = !repair.failover.is_empty()
+        && repair.failover != c.failover
+        && prompt::confirm_or_yes(
+            &mut Tty,
+            yes,
+            "Write the proposed failover list?",
+            Consent::Proposal {
+                note: "failover list not written (pass --yes, or confirm on a TTY)",
+            },
+        )?;
+    let old = c.rpc.clone();
+    chainz.transact(|tx| repair.apply(tx, write_failover))?;
+    if failing.is_some() {
+        report.fixed(&format!("{chain}: active {old} → {}", repair.active));
     }
     Ok(())
 }

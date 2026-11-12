@@ -690,7 +690,7 @@ async fn capability_tags_steer_debug_trace_and_old_block_reads() {
         "a"
     );
 
-    // Tags are re-read when the health store changes (`chainz rpc bench`).
+    // Tags are re-read when the health store changes (`chainz doctor CHAIN`).
     tag(
         "c",
         Capabilities {

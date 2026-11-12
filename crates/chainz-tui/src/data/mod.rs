@@ -648,7 +648,7 @@ async fn probe_loop(
 }
 
 /// One probe round over a chain's HTTP endpoints: report it, and record it
-/// in the health history (as `rpc bench` does), the same samples both.
+/// in the health history (as `doctor CHAIN` does), the same samples both.
 async fn probe_chain(shared: &Arc<Shared>, chain: &ChainPlan) {
     let (names, targets): (Vec<&str>, Vec<Target>) = chain
         .endpoints

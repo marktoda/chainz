@@ -1565,7 +1565,7 @@ fn chain_add_and_rpc_add_move_url_keys_into_secrets() {
 }
 
 #[test]
-fn rpc_bench_fix_activates_the_best_and_yes_writes_failover() {
+fn doctor_chain_fix_activates_the_best_and_yes_writes_failover() {
     let sb = Sandbox::new();
     let fast = chain_rpc(1, 1_000, std::time::Duration::ZERO);
     let slow = chain_rpc(1, 1_000, std::time::Duration::from_millis(300));
@@ -1576,68 +1576,104 @@ fn rpc_bench_fix_activates_the_best_and_yes_writes_failover() {
     );
     sb.write_config(&config);
 
-    // Report only.
-    let report = sb.ok(&["rpc", "bench", "eth"]);
+    // Report only: the dead active endpoint is a problem.
+    let out = sb.run(&["doctor", "eth"]);
+    let report = stdout(&out);
+    assert_eq!(out.status.code(), Some(1), "{report}");
+    assert!(report.contains("(2 of 3 answered)"), "{report}");
     assert!(
-        report.contains("best: fast (run with --fix to activate)"),
+        report.contains("eth: active endpoint 'dead' is failing"),
+        "{report}"
+    );
+    assert!(report.contains("best: fast (--fix activates it)"), "{report}");
+    assert!(
+        report.contains("`chainz doctor eth --fix` would") && report.contains("switch 1 active endpoint"),
         "{report}"
     );
     assert!(sb.config().contains("rpc = \"dead\""));
 
     // --fix off a TTY activates the best but leaves failover unwritten.
-    let fixed = sb.ok(&["rpc", "bench", "eth", "--fix"]);
+    let fixed = sb.ok(&["doctor", "eth", "--fix"]);
     assert!(
         fixed.contains("eth: active → fast; proposed failover: slow"),
         "{fixed}"
     );
-    assert!(fixed.contains("failover lists not written"), "{fixed}");
+    assert!(fixed.contains("failover list not written"), "{fixed}");
+    assert!(fixed.contains("fixed: eth: active dead → fast"), "{fixed}");
     assert!(sb.config().contains("rpc = \"fast\""));
     assert!(!sb.config().contains("failover"));
 
     // --yes writes it.
     sb.write_config(&config);
-    sb.ok(&["rpc", "bench", "--fix", "--yes"]);
+    sb.ok(&["doctor", "eth", "--fix", "--yes"]);
     let written = sb.config();
     assert!(written.contains("rpc = \"fast\""), "{written}");
     assert!(written.contains("failover = [\"slow\"]"), "{written}");
 
-    // --yes needs --fix.
-    sb.cmd().args(["rpc", "bench", "--yes"]).assert().code(2);
+    // `rpc bench` is gone; --discover needs a chain.
+    sb.cmd().args(["rpc", "bench", "eth"]).assert().code(2);
+    sb.cmd().args(["doctor", "--discover"]).assert().code(2);
 }
 
 /// Every endpoint down: no latencies, nothing ranked, `--fix` says so, and
 /// the exit code tells scripts.
 #[test]
-fn rpc_bench_with_every_endpoint_down_fails() {
+fn doctor_chain_with_every_endpoint_down_fails() {
     let sb = Sandbox::new();
     sb.write_config(
         "version = 2\n[chains.uni]\nid = 130\nrpc = \"a\"\n[chains.uni.rpcs]\na = \"http://127.0.0.1:1\"\nb = \"http://127.0.0.1:1/b\"\n",
     );
     for fix in [false, true] {
         let args: &[&str] = if fix {
-            &["rpc", "bench", "uni", "--fix"]
+            &["doctor", "uni", "--fix"]
         } else {
-            &["rpc", "bench", "uni"]
+            &["doctor", "uni"]
         };
         let out = sb.run(args);
         let text = stdout(&out);
         assert_eq!(out.status.code(), Some(1), "{text}");
         assert!(text.contains("(0 of 2 answered)"), "{text}");
         assert!(text.contains("✗ connection failed"), "{text}");
-        assert!(!text.contains("ms"), "{text}");
-        let lines: Vec<&str> = text.lines().filter(|l| l.contains("✗")).collect();
+        let lines: Vec<&str> = text
+            .lines()
+            .filter(|l| l.contains("✗ connection failed"))
+            .collect();
         assert!(
             lines[0].contains(" a ") && lines[1].contains(" b "),
             "{text}"
         );
-        assert!(text.contains("no healthy endpoint on uni"), "{text}");
-        assert_eq!(text.contains("nothing to fix"), fix, "{text}");
+        assert!(
+            text.contains("no healthy endpoint on uni; check your network, or `chainz doctor uni --discover`"),
+            "{text}"
+        );
     }
     assert!(sb.config().contains("rpc = \"a\""));
 }
 
+/// An endpoint whose `${VAR}` is set nowhere can't be probed: a problem,
+/// not "no HTTP endpoints to probe" and exit 0.
 #[test]
-fn rpc_discover_lists_off_a_tty_and_yes_adds_the_live_ones() {
+fn doctor_reports_endpoints_it_cannot_probe() {
+    let sb = Sandbox::new();
+    sb.write_config(
+        "version = 2\n[chains.eth]\nid = 1\nrpc = \"a\"\n[chains.eth.rpcs]\na = \"https://x.invalid/v3/${NOPE_KEY}\"\n",
+    );
+    for args in [&["doctor", "eth"][..], &["doctor"]] {
+        let out = sb.run(args);
+        let text = stdout(&out);
+        assert_eq!(out.status.code(), Some(1), "{args:?}: {text}");
+        assert!(
+            text.contains("✗ not probed: chain 'eth' endpoint 'a'")
+                && text.contains("${NOPE_KEY} is not set"),
+            "{args:?}: {text}"
+        );
+        assert!(!text.contains("websocket"), "{args:?}: {text}");
+    }
+    assert!(stdout(&sb.run(&["doctor", "eth"])).contains("(0 of 1 answered)"));
+}
+
+#[test]
+fn doctor_discover_lists_off_a_tty_and_yes_adds_the_live_ones() {
     let sb = Sandbox::new();
     let live = chain_rpc(1, 1_000, std::time::Duration::ZERO);
     sb.write_config(
@@ -1657,11 +1693,13 @@ fn rpc_discover_lists_off_a_tty_and_yes_adds_the_live_ones() {
 
     // Off a TTY without --yes: the ranked list and a hint, nothing added.
     let before = sb.config();
-    let listed = sb.run(&["rpc", "discover", "eth"]);
-    assert!(listed.status.success(), "{}", stderr(&listed));
+    let listed = sb.run(&["doctor", "eth", "--discover"]);
     let text = stdout(&listed);
     assert!(text.contains(&live.url()), "{text}");
-    assert!(text.contains("chainz rpc discover eth --yes"), "{text}");
+    assert!(
+        text.contains("chainz doctor eth --discover --yes"),
+        "{text}"
+    );
     assert!(
         stderr(&listed).contains("skipping [REDACTED URL]: invalid endpoint: invalid URL"),
         "{}",
@@ -1669,9 +1707,14 @@ fn rpc_discover_lists_off_a_tty_and_yes_adds_the_live_ones() {
     );
     assert_eq!(sb.config(), before);
 
-    // --yes adds every endpoint that answered, and only those.
-    let added = sb.ok(&["rpc", "discover", "eth", "--yes"]);
-    assert_eq!(added, "Added 1 endpoint(s) to 'eth': local\n");
+    // --yes adds every endpoint that answered, and only those; the checks
+    // then rank it with the others.
+    let added = stdout(&sb.run(&["doctor", "eth", "--discover", "--yes"]));
+    assert!(
+        added.contains("Added 1 endpoint(s) to 'eth': local\n"),
+        "{added}"
+    );
+    assert!(added.contains("best: local (--fix activates it)"), "{added}");
     let (_, list) = endpoints(&sb, "eth");
     assert_eq!(
         list,

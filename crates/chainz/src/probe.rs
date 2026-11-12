@@ -1,5 +1,5 @@
-//! Probing endpoints for the commands that judge them: `rpc bench`,
-//! `rpc discover`, `doctor` and `add`. What "healthy" means and how
+//! Probing endpoints for the commands that judge them: `doctor` (with
+//! `--discover`) and `add`. What "healthy" means and how
 //! endpoints rank is `chainz_rpc::health`; this module turns config into
 //! probes, records them, renders ranked lists and proposes repairs.
 
@@ -100,6 +100,9 @@ pub enum Depth {
 pub struct ChainProbes {
     pub chain: String,
     pub probes: Vec<EndpointProbe>,
+    /// HTTP endpoints that could not be probed (a `${VAR}` that is set
+    /// nowhere, say): the endpoint name and why.
+    pub unprobed: Vec<(String, String)>,
 }
 
 impl ChainProbes {
@@ -120,7 +123,9 @@ impl ChainProbes {
 }
 
 /// Probe every HTTP endpoint of `chains` concurrently, and record the
-/// results in `store` (a failed save is a warning).
+/// results in `store` (a failed save is a warning). An endpoint that
+/// can't be turned into a target is listed in `unprobed`, for the caller
+/// to report.
 pub async fn probe_chains(
     chainz: &Chainz,
     chains: &[String],
@@ -132,22 +137,20 @@ pub async fn probe_chains(
     for chain in chains {
         let c = &chainz.config().chains[chain];
         let mut futures = Vec::new();
+        let mut unprobed = Vec::new();
         for (ep, e) in &c.rpcs {
             if e.is_websocket() {
                 continue;
             }
-            let target = match net::target(chainz, chain, c.id, ep, e) {
-                Ok(t) => t,
-                Err(err) => {
-                    eprintln!("{}", ui::warn(&format!("{err:#}")));
-                    continue;
-                }
-            };
-            futures.push(probe_one(client.clone(), target, c.id, depth));
+            match net::target(chainz, chain, c.id, ep, e) {
+                Ok(target) => futures.push(probe_one(client.clone(), target, c.id, depth)),
+                Err(err) => unprobed.push((ep.clone(), format!("{err:#}"))),
+            }
         }
         out.push(ChainProbes {
             chain: chain.clone(),
             probes: net::join_indexed(futures).await?,
+            unprobed,
         });
     }
     if let Err(e) = health::record(store, out.iter().flat_map(|c| &c.probes)) {
@@ -371,6 +374,7 @@ mod tests {
                 probe("spare", 40, Some(100)),
                 probe("down", 1, None),
             ],
+            unprobed: vec![],
         };
         let ranking = probes.ranking(&HealthStore::empty());
         let repair = Repair::propose("eth", &c, &probes, &ranking).unwrap();
@@ -381,6 +385,7 @@ mod tests {
         let none = ChainProbes {
             chain: "eth".into(),
             probes: vec![probe("slow", 1, None)],
+            unprobed: vec![],
         };
         let ranking = none.ranking(&HealthStore::empty());
         assert_eq!(Repair::propose("eth", &c, &none, &ranking), None);
@@ -398,6 +403,7 @@ mod tests {
                 probe("down", 0, None),
                 probe("fast", 10, Some(100)),
             ],
+            unprobed: vec![],
         };
         let ranking = probes.ranking(&HealthStore::empty());
         let lines = ranked_lines(&c, &probes, &ranking, &HealthStore::empty());

@@ -302,7 +302,7 @@ impl Tx {
     }
 
     /// Add an endpoint from a user's URL to chain `chain`: the one way
-    /// `rpc add`, `rpc discover`, `add` and `update --rpc URL` do
+    /// `rpc add`, `doctor --discover`, `add` and `update --rpc URL` do
     /// it. The URL and name are checked by [`Chain::new_endpoint`] (which
     /// also names it when `name` is `None`, and refuses a URL the chain
     /// has, by [`Endpoint::same_url`] over `secrets.toml`'s variables), and

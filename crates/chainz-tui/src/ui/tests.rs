@@ -474,7 +474,7 @@ fn endpoints_tab_redacts_urls_and_follows_the_selection() {
 
 #[test]
 fn endpoints_tab_marks_cached_health_as_cached() {
-    // Health from an earlier `rpc bench`, nothing probed in this session.
+    // Health from an earlier `doctor CHAIN`, nothing probed in this session.
     let dir = tempfile::tempdir().unwrap();
     let mut store = HealthStore::load(dir.path()).unwrap();
     let sample = |latency_ms, head| chainz_rpc::HealthSample {

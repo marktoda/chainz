@@ -79,7 +79,7 @@ pub async fn pin(
         let hint = match rpc {
             Some(_) => String::new(),
             None => format!(
-                " (pin another with --rpc NAME|URL; `chainz rpc bench {parent}` ranks the endpoints)"
+                " (pin another with --rpc NAME|URL; `chainz doctor {parent}` ranks the endpoints)"
             ),
         };
         anyhow!("can't fork '{parent}' from endpoint '{label}': {e}{hint}")

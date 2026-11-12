@@ -275,12 +275,29 @@ pub struct LabelArgs {
 
 #[derive(Debug, Args)]
 pub struct DoctorArgs {
-    /// Repair what can be repaired (dead active RPCs, literal credentials)
+    /// Check this chain only: probe, rank and tag every endpoint (default:
+    /// the active endpoint of every chain)
+    #[arg(add = ArgValueCompleter::new(complete::configured_chains))]
+    pub chain: Option<String>,
+    /// Repair what can be repaired: file modes, literal credentials, dead
+    /// active endpoints; with CHAIN, activate the best endpoint and propose
+    /// a failover list
     #[arg(long)]
     pub fix: bool,
+    /// Don't ask: write the proposed failover list (--fix), add every
+    /// public endpoint that answered (--discover)
+    #[arg(long, short)]
+    pub yes: bool,
+    /// With CHAIN: find public endpoints on chainlist, probe them, offer
+    /// to add them
+    #[arg(long, requires = "chain")]
+    pub discover: bool,
+    /// With --discover: re-download the chainlist
+    #[arg(long, requires = "discover")]
+    pub refresh: bool,
     /// Verify the built-in token registry on chain (checks only; for
     /// maintainers)
-    #[arg(long, hide = true, conflicts_with = "fix")]
+    #[arg(long, hide = true, conflicts_with_all = ["fix", "chain"])]
     pub tokens: bool,
     /// List each finding of a group (one cause on many chains)
     #[arg(short, long)]
@@ -480,10 +497,6 @@ pub enum RpcCommand {
     Add(RpcAddArgs),
     /// Remove an endpoint; asks first unless --yes
     Rm(RpcRmArgs),
-    /// Probe, rank and tag endpoints
-    Bench(BenchArgs),
-    /// Find public endpoints on chainlist, probe them, offer to add
-    Discover(DiscoverArgs),
 }
 
 #[derive(Debug, Args)]
@@ -519,32 +532,6 @@ pub struct RpcRmArgs {
     #[arg(add = ArgValueCompleter::new(complete::endpoints))]
     pub name: String,
     /// Remove without asking (required off a terminal)
-    #[arg(long, short)]
-    pub yes: bool,
-}
-
-#[derive(Debug, Args)]
-pub struct BenchArgs {
-    /// Only this chain (name, alias, prefix or ID)
-    #[arg(add = ArgValueCompleter::new(complete::configured_chains))]
-    pub chain: Option<String>,
-    /// Activate the best endpoint and propose a failover list
-    #[arg(long)]
-    pub fix: bool,
-    /// With --fix: write the proposed failover lists without asking
-    #[arg(long, short, requires = "fix")]
-    pub yes: bool,
-}
-
-#[derive(Debug, Args)]
-pub struct DiscoverArgs {
-    /// Chain name, alias, prefix or ID
-    #[arg(add = ArgValueCompleter::new(complete::configured_chains))]
-    pub chain: String,
-    /// Re-download the chainlist
-    #[arg(long)]
-    pub refresh: bool,
-    /// Add every endpoint that answered without asking
     #[arg(long, short)]
     pub yes: bool,
 }

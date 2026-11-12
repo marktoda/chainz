@@ -719,7 +719,7 @@ async fn endpoints_are_probed_only_while_focused_and_lag_is_classified() {
     tokio::time::sleep(Duration::from_millis(1_000)).await;
     assert_eq!(rounds(), settled);
 
-    // Probes are written to the health history, as `rpc bench` does.
+    // Probes are written to the health history, as `doctor CHAIN` does.
     let stored = chainz_rpc::HealthStore::load(dir.path()).unwrap();
     assert_eq!(stored.latest(1, "best").unwrap().head, Some(1_000));
     assert_eq!(

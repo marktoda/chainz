@@ -8,7 +8,7 @@
 //! purpose:
 //!
 //! - [`ENDPOINT_LAG`] (20 blocks): is an endpoint lagging its peers? Used to
-//!   rank endpoints (`rpc bench`, `doctor`, the dashboard). Generous: a
+//!   rank endpoints (`doctor`, the dashboard). Generous: a
 //!   provider a few blocks behind is still a fine default.
 //! - [`CHAIN_LAG`] (3 blocks): is a chain's head behind where it should be?
 //!   The dashboard's chain status.
