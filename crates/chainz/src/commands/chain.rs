@@ -84,7 +84,8 @@ pub fn set_default(chainz: &mut Chainz, name: &str) -> Result<()> {
 fn show(chainz: &Chainz, query: &str, args: &ListArgs) -> Result<i32> {
     let config = chainz.config();
     let (name, chain) = resolve::configured(config, query, Policy::Prefix)?;
-    let v = view::ChainView::new(config, name, chain, args.reveal, &health_store());
+    let labels = chainz_core::labels::LabelIndex::new(config);
+    let v = view::ChainView::new(config, &labels, name, chain, args.reveal, &health_store());
     if args.json {
         println!("{}", serde_json::to_string_pretty(&v)?);
         return Ok(0);

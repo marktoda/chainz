@@ -201,8 +201,11 @@ impl EndpointView {
 }
 
 impl ChainView {
+    /// `labels` is the config's index, built once by the caller (it parses
+    /// every configured address).
     pub fn new(
         config: &Config,
+        labels: &LabelIndex,
         name: &str,
         chain: &Chain,
         reveal: bool,
@@ -232,7 +235,7 @@ impl ChainView {
                 .and_then(|s| s.address),
             explorer: chain.explorer.clone(),
             default: config.default.as_deref() == Some(name),
-            labels: LabelIndex::new(config)
+            labels: labels
                 .labels_on(chain.id)
                 .into_iter()
                 .filter(|l| !matches!(l.source, LabelSource::Signer))
@@ -250,10 +253,11 @@ impl ChainView {
 
 /// All chains as views.
 pub fn chains(config: &Config, reveal: bool, store: &HealthStore) -> Vec<ChainView> {
+    let labels = LabelIndex::new(config);
     config
         .chains
         .iter()
-        .map(|(name, chain)| ChainView::new(config, name, chain, reveal, store))
+        .map(|(name, chain)| ChainView::new(config, &labels, name, chain, reveal, store))
         .collect()
 }
 
