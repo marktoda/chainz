@@ -1780,11 +1780,9 @@ fn doctor_discover_lists_off_a_tty_and_yes_adds_the_live_ones() {
         text.contains("chainz doctor eth --discover --yes"),
         "{text}"
     );
-    assert!(
-        stderr(&listed).contains("skipping [REDACTED URL]: invalid endpoint: invalid URL"),
-        "{}",
-        stderr(&listed)
-    );
+    // A malformed chainlist URL is left out, as `add` leaves it out.
+    assert!(!text.contains("bad host"), "{text}");
+    assert!(!stderr(&listed).contains("REDACTED"), "{}", stderr(&listed));
     assert_eq!(sb.config(), before);
 
     // --yes adds every endpoint that answered, and only those; the checks
