@@ -75,9 +75,8 @@ pub fn short_tempdir() -> tempfile::TempDir {
 /// skipped test does not pass unseen. With `CHAINZ_REQUIRE_TOOLS` set (CI
 /// sets it) a missing tool fails the test instead.
 pub fn require_tool(tool: &str) -> bool {
-    let found = std::env::var_os("PATH").is_some_and(|path| {
-        std::env::split_paths(&path).any(|dir| is_executable(&dir.join(tool)))
-    });
+    let found = std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| is_executable(&dir.join(tool))));
     if !found {
         assert!(
             std::env::var_os("CHAINZ_REQUIRE_TOOLS").is_none(),

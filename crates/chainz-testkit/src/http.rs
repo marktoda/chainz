@@ -29,7 +29,7 @@ impl Response {
 }
 
 /// `method path` to `authority` (`host:port`) with `headers` and `body`.
-/// `Host` and `Content-Length` are added unless `headers` has them.
+/// `Content-Length` is added unless `headers` has it; `Host` is not.
 /// `None` if the connection fails or no complete response comes back
 /// within 30 s.
 pub fn send(
@@ -40,9 +40,11 @@ pub fn send(
     body: &str,
 ) -> Option<Response> {
     let mut stream = TcpStream::connect(authority).ok()?;
-    stream.set_read_timeout(Some(Duration::from_secs(30))).ok()?;
     stream
-        .write_all(request(authority, method, path, headers, body).as_bytes())
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .ok()?;
+    stream
+        .write_all(request(method, path, headers, body).as_bytes())
         .ok()?;
     let mut raw = Vec::new();
     stream.read_to_end(&mut raw).ok()?;
@@ -61,7 +63,7 @@ pub async fn send_async(
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut stream = tokio::net::TcpStream::connect(authority).await.unwrap();
     stream
-        .write_all(request(authority, method, path, headers, body).as_bytes())
+        .write_all(request(method, path, headers, body).as_bytes())
         .await
         .unwrap();
     let mut raw = Vec::new();
@@ -79,7 +81,7 @@ pub fn try_rpc(url: &str, method: &str, params: Value) -> Option<Value> {
         authority,
         "POST",
         &format!("/{path}"),
-        &[("Content-Type", "application/json")],
+        &[("Host", authority), ("Content-Type", "application/json")],
         &body.to_string(),
     )?;
     serde_json::from_str(&response.body).ok()
@@ -97,18 +99,9 @@ pub fn rpc(url: &str, method: &str, params: Value) -> Value {
     response["result"].clone()
 }
 
-fn request(
-    authority: &str,
-    method: &str,
-    path: &str,
-    headers: &[(&str, &str)],
-    body: &str,
-) -> String {
+fn request(method: &str, path: &str, headers: &[(&str, &str)], body: &str) -> String {
     let has = |name: &str| headers.iter().any(|(n, _)| n.eq_ignore_ascii_case(name));
     let mut out = format!("{method} {path} HTTP/1.1\r\nConnection: close\r\n");
-    if !has("host") {
-        out.push_str(&format!("Host: {authority}\r\n"));
-    }
     for (name, value) in headers {
         out.push_str(&format!("{name}: {value}\r\n"));
     }

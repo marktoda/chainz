@@ -414,11 +414,7 @@ fn serve(stream: TcpStream, shared: &Shared) {
 }
 
 fn answer(shared: &Shared, head: String, body: Vec<u8>) -> Reply {
-    let path = head
-        .split_whitespace()
-        .nth(1)
-        .unwrap_or("/")
-        .to_string();
+    let path = head.split_whitespace().nth(1).unwrap_or("/").to_string();
     let json: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
     if shared.probes && is_probe(&json) {
         shared.probed.fetch_add(1, Ordering::SeqCst);

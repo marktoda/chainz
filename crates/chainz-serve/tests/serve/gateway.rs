@@ -1,16 +1,16 @@
 //! Hermetic gateway tests: an in-process gateway against scripted mock
 //! upstreams on loopback. Nothing here touches the network or the real
 //! config.
-mod common;
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+use crate::common::{
+    Answer, Mock, Response, Rig, eth_config, eventually, http, named, probed_twice_since,
+};
 use chainz_core::runtime::GatewayState;
 use chainz_rpc::control::{Backlog, EventsOptions, RecordStatus, Window};
 use chainz_rpc::{Capabilities, ErrorClass, HealthStore};
-use common::{Mock, R, Rig, eth_config, eventually, http, probed_twice_since};
 use serde_json::{Value, json};
 
 const RAW_TX: &str = "0x02f86c0180843b9aca00847735940082520894f39fd6e51aad88f6f4ce6ab8827279cfffb92266865af3107a400080c001a0aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -24,7 +24,7 @@ async fn pair(a: &Mock, b: &Mock) -> Rig {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn auth_rejects_wrong_token_bad_host_non_post_and_non_json() {
-    let a = Mock::named("a").await;
+    let a = named("a");
     let rig = Rig::start(&eth_config("a", &[], &[("a", a.url())])).await;
     let path = rig.path("eth", None);
     let host = rig.host();
@@ -176,11 +176,13 @@ async fn auth_rejects_wrong_token_bad_host_non_post_and_non_json() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn killing_the_active_upstream_mid_stream_fails_zero_reads() {
     // Slow enough that requests are in flight when the upstream dies.
-    let mut a = Mock::start("a", |_| {
-        R::Delay(Duration::from_millis(5), Box::new(R::Result(json!("a"))))
-    })
-    .await;
-    let b = Mock::named("b").await;
+    let mut a = Mock::start_probed(|_| {
+        Answer::Delay(
+            Duration::from_millis(5),
+            Box::new(Answer::Result(json!("a"))),
+        )
+    });
+    let b = named("b");
     let rig = Arc::new(pair(&a, &b).await);
 
     let done = Arc::new(AtomicUsize::new(0));
@@ -205,7 +207,7 @@ async fn killing_the_active_upstream_mid_stream_fails_zero_reads() {
         }));
     }
     eventually(|| done.load(Ordering::SeqCst) >= 100).await;
-    a.kill().await;
+    a.kill();
     let mut by_a = 0;
     let mut by_b = 0;
     for worker in workers {
@@ -253,13 +255,13 @@ async fn killing_the_active_upstream_mid_stream_fails_zero_reads() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_send_never_leaves_the_active_endpoint() {
     for failure in [
-        R::Http(503, None),
-        R::Http(429, Some("30")),
-        R::Error(-32005),
+        Answer::Http(503, None),
+        Answer::Http(429, Some("30")),
+        Answer::Error(-32005),
     ] {
         let fail = failure.clone();
-        let a = Mock::start("a", move |_| fail.clone()).await;
-        let b = Mock::named("b").await;
+        let a = Mock::start_probed(move |_| fail.clone());
+        let b = named("b");
         let rig = pair(&a, &b).await;
 
         // The read fails over...
@@ -267,16 +269,24 @@ async fn a_send_never_leaves_the_active_endpoint() {
         assert_eq!(read.json()["result"], "b", "{failure:?}");
         let reads_on_b = b.calls().len();
 
-        // ...the sends, and anything not known to be a read, do not.
-        for method in [
-            "eth_sendRawTransaction",
-            "eth_sendTransaction",
-            "eth_sendRawTransactionSync",
-            "eth_sendBundle",
-            "eth_sign",
-            "anvil_setBalance",
-            "made_up_method",
-        ] {
+        // ...the sends, and anything not known to be a read, do not. Which
+        // methods count as sends doesn't depend on the failure, so the
+        // whole list runs once (after a 429 the limiter spaces requests
+        // to `a` out, which makes every send there slow).
+        let methods: &[&str] = if matches!(failure, Answer::Http(503, _)) {
+            &[
+                "eth_sendRawTransaction",
+                "eth_sendTransaction",
+                "eth_sendRawTransactionSync",
+                "eth_sendBundle",
+                "eth_sign",
+                "anvil_setBalance",
+                "made_up_method",
+            ]
+        } else {
+            &["eth_sendRawTransaction", "made_up_method"]
+        };
+        for &method in methods {
             let reply = rig.call("eth", method, json!([RAW_TX])).await;
             assert!(
                 reply.json()["error"].is_object(),
@@ -312,7 +322,7 @@ async fn a_send_never_leaves_the_active_endpoint() {
                 ]),
             )
             .await;
-        if !matches!(failure, R::Error(_)) {
+        if !matches!(failure, Answer::Error(_)) {
             // (-32005 inside a batch is not inspected.)
             assert_eq!(batch.json()[1]["result"], "b", "{failure:?}: {batch:?}");
         }
@@ -321,10 +331,10 @@ async fn a_send_never_leaves_the_active_endpoint() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_dead_active_send_fails_without_trying_anything_else() {
-    let mut a = Mock::named("a").await;
-    let b = Mock::named("b").await;
+    let mut a = named("a");
+    let b = named("b");
     let rig = pair(&a, &b).await;
-    a.kill().await;
+    a.kill();
     let reply = rig
         .call("eth", "eth_sendRawTransaction", json!([RAW_TX]))
         .await;
@@ -340,9 +350,9 @@ async fn a_dead_active_send_fails_without_trying_anything_else() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_endpoint_outside_the_failover_list_is_never_tried() {
-    let a = Mock::start("a", |_| R::Http(503, None)).await;
-    let b = Mock::start("b", |_| R::Http(503, None)).await;
-    let private = Mock::named("private").await;
+    let a = Mock::start_probed(|_| Answer::Http(503, None));
+    let b = Mock::start_probed(|_| Answer::Http(503, None));
+    let private = named("private");
     let rig = Rig::start(&eth_config(
         "a",
         &["b"],
@@ -369,9 +379,9 @@ async fn an_endpoint_outside_the_failover_list_is_never_tried() {
     // With an empty failover list nothing but the active endpoint is
     // touched, not even by probes. A second chain with a failover pool
     // shows the probe loop at work meanwhile.
-    let a = Mock::start("a", |_| R::Http(503, None)).await;
-    let other = Mock::named("other").await;
-    let (c, d) = (Mock::named("c").await, Mock::named("d").await);
+    let a = Mock::start_probed(|_| Answer::Http(503, None));
+    let other = named("other");
+    let (c, d) = (named("c"), named("d"));
     let mut toml = eth_config("a", &[], &[("a", a.url()), ("other", other.url())]);
     toml.push_str(&format!(
         "[chains.base]\nid = 8453\nrpc = \"c\"\nfailover = [\"d\"]\n[chains.base.rpcs]\nc = \"{}\"\nd = \"{}\"\n",
@@ -396,15 +406,14 @@ async fn a_429_waits_on_the_same_endpoint_then_shifts() {
     // Short Retry-After: wait it out on the same endpoint.
     let hits = Arc::new(AtomicUsize::new(0));
     let counter = hits.clone();
-    let a = Mock::start("a", move |_| {
+    let a = Mock::start_probed(move |_| {
         if counter.fetch_add(1, Ordering::SeqCst) == 0 {
-            R::Http(429, Some("1"))
+            Answer::Http(429, Some("1"))
         } else {
-            R::Result(json!("a"))
+            Answer::Result(json!("a"))
         }
-    })
-    .await;
-    let b = Mock::named("b").await;
+    });
+    let b = named("b");
     let rig = pair(&a, &b).await;
     let started = Instant::now();
     let reply = rig.call("eth", "eth_getTransactionCount", json!([])).await;
@@ -424,8 +433,8 @@ async fn a_429_waits_on_the_same_endpoint_then_shifts() {
     assert!(b.calls().is_empty());
 
     // Long Retry-After: a read shifts at once; a send comes back as a 429.
-    let a = Mock::start("a", |_| R::Http(429, Some("30"))).await;
-    let b = Mock::named("b").await;
+    let a = Mock::start_probed(|_| Answer::Http(429, Some("30")));
+    let b = named("b");
     let rig = pair(&a, &b).await;
     let started = Instant::now();
     let reply = rig.call("eth", "eth_call", json!([])).await;
@@ -450,8 +459,8 @@ async fn a_429_waits_on_the_same_endpoint_then_shifts() {
     // would pass 2 s. Bucket waits count toward those 2 s, so on a slow
     // machine the shift can come one 429 early, or the bucket may turn the
     // last retry away itself (unsent) instead of `a` answering it 429.
-    let a = Mock::start("a", |_| R::Http(429, None)).await;
-    let b = Mock::named("b").await;
+    let a = Mock::start_probed(|_| Answer::Http(429, None));
+    let b = named("b");
     let rig = pair(&a, &b).await;
     let started = Instant::now();
     let reply = rig.call("eth", "eth_call", json!([])).await;
@@ -481,13 +490,12 @@ async fn a_429_waits_on_the_same_endpoint_then_shifts() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn filters_are_sticky_to_the_endpoint_that_created_them() {
-    let mut a = Mock::start("a", |call| match call["method"].as_str().unwrap() {
-        "eth_newFilter" => R::Result(json!("0xF1")),
-        "eth_newBlockFilter" => R::Result(json!("0xf2")),
-        _ => R::Result(json!("a")),
-    })
-    .await;
-    let b = Mock::named("b").await;
+    let mut a = Mock::start_probed(|call| match call["method"].as_str().unwrap() {
+        "eth_newFilter" => Answer::Result(json!("0xF1")),
+        "eth_newBlockFilter" => Answer::Result(json!("0xf2")),
+        _ => Answer::Result(json!("a")),
+    });
+    let b = named("b");
     let rig = pair(&a, &b).await;
     assert_eq!(
         rig.call("eth", "eth_newFilter", json!([{}])).await.json()["result"],
@@ -561,7 +569,7 @@ async fn filters_are_sticky_to_the_endpoint_that_created_them() {
     // Never failed over: with `a` gone the filter read fails, although `b`
     // (now active) is healthy.
     let before = b.calls().len();
-    a.kill().await;
+    a.kill();
     let reply = rig
         .call("eth", "eth_getFilterChanges", json!(["0xf1"]))
         .await;
@@ -571,8 +579,8 @@ async fn filters_are_sticky_to_the_endpoint_that_created_them() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_lagging_endpoint_is_not_a_failover_target() {
-    let a = Mock::start("a", |_| R::Http(503, None)).await;
-    let b = Mock::named("b").await;
+    let a = Mock::start_probed(|_| Answer::Http(503, None));
+    let b = named("b");
     b.set_head(97); // 3 behind the high-water mark of 100
     let rig = pair(&a, &b).await;
     let reply = rig.call("eth", "eth_blockNumber", json!([])).await;
@@ -596,9 +604,9 @@ async fn a_lagging_endpoint_is_not_a_failover_target() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn capability_tags_steer_debug_trace_and_old_block_reads() {
-    let a = Mock::named("a").await;
-    let b = Mock::named("b").await;
-    let c = Mock::named("c").await;
+    let a = named("a");
+    let b = named("b");
+    let c = named("c");
     let dir = tempfile::tempdir().unwrap();
     let toml = eth_config(
         "a",
@@ -646,7 +654,7 @@ async fn capability_tags_steer_debug_trace_and_old_block_reads() {
     }
     rig.wait_for_head("eth", 1000, &[&a, &b, &c]).await;
 
-    let who = |reply: common::HttpReply| reply.json()["result"].as_str().unwrap().to_string();
+    let who = |reply: Response| reply.json()["result"].as_str().unwrap().to_string();
     assert_eq!(
         who(rig.call("eth", "eth_call", json!([{}, "latest"])).await),
         "a"
@@ -722,9 +730,9 @@ async fn capability_tags_steer_debug_trace_and_old_block_reads() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_pinned_url_uses_exactly_that_endpoint() {
-    let a = Mock::named("a").await;
-    let b = Mock::start("b", |_| R::Http(503, None)).await;
-    let other = Mock::named("other").await;
+    let a = named("a");
+    let b = Mock::start_probed(|_| Answer::Http(503, None));
+    let other = named("other");
     let mut toml = eth_config(
         "a",
         &["b"],
@@ -756,23 +764,26 @@ async fn a_pinned_url_uses_exactly_that_endpoint() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn only_the_enumerated_errors_fail_over() {
     for (failure, shifts) in [
-        (R::Http(502, None), true),
-        (R::Http(503, None), true),
-        (R::Http(504, None), true),
-        (R::Error(-32005), true),
+        (Answer::Http(502, None), true),
+        (Answer::Http(503, None), true),
+        (Answer::Http(504, None), true),
+        (Answer::Error(-32005), true),
         (
-            R::Delay(Duration::from_secs(5), Box::new(R::Result(json!("late")))),
+            Answer::Delay(
+                Duration::from_secs(5),
+                Box::new(Answer::Result(json!("late"))),
+            ),
             true,
         ), // timeout
-        (R::Http(500, None), false),
-        (R::Http(401, None), false),
-        (R::Http(404, None), false),
-        (R::Error(-32000), false),
-        (R::Error(3), false), // execution reverted
+        (Answer::Http(500, None), false),
+        (Answer::Http(401, None), false),
+        (Answer::Http(404, None), false),
+        (Answer::Error(-32000), false),
+        (Answer::Error(3), false), // execution reverted
     ] {
         let fail = failure.clone();
-        let a = Mock::start("a", move |_| fail.clone()).await;
-        let b = Mock::named("b").await;
+        let a = Mock::start_probed(move |_| fail.clone());
+        let b = named("b");
         let dir_toml = eth_config("a", &["b"], &[("a", a.url()), ("b", b.url())]);
         // Short enough to time out the 5 s delay, long enough that a busy
         // machine doesn't time out the others.
@@ -792,15 +803,14 @@ async fn only_the_enumerated_errors_fail_over() {
 /// shows the hash the node reports, as for `eth_sendRawTransaction`.
 #[tokio::test]
 async fn a_sync_send_is_recorded_with_the_nodes_hash() {
-    let a = Mock::start("a", |call| match call["method"].as_str().unwrap() {
-        "eth_sendRawTransactionSync" => R::Result(json!({
+    let a = Mock::start_probed(|call| match call["method"].as_str().unwrap() {
+        "eth_sendRawTransactionSync" => Answer::Result(json!({
             "transactionHash": format!("0x{}", "CD".repeat(32)),
             "status": "0x1",
         })),
-        _ => R::Result(json!("0x01")),
-    })
-    .await;
-    let b = Mock::named("b").await;
+        _ => Answer::Result(json!("0x01")),
+    });
+    let b = named("b");
     let rig = pair(&a, &b).await;
     let reply = rig
         .call("eth", "eth_sendRawTransactionSync", json!([RAW_TX]))
@@ -827,12 +837,11 @@ async fn a_sync_send_is_recorded_with_the_nodes_hash() {
 async fn inspector_control_api_and_runtime_files() {
     use std::os::unix::fs::PermissionsExt;
     const USDC: &str = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
-    let a = Mock::start("a", |call| match call["method"].as_str().unwrap() {
-        "eth_sendRawTransaction" => R::Result(json!(format!("0x{}", "ab".repeat(32)))),
-        "eth_estimateGas" => R::Error(3),
-        _ => R::Result(json!("0x01")),
-    })
-    .await;
+    let a = Mock::start_probed(|call| match call["method"].as_str().unwrap() {
+        "eth_sendRawTransaction" => Answer::Result(json!(format!("0x{}", "ab".repeat(32)))),
+        "eth_estimateGas" => Answer::Error(3),
+        _ => Answer::Result(json!("0x01")),
+    });
     let dir = tempfile::tempdir().unwrap();
     let log = dir.path().join("requests.jsonl");
     let mut toml = eth_config("a", &[], &[("a", format!("{}/v3/urlsekrit", a.url()))]);
@@ -1029,13 +1038,12 @@ async fn inspector_control_api_and_runtime_files() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shutdown_drains_in_flight_requests() {
-    let a = Mock::start("a", |_| {
-        R::Delay(
+    let a = Mock::start_probed(|_| {
+        Answer::Delay(
             Duration::from_millis(400),
-            Box::new(R::Result(json!("slow"))),
+            Box::new(Answer::Result(json!("slow"))),
         )
-    })
-    .await;
+    });
     let mut rig = Rig::start(&eth_config("a", &[], &[("a", a.url())])).await;
     let path = rig.path("eth", None);
     let host = rig.host();
@@ -1073,8 +1081,8 @@ async fn shutdown_drains_in_flight_requests() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_change_already_reloaded_is_not_reloaded_again_by_the_watch() {
-    let a = Mock::named("a").await;
-    let watch = Duration::from_millis(500);
+    let a = named("a");
+    let watch = Duration::from_millis(200);
     let rig = Rig::start_with(&eth_config("a", &[], &[("a", a.url())]), |config| {
         config.watch_interval = watch;
     })
@@ -1103,7 +1111,7 @@ async fn a_change_already_reloaded_is_not_reloaded_again_by_the_watch() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn secrets_and_headers_are_applied_upstream_and_follow_reloads() {
     // The mock echoes nothing; inspect what it received.
-    let a = Mock::named("a").await;
+    let a = named("a");
     let dir = tempfile::tempdir().unwrap();
     let config = format!(
         "version = 2\n[chains.eth]\nid = 1\nrpc = \"a\"\n[chains.eth.rpcs]\na = {{ url = \"{}/${{GW_TEST_PATH}}\", headers = {{ x-key = \"${{GW_TEST_HEADER}}\" }} }}\n",
@@ -1161,7 +1169,7 @@ async fn secrets_and_headers_are_applied_upstream_and_follow_reloads() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_same_size_config_change_with_the_same_mtime_is_seen() {
-    let (a, b) = (Mock::named("a").await, Mock::named("b").await);
+    let (a, b) = (named("a"), named("b"));
     let endpoints = [("a", a.url()), ("b", b.url())];
     let rig = Rig::start(&eth_config("a", &[], &endpoints)).await;
     let config = Rig::paths(rig.dir.path()).config().to_path_buf();
@@ -1193,14 +1201,13 @@ async fn with_nowhere_else_to_go_requests_queue_in_the_bucket() {
     // spaced out by the bucket, none held back to fire all at once.
     let hits = Arc::new(AtomicUsize::new(0));
     let counter = hits.clone();
-    let a = Mock::start("a", move |_| {
+    let a = Mock::start_probed(move |_| {
         if counter.fetch_add(1, Ordering::SeqCst) == 0 {
-            R::Http(429, Some("1"))
+            Answer::Http(429, Some("1"))
         } else {
-            R::Result(json!("a"))
+            Answer::Result(json!("a"))
         }
-    })
-    .await;
+    });
     let rig = Arc::new(Rig::start(&eth_config("a", &[], &[("a", a.url())])).await);
     assert_eq!(rig.call("eth", "eth_call", json!([])).await.status, 200);
     let burst: Vec<_> = (0..8)
@@ -1236,18 +1243,17 @@ async fn retries_after_a_429_go_through_the_bucket() {
     // take bucket slots rather than all firing together a second later.
     let hits = Arc::new(AtomicUsize::new(0));
     let counter = hits.clone();
-    let a = Mock::start("a", move |_| {
+    let a = Mock::start_probed(move |_| {
         if counter.fetch_add(1, Ordering::SeqCst) < 8 {
             // Slow enough that all eight are in before the first 429 lands.
-            R::Delay(
+            Answer::Delay(
                 Duration::from_millis(200),
-                Box::new(R::Http(429, Some("1"))),
+                Box::new(Answer::Http(429, Some("1"))),
             )
         } else {
-            R::Result(json!("a"))
+            Answer::Result(json!("a"))
         }
-    })
-    .await;
+    });
     let rig = Arc::new(Rig::start(&eth_config("a", &[], &[("a", a.url())])).await);
     let herd: Vec<_> = (0..8)
         .map(|_| {
@@ -1275,7 +1281,7 @@ async fn retries_after_a_429_go_through_the_bucket() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_failed_serve_json_write_leaves_nothing_running() {
-    let a = Mock::named("a").await;
+    let a = named("a");
     let dir = tempfile::tempdir().unwrap();
     Rig::write_config(dir.path(), &eth_config("a", &[], &[("a", a.url())]));
     // serve.json can't be written: a directory is in its place.

@@ -1,11 +1,9 @@
 //! The pinned (single-endpoint) proxy against a scripted mock upstream on
 //! loopback.
-mod common;
-
+use crate::common::{Answer, Mock, eventually, http, named};
 use chainz_core::runtime::GatewayAddr;
 use chainz_rpc::{RpcClient, Target};
 use chainz_serve::PinnedProxy;
-use common::{Mock, R, http};
 use serde_json::json;
 
 async fn proxy_to(mock: &Mock) -> PinnedProxy {
@@ -28,7 +26,7 @@ const BODY: &str = r#"{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn forwards_only_tokened_loopback_json_posts() {
-    let a = Mock::named("a").await;
+    let a = named("a");
     let proxy = proxy_to(&a).await;
     let addr = addr_of(&proxy);
     assert_eq!(proxy.url(), addr.base_url());
@@ -82,7 +80,7 @@ async fn forwards_only_tokened_loopback_json_posts() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn upstream_failures_are_http_errors_without_the_url() {
-    let a = Mock::start("a", |_| R::Http(429, Some("3"))).await;
+    let a = Mock::start_probed(|_| Answer::Http(429, Some("3")));
     let proxy = proxy_to(&a).await;
     let path = addr_of(&proxy).path(None, None);
     let host = format!("127.0.0.1:{}", addr_of(&proxy).port);
@@ -97,9 +95,9 @@ async fn upstream_failures_are_http_errors_without_the_url() {
     // The same answer the gateway gives a rate limit.
     assert_eq!(reply.json()["error"]["code"], json!(-32005));
 
-    let mut b = Mock::named("b").await;
+    let mut b = named("b");
     let proxy = proxy_to(&b).await;
-    b.kill().await;
+    b.kill();
     let path = addr_of(&proxy).path(None, None);
     let host = format!("127.0.0.1:{}", addr_of(&proxy).port);
     let headers = [
@@ -110,7 +108,7 @@ async fn upstream_failures_are_http_errors_without_the_url() {
     assert_eq!(reply.status, 502);
 
     // An upstream 4xx is passed on, as the gateway does.
-    let c = Mock::start("c", |_| R::Http(403, None)).await;
+    let c = Mock::start_probed(|_| Answer::Http(403, None));
     let proxy = proxy_to(&c).await;
     let path = addr_of(&proxy).path(None, None);
     let host = format!("127.0.0.1:{}", addr_of(&proxy).port);
@@ -126,13 +124,12 @@ async fn upstream_failures_are_http_errors_without_the_url() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_limit_exceeded_answer_is_retried_on_the_same_endpoint() {
     let calls = std::sync::atomic::AtomicUsize::new(0);
-    let a = Mock::start("a", move |_| {
+    let a = Mock::start_probed(move |_| {
         match calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
-            0 => R::Error(-32005),
-            _ => R::Result(json!("a")),
+            0 => Answer::Error(-32005),
+            _ => Answer::Result(json!("a")),
         }
-    })
-    .await;
+    });
     let proxy = proxy_to(&a).await;
     let host = format!("127.0.0.1:{}", addr_of(&proxy).port);
     let headers = [
@@ -148,7 +145,7 @@ async fn a_limit_exceeded_answer_is_retried_on_the_same_endpoint() {
     assert_eq!(a.calls().len(), 2);
 
     // Retries run out: the last -32005 answer, as the endpoint sent it.
-    let b = Mock::start("b", |_| R::Error(-32005)).await;
+    let b = Mock::start_probed(|_| Answer::Error(-32005));
     let proxy = proxy_to(&b).await;
     let host = format!("127.0.0.1:{}", addr_of(&proxy).port);
     let headers = [
@@ -164,9 +161,9 @@ async fn a_limit_exceeded_answer_is_retried_on_the_same_endpoint() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dropping_releases_the_port() {
-    let a = Mock::named("a").await;
+    let a = named("a");
     let proxy = proxy_to(&a).await;
     let port = addr_of(&proxy).port;
     drop(proxy);
-    common::eventually(|| std::net::TcpStream::connect(("127.0.0.1", port)).is_err()).await;
+    eventually(|| std::net::TcpStream::connect(("127.0.0.1", port)).is_err()).await;
 }
