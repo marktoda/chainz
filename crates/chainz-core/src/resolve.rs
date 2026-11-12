@@ -6,15 +6,16 @@
 //! 3. `default` in config (callers print `chainz: <name> (default)`);
 //! 4. otherwise the caller opens a picker on a TTY, or fails.
 //!
-//! Within a reference: a live fork name, an exact chain ID, an exact name
-//! or alias (case-insensitive), then an unambiguous prefix of a name or
-//! alias. Each command matches under one [`Policy`]; destructive commands
+//! Within a reference: an exact chain ID, an exact name or alias
+//! (case-insensitive), then a live fork's exact name, then an unambiguous
+//! prefix of a name or alias. Configured chains come first: a fork never
+//! shadows one, and a dead fork never resolves. Each command matches under one [`Policy`]; destructive commands
 //! use [`Policy::Exact`]: name or ID only.
 
 use crate::contract::Env;
 use crate::model::{Chain, Config};
 use crate::runtime::{ForkRecord, Runtime};
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context as _, Result, anyhow, bail};
 
 /// What a reference resolved to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,9 +62,14 @@ pub fn resolve(config: &Config, runtime: Option<&Runtime>, query: &str) -> Resul
     if query.is_empty() {
         bail!("empty chain reference");
     }
+    if let Some((name, _)) = exact(config, query)? {
+        return Ok(ChainRef::Configured(name.to_string()));
+    }
     if let Some(runtime) = runtime
         && crate::names::is_valid_chain_name(query)
-        && let Ok(Some(fork)) = runtime.read_fork(query)
+        && let Some(fork) = runtime
+            .fork(query)
+            .with_context(|| format!("unable to read fork '{query}'"))?
     {
         return Ok(ChainRef::Fork(fork));
     }
@@ -144,6 +150,22 @@ pub fn configured<'c>(
                 .join(", ")
         )),
     }
+}
+
+/// [`Policy::Prefix`]'s exact matches only: an ID (an unknown ID is an
+/// error), then a name or alias in any case.
+fn exact<'c>(config: &'c Config, query: &str) -> Result<Option<(&'c str, &'c Chain)>> {
+    if let Ok(id) = query.parse::<u64>() {
+        return match config.chain_by_id(id) {
+            Some(found) => Ok(Some(found)),
+            None => bail!("no chain with ID {id} is configured{}", hint(config)),
+        };
+    }
+    Ok(config
+        .chains
+        .iter()
+        .find(|(name, chain)| name.eq_ignore_ascii_case(query) || chain.matches_alias(query))
+        .map(|(name, chain)| (name.as_str(), chain)))
 }
 
 fn hint(config: &Config) -> String {
@@ -237,21 +259,31 @@ rpcs.a = "https://a"
         assert_eq!((name, chain.id), ("base-sepolia", 84532));
     }
 
+    fn fork(rt: &Runtime, name: &str) -> crate::runtime::ForkClaim {
+        let claim = rt.claim_fork(name).unwrap().unwrap();
+        claim
+            .register(&ForkRecord {
+                format: ForkRecord::FORMAT,
+                name: name.into(),
+                pid: std::process::id(),
+                anvil_pid: 0,
+                port: 8601,
+                parent: "base".into(),
+                chain_id: 8453,
+                fork_block: None,
+                started_at: 0,
+                ready: true,
+            })
+            .unwrap();
+        claim
+    }
+
     #[test]
-    fn forks_resolve_by_name_only() {
+    fn live_forks_resolve_by_name_only() {
         let dir = tempfile::tempdir().unwrap();
         let rt = Runtime::at(dir.path());
-        rt.write_fork(&crate::runtime::ForkRecord {
-            name: "base-fork".into(),
-            pid: 1,
-            port: 8601,
-            parent: "base".into(),
-            chain_id: 8453,
-            fork_block: None,
-            started_at: 0,
-        })
-        .unwrap();
         let c = config();
+        let claim = fork(&rt, "base-fork");
         assert!(matches!(
             resolve(&c, Some(&rt), "base-fork").unwrap(),
             ChainRef::Fork(_)
@@ -260,5 +292,34 @@ rpcs.a = "https://a"
             resolve(&c, Some(&rt), "8453").unwrap(),
             ChainRef::Configured("base".into())
         );
+        // A fork's name is exact: never a prefix match of a configured chain.
+        assert!(resolve(&c, None, "base-fork").is_err());
+        // Its supervisor gone, the fork no longer resolves.
+        drop(claim);
+        assert!(resolve(&c, Some(&rt), "base-fork").is_err());
+    }
+
+    #[test]
+    fn configured_chains_come_before_forks() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = Runtime::at(dir.path());
+        let c = config();
+        // A chain configured after the fork started keeps its name.
+        let _base = fork(&rt, "base");
+        let _alias = fork(&rt, "mainnet");
+        assert_eq!(
+            resolve(&c, Some(&rt), "base").unwrap(),
+            ChainRef::Configured("base".into())
+        );
+        assert_eq!(
+            resolve(&c, Some(&rt), "mainnet").unwrap(),
+            ChainRef::Configured("eth".into())
+        );
+        // A live fork's exact name beats a prefix of configured names.
+        let _ba = fork(&rt, "ba");
+        assert!(matches!(
+            resolve(&c, Some(&rt), "ba").unwrap(),
+            ChainRef::Fork(f) if f.name == "ba"
+        ));
     }
 }
