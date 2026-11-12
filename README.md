@@ -156,6 +156,7 @@ chainz prompt.
 chainz exec base -- cast call @usdc 'balanceOf(address)(uint256)' @wallet
 chainz exec eth --signer funder -- cast send @wallet --value 1ether
 chainz exec op --rpc llama -- cast block-number
+chainz exec op --rpc http://127.0.0.1:8545 -- cast block-number   # a URL, this run only
 eval "$(chainz env base)"             # export into the current shell
 chainz shell base                     # or open a subshell
 ```
@@ -214,7 +215,8 @@ $ chainz fork stop base-fork        # or Ctrl-C, or --all
 - The fork is a chain name while it runs, and only by name: `exec 8453`
   always means the real chain.
 - Anvil reads state through a proxy pinned to one endpoint (and through the
-  gateway when it runs). `--block N` requires an archive-capable endpoint.
+  gateway when it runs): the active one, or `--rpc NAME|URL` (a URL for
+  this fork only). `--block N` requires an archive-capable endpoint.
 - Your signer is funded with ETH by default; `--fund` adds tokens,
   `--no-fund` skips it.
 - A fork shares its parent's chain ID, so chainz refuses `--expose-key` on

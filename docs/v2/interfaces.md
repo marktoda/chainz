@@ -211,7 +211,11 @@ Target::new(route.chain_id, &route.endpoint, &route.url, &route.headers)
 
 The rule: through a running gateway (pinned to the endpoint when one is
 named) unless `direct` or the endpoint is a websocket; otherwise the
-endpoint itself, `${VAR}`s expanded. `direct_route` is the one public way
+endpoint itself, `${VAR}`s expanded. `RouteOpts::endpoint` is `--rpc
+NAME|URL`, read by `Chain::rpc_choice` (the rule `chain set --rpc` uses): a
+URL the chain has no endpoint for goes straight to it, for that route only,
+never written and never through the gateway (`exec`/`env`/`shell --rpc`
+and `fork --rpc`). `direct_route` is the one public way
 to expand an endpoint; the gateway, `top`, probes and forks all use it.
 
 ## Runtime registry (`chainz_core::runtime`)
@@ -600,7 +604,8 @@ names the file. `ErrorClass::phrase()` is the class in a sentence
 - Chain edits: `tx.edit_chain(name, &ChainEdit) -> Result<EditReport>` applies
   one patch (`chain set` flags or its menu): signer, `rpc` (an endpoint name,
   or a URL: an existing one activates, a new one is added with its secrets
-  extracted and activated; `ChainEdit::rpc_choice` says which,
+  extracted and activated; `ChainEdit::rpc_choice` says which, by
+  `Chain::rpc_choice(name, rpc)` (in `model`, shared with routes):
   `RpcChoice::{Existing(name), New(name, endpoint)}`, so the caller probes
   exactly that and the menu shows it), headers and `clear_headers` on that endpoint
   (or the active one), failover, explorer (`Explorer::ETHERSCAN` creates the

@@ -1,4 +1,5 @@
 use super::*;
+use crate::model::RpcChoice;
 use indexmap::IndexMap;
 
 const DOC: &str = "# top comment\nversion = 2\ndefault = \"eth\"\n\n# eth is my main chain\n[chains.eth]\nid = 1 # mainnet\nrpc = \"a\"\nfailover = [\"b\"]\n[chains.eth.rpcs]\na = \"https://a.example\" # keep me\nb = \"https://b.example\"\n\n[addresses.router]\neth = \"0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf\"\n";

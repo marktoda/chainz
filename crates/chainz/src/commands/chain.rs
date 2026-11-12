@@ -7,7 +7,7 @@ pub use set::set;
 use crate::cli::{ChainAddArgs, ChainCommand, ChainRmArgs, ChainShowArgs, ListArgs, UseArgs};
 use crate::load::open;
 use crate::probe::{check, probe_urls, ranked_urls};
-use crate::prompt::Ask;
+use crate::prompt::{Ask, Tty};
 use crate::{net, ui, view};
 use anyhow::{Context, Result, anyhow, bail};
 use chainz_core::Chainz;

@@ -165,8 +165,9 @@ pub struct ContextArgs {
     /// Use this signer instead of the chain's
     #[arg(long, add = ArgValueCompleter::new(complete::signers))]
     pub signer: Option<String>,
-    /// Use this endpoint instead of the active one
-    #[arg(long, add = ArgValueCompleter::new(complete::endpoints))]
+    /// Use this endpoint instead of the active one, or a URL for this run
+    /// only (not saved)
+    #[arg(long, value_name = "NAME|URL", add = ArgValueCompleter::new(complete::endpoints))]
     pub rpc: Option<String>,
     /// Bypass a running gateway
     #[arg(long)]
@@ -335,6 +336,10 @@ pub struct ForkArgs {
     /// Fork at this block (needs an archive endpoint)
     #[arg(long)]
     pub block: Option<u64>,
+    /// Pin the fork to this endpoint, or a URL (not saved), instead of the
+    /// active one (with --block, instead of the first archive endpoint)
+    #[arg(long, value_name = "NAME|URL", add = ArgValueCompleter::new(complete::endpoints))]
+    pub rpc: Option<String>,
     /// Anvil port (default: first free from 8601)
     #[arg(long)]
     pub port: Option<u16>,

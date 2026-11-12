@@ -31,6 +31,8 @@ changed before 2.0.0; they are listed under Removed and Changed.
 ### Added
 
 - `exec` replaces itself with the command (`execvp`) and costs about 3 ms.
+  `exec`/`env`/`shell --rpc NAME|URL` take an endpoint name or a URL for
+  that run only (not saved), by the same rule as `chain set --rpc`.
   New tokens: address labels (`@usdc`, `@myrouter`), signer names (`@funder`),
   cross-chain labels (`@usdc:arb`), and `--explain`. `env` prints exports.
 - `chain set [CHAIN]`, also `chainz update`: every chain setting in one
@@ -65,6 +67,8 @@ changed before 2.0.0; they are listed under Removed and Changed.
   port (`ports/<port>.lock` in the runtime dir) before anvil starts, so
   parallel forks never pick the same port; an automatically chosen port
   that is taken moves on to the next one. `--port` is used exactly or fails.
+  `--rpc NAME|URL` pins the upstream (a URL for this fork only, not saved)
+  instead of the active endpoint, or with `--block` the first archive one.
 - Address book: `addr add/ls/rm/find`, built-in major-token labels on every
   configured chain, and `label` to annotate addresses in any output.
   `addr import` labels the contracts in Foundry broadcast output

@@ -903,6 +903,27 @@ fn exec_exports_context_and_expands_tokens() {
 }
 
 #[test]
+fn exec_rpc_takes_a_url_for_one_run_without_saving_it() {
+    let sb = Sandbox::new();
+    sb.seed(&[("eth", 1)]);
+    let config = sb.config();
+    sb.cmd()
+        .args(["exec", "1", "--rpc", "http://127.0.0.1:8545", "--"])
+        .args(["sh", "-c", "echo $ETH_RPC_URL \"$1\"", "sh", "@rpc"])
+        .assert()
+        .success()
+        .stdout("http://127.0.0.1:8545 http://127.0.0.1:8545\n");
+    assert_eq!(sb.config(), config);
+    sb.cmd()
+        .args(["exec", "eth", "--rpc", "nope", "--", "true"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "chain 'eth' has no endpoint 'nope'",
+        ));
+}
+
+#[test]
 fn exec_x_alias_and_embedded_tokens() {
     let sb = Sandbox::new();
     sb.seed(&[("eth", 1), ("base", 8453)]);

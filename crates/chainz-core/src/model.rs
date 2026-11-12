@@ -838,6 +838,50 @@ impl Chain {
             )),
         }
     }
+
+    /// What `--rpc NAME|URL` means for this chain (named `name`): an
+    /// endpoint it has, by name or by URL (compared with `vars`, [`Endpoint::same_url`]), or a
+    /// URL that is new to it. An
+    /// error when it is neither an endpoint nor a URL [`Endpoint::check_url`]
+    /// accepts. The one owner of that rule: `chain set --rpc` (which adds
+    /// a new URL) and `exec --rpc` and `fork --rpc` (which use it for one
+    /// run) all go by it.
+    pub fn rpc_choice(
+        &self,
+        name: &str,
+        rpc: &str,
+        vars: &crate::secrets::Vars,
+    ) -> anyhow::Result<RpcChoice> {
+        if self.rpcs.contains_key(rpc) {
+            return Ok(RpcChoice::Existing(rpc.to_string()));
+        }
+        if let Some(existing) = self.endpoint_at(rpc, vars) {
+            return Ok(RpcChoice::Existing(existing.to_string()));
+        }
+        if !rpc.contains("://") {
+            anyhow::bail!(
+                "chain '{name}' has no endpoint '{rpc}' (endpoints: {})",
+                self.rpcs
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+        let ep_name = self.new_endpoint(name, rpc, None, vars)?;
+        Ok(RpcChoice::New(ep_name, Endpoint::new(rpc)))
+    }
+}
+
+/// What `--rpc` means for a chain ([`Chain::rpc_choice`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RpcChoice {
+    /// An endpoint the chain has, named by its name or its URL
+    /// ([`Endpoint::same_url`]): that endpoint's name.
+    Existing(String),
+    /// A URL new to the chain: the name it would get, and the endpoint (with
+    /// the edit's headers, for `ChainEdit::rpc_choice`).
+    New(String, Endpoint),
 }
 
 impl fmt::Debug for Config {

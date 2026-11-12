@@ -4,7 +4,7 @@
 
 use super::{EndpointRole, Tx};
 use crate::extract::Moved;
-use crate::model::{Chain, Endpoint, Explorer, is_header_name};
+use crate::model::{Chain, Explorer, RpcChoice, is_header_name};
 use crate::names;
 use anyhow::{Result, anyhow, bail};
 use zeroize::Zeroizing;
@@ -59,12 +59,10 @@ impl ChainEdit {
     }
 
     /// What `--rpc` means for `chain` (named `name`): `None` when unset,
-    /// an endpoint the chain has (by name, or by URL through
-    /// [`Chain::endpoint_at`] with `vars`, `secrets.toml`'s `[vars]`), or a
-    /// new endpoint to add. An error when
-    /// it is neither an endpoint nor a URL [`Tx::edit_chain`] would accept.
-    /// The one owner of that rule: the edit, the caller's chain-ID probe
-    /// and the `chain set` menu all go by it.
+    /// else [`Chain::rpc_choice`] (URLs compared with `vars`,
+    /// `secrets.toml`'s `[vars]`), a new endpoint carrying the edit's
+    /// headers. The edit, the caller's chain-ID probe and the `chain set`
+    /// menu all go by it.
     pub fn rpc_choice(
         &self,
         name: &str,
@@ -74,25 +72,10 @@ impl ChainEdit {
         let Some(rpc) = self.rpc.as_deref() else {
             return Ok(None);
         };
-        if chain.rpcs.contains_key(rpc) {
-            return Ok(Some(RpcChoice::Existing(rpc.to_string())));
-        }
-        if let Some(existing) = chain.endpoint_at(rpc, vars) {
-            return Ok(Some(RpcChoice::Existing(existing.to_string())));
-        }
-        if !rpc.contains("://") {
-            bail!(
-                "chain '{name}' has no endpoint '{rpc}' (endpoints: {})",
-                chain
-                    .rpcs
-                    .keys()
-                    .map(String::as_str)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-        }
-        let ep_name = chain.new_endpoint(name, rpc, None, vars)?;
-        let mut endpoint = Endpoint::new(rpc);
+        let (ep_name, mut endpoint) = match chain.rpc_choice(name, rpc, vars)? {
+            RpcChoice::New(ep_name, endpoint) => (ep_name, endpoint),
+            existing => return Ok(Some(existing)),
+        };
         for (header, value) in &self.headers {
             let header = header.trim();
             if !is_header_name(header) {
@@ -104,17 +87,6 @@ impl ChainEdit {
         }
         Ok(Some(RpcChoice::New(ep_name, endpoint)))
     }
-}
-
-/// What `--rpc` means for a chain ([`ChainEdit::rpc_choice`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RpcChoice {
-    /// An endpoint the chain has, named by its name or its URL
-    /// ([`Endpoint::same_url`]): that endpoint's name.
-    Existing(String),
-    /// A URL to add as a new endpoint: its name, and the endpoint with the
-    /// edit's headers.
-    New(String, Endpoint),
 }
 
 /// What [`Tx::edit_chain`] did, for the caller to report.

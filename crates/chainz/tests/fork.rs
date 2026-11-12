@@ -671,6 +671,45 @@ fn block_needs_an_archive_endpoint() {
     assert_eq!(fork.wait_exit(), Some(143));
 }
 
+/// `--rpc NAME|URL` pins the upstream: a dead active endpoint says so; a
+/// URL is used for this fork only, and the config is not written.
+#[test]
+fn rpc_pins_the_upstream_by_name_or_url() {
+    if !anvil_available() {
+        return;
+    }
+    let upstream = Upstream::start();
+    let sb = Sandbox::new();
+    seed_local(&sb, "http://127.0.0.1:1");
+    let config = sb.config();
+    let refused = sb.run(&["fork", "local", "--no-fund"]);
+    assert!(!refused.status.success());
+    assert!(
+        stderr(&refused).contains("can't fork 'local' from endpoint 'up'")
+            && stderr(&refused).contains("pin another with --rpc NAME|URL"),
+        "{refused:?}"
+    );
+    let unknown = sb.run(&["fork", "local", "--no-fund", "--rpc", "nope"]);
+    assert!(
+        stderr(&unknown).contains("chain 'local' has no endpoint 'nope' (endpoints: up)"),
+        "{unknown:?}"
+    );
+    assert!(registry_is_empty(&sb));
+
+    let mut fork = Fork::start(&sb, &["local", "--no-fund", "--rpc", &upstream.url()]);
+    let out = fork.wait_for_output("ctrl-c to stop");
+    assert!(
+        out.contains(&format!(
+            "upstream local/{}/ (pinned, via proxy)",
+            upstream.url()
+        )),
+        "{out}"
+    );
+    send_signal(fork.pid(), "TERM");
+    assert_eq!(fork.wait_exit(), Some(143));
+    assert_eq!(sb.config(), config, "a one-off URL is not saved");
+}
+
 /// With a gateway running, the fork's proxy forwards to the gateway's URL
 /// pinned to the chosen endpoint, and the gateway token stays in the
 /// supervisor's memory.

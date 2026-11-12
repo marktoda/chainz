@@ -211,6 +211,55 @@ fn gateway_seam_routes_through_serve_unless_direct() {
     )
     .unwrap();
     assert!(!ws.rpc.via_gateway, "websockets are never routed");
+    // A URL the chain has picks that endpoint; a new one is used straight,
+    // for this run only (the gateway doesn't know it).
+    let rpc = |rpc: &str| {
+        ctx(
+            &f,
+            "eth",
+            &ExecOptions {
+                rpc: Some(rpc.into()),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+    };
+    let known = rpc("https://gw.example/rpc/1/");
+    assert!(known.rpc.via_gateway);
+    assert_eq!(known.rpc.endpoint.as_deref(), Some("gw"));
+    let one_off = rpc("http://127.0.0.1:8545");
+    assert!(!one_off.rpc.via_gateway);
+    assert_eq!(env_map(&one_off)["ETH_RPC_URL"], "http://127.0.0.1:8545");
+}
+
+#[test]
+fn a_one_off_rpc_url_is_used_straight_and_never_written() {
+    let f = fixture();
+    let c = ctx(
+        &f,
+        "eth",
+        &ExecOptions {
+            rpc: Some("https://other.example/${CTX_TEST_INFURA}".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(!c.rpc.via_gateway);
+    let env = env_map(&c);
+    assert_eq!(env["ETH_RPC_URL"], "https://other.example/inf-key");
+    let err = format!(
+        "{:#}",
+        ctx(
+            &f,
+            "eth",
+            &ExecOptions {
+                rpc: Some("not a url".into()),
+                ..Default::default()
+            }
+        )
+        .unwrap_err()
+    );
+    assert!(err.contains("has no endpoint 'not a url'"), "{err}");
 }
 
 #[test]

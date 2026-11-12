@@ -10,10 +10,10 @@ use crate::prompt::{self, Ask, Esc, StdinTrim, Tty, read_stdin_secret};
 use crate::select::{Missing, pick_chain};
 use crate::{ui, view};
 use anyhow::Result;
-use chainz_core::model::{Config, Explorer};
+use chainz_core::model::{Config, Explorer, RpcChoice};
 use chainz_core::resolve::{self, Policy};
 use chainz_core::secrets::Vars;
-use chainz_core::tx::{ChainEdit, EditReport, RpcChoice};
+use chainz_core::tx::{ChainEdit, EditReport};
 use zeroize::Zeroizing;
 
 /// `chain set`, or `update` (`command` is how it was invoked:

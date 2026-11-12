@@ -75,7 +75,7 @@ Forks are real chains while they run. `base-fork` resolves like any configured c
 
 Within step 1, a reference matches in this order: an exact chain ID, an exact name or alias (case-insensitive), a live fork's exact name, then an unambiguous prefix. A configured chain always beats a fork of the same name, and a fork whose supervisor is gone never resolves. Destructive commands (`rm`) accept only an exact name or ID.
 
-**How an endpoint is chosen for `exec`:** if `chainz serve` is running, the gateway URL for that chain is used. Otherwise the chain's active endpoint is used. `--direct` skips the gateway, and `--rpc <name>` picks a specific endpoint.
+**How an endpoint is chosen for `exec`:** if `chainz serve` is running, the gateway URL for that chain is used. Otherwise the chain's active endpoint is used. `--direct` skips the gateway, and `--rpc <name>` picks a specific endpoint. `--rpc <url>` uses that URL for this run only, straight and without writing it (a URL the chain already has picks that endpoint), by the same name/URL rule as `chain set --rpc`.
 
 ## CLI surface
 
@@ -83,9 +83,9 @@ The frequent actions are top-level verbs; management lives under nouns. You type
 
 ```
 # hot path
-chainz exec [CHAIN] [--signer S] [--rpc NAME] [--direct] [--expose-key] [--explain] -- CMD...   (alias: x)
-chainz shell [CHAIN] [--signer S] [--rpc NAME] [--direct]     # subshell with the context exported
-chainz env [CHAIN] [--signer S] [--rpc NAME] [--direct] [--shell zsh|bash|fish]   # eval "$(chainz env base)"
+chainz exec [CHAIN] [--signer S] [--rpc NAME|URL] [--direct] [--expose-key] [--explain] -- CMD...   (alias: x)
+chainz shell [CHAIN] [--signer S] [--rpc NAME|URL] [--direct]     # subshell with the context exported
+chainz env [CHAIN] [--signer S] [--rpc NAME|URL] [--direct] [--shell zsh|bash|fish]   # eval "$(chainz env base)"
 chainz use [CHAIN | --clear]         # set the default chain (no chain: show it)
 chainz ls [--json] [--reveal]        # alias of `chain ls`
 
@@ -93,7 +93,7 @@ chainz ls [--json] [--reveal]        # alias of `chain ls`
 chainz top [--once [--json]] [--reveal]
 chainz serve [--port 18545] [--detach] [--log FILE]
 chainz serve status [--json] | stop | log [-f] [--chain C] [--method M]
-chainz fork CHAIN [--block N] [--port P] [--name NAME] [--chain-id N] [--fund [SPEC] | --no-fund] [--detach]
+chainz fork CHAIN [--block N] [--rpc NAME|URL] [--port P] [--name NAME] [--chain-id N] [--fund [SPEC] | --no-fund] [--detach]
                                      # SPEC: usdc=10000,weth=5; `ls` and `stop` are reserved names
 chainz fork ls [--json] | stop NAME|--all
 
@@ -372,7 +372,7 @@ $ chainz exec base-fork -- cast send @usdc 'transfer(address,uint256)' @myrouter
 
 **Supervisor.** The `chainz fork` process supervises anvil as a child. Anvil gets `--fork-url http://127.0.0.1:<port>/<token>`, which points at a single-chain proxy inside the supervisor. The proxy always sits in front of anvil: it forwards to the pinned endpoint directly, or, when a gateway is running, through the gateway pinned to that same endpoint so fork traffic shows up in the inspector and metrics. The `<token>` is a per-fork token, never the gateway's token or an endpoint secret, so anvil's argv is safe to show in `ps`.
 
-- **Upstream:** the proxy pins one endpoint for the fork's whole life, because anvil's lazily fetched state must come from one consistent source. With `--block N`, that endpoint must be archive-capable: it is chosen from capability tags, and the fork refuses to start if none qualifies. The proxy retries transient errors on that same endpoint but never fails over, since mixing nodes mid-fork corrupts state.
+- **Upstream:** the proxy pins one endpoint for the fork's whole life, because anvil's lazily fetched state must come from one consistent source. It is the active endpoint, or what `--rpc NAME|URL` names (a URL is used for this fork only, not saved). With `--block N` and no `--rpc`, that endpoint must be archive-capable: it is chosen from capability tags, and the fork refuses to start if none qualifies. When the active endpoint doesn't answer, the error suggests `--rpc` and `chainz rpc bench`. The proxy retries transient errors on that same endpoint but never fails over, since mixing nodes mid-fork corrupts state.
 - **Unsupported chains:** chains anvil can't fork (zkSync Era, 324) are rejected up front with a clear message.
 - **Orphans:** anvil runs in its own process group with `PR_SET_PDEATHSIG` on Linux. If the supervisor is SIGKILLed, anvil dies too. On macOS the next `chainz fork` or `fork ls` reaps any anvil whose supervisor is gone.
 - **Stopping:** Ctrl-C, `chainz fork stop base-fork` or `--all` stops anvil and removes the registry entry.

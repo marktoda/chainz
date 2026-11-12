@@ -5,13 +5,15 @@
 //! The rule: a chain's requests go through a running gateway (pinned to the
 //! endpoint when one is named) unless the caller asks for a direct
 //! connection or the endpoint is a websocket, which the gateway does not
-//! serve. Otherwise they go to the endpoint itself, `${VAR}`s expanded.
+//! serve. Otherwise they go to the endpoint itself, `${VAR}`s expanded. A
+//! one-off URL (`--rpc URL` the chain has no endpoint for) always goes
+//! straight to it.
 //!
 //! `chainz-rpc` does not depend on this crate: a consumer turns a [`Route`]
 //! into its `Target` with one line,
 //! `Target::new(route.chain_id, &route.endpoint, &route.url, &route.headers)`.
 
-use crate::model::{Chain, Endpoint};
+use crate::model::{Chain, Endpoint, RpcChoice};
 use crate::redact;
 use crate::runtime::{GatewayState, Runtime, ServeInfo};
 use crate::store::Chainz;
@@ -21,8 +23,9 @@ use std::fmt;
 /// How to route.
 #[derive(Debug, Clone, Default)]
 pub struct RouteOpts {
-    /// Use this endpoint instead of the active one (and pin the gateway to
-    /// it).
+    /// `--rpc NAME|URL` ([`Chain::rpc_choice`]): use this endpoint instead
+    /// of the active one (and pin the gateway to it), or a URL the chain
+    /// does not have, straight, for this route only (nothing is written).
     pub endpoint: Option<String>,
     /// Bypass a running gateway.
     pub direct: bool,
@@ -126,7 +129,20 @@ impl Chainz {
             .chains
             .get(chain_name)
             .ok_or_else(|| anyhow!("chain '{chain_name}' is not configured"))?;
-        let endpoint_name = opts.endpoint.as_deref().unwrap_or(&chain.rpc);
+        let chosen;
+        let endpoint_name = match opts.endpoint.as_deref() {
+            None => chain.rpc.as_str(),
+            Some(rpc) => match chain.rpc_choice(chain_name, rpc, &self.secrets()?.vars)? {
+                // A one-off URL: the gateway doesn't know it.
+                RpcChoice::New(name, endpoint) => {
+                    return self.direct_route(chain_name, chain.id, &name, &endpoint);
+                }
+                RpcChoice::Existing(name) => {
+                    chosen = name;
+                    chosen.as_str()
+                }
+            },
+        };
         let endpoint = chain.rpcs.get(endpoint_name).ok_or_else(|| {
             anyhow!(
                 "chain '{chain_name}' has no endpoint '{endpoint_name}' (endpoints: {})",

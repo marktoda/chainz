@@ -80,21 +80,26 @@ impl<'a> From<&'a ForkArgs> for FundOptions<'a> {
     }
 }
 
-/// What the supervisor starts, from `--block`, `--port` and `--chain-id`.
+/// What the supervisor starts, from `--block`, `--rpc`, `--port` and
+/// `--chain-id`.
 #[derive(Debug, Clone, Copy)]
-struct StartOptions {
+struct StartOptions<'a> {
     /// `--block`: the block to fork at.
     block: Option<u64>,
+    /// `--rpc NAME|URL`: the upstream to pin (else the active endpoint, or
+    /// with `--block` the first archive one).
+    rpc: Option<&'a str>,
     /// `--port`: anvil's port, else the first free one.
     port: Option<u16>,
     /// `--chain-id`, if given (anvil is told only then).
     chain_id: Option<u64>,
 }
 
-impl From<&ForkArgs> for StartOptions {
-    fn from(args: &ForkArgs) -> Self {
+impl<'a> From<&'a ForkArgs> for StartOptions<'a> {
+    fn from(args: &'a ForkArgs) -> Self {
         StartOptions {
             block: args.block,
+            rpc: args.rpc.as_deref(),
             port: args.port,
             chain_id: args.chain_id,
         }
@@ -174,6 +179,10 @@ pub fn start(args: ForkArgs) -> Result<i32> {
     // that holds when two forks race for it.
     if runtime.fork_live(&name).unwrap_or(false) {
         return Err(already_running(&name));
+    }
+    if let Some(rpc) = &args.rpc {
+        // Said before anything starts (or detaches).
+        chain.rpc_choice(&parent, rpc, &chainz.secrets()?.vars)?;
     }
     let funding = plan_funding(config, &parent, chain, FundOptions::from(&args))?;
     match args.port {
@@ -260,7 +269,7 @@ struct Job<'a> {
     parent: &'a str,
     chain: &'a Chain,
     name: &'a str,
-    options: StartOptions,
+    options: StartOptions<'a>,
     /// The chain ID the fork reports: `--chain-id`, else the parent's.
     chain_id: u64,
     funding: Option<&'a FundPlan>,
@@ -332,9 +341,11 @@ async fn start_fork(supervisor: &mut Supervisor, job: &Job<'_>) -> Result<Runnin
         ..
     } = *job;
     let client = RpcClient::new();
-    let endpoint = match options.block {
-        None => endpoint::pin_active(chainz, parent, chain, &client).await?,
-        Some(block) => endpoint::find_archive(chainz, parent, chain, block, &client).await?,
+    let endpoint = match (options.rpc, options.block) {
+        (None, Some(block)) => {
+            endpoint::find_archive(chainz, parent, chain, block, &client).await?
+        }
+        (rpc, _) => endpoint::pin(chainz, parent, chain, rpc, &client).await?,
     };
 
     // One upstream for the fork's whole life, always behind our own
@@ -392,7 +403,8 @@ async fn start_fork(supervisor: &mut Supervisor, job: &Job<'_>) -> Result<Runnin
         }
     }
     let notice = format!(
-        "upstream {parent}/{endpoint} (pinned, via {route}); log {}",
+        "upstream {parent}/{} (pinned, via {route}); log {}",
+        endpoint.label,
         log_path.display()
     );
     if job.detached {

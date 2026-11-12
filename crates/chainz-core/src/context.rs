@@ -48,7 +48,8 @@ use zeroize::Zeroizing;
 pub struct ExecOptions {
     /// `--signer`: override the chain's signer.
     pub signer: Option<String>,
-    /// `--rpc`: use this endpoint instead of the active one.
+    /// `--rpc NAME|URL`: use this endpoint instead of the active one, or a
+    /// URL for this run only ([`RouteOpts::endpoint`]).
     pub rpc: Option<String>,
     /// `--direct`: bypass a running gateway.
     pub direct: bool,
