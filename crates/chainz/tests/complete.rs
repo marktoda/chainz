@@ -199,7 +199,10 @@ fn rpc_completes_the_typed_chain_endpoints() {
     );
     assert_set(fish(&sb, &["update", "eth", "--rm-rpc", "l"]), &["llama"]);
     assert_set(
-        fish(&sb, &["update", "eth", "--rm-rpc", "llama", "--rm-rpc", "a"]),
+        fish(
+            &sb,
+            &["update", "eth", "--rm-rpc", "llama", "--rm-rpc", "a"],
+        ),
         &["alchemy"],
     );
 }
@@ -216,10 +219,7 @@ fn completers_follow_the_arguments() {
         &fish(&sb, &["update", "base", "--explorer", ""]),
         "etherscan"
     ));
-    assert!(has(
-        &fish(&sb, &["add", "--signer", ""]),
-        "default"
-    ));
+    assert!(has(&fish(&sb, &["add", "--signer", ""]), "default"));
 }
 
 #[test]

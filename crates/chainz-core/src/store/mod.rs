@@ -50,9 +50,7 @@ impl fmt::Display for Notice {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Notice::Permissions(warning) => write!(f, "warning: {warning}"),
-            Notice::Migrated { summary, config } => {
-                f.write_str(&summary.report(config).join("\n"))
-            }
+            Notice::Migrated { summary, config } => f.write_str(&summary.report(config).join("\n")),
         }
     }
 }

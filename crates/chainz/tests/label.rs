@@ -774,8 +774,7 @@ fn label_ls_and_find_json_and_rm_by_chain_alias() {
                 "address": ROUTER, "source": "user", "shadowed": false})
     );
     // The built-in @usdc on base is hidden by the user's label.
-    let found: Value =
-        serde_json::from_str(&sb.ok(&["label", USDC_BASE, "--json"])).unwrap();
+    let found: Value = serde_json::from_str(&sb.ok(&["label", USDC_BASE, "--json"])).unwrap();
     assert_eq!(
         found,
         json!([{"name": "usdc", "scope": "base", "chain_id": 8453, "address": USDC_BASE,

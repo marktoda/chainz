@@ -139,7 +139,11 @@ fn shell(chainz: &Chainz, mut ctx: Context, explain_only: bool) -> Result<i32> {
     if explain_only {
         print!(
             "{}",
-            explain(&ctx, &exports(&ctx)?, &format!("{} (subshell)", shell_quote(&shell)))
+            explain(
+                &ctx,
+                &exports(&ctx)?,
+                &format!("{} (subshell)", shell_quote(&shell))
+            )
         );
         return Ok(0);
     }

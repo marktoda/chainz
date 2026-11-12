@@ -533,13 +533,7 @@ fn chain_add_with_several_signers_names_the_fix() {
         .write_stdin(TEST_KEY_2)
         .assert()
         .success();
-    let out = sb.run(&[
-        "add",
-        "base",
-        "--url",
-        "http://127.0.0.1:1",
-        "--no-check",
-    ]);
+    let out = sb.run(&["add", "base", "--url", "http://127.0.0.1:1", "--no-check"]);
     assert!(out.status.success());
     let err = stderr(&out);
     assert!(
@@ -562,13 +556,7 @@ fn chain_add_with_several_signers_names_the_fix() {
 #[test]
 fn chain_add_with_url_stays_offline() {
     let sb = Sandbox::new();
-    let out = sb.ok(&[
-        "add",
-        "arb",
-        "--url",
-        "http://127.0.0.1:1",
-        "--no-check",
-    ]);
+    let out = sb.ok(&["add", "arb", "--url", "http://127.0.0.1:1", "--no-check"]);
     assert!(out.contains("Added chain 'arb' (42161)"), "{out}");
     let out = sb.ok(&[
         "add",
@@ -605,13 +593,7 @@ fn etherscan_attaches_by_default_only_to_chains_it_covers() {
         .success()
         .stderr("");
     sb.cmd()
-        .args([
-            "add",
-            "10",
-            "--url",
-            "http://127.0.0.1:1",
-            "--no-check",
-        ])
+        .args(["add", "10", "--url", "http://127.0.0.1:1", "--no-check"])
         .assert()
         .success()
         .stdout(predicate::str::contains("  explorer: etherscan\n"));
@@ -679,22 +661,10 @@ fn re_adding_a_url_whose_key_moved_adds_nothing() {
 fn chain_rm_by_name_and_id_requires_exact_match() {
     let sb = Sandbox::new();
     sb.seed(&[("eth", 1), ("base", 8453), ("arb", 42161)]);
-    sb.cmd()
-        .args(["rm", "ba", "-y"])
-        .assert()
-        .failure();
-    sb.cmd()
-        .args(["rm", "base", "-y"])
-        .assert()
-        .success();
-    sb.cmd()
-        .args(["rm", "42161", "--yes"])
-        .assert()
-        .success();
-    sb.cmd()
-        .args(["rm", "nope", "-y"])
-        .assert()
-        .failure();
+    sb.cmd().args(["rm", "ba", "-y"]).assert().failure();
+    sb.cmd().args(["rm", "base", "-y"]).assert().success();
+    sb.cmd().args(["rm", "42161", "--yes"]).assert().success();
+    sb.cmd().args(["rm", "nope", "-y"]).assert().failure();
     let text = sb.config();
     assert!(text.contains("[chains.eth]"));
     assert!(!text.contains("[chains.base]") && !text.contains("[chains.arb]"));
@@ -1409,7 +1379,10 @@ fn edit_path_and_doctor_list_the_locations() {
             "{what}: {text}"
         );
     }
-    assert!(text.contains("serve.log") && text.contains("forks/<name>.log"), "{text}");
+    assert!(
+        text.contains("serve.log") && text.contains("forks/<name>.log"),
+        "{text}"
+    );
 }
 
 #[test]
@@ -1608,9 +1581,13 @@ fn doctor_chain_fix_activates_the_best_and_yes_writes_failover() {
         report.contains("eth: active endpoint 'dead' is failing"),
         "{report}"
     );
-    assert!(report.contains("best: fast (--fix activates it)"), "{report}");
     assert!(
-        report.contains("`chainz doctor eth --fix` would") && report.contains("switch 1 active endpoint"),
+        report.contains("best: fast (--fix activates it)"),
+        "{report}"
+    );
+    assert!(
+        report.contains("`chainz doctor eth --fix` would")
+            && report.contains("switch 1 active endpoint"),
         "{report}"
     );
     assert!(sb.config().contains("rpc = \"dead\""));
@@ -1666,7 +1643,9 @@ fn doctor_chain_with_every_endpoint_down_fails() {
             "{text}"
         );
         assert!(
-            text.contains("no healthy endpoint on uni; check your network, or `chainz doctor uni --discover`"),
+            text.contains(
+                "no healthy endpoint on uni; check your network, or `chainz doctor uni --discover`"
+            ),
             "{text}"
         );
     }
@@ -1737,7 +1716,10 @@ fn doctor_discover_lists_off_a_tty_and_yes_adds_the_live_ones() {
         added.contains("Added 1 endpoint(s) to 'eth': local\n"),
         "{added}"
     );
-    assert!(added.contains("best: local (--fix activates it)"), "{added}");
+    assert!(
+        added.contains("best: local (--fix activates it)"),
+        "{added}"
+    );
     let (_, list) = endpoints(&sb, "eth");
     assert_eq!(
         list,
@@ -1824,7 +1806,14 @@ fn signer_migrate_off_a_tty_changes_nothing_and_reports_each_failure() {
     assert_eq!(unchanged(&sb), before);
 
     sb.cmd()
-        .args(["signer", "add", "second", "--backend", "plaintext", "--stdin"])
+        .args([
+            "signer",
+            "add",
+            "second",
+            "--backend",
+            "plaintext",
+            "--stdin",
+        ])
         .write_stdin(TEST_KEY_2)
         .assert()
         .success();
@@ -2222,10 +2211,7 @@ fn update_off_a_tty_needs_a_chain_and_flags() {
     // A usage error or an unknown chain is reported before stdin is read
     // (an empty stdin would fail as "API key from stdin was empty").
     for (args, error) in [
-        (
-            &["update", "--api-key-stdin"][..],
-            "Usage: chainz update",
-        ),
+        (&["update", "--api-key-stdin"][..], "Usage: chainz update"),
         (
             &["update", "nope", "--api-key-stdin"],
             "chain 'nope' not found",

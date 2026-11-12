@@ -428,8 +428,7 @@ fn fork_through_proxy_registers_funds_lists_and_stops() {
     assert_eq!(cells.last().unwrap(), &fork.pid().to_string());
     assert!(listing.starts_with("NAME"), "{listing}");
     // `fork list --json`: the record, its URL and height.
-    let listed: Value =
-        serde_json::from_str(&stdout(&sb.run(&["fork", "ls", "--json"]))).unwrap();
+    let listed: Value = serde_json::from_str(&stdout(&sb.run(&["fork", "ls", "--json"]))).unwrap();
     assert_eq!(listed[0]["name"], "local-fork", "{listed}");
     assert_eq!(listed[0]["port"], port);
     assert_eq!(listed[0]["url"], format!("http://127.0.0.1:{port}"));

@@ -75,7 +75,12 @@ fn grouped_help(command: &clap::Command) -> clap::builder::StyledStr {
                 .collect()
         })
         .collect();
-    let width = rows.iter().flatten().map(|(l, _)| l.len()).max().unwrap_or(0);
+    let width = rows
+        .iter()
+        .flatten()
+        .map(|(l, _)| l.len())
+        .max()
+        .unwrap_or(0);
     let mut out = String::from("{about-with-newline}\n{usage-heading} {usage}\n");
     for ((title, _), rows) in HELP_GROUPS.iter().zip(&rows) {
         let _ = write!(out, "\n{header}{title}:{header:#}\n");
@@ -83,7 +88,10 @@ fn grouped_help(command: &clap::Command) -> clap::builder::StyledStr {
             let _ = writeln!(out, "  {header}{label:<width$}{header:#}  {about}");
         }
     }
-    let _ = write!(out, "\n{header}Options:{header:#}\n{{options}}{{after-help}}");
+    let _ = write!(
+        out,
+        "\n{header}Options:{header:#}\n{{options}}{{after-help}}"
+    );
     out.into()
 }
 
@@ -511,7 +519,11 @@ pub struct UpdateArgs {
     pub rpc: Option<String>,
     /// Add an endpoint without activating it (repeatable; the name
     /// defaults to the host)
-    #[arg(long = "add-rpc", value_name = "[NAME=]URL", help_heading = "Endpoints")]
+    #[arg(
+        long = "add-rpc",
+        value_name = "[NAME=]URL",
+        help_heading = "Endpoints"
+    )]
     pub add_rpcs: Vec<String>,
     /// Remove an endpoint, and its failover entry (repeatable)
     #[arg(long = "rm-rpc", value_name = "NAME", help_heading = "Endpoints", add = ArgValueCompleter::new(complete::endpoints))]
@@ -531,7 +543,11 @@ pub struct UpdateArgs {
     pub no_failover: bool,
     /// Header for the --rpc endpoint, else the one --add-rpc endpoint, else
     /// the active one, as 'name: value' (repeatable)
-    #[arg(long = "header", value_name = "NAME: VALUE", help_heading = "Endpoints")]
+    #[arg(
+        long = "header",
+        value_name = "NAME: VALUE",
+        help_heading = "Endpoints"
+    )]
     pub headers: Vec<String>,
     /// Drop that endpoint's headers first
     #[arg(long, help_heading = "Endpoints")]
@@ -836,7 +852,10 @@ mod tests {
         for name in &grouped {
             let lines = help
                 .lines()
-                .filter(|l| l.trim_start().starts_with(&format!("{name} ")) || l.trim_start().starts_with(&format!("{name},")))
+                .filter(|l| {
+                    l.trim_start().starts_with(&format!("{name} "))
+                        || l.trim_start().starts_with(&format!("{name},"))
+                })
                 .count();
             assert_eq!(lines, 1, "{name} in:\n{help}");
         }

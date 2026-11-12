@@ -865,9 +865,15 @@ fn add_rpc_arguments_name_an_endpoint_or_stay_a_url() {
         parse("gw=https://gw.example/1"),
         (Some("gw".into()), "https://gw.example/1".into())
     );
-    assert_eq!(parse("https://x.example/?k=v"), (None, "https://x.example/?k=v".into()));
+    assert_eq!(
+        parse("https://x.example/?k=v"),
+        (None, "https://x.example/?k=v".into())
+    );
     assert_eq!(parse("wss://x.example"), (None, "wss://x.example".into()));
-    assert_eq!(parse("=https://x.example"), (None, "=https://x.example".into()));
+    assert_eq!(
+        parse("=https://x.example"),
+        (None, "=https://x.example".into())
+    );
 }
 
 /// `--add-rpc` adds spares (headers on the one added), `--rm-rpc` removes
@@ -876,9 +882,7 @@ fn add_rpc_arguments_name_an_endpoint_or_stay_a_url() {
 fn edit_chain_adds_and_removes_endpoints() {
     let mut tx = tx(DOC);
     let edit = ChainEdit {
-        add_rpcs: vec![
-            (Some("gw".into()), "https://gw.example/1".into()),
-        ],
+        add_rpcs: vec![(Some("gw".into()), "https://gw.example/1".into())],
         headers: vec![("x-api-key".into(), "${GW}".into())],
         failover: Some(vec!["b".into(), "gw".into()]),
         ..ChainEdit::default()
@@ -890,7 +894,10 @@ fn edit_chain_adds_and_removes_endpoints() {
     assert_eq!(chain.failover, ["b", "gw"]);
     assert_eq!(chain.rpcs["gw"].headers["x-api-key"], "${GW}");
     assert!(chain.rpcs["a"].headers.is_empty());
-    assert!(report.changes.contains(&"added endpoint 'gw'".to_string()), "{report:?}");
+    assert!(
+        report.changes.contains(&"added endpoint 'gw'".to_string()),
+        "{report:?}"
+    );
 
     // Several unnamed URLs get unique names; a URL the chain has is refused.
     let edit = ChainEdit {
@@ -907,20 +914,38 @@ fn edit_chain_adds_and_removes_endpoints() {
         add_rpcs: vec![(None, "https://a.example".into())],
         ..ChainEdit::default()
     };
-    assert!(tx.edit_chain("eth", &dup).unwrap_err().to_string().contains("already has this URL"));
+    assert!(
+        tx.edit_chain("eth", &dup)
+            .unwrap_err()
+            .to_string()
+            .contains("already has this URL")
+    );
     let ambiguous = ChainEdit {
-        add_rpcs: vec![(None, "https://d.example".into()), (None, "https://e.example".into())],
+        add_rpcs: vec![
+            (None, "https://d.example".into()),
+            (None, "https://e.example".into()),
+        ],
         headers: vec![("x".into(), "y".into())],
         ..ChainEdit::default()
     };
-    assert!(tx.edit_chain("eth", &ambiguous).unwrap_err().to_string().contains("ambiguous"));
+    assert!(
+        tx.edit_chain("eth", &ambiguous)
+            .unwrap_err()
+            .to_string()
+            .contains("ambiguous")
+    );
 
     // The active endpoint can't go alone; with --rpc it can.
     let rm_active = ChainEdit {
         remove_rpcs: vec!["a".into()],
         ..ChainEdit::default()
     };
-    assert!(tx.edit_chain("eth", &rm_active).unwrap_err().to_string().contains("is the active endpoint"));
+    assert!(
+        tx.edit_chain("eth", &rm_active)
+            .unwrap_err()
+            .to_string()
+            .contains("is the active endpoint")
+    );
     let switch = ChainEdit {
         rpc: Some("gw".into()),
         remove_rpcs: vec!["a".into(), "b".into()],
@@ -931,10 +956,18 @@ fn edit_chain_adds_and_removes_endpoints() {
     assert_eq!(chain.rpc, "gw");
     assert!(!chain.rpcs.contains_key("a") && !chain.rpcs.contains_key("b"));
     assert!(chain.failover.is_empty());
-    assert!(report.changes.contains(&"removed endpoint 'a'".to_string()), "{report:?}");
+    assert!(
+        report.changes.contains(&"removed endpoint 'a'".to_string()),
+        "{report:?}"
+    );
     let missing = ChainEdit {
         remove_rpcs: vec!["nope".into()],
         ..ChainEdit::default()
     };
-    assert!(tx.edit_chain("eth", &missing).unwrap_err().to_string().contains("has no endpoint 'nope'"));
+    assert!(
+        tx.edit_chain("eth", &missing)
+            .unwrap_err()
+            .to_string()
+            .contains("has no endpoint 'nope'")
+    );
 }

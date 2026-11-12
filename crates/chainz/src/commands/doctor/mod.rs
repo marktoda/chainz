@@ -13,10 +13,10 @@ use crate::probe::{self, Depth, Repair, health_problem};
 use crate::prompt::{self, Consent, Tty};
 use crate::{net, ui};
 use anyhow::Result;
-use chainz_core::resolve::{self, Policy};
 use chainz_core::extract::{self, Location};
 use chainz_core::labels::LabelIndex;
 use chainz_core::model::{Backend, Config};
+use chainz_core::resolve::{self, Policy};
 use chainz_core::{Chainz, paths, validate};
 use indexmap::IndexMap;
 
@@ -195,7 +195,10 @@ impl Report {
                 Some(chain) => format!("chainz doctor {chain} --fix"),
                 None => "chainz doctor --fix".to_string(),
             };
-            ui::fail(&format!("{problems}; `{command}` would {}", would.join(", ")))
+            ui::fail(&format!(
+                "{problems}; `{command}` would {}",
+                would.join(", ")
+            ))
         }
     }
 }

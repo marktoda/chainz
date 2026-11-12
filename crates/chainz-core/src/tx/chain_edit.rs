@@ -399,7 +399,9 @@ impl Tx {
         }
         if changed {
             let mut endpoints = [(ep_name.to_string(), endpoint)];
-            report.moved.extend(self.extract_secrets(name, &mut endpoints)?);
+            report
+                .moved
+                .extend(self.extract_secrets(name, &mut endpoints)?);
             let [(_, endpoint)] = endpoints;
             self.set_endpoint(name, ep_name, &endpoint)?;
         }
