@@ -13,10 +13,31 @@ use dialoguer::{Confirm, FuzzySelect, Input, MultiSelect};
 use std::io::IsTerminal;
 use zeroize::Zeroizing;
 
-/// Whether pickers and prompts may be shown: stdin and stderr are both
-/// terminals. Scripts never block on a hidden prompt.
+/// The interactivity rule: chainz asks only when the answer can come from
+/// a person at a terminal. Prompts go to stderr, so stderr must be one.
+/// Pickers and questions ([`Tty`]) read stdin, so stdin must be one too
+/// ([`is_tty`]). Hidden prompts ([`Terminal`]) read the controlling
+/// terminal instead (`/dev/tty`), so they only need it to open
+/// ([`can_prompt_hidden`]): `printf %s "$KEY" | chainz signer add NAME
+/// --stdin` still asks for the encryption password.
 pub fn is_tty() -> bool {
     std::io::stdin().is_terminal() && std::io::stderr().is_terminal()
+}
+
+/// Whether a hidden prompt can reach the person: see [`is_tty`].
+pub fn can_prompt_hidden() -> bool {
+    std::io::stderr().is_terminal() && controlling_terminal_opens()
+}
+
+#[cfg(unix)]
+fn controlling_terminal_opens() -> bool {
+    std::fs::File::open("/dev/tty").is_ok()
+}
+
+/// rpassword reads the console on other platforms.
+#[cfg(not(unix))]
+fn controlling_terminal_opens() -> bool {
+    true
 }
 
 /// Yes or no.
@@ -284,12 +305,13 @@ pub fn warn_secret_argument(what: &str, instead: &str) {
     );
 }
 
-/// Hidden prompts on the terminal (stderr), for passwords and keys.
+/// Hidden prompts on the controlling terminal, for passwords and keys
+/// (rpassword never reads stdin).
 pub struct Terminal;
 
 impl chainz_core::signer::Prompter for Terminal {
     fn is_interactive(&self) -> bool {
-        is_tty()
+        can_prompt_hidden()
     }
 
     fn secret(&self, prompt: &str) -> Result<Zeroizing<String>> {

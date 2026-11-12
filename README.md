@@ -276,7 +276,9 @@ the same for what is already there.
 
 - Off a terminal chainz never prompts: it fails and names the flag to pass.
   Removals (`rm`, `signer rm`, `label rm`, `var rm`) ask on a terminal and
-  need `--yes` (`-y`) off one.
+  need `--yes` (`-y`) off one. Password prompts read the terminal itself,
+  not stdin, so a piped key (`signer add NAME --stdin`) still gets its
+  encryption password asked for when a terminal is there.
 - Every listing takes `--json`.
 - Secrets are masked unless you pass `--reveal`, and only the parts that
   could be secret: `https://mainnet.infura.io/v3/[REDACTED]`.

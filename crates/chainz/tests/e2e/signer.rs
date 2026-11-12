@@ -281,3 +281,116 @@ fn signer_rm_needs_yes_off_a_tty_and_names_every_flag_at_once() {
     assert!(!sb.config().contains("[signers.default]"));
     assert!(!sb.config().contains("signer = \"default\""));
 }
+
+/// Hidden prompts read the controlling terminal, not stdin: with a key
+/// piped in and a terminal present, `encrypted` still asks for its
+/// password (on the terminal) instead of failing.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_piped_key_still_gets_its_password_prompt_on_a_terminal() {
+    use std::io::{Read, Write};
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+
+    let sb = Sandbox::new();
+    let (mut master, slave) = {
+        let (mut m, mut s) = (0, 0);
+        // SAFETY: openpty writes two fds we then own.
+        let rc = unsafe {
+            libc::openpty(
+                &mut m,
+                &mut s,
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                std::ptr::null(),
+            )
+        };
+        assert_eq!(rc, 0, "openpty: {}", std::io::Error::last_os_error());
+        // SAFETY: both fds are fresh and owned only here.
+        unsafe { (fs::File::from_raw_fd(m), OwnedFd::from_raw_fd(s)) }
+    };
+    let slave_fd = slave.as_raw_fd();
+    let mut cmd = sb.process();
+    cmd.args(["signer", "add", "enc", "--stdin", "--no-attach"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(fs::File::from(slave.try_clone().unwrap()));
+    // SAFETY: only async-signal-safe calls between fork and exec.
+    unsafe {
+        cmd.pre_exec(move || {
+            // A new session whose controlling terminal is the pty, so
+            // `/dev/tty` opens it.
+            if libc::setsid() < 0 || libc::ioctl(slave_fd, libc::TIOCSCTTY as _, 0) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = cmd.spawn().unwrap();
+    // The command holds a copy of the terminal; drop it so the terminal
+    // closes once the child exits and `slave` (kept to read the terminal's
+    // modes) is dropped.
+    drop(cmd);
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(TEST_KEY.as_bytes())
+        .unwrap();
+
+    // Answer each password prompt as it appears on the terminal.
+    let mut answers = master.try_clone().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 256];
+        while let Ok(n @ 1..) = master.read(&mut buf) {
+            if tx
+                .send(String::from_utf8_lossy(&buf[..n]).into_owned())
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+    let mut seen = String::new();
+    let mut answered = 0;
+    while answered < 2 {
+        match rx.recv_timeout(Duration::from_secs(30)) {
+            Ok(text) => seen.push_str(&text),
+            Err(_) => {
+                let _ = child.kill();
+                panic!("no password prompt on the terminal; saw {seen:?}");
+            }
+        }
+        // Both prompts ("Encryption password for enc: ", "Confirm …: ")
+        // end in ": ".
+        if seen.matches(": ").count() > answered {
+            // Answer once the prompt has turned echo off, as a person
+            // would: typed earlier, the line would race its setup.
+            wait_until(
+                "the prompt to turn echo off",
+                Duration::from_secs(30),
+                || {
+                    // SAFETY: a zeroed termios is a valid out-parameter.
+                    let mut term: libc::termios = unsafe { std::mem::zeroed() };
+                    // SAFETY: `slave_fd` is open (`slave` is alive).
+                    let read = unsafe { libc::tcgetattr(slave_fd, &mut term) };
+                    read == 0 && term.c_lflag & libc::ECHO == 0
+                },
+            );
+            answers.write_all(b"hunter2\n").unwrap();
+            answered += 1;
+        }
+    }
+    drop(slave);
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        out.status.success(),
+        "{seen}{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains(TEST_ADDRESS));
+    assert!(sb.config().contains("encrypted"));
+    assert!(!sb.secrets().contains(TEST_KEY));
+}
