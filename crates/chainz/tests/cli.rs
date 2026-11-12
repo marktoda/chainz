@@ -64,6 +64,36 @@ fn completions_generate_for_zsh_and_bash() {
     }
 }
 
+/// `chainz rpc ls | head` and friends: a reader that went away ends the
+/// command quietly with exit 0, never a panic.
+#[test]
+fn a_closed_stdout_exits_quietly() {
+    let sb = Sandbox::new();
+    sb.seed(&[("eth", 1), ("base", 8453), ("op", 10)]);
+    sb.write_secrets("[vars]\nTOKEN = \"t\"\n");
+    for args in [
+        &["rpc", "ls"][..],
+        &["var", "ls"],
+        &["addr", "ls"],
+        &["addr", "ls", "--builtin"],
+        &["ls"],
+    ] {
+        let mut child = sb
+            .process()
+            .args(args)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        // Close the read end before chainz writes anything.
+        drop(child.stdout.take());
+        let out = child.wait_with_output().unwrap();
+        let err = stderr(&out);
+        assert!(!err.contains("panicked"), "{args:?}: {err}");
+        assert_eq!(out.status.code(), Some(0), "{args:?}: {err}");
+    }
+}
+
 // ---------------------------------------------------------------- config files
 
 #[test]

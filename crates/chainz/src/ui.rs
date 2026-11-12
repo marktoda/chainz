@@ -84,6 +84,35 @@ pub fn is_broken_pipe(error: &anyhow::Error) -> bool {
     })
 }
 
+/// Make a closed stdout or stderr (`chainz rpc ls | head`) end the process
+/// quietly with exit 0, as [`exit_code`] does for an error: `println!`
+/// panics on a broken pipe, and this hook turns that panic, wherever it
+/// happens, into a silent exit. Every other panic goes to the previous
+/// hook. `main` installs it first thing, so it covers every command.
+pub fn exit_quietly_on_broken_pipe() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if is_broken_pipe_panic(panic_message(info.payload())) {
+            std::process::exit(0);
+        }
+        previous(info);
+    }));
+}
+
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
+    payload
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| payload.downcast_ref::<&str>().copied())
+        .unwrap_or_default()
+}
+
+/// Whether a panic message is std's "failed printing to stdout: Broken
+/// pipe (os error 32)" (or stderr).
+fn is_broken_pipe_panic(message: &str) -> bool {
+    message.starts_with("failed printing to std") && message.contains("Broken pipe")
+}
+
 /// A section title: a blank line, then the title in bold cyan.
 pub fn section(title: &str) -> String {
     format!("\n{}", style(title).cyan().bold())
@@ -148,6 +177,20 @@ mod tests {
         assert!(is_cancelled(&error));
         assert_eq!(error.to_string(), "Cancelled");
         assert_eq!(exit_code(&error), 130);
+    }
+
+    #[test]
+    fn only_broken_pipe_panics_exit_quietly() {
+        assert!(is_broken_pipe_panic(
+            "failed printing to stdout: Broken pipe (os error 32)"
+        ));
+        assert!(is_broken_pipe_panic(
+            "failed printing to stderr: Broken pipe (os error 32)"
+        ));
+        assert!(!is_broken_pipe_panic("index out of bounds"));
+        assert!(!is_broken_pipe_panic(
+            "failed printing to stdout: No space left on device (os error 28)"
+        ));
     }
 
     #[test]

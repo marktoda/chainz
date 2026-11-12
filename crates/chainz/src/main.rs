@@ -20,6 +20,7 @@ mod view;
 use clap::Parser;
 
 fn main() {
+    ui::exit_quietly_on_broken_pipe();
     // Shell completion requests (`CHAINZ_COMPLETE=zsh chainz -- …`): one env
     // lookup on every other run.
     if complete::requested() {

@@ -186,6 +186,8 @@ changed before 2.0.0; they are listed under Removed and Changed.
 
 ### Fixed
 
+- Every command exits quietly (exit 0) when its reader goes away: `rpc ls
+  | head`, `var ls | head` and `addr ls | head` panicked.
 - `chain add NAME` and `rpc discover` paired probe results with the wrong
   URLs when chainlist listed an invalid one, so they could activate or add a
   dead endpoint. `chain add` with no chain off a terminal is a usage error
