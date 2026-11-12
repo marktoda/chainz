@@ -29,21 +29,6 @@ fn sort_key(label: &Label) -> (LabelSource, &str, Option<u64>) {
     (label.source, &label.name, chain)
 }
 
-/// The preferred name for `address` on `chain_id`: the first reverse label
-/// that also resolves forward to the same address there, so the name can
-/// be pasted back as `@name` (a shadowed built-in token never labels).
-fn name_on<'a>(index: &'a LabelIndex, chain_id: u64, address: &Address) -> Option<&'a str> {
-    index
-        .reverse_all(chain_id, address)
-        .into_iter()
-        .find(|l| {
-            index
-                .resolve(&l.name, chain_id)
-                .is_ok_and(|r| r.address == *address)
-        })
-        .map(|l| l.name.as_str())
-}
-
 #[derive(Debug)]
 enum Mode {
     /// Labels as they resolve on one chain.
@@ -100,7 +85,8 @@ impl Labeler {
                         .or_insert_with(|| label.name.clone());
                 }
                 LabelScope::Chain(id) => {
-                    let Some(name) = name_on(&index, id, &label.address) else {
+                    let Some(name) = index.reverse(id, &label.address).map(|l| l.name.as_str())
+                    else {
                         continue;
                     };
                     per_chain
@@ -130,7 +116,7 @@ impl Labeler {
     /// The label this filter gives `address`, if any.
     pub fn name(&self, address: &Address) -> Option<&str> {
         match &self.mode {
-            Mode::Chain(id) => name_on(&self.index, *id, address),
+            Mode::Chain(id) => self.index.reverse(*id, address).map(|l| l.name.as_str()),
             Mode::AnyChain(names) => names.get(address).map(String::as_str),
         }
     }

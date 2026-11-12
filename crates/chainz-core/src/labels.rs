@@ -351,14 +351,19 @@ impl LabelIndex {
             || builtin_tokens().iter().any(|t| t.name == name)
     }
 
-    /// The preferred label for `(chain_id, address)`: user, then signer,
-    /// then token.
+    /// The preferred label for `(chain_id, address)` (user, then signer,
+    /// then token) among those that resolve back to `address` on
+    /// `chain_id`: the name can be pasted back as `@name`, so a shadowed
+    /// built-in token never labels.
     pub fn reverse(&self, chain_id: u64, address: &Address) -> Option<&Label> {
-        self.reverse_all(chain_id, address).into_iter().next()
+        self.reverse_all(chain_id, address).into_iter().find(|l| {
+            self.resolve(&l.name, chain_id)
+                .is_ok_and(|r| r.address == *address)
+        })
     }
 
     /// Every label for `(chain_id, address)`, preferred first.
-    pub(crate) fn reverse_all(&self, chain_id: u64, address: &Address) -> Vec<&Label> {
+    fn reverse_all(&self, chain_id: u64, address: &Address) -> Vec<&Label> {
         let reverse = self.reverse_maps();
         let mut out: Vec<&Label> = reverse
             .by_chain
@@ -538,6 +543,10 @@ eth = "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf"
             .unwrap();
         assert_eq!(index.reverse(8453, &one).unwrap().name, "myrouter");
         assert_eq!(index.reverse(1, &one).unwrap().name, "usdc");
+        // The built-in USDC that the user's `usdc` hides on chain 1 is not
+        // labelled `usdc` there: `@usdc` names another address.
+        let hidden = builtin_token(1, "usdc").unwrap().address;
+        assert!(index.reverse(1, &hidden).is_none_or(|l| l.name != "usdc"));
     }
 
     #[test]
