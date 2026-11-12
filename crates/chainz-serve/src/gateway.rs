@@ -144,7 +144,7 @@ impl Shared {
     /// files: a reload that ran while this one waited may have read them.
     async fn reload_if_changed(&self) -> Result<()> {
         let one_at_a_time = self.reloading.lock().await;
-        if self.stamps().same_config(&self.router.snapshot().stamps()) {
+        if self.stamps().store == self.router.snapshot().stamps().store {
             return Ok(());
         }
         self.reload_locked(one_at_a_time).await
@@ -562,7 +562,7 @@ async fn watch_loop(shared: Arc<Shared>, interval: Duration, mut stopped: watch:
         let now = shared.stamps();
         let snapshot = shared.router.snapshot();
         let loaded = snapshot.stamps();
-        if !now.same_config(&loaded) {
+        if now.store != loaded.store {
             let _ = shared.reload_if_changed().await;
         } else if now.health != loaded.health
             && let Some(dir) = shared.state_dir.clone()

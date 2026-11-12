@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use chainz_core::labels::LabelIndex;
 use chainz_core::model::{Chain, Config, Endpoint};
-use chainz_core::{Chainz, LoadMode, StorePaths, resolve};
+use chainz_core::{Chainz, LoadMode, StorePaths, StoreStamp, resolve};
 use chainz_os::FileStamp;
 use chainz_rpc::control::ChainStatus;
 use chainz_rpc::health::FAILOVER_LAG;
@@ -325,10 +325,8 @@ impl ChainState {
 /// capability tags when the health store does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Stamps {
-    /// `config.toml`.
-    pub config: Option<FileStamp>,
-    /// `secrets.toml`.
-    pub secrets: Option<FileStamp>,
+    /// The config's files (`config.toml`, `secrets.toml`).
+    pub store: StoreStamp,
     /// `health.json` (capability tags).
     pub health: Option<FileStamp>,
 }
@@ -337,16 +335,9 @@ impl Stamps {
     /// The files as they are now.
     pub fn take(paths: &StorePaths, state_dir: Option<&Path>) -> Stamps {
         Stamps {
-            config: FileStamp::of(paths.config()),
-            secrets: FileStamp::of(paths.secrets()),
+            store: paths.stamp(),
             health: state_dir.and_then(|dir| FileStamp::of(&HealthStore::path(dir))),
         }
-    }
-
-    /// Whether the config files are as in `other` (the health store
-    /// aside).
-    pub fn same_config(&self, other: &Stamps) -> bool {
-        (self.config, self.secrets) == (other.config, other.secrets)
     }
 }
 
