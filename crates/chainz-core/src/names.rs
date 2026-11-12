@@ -114,13 +114,14 @@ pub fn short_name(chain_id: u64) -> Option<&'static str> {
         .map(|(_, name)| *name)
 }
 
-/// The chain ID of a built-in short name (case-insensitive): what `chain
-/// add NAME --url …` resolves offline.
-pub fn chain_id_for_short_name(name: &str) -> Option<u64> {
+/// The chain ID of a built-in short or [long](LONG_NAMES) name
+/// (case-insensitive): what `chain add NAME --url …` resolves offline.
+pub fn builtin_chain_id(name: &str) -> Option<u64> {
     SHORT_NAMES
         .iter()
         .find(|(_, short)| short.eq_ignore_ascii_case(name))
         .map(|(id, _)| *id)
+        .or_else(|| long_name_id(name))
 }
 
 /// Why `alias` cannot be a chain alias, if it cannot: a number would

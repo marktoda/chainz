@@ -75,7 +75,7 @@ The first signer you add attaches to every chain that has none, and
 it attaches none and names the command that does) and the `etherscan`
 explorer once it is configured, on chains Etherscan's v2 API covers (not
 anvil's 31337 or custom chains). With `--url` (`chainz chain add
-42161 --url https://…`, or a built-in short name such as `arb`) `chain add`
+42161 --url https://…`, or a built-in name such as `arb` or `arbitrum`) `chain add`
 never downloads chainlist; any other name needs the chain ID and `--name`.
 More setup:
 

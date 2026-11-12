@@ -570,8 +570,8 @@ fn chain_add_with_several_signers_names_the_fix() {
     assert!(!stderr(&out).contains("no signer"), "{}", stderr(&out));
 }
 
-/// With `--url` the chain is an ID or a built-in short name, resolved
-/// offline: chainlist is never downloaded.
+/// With `--url` the chain is an ID or a built-in short or long name,
+/// resolved offline: chainlist is never downloaded.
 #[test]
 fn chain_add_with_url_stays_offline() {
     let sb = Sandbox::new();
@@ -584,6 +584,15 @@ fn chain_add_with_url_stays_offline() {
         "--no-check",
     ]);
     assert!(out.contains("Added chain 'arb' (42161)"), "{out}");
+    let out = sb.ok(&[
+        "chain",
+        "add",
+        "optimism",
+        "--url",
+        "http://127.0.0.1:1",
+        "--no-check",
+    ]);
+    assert!(out.contains("Added chain 'op' (10)"), "{out}");
     let out = sb.run(&[
         "chain",
         "add",
@@ -595,7 +604,7 @@ fn chain_add_with_url_stays_offline() {
     assert_eq!(out.status.code(), Some(2));
     let err = stderr(&out);
     assert!(
-        err.contains("not a chain ID or a built-in short name"),
+        err.contains("not a chain ID or a built-in chain name"),
         "{err}"
     );
     assert!(err.contains("--name mychain"), "{err}");
@@ -638,7 +647,7 @@ fn etherscan_attaches_by_default_only_to_chains_it_covers() {
         .args(["chain", "set", "local", "--explorer", "etherscan"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("explorer: etherscan"))
+        .stdout(predicate::str::contains("explorer: none → etherscan"))
         .stderr(predicate::str::contains(
             "etherscan doesn't cover chain ID 31337; its API will reject this chain",
         ));

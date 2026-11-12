@@ -260,7 +260,7 @@ changed before 2.0.0; they are listed under Removed and Changed.
   PATH`). It used to add a signer with no cached address, or none at all
   that could work.
 - `chain add NAME --url URL` downloaded chainlist to resolve the name. With
-  `--url` the chain is now a chain ID or a built-in short name (`arb`,
+  `--url` the chain is now a chain ID or a built-in name (`arb`, `arbitrum`,
   `base`…), resolved offline; another name is a usage error asking for the
   ID (and `--name`).
 - `rpc bench` showed dead endpoints with a `0ms` latency and ranked them by

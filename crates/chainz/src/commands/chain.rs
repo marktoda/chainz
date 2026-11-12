@@ -115,7 +115,7 @@ fn find_in_chainlist<'a>(entries: &'a [ChainlistEntry], query: &str) -> Result<&
         });
     }
     let q = query.to_ascii_lowercase();
-    if let Some(id) = names::chain_id_for_short_name(query)
+    if let Some(id) = names::builtin_chain_id(query)
         && let Some(e) = entries.iter().find(|e| e.chain_id == id)
     {
         return Ok(e);
@@ -162,13 +162,13 @@ impl ChainSource {
             Some(query) if !args.urls.is_empty() => query
                 .parse()
                 .ok()
-                .or_else(|| names::chain_id_for_short_name(query))
+                .or_else(|| names::builtin_chain_id(query))
                 .map(|id| ChainSource::Offline { id })
                 .ok_or_else(|| {
                     crate::cli::usage_error(
                         &["chain", "add"],
                         &format!(
-                            "'{query}' is not a chain ID or a built-in short name; with --url, pass the chain ID (and --name {query} to name it)"
+                            "'{query}' is not a chain ID or a built-in chain name; with --url, pass the chain ID (and --name {query} to name it)"
                         ),
                     )
                 }),
