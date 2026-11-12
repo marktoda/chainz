@@ -124,7 +124,7 @@ impl Foreground {
                 let status = gateway.status();
                 self.say(&format!(
                     "listening on http://{LOOPBACK}:{} ({} chains, pid {})",
-                    gateway.port(),
+                    gateway.addr().port,
                     status.chains.len(),
                     status.pid
                 ));

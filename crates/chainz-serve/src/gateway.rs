@@ -352,11 +352,6 @@ impl Gateway {
         })
     }
 
-    /// The loopback port.
-    pub fn port(&self) -> u16 {
-        self.shared.info.port
-    }
-
     /// Port and token: the gateway's URLs. The token is a secret.
     pub fn addr(&self) -> GatewayAddr {
         self.shared.info.addr()

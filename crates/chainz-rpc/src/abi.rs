@@ -10,7 +10,7 @@ pub const DECIMALS: [u8; 4] = [0x31, 0x3c, 0xe5, 0x67];
 /// ERC-20 `balanceOf(address)`.
 pub const BALANCE_OF: [u8; 4] = [0x70, 0xa0, 0x82, 0x31];
 /// Multicall3 `aggregate3((address,bool,bytes)[])`.
-pub const AGGREGATE3: [u8; 4] = [0x82, 0xad, 0x56, 0xcb];
+pub(crate) const AGGREGATE3: [u8; 4] = [0x82, 0xad, 0x56, 0xcb];
 /// Multicall3 `getEthBalance(address)`.
 pub const GET_ETH_BALANCE: [u8; 4] = [0x4d, 0x23, 0x01, 0xcc];
 
@@ -66,7 +66,7 @@ pub fn call_with_address(selector: [u8; 4], address: &[u8; 20]) -> Vec<u8> {
 }
 
 /// A big-endian ABI word at byte `at` as a `usize`, if it fits.
-pub fn word(data: &[u8], at: usize) -> Option<usize> {
+pub(crate) fn word(data: &[u8], at: usize) -> Option<usize> {
     let word = data.get(at..at.checked_add(32)?)?;
     if word[..24].iter().any(|b| *b != 0) {
         return None;

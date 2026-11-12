@@ -57,12 +57,6 @@ impl BlockHeader {
 pub enum BlockId {
     /// `"latest"`.
     Latest,
-    /// `"earliest"`.
-    Earliest,
-    /// `"pending"`.
-    Pending,
-    /// `"safe"`.
-    Safe,
     /// `"finalized"`.
     Finalized,
     /// A specific block number.
@@ -74,9 +68,6 @@ impl BlockId {
     pub(crate) fn to_param(self) -> Value {
         Value::String(match self {
             BlockId::Latest => "latest".into(),
-            BlockId::Earliest => "earliest".into(),
-            BlockId::Pending => "pending".into(),
-            BlockId::Safe => "safe".into(),
             BlockId::Finalized => "finalized".into(),
             BlockId::Number(n) => hex::quantity(n),
         })
@@ -103,12 +94,6 @@ pub struct RpcClient {
 impl std::fmt::Debug for RpcClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RpcClient").finish_non_exhaustive()
-    }
-}
-
-impl Default for RpcClient {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -265,7 +250,7 @@ impl RpcClient {
     }
 
     /// `eth_getBalance` in wei.
-    pub async fn get_balance(
+    pub(crate) async fn get_balance(
         &self,
         t: &Target,
         address: &str,

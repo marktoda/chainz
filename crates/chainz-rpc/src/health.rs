@@ -34,13 +34,13 @@ pub const CHAIN_LAG: u64 = 3;
 /// high-water mark to take a read.
 pub const FAILOVER_LAG: u64 = 2;
 /// Successful samples the median latency ([`p50`]) is taken over.
-pub const P50_WINDOW: usize = 16;
+pub(crate) const P50_WINDOW: usize = 16;
 /// Recorded samples taken this long before the newest of a chain's are not
 /// compared with it ([`judge_latest`]): they say nothing about how far
 /// behind their endpoint is now. Two of the dashboard's 15 s probe rounds.
 pub const ROUND_WINDOW_MS: u64 = 30_000;
 
-/// Median latency over the last [`P50_WINDOW`] successful samples of a
+/// Median latency over the last 16 successful samples of a
 /// history (oldest first, as [`HealthStore::samples`] gives them); the
 /// lower median for even counts. `None` when none succeeded.
 pub fn p50<'a, I>(samples: I) -> Option<Duration>

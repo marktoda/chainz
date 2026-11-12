@@ -393,7 +393,7 @@ impl Rig {
         let mut config = Rig::config(dir.path());
         tweak(&mut config);
         let gateway = Gateway::start(config).await.unwrap();
-        let port = gateway.port();
+        let port = gateway.addr().port;
         Rig {
             dir,
             gateway: Some(gateway),

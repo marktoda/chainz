@@ -183,7 +183,7 @@ pub fn write_line<T: Serialize>(value: &T) -> serde_json::Result<Vec<u8>> {
 /// Take the next complete NDJSON line out of `buf` and parse it, skipping
 /// blank lines. `None` when no complete line is left; the rest of `buf` is
 /// kept for the next read.
-pub fn read_line<T: DeserializeOwned>(buf: &mut Vec<u8>) -> Option<serde_json::Result<T>> {
+pub(crate) fn read_line<T: DeserializeOwned>(buf: &mut Vec<u8>) -> Option<serde_json::Result<T>> {
     while let Some(end) = buf.iter().position(|&b| b == b'\n') {
         let line: Vec<u8> = buf.drain(..=end).collect();
         let line = line.trim_ascii();

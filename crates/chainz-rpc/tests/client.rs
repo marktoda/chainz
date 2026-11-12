@@ -209,7 +209,7 @@ async fn typed_helpers() {
         }
     })
     .await;
-    let c = RpcClient::default();
+    let c = RpcClient::new();
     let t = server.target(1);
     c.check_chain_id(&t, 1).await.unwrap();
     assert_eq!(
@@ -220,16 +220,6 @@ async fn typed_helpers() {
         }
     );
     assert_eq!(c.block_number(&t).await.unwrap(), 16);
-    assert_eq!(
-        c.get_balance(
-            &t,
-            "0x0000000000000000000000000000000000000000",
-            BlockId::Number(5)
-        )
-        .await
-        .unwrap(),
-        1_000_000_000_000_000_000
-    );
     assert_eq!(
         c.call(&t, "0x00", &[0x70, 0xa0, 0x82, 0x31], BlockId::Latest)
             .await

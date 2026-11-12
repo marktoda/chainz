@@ -634,7 +634,7 @@ async fn capability_tags_steer_debug_trace_and_old_block_reads() {
     let gateway = chainz_serve::Gateway::start(Rig::config(dir.path()))
         .await
         .unwrap();
-    let port = gateway.port();
+    let port = gateway.addr().port;
     let rig = Rig {
         dir,
         gateway: Some(gateway),
@@ -841,7 +841,7 @@ async fn inspector_control_api_and_runtime_files() {
     let mut config = Rig::config(dir.path());
     config.log = Some(log.clone());
     let gateway = chainz_serve::Gateway::start(config).await.unwrap();
-    let port = gateway.port();
+    let port = gateway.addr().port;
     let mut rig = Rig {
         dir,
         gateway: Some(gateway),
@@ -1126,7 +1126,7 @@ async fn secrets_and_headers_are_applied_upstream_and_follow_reloads() {
     let gateway = chainz_serve::Gateway::start(Rig::config(dir.path()))
         .await
         .unwrap();
-    let port = gateway.port();
+    let port = gateway.addr().port;
     let rig = Rig {
         dir,
         gateway: Some(gateway),

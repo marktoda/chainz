@@ -8,7 +8,7 @@ use crate::hex;
 use crate::target::Target;
 
 /// The `eth_getLogs` block ranges tried, largest first.
-pub const LOG_RANGES: [u64; 5] = [100_000, 10_000, 2_000, 500, 100];
+pub(crate) const LOG_RANGES: [u64; 5] = [100_000, 10_000, 2_000, 500, 100];
 
 /// A topic that matches no real log, keeping `eth_getLogs` responses tiny.
 const NO_MATCH_TOPIC: &str = "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
@@ -25,7 +25,7 @@ pub struct Capabilities {
     pub debug_trace: Option<bool>,
     /// Serves `trace_block`.
     pub trace_block: Option<bool>,
-    /// The largest `eth_getLogs` block range accepted among [`LOG_RANGES`];
+    /// The largest `eth_getLogs` block range accepted among the ranges probed (100,000 down to 100);
     /// `None` when unknown or when even the smallest range failed.
     pub max_logs_range: Option<u64>,
     /// The URL is `ws://` or `wss://`.
@@ -63,7 +63,8 @@ impl Capabilities {
 /// - archive: `eth_getBalance(zero address, block 1)` succeeds;
 /// - debug / trace: `debug_traceTransaction(zero hash)` / `trace_block(1)`
 ///   errors with something other than "method missing";
-/// - max_logs_range: the largest of [`LOG_RANGES`] for which `eth_getLogs`
+/// - max_logs_range: the largest of the ranges probed (100,000, 10,000,
+///   2,000, 500, 100) for which `eth_getLogs`
 ///   over `[head - range, head]` with a never-matching topic succeeds;
 /// - websocket: [`Target::is_websocket`]. Websocket targets are otherwise not
 ///   probed (all other fields stay `None`).

@@ -19,11 +19,11 @@ pub struct Target {
 
 impl Target {
     /// The URL schemes an endpoint may use.
-    pub const SCHEMES: [&str; 4] = ["http", "https", "ws", "wss"];
+    pub(crate) const SCHEMES: [&str; 4] = ["http", "https", "ws", "wss"];
 
     /// Build a target from a URL string and `(name, value)` header pairs.
     ///
-    /// The URL must use one of [`Target::SCHEMES`]. Errors never echo the
+    /// The URL must use `http`, `https`, `ws` or `wss`. Errors never echo the
     /// URL or a header value; an invalid header *value* names its header.
     pub fn new(
         chain_id: u64,
