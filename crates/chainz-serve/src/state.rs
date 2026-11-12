@@ -32,13 +32,11 @@ const MAX_FILTERS: usize = 4096;
 
 /// One routable (HTTP) endpoint.
 pub struct EndpointState {
-    /// Endpoint name.
     name: String,
     /// Expanded URL and headers.
     target: Target,
     /// URL and headers, to detect changes on reload. Secret: never printed.
     fingerprint: String,
-    /// Adaptive rate limiter.
     limiter: AimdLimiter,
     /// Last probed head; 0 = unknown or the last probe failed.
     head: AtomicU64,
@@ -141,11 +139,8 @@ struct ChainLive {
 /// One served chain.
 #[derive(Debug)]
 pub struct ChainState {
-    /// Short name.
     name: String,
-    /// Chain ID.
     id: u64,
-    /// Name of the active endpoint.
     active_name: String,
     /// Names of the failover endpoints, in config order.
     failover_names: Vec<String>,
