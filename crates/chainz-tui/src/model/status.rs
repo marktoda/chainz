@@ -1,8 +1,8 @@
 //! Classification: ok / lag / slow / down for chains, ok / lagging /
 //! failing for endpoints.
 
-use chainz_rpc::health::CHAIN_LAG;
-use chainz_rpc::{ErrorClass, Health, HealthSample, classify};
+use chainz_rpc::health::{self, CHAIN_LAG, Judged};
+use chainz_rpc::{ErrorClass, Health, HealthSample};
 
 use super::state::ChainState;
 use super::update::{FaultClass, Head};
@@ -12,11 +12,9 @@ pub const SLOW_FLOOR_MS: u32 = 200;
 /// An endpoint is slow when its median is this many times the median of
 /// all chains (and above [`SLOW_FLOOR_MS`]).
 pub const SLOW_FACTOR: u32 = 3;
-/// How often the chain on screen has its endpoints probed.
-pub const PROBE_EVERY_MS: u64 = 15_000;
-/// Endpoint probes this much older than the newest one are not compared
-/// with it: two probe intervals.
-pub const PROBE_WINDOW_MS: u64 = 2 * PROBE_EVERY_MS;
+/// How often the chain on screen has its endpoints probed: half of
+/// [`health::ROUND_WINDOW_MS`], so one missed round still compares.
+pub const PROBE_EVERY_MS: u64 = health::ROUND_WINDOW_MS / 2;
 
 /// The health of a chain's active endpoint, as shown in the Chains tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,7 +48,8 @@ impl Status {
 /// probes' [`Health`], plus what the dashboard knows without probing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EndpointStatus {
-    /// Never probed, or not within [`PROBE_WINDOW_MS`] of the newest probe.
+    /// Never probed, or not within [`health::ROUND_WINDOW_MS`] of the
+    /// newest probe.
     Unknown,
     /// Answered within [`ENDPOINT_LAG`](chainz_rpc::health::ENDPOINT_LAG) blocks of the best head.
     Ok,
@@ -96,51 +95,25 @@ impl ChainState {
 
     /// Status and lag of every endpoint, in order.
     pub fn endpoint_statuses(&self) -> Vec<(EndpointStatus, Option<u64>)> {
-        // Probes are compared within one round: a sample from long before
-        // the newest says nothing about how far behind its endpoint is now.
-        let newest = self
-            .endpoints
-            .iter()
-            .filter_map(|e| Some(e.latest()?.at_ms))
-            .max()
-            .unwrap_or(0);
-        let current: Vec<Option<&HealthSample>> = self
-            .endpoints
-            .iter()
-            .map(|e| {
-                e.latest()
-                    .filter(|s| s.at_ms.saturating_add(PROBE_WINDOW_MS) >= newest)
-            })
-            .collect();
-        let observed: Vec<&HealthSample> = current.iter().flatten().copied().collect();
-        let mut health = classify(&observed).into_iter();
-        let best = observed
-            .iter()
-            .filter(|s| s.error.is_none())
-            .filter_map(|s| s.head)
-            .max();
+        let latest: Vec<Option<&HealthSample>> =
+            self.endpoints.iter().map(|e| e.latest()).collect();
         self.endpoints
             .iter()
-            .zip(current)
-            .map(|(e, sample)| {
-                // In step with `observed`: one health per current sample.
-                let health = sample.and_then(|_| health.next());
+            .zip(health::judge_latest(&latest))
+            .map(|(e, judged)| {
                 if e.info.invalid.is_some() {
                     return (EndpointStatus::Invalid, None);
                 }
                 if e.info.websocket {
                     return (EndpointStatus::Websocket, None);
                 }
-                let (Some(sample), Some(health)) = (sample, health) else {
-                    return (EndpointStatus::Unknown, None);
-                };
-                let behind = best
-                    .zip(sample.head)
-                    .map(|(best, head)| best.saturating_sub(head));
-                match health {
-                    Health::Failing(class) => (EndpointStatus::Failing(class), None),
-                    Health::Lagging { behind: n } => (EndpointStatus::Lagging(n), Some(n)),
-                    Health::Healthy => (EndpointStatus::Ok, behind),
+                match judged {
+                    None => (EndpointStatus::Unknown, None),
+                    Some(Judged { health, behind }) => match health {
+                        Health::Failing(class) => (EndpointStatus::Failing(class), None),
+                        Health::Lagging { behind: n } => (EndpointStatus::Lagging(n), Some(n)),
+                        Health::Healthy => (EndpointStatus::Ok, behind),
+                    },
                 }
             })
             .collect()

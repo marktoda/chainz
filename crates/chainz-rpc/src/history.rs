@@ -177,6 +177,24 @@ impl HealthStore {
             .capabilities = Some(caps);
     }
 
+    /// The capability tags to show for an endpoint: the cached ones, else
+    /// `ws` for a websocket endpoint (which is never probed).
+    pub fn tags(&self, chain_id: u64, endpoint: &str, websocket: bool) -> Vec<String> {
+        match self.capabilities(chain_id, endpoint) {
+            Some(capabilities) => capabilities.tags(),
+            None if websocket => vec!["ws".to_string()],
+            None => Vec::new(),
+        }
+    }
+
+    /// [`save`](Self::save), and on failure the warning to show:
+    /// `health history not saved: …`.
+    pub fn save_or_warn(&self) -> Option<String> {
+        self.save()
+            .err()
+            .map(|e| format!("health history not saved: {e}"))
+    }
+
     /// Under an exclusive lock file `<state_dir>/health.lock`, re-read the
     /// file, merge this store's samples and capabilities into it, and write
     /// it atomically (tempfile + fsync + rename, mode 0600, dir 0700).
@@ -188,7 +206,6 @@ impl HealthStore {
         let Some(dir) = &self.dir else {
             return Err(io::Error::other("the health store has no state directory"));
         };
-        // Held until the end of this function.
         let _lock = lock(dir)?;
         let path = Self::path(dir);
         let mut merged = match read_entries(&path)? {

@@ -403,13 +403,13 @@ fn endpoints_tab_shows_health_errors_and_tags() {
         r"
  chainz top ─ [1] Chains  [2] Endpoints  [3] Balances  [4] Traffic                                               serve: on :18545
  eth (1) · 6 endpoints · active infura · probed 3s ago
- ENDPOINT      STATUS   LATENCY    P50        HEAD  LAG  ERROR                               TAGS
-▸● infura      ok          48ms   48ms  23,481,220    0
-   llama       lagging    131ms  131ms  23,481,186   34
-   publicnode  failing        –      –           –    –  rate limited (retry after 30s)
-   quiknode    ok          1.2s   1.2s  23,481,219    1
-   alchemy-ws  ws             –      –           –    –                                      ws
-   broken      invalid        –      –           –    –  variable ${EXAMPLE_KEY} is not set
+ ENDPOINT      STATUS     LATENCY    P50        HEAD  LAG  ERROR                               TAGS
+▸● infura      ok            48ms   48ms  23,481,220    0
+   llama       lagging      131ms  131ms  23,481,186   34
+   publicnode  failing          –      –           –    –  rate limited (retry after 30s)
+   quiknode    ok            1.2s   1.2s  23,481,219    1
+   alchemy-ws  websocket        –      –           –    –                                      ws
+   broken      invalid          –      –           –    –  variable ${EXAMPLE_KEY} is not set
 
  s: set rpc  h/l: chain  r: probe now  y: copy url  e: exec shell  esc: back  q: quit
 ",
@@ -420,13 +420,13 @@ fn endpoints_tab_shows_health_errors_and_tags() {
         r"
  [1] Chains  [2] Endpoints  [3] Balances  [4] Traffic    gw on :18545
  eth (1) · 6 endpoints · active infura · probed 3s ago
- ENDPOINT      STATUS   LATENCY  ERROR
-▸● infura      ok          48ms
-   llama       lagging    131ms
-   publicnode  failing        –  rate limited (retry after 30s)
-   quiknode    ok          1.2s
-   alchemy-ws  ws             –
-   broken      invalid        –  variable ${EXAMPLE_KEY} is not set
+ ENDPOINT      STATUS     LATENCY  ERROR
+▸● infura      ok            48ms
+   llama       lagging      131ms
+   publicnode  failing          –  rate limited (retry after 30s)
+   quiknode    ok            1.2s
+   alchemy-ws  websocket        –
+   broken      invalid          –  variable ${EXAMPLE_KEY} is not set
 
  s: set rpc  h/l: chain  r: probe now  y: copy url  q: quit
 ",
@@ -500,7 +500,7 @@ fn endpoints_tab_marks_cached_health_as_cached() {
     let text = frame(&app(Tab::Endpoints), &state, 130, 11);
     assert!(text.contains("cached health · probing…"), "{text}");
     assert!(
-        text.contains("▸● infura      ok          60ms   40ms  23,000,050"),
+        text.contains("▸● infura      ok            60ms   40ms  23,000,050"),
         "{text}"
     );
     assert!(text.contains("archive debug logs:10000"), "{text}");

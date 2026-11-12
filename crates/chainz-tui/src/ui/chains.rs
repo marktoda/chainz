@@ -9,19 +9,20 @@ use super::theme::Theme;
 use super::{Body, Content, Ctx};
 use crate::app::ScrollSlot;
 use crate::fmt;
-use crate::model::Status;
+use crate::model::{FaultClass, Status};
 use crate::view::{self, ChainRow};
 
 /// Sparkline width, in samples.
 const SPARK: usize = 8;
 
 pub(super) fn status_cell(status: Status, t: Theme) -> Cell {
+    let word = status.word();
     match status {
         Status::Pending => Cell::new("…", t.faint()),
-        Status::Ok => Cell::new("ok", t.ok()),
-        Status::Lag(n) => Cell::new(format!("lag {}", core_fmt::group(n)), t.lag()),
-        Status::Slow => Cell::new("slow", t.warn()),
-        Status::Down(class) => Cell::new(format!("down {class}"), t.bad()),
+        Status::Ok => Cell::new(word, t.ok()),
+        Status::Lag(n) => Cell::new(format!("{word} {}", core_fmt::group(n)), t.lag()),
+        Status::Slow => Cell::new(word, t.warn()),
+        Status::Down(class) => Cell::new(format!("{word} {class}"), t.bad()),
     }
 }
 
@@ -102,19 +103,19 @@ pub(crate) fn body(ctx: Ctx) -> Body {
     let visible = ctx.app.visible(ctx.state);
     let rows = view::chain_rows(ctx.state, visible.iter().copied(), ctx.now_ms);
 
-    let count = |pick: fn(&Status) -> bool| rows.iter().filter(|r| pick(&r.status)).count();
     let mut parts = vec![vec![Span::styled(
         format!("{} chains", ctx.state.chains.len()),
         t.dim(),
     )]];
-    let tallies: [(usize, &str, Style); 5] = [
-        (count(|s| matches!(s, Status::Ok)), "ok", t.ok()),
-        (count(|s| matches!(s, Status::Lag(_))), "lag", t.lag()),
-        (count(|s| matches!(s, Status::Slow)), "slow", t.warn()),
-        (count(|s| matches!(s, Status::Down(_))), "down", t.bad()),
-        (count(|s| matches!(s, Status::Pending)), "pending", t.dim()),
+    let tallies: [(&str, Style); 5] = [
+        (Status::Ok.word(), t.ok()),
+        (Status::Lag(0).word(), t.lag()),
+        (Status::Slow.word(), t.warn()),
+        (Status::Down(FaultClass::Internal).word(), t.bad()),
+        (Status::Pending.word(), t.dim()),
     ];
-    for (n, word, style) in tallies {
+    for (word, style) in tallies {
+        let n = rows.iter().filter(|r| r.status.word() == word).count();
         if n > 0 {
             parts.push(vec![Span::styled(format!("{n} {word}"), style)]);
         }

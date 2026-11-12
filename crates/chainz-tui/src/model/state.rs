@@ -96,16 +96,7 @@ impl ChainState {
             .map(|e| EndpointState {
                 info: e.info.clone(),
                 active: e.info.name == plan.info.active,
-                tags: store
-                    .capabilities(id, &e.info.name)
-                    .map(|c| c.tags())
-                    .unwrap_or_else(|| {
-                        if e.info.websocket {
-                            vec!["ws".to_string()]
-                        } else {
-                            Vec::new()
-                        }
-                    }),
+                tags: store.tags(id, &e.info.name, e.info.websocket),
                 samples: store.samples(id, &e.info.name).into(),
                 live: false,
                 message: None,

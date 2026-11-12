@@ -143,8 +143,8 @@ pub async fn probe_chains(
             unprobed,
         });
     }
-    if let Err(e) = health::record(store, out.iter().flat_map(|c| &c.probes)) {
-        eprintln!("{}", ui::warn(&format!("health history not saved: {e}")));
+    if let Some(warning) = health::record(store, out.iter().flat_map(|c| &c.probes)) {
+        eprintln!("{}", ui::warn(&warning));
     }
     Ok(out)
 }

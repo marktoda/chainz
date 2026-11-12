@@ -16,9 +16,7 @@ use std::collections::VecDeque;
 pub use state::{ChainState, EndpointState, State};
 pub use status::{EndpointStatus, PROBE_EVERY_MS, Status};
 pub use traffic::{FEED_CAP, FeedItem, GatewayChain, TrafficRow, TrafficSnapshot, TrafficWindow};
-#[cfg(test)]
-pub use update::FaultClass;
-pub use update::{Fault, GatewayInfo, Head, Holding, Refresh, Sheet, Update, Via};
+pub use update::{Fault, FaultClass, GatewayInfo, Head, Holding, Refresh, Sheet, Update, Via};
 
 fn push_capped<T>(queue: &mut VecDeque<T>, item: T, cap: usize) {
     queue.push_back(item);

@@ -14,6 +14,6 @@ Chain eth (ethereum, mainnet)
       x-api-key: [REDACTED]
       x-team: ${TEAM}
   ◐  llama     -            -        https://eth.llamarpc.com/
-     llama-ws  -            -        wss://eth.llamarpc.com/
+     llama-ws  -            -        wss://eth.llamarpc.com/ ws
 
 ● active  ◐ failover

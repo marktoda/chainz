@@ -11,7 +11,8 @@
 use crate::ui;
 use chainz_core::model::{Chain, Config, Endpoint};
 use chainz_core::{fmt, names, redact};
-use chainz_rpc::{ErrorClass, Health, HealthSample, HealthStore, classify};
+use chainz_rpc::health;
+use chainz_rpc::{ErrorClass, Health, HealthSample, HealthStore};
 use console::{Alignment, pad_str, style};
 use serde::Serialize;
 use std::fmt::Write;
@@ -90,7 +91,8 @@ pub struct EndpointHealth {
     pub error: Option<ErrorClass>,
     pub tags: Vec<String>,
     /// The latest sample judged against the chain's other endpoints'
-    /// (lagging is relative); `None` when never checked.
+    /// (lagging is relative); `None` when never checked, or checked too
+    /// long before the others to compare.
     #[serde(skip)]
     pub health: Option<Health>,
 }
@@ -103,22 +105,19 @@ impl EndpointHealth {
             .keys()
             .map(|name| store.latest(chain.id, name))
             .collect();
-        let recorded: Vec<&HealthSample> = latest.iter().flatten().copied().collect();
-        let mut judged = classify(&recorded).into_iter();
+        let judged = health::judge_latest(&latest);
         chain
             .rpcs
-            .keys()
+            .iter()
             .zip(latest)
-            .map(|(name, sample)| Self {
+            .zip(judged)
+            .map(|(((name, endpoint), sample), judged)| Self {
                 latency_ms: sample.filter(|s| s.error.is_none()).map(|s| s.latency_ms),
                 head: sample.and_then(|s| s.head),
                 probed_at_ms: sample.map(|s| s.at_ms),
                 error: sample.and_then(|s| s.error),
-                tags: store
-                    .capabilities(chain.id, name)
-                    .map(|c| c.tags())
-                    .unwrap_or_default(),
-                health: sample.and_then(|_| judged.next()),
+                tags: store.tags(chain.id, name, endpoint.is_websocket()),
+                health: judged.map(|j| j.health),
             })
             .collect()
     }

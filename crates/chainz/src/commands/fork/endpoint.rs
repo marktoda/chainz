@@ -142,8 +142,8 @@ pub async fn find_archive(
         }
         store.set_capabilities(chain.id, name, capabilities);
     }
-    if let Err(e) = store.save() {
-        eprintln!("{}", ui::warn(&format!("health history not saved: {e}")));
+    if let Some(warning) = store.save_or_warn() {
+        eprintln!("{}", ui::warn(&warning));
     }
     chosen.map(|name| Pinned::endpoint(&name)).ok_or_else(|| {
         anyhow!(

@@ -119,12 +119,9 @@ impl HealthSink {
         for (endpoint, sample) in samples {
             store.record(chain_id, &endpoint, sample);
         }
-        let saved = store.save();
+        let warning = store.save_or_warn();
         drop(store);
-        let error = saved
-            .err()
-            .map(|e| format!("health history not saved: {e}"));
-        self.failed.report(error)
+        self.failed.report(warning)
     }
 }
 

@@ -18,7 +18,6 @@
 //! An endpoint the gateway refuses as a failover target can therefore rank
 //! as healthy here.
 
-use std::io;
 use std::time::Duration;
 
 use crate::capabilities::Capabilities;
@@ -36,6 +35,10 @@ pub const CHAIN_LAG: u64 = 3;
 pub const FAILOVER_LAG: u64 = 2;
 /// Successful samples the median latency ([`p50`]) is taken over.
 pub const P50_WINDOW: usize = 16;
+/// Recorded samples taken this long before the newest of a chain's are not
+/// compared with it ([`judge_latest`]): they say nothing about how far
+/// behind their endpoint is now. Two of the dashboard's 15 s probe rounds.
+pub const ROUND_WINDOW_MS: u64 = 30_000;
 
 /// Median latency over the last [`P50_WINDOW`] successful samples of a
 /// history (oldest first, as [`HealthStore::samples`] gives them); the
@@ -203,6 +206,44 @@ impl Ranking {
     }
 }
 
+/// One endpoint's latest recorded sample, judged against its peers'.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Judged {
+    /// Its health.
+    pub health: Health,
+    /// Blocks behind the best head among its peers, when it reported one.
+    pub behind: Option<u64>,
+}
+
+/// Judge each endpoint's latest recorded sample (`None`: never probed)
+/// against the others': [`classify`] over the samples taken within
+/// [`ROUND_WINDOW_MS`] of the newest one. `None` for an endpoint never
+/// probed, or probed too long before the rest to compare.
+pub fn judge_latest(latest: &[Option<&HealthSample>]) -> Vec<Option<Judged>> {
+    let newest = latest.iter().flatten().map(|s| s.at_ms).max().unwrap_or(0);
+    let current: Vec<Option<&HealthSample>> = latest
+        .iter()
+        .map(|s| s.filter(|s| s.at_ms.saturating_add(ROUND_WINDOW_MS) >= newest))
+        .collect();
+    let observed: Vec<&HealthSample> = current.iter().flatten().copied().collect();
+    let best = observed
+        .iter()
+        .filter(|s| s.error.is_none())
+        .filter_map(|s| s.head)
+        .max();
+    let mut health = classify(&observed).into_iter();
+    current
+        .into_iter()
+        .map(|sample| {
+            let sample = sample?;
+            Some(Judged {
+                health: health.next()?,
+                behind: best.zip(sample.head).map(|(b, h)| b.saturating_sub(h)),
+            })
+        })
+        .collect()
+}
+
 /// One endpoint's probe, ready to record.
 #[derive(Debug, Clone)]
 pub struct EndpointProbe {
@@ -229,11 +270,11 @@ impl Observation for EndpointProbe {
 }
 
 /// Record `probes` in `store` (a sample each, plus capabilities where
-/// probed) and save it.
+/// probed) and save it; see [`HealthStore::save_or_warn`].
 pub fn record<'a>(
     store: &mut HealthStore,
     probes: impl IntoIterator<Item = &'a EndpointProbe>,
-) -> io::Result<()> {
+) -> Option<String> {
     for probe in probes {
         store.record(
             probe.chain_id,
@@ -244,7 +285,7 @@ pub fn record<'a>(
             store.set_capabilities(probe.chain_id, &probe.endpoint, capabilities.clone());
         }
     }
-    store.save()
+    store.save_or_warn()
 }
 
 #[cfg(test)]
@@ -358,6 +399,35 @@ mod tests {
     }
 
     #[test]
+    fn latest_samples_are_judged_within_one_round() {
+        let sample = |at_ms, head| HealthSample {
+            at_ms,
+            latency_ms: 10,
+            head: Some(head),
+            error: None,
+        };
+        let now = 1_000_000;
+        // `b` is far behind, but its sample is older than a round: not
+        // compared, so not lagging either.
+        let a = sample(now, 1_000);
+        let b = sample(now - ROUND_WINDOW_MS - 1, 900);
+        let c = sample(now - 1_000, 990);
+        let judged = judge_latest(&[Some(&a), Some(&b), None, Some(&c)]);
+        let healthy = |behind| {
+            Some(Judged {
+                health: Health::Healthy,
+                behind: Some(behind),
+            })
+        };
+        assert_eq!(judged, [healthy(0), None, None, healthy(10)]);
+        let d = sample(now - ROUND_WINDOW_MS, 900);
+        assert_eq!(
+            judge_latest(&[Some(&a), Some(&d)])[1].unwrap().health,
+            Health::Lagging { behind: 100 }
+        );
+    }
+
+    #[test]
     fn record_saves_samples_and_capabilities() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = HealthStore::load(dir.path()).unwrap();
@@ -378,7 +448,7 @@ mod tests {
                 capabilities: None,
             },
         ];
-        record(&mut store, &probes).unwrap();
+        assert_eq!(record(&mut store, &probes), None);
         let loaded = HealthStore::load(dir.path()).unwrap();
         assert_eq!(loaded.latest(1, "a").unwrap().head, Some(100));
         assert_eq!(

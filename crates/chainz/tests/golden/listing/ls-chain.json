@@ -87,7 +87,9 @@
       "head": null,
       "probed_at_ms": null,
       "error": null,
-      "tags": []
+      "tags": [
+        "ws"
+      ]
     }
   ]
 }

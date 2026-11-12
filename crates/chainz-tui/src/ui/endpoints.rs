@@ -94,11 +94,15 @@ pub(super) fn body(ctx: Ctx) -> Body {
             },
             match r.status {
                 EndpointStatus::Unknown => Cell::new("…", t.faint()),
-                EndpointStatus::Ok => Cell::new("ok", t.ok()),
-                EndpointStatus::Lagging(_) => Cell::new("lagging", t.lag()),
-                EndpointStatus::Failing(_) => Cell::new("failing", t.bad()),
-                EndpointStatus::Websocket => Cell::new("ws", t.dim()),
-                EndpointStatus::Invalid => Cell::new("invalid", t.bad()),
+                status => Cell::new(
+                    status.word(),
+                    match status {
+                        EndpointStatus::Ok => t.ok(),
+                        EndpointStatus::Lagging(_) => t.lag(),
+                        EndpointStatus::Websocket => t.dim(),
+                        _ => t.bad(),
+                    },
+                ),
             },
             r.latency_ms
                 .map_or_else(blank, |ms| Cell::new(fmt::latency(ms), fresh)),
