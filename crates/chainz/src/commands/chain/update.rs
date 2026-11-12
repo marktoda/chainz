@@ -123,16 +123,15 @@ fn print_report(report: &EditReport) {
         println!("No changes ('{}' already has these settings)", report.chain);
         return;
     }
-    println!("Updated chain '{}'", report.chain);
-    if let Some(explorer) = &report.created_explorer {
-        println!("  created [explorers.{explorer}]");
-    }
-    for change in &report.changes {
-        println!("  {change}");
-    }
-    crate::ui::report_moved(&report.moved);
+    let created = report
+        .created_explorer
+        .iter()
+        .map(|explorer| format!("created [explorers.{explorer}]"));
+    let changes: Vec<String> = created.chain(report.changes.iter().cloned()).collect();
+    println!("{}", ui::updated_chain(&report.chain, &changes));
+    ui::report_moved(&report.moved);
     for warning in &report.warnings {
-        eprintln!("{}", crate::ui::warn(warning));
+        eprintln!("{}", ui::warn(warning));
     }
 }
 

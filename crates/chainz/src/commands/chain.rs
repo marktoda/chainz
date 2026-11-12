@@ -67,12 +67,18 @@ pub fn use_default(args: &UseArgs) -> Result<i32> {
         println!("No changes ('{name}' is already the default chain)");
         return Ok(0);
     }
+    set_default(&mut chainz, &name)?;
+    Ok(0)
+}
+
+/// Make `name` the default chain, and say so.
+pub fn set_default(chainz: &mut Chainz, name: &str) -> Result<()> {
     chainz.transact(|tx| {
-        tx.set_default(Some(&name));
+        tx.set_default(Some(name));
         Ok(())
     })?;
     println!("Default chain set to '{name}'");
-    Ok(0)
+    Ok(())
 }
 
 /// `ls CHAIN`: one chain in full.
@@ -218,7 +224,12 @@ fn find_chain(args: &AddArgs, source: ChainSource, ask: &mut dyn Ask) -> Result<
 
 /// `add`: find the chain, pick its endpoints, and insert it with the
 /// default signer and explorer attached (unless `--no-signer`).
-pub fn add(chainz: &mut Chainz, args: &AddArgs, ask: &mut dyn Ask) -> Result<i32> {
+pub fn add(args: &AddArgs) -> Result<i32> {
+    add_to(&mut open()?, args, &mut Tty)
+}
+
+/// [`add`] to an open store, asking through `ask` (`init`'s chain step).
+pub fn add_to(chainz: &mut Chainz, args: &AddArgs, ask: &mut dyn Ask) -> Result<i32> {
     let found = find_chain(args, ChainSource::of(args, ask)?, ask)?;
     let id = found.id();
     let short = args
@@ -333,7 +344,7 @@ pub fn add(chainz: &mut Chainz, args: &AddArgs, ask: &mut dyn Ask) -> Result<i32
     }
     ui::report_moved(&moved);
     if let Some(why) = &attached.signer_skipped {
-        super::signer::warn_signerless(std::slice::from_ref(&short), why);
+        ui::warn_signerless(std::slice::from_ref(&short), why);
     }
     Ok(0)
 }

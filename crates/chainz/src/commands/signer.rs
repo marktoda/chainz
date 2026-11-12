@@ -228,7 +228,7 @@ fn rm(backend: &dyn KeyBackend, args: &SignerRmArgs) -> Result<i32> {
     }
     println!("Removed signer '{name}'");
     if !removed.unassigned.is_empty() {
-        warn_signerless(&removed.unassigned, &format!("'{name}' was removed"));
+        ui::warn_signerless(&removed.unassigned, &format!("'{name}' was removed"));
     }
     Ok(0)
 }
@@ -270,24 +270,6 @@ fn removal_consent(
     };
     prompt::confirm_removal(ask, args.yes, &removal)?;
     Ok(!users.is_empty())
-}
-
-/// Warn that `chains` have no signer (`why`), naming the command that
-/// attaches one: after a write that leaves chains signerless (`signer rm
-/// --unassign`, `add` with several signers to choose from).
-pub fn warn_signerless(chains: &[String], why: &str) {
-    let target = match chains {
-        [one] => one.as_str(),
-        _ => "CHAIN",
-    };
-    eprintln!(
-        "{}",
-        ui::warn(&format!(
-            "{} {} no signer ({why}); attach one with `chainz update {target} --signer NAME`",
-            chains.join(", "),
-            if chains.len() == 1 { "has" } else { "have" }
-        ))
-    );
 }
 
 fn migrate(backend: &dyn KeyBackend, args: &SignerMigrateArgs) -> Result<i32> {

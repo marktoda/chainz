@@ -39,7 +39,7 @@ pub fn run() -> Result<i32> {
     }
     let mut chainz = open()?;
     println!("{}", ui::section("Chains"));
-    add_chains(&mut chainz, ask, &mut chain::add)?;
+    add_chains(&mut chainz, ask, &mut chain::add_to)?;
     println!("{}", ui::section("Signer"));
     add_signer(&mut chainz, &SystemKeyBackend, ask)?;
     if !chainz.config().chains.is_empty() {
@@ -49,11 +49,7 @@ pub fn run() -> Result<i32> {
         }
         println!("{}", ui::section("Default chain"));
         if let Some(default) = pick_default(chainz.config(), ask)? {
-            chainz.transact(|tx| {
-                tx.set_default(Some(&default));
-                Ok(())
-            })?;
-            println!("Default chain set to '{default}'");
+            chain::set_default(&mut chainz, &default)?;
         }
     }
     println!();
@@ -76,7 +72,7 @@ fn closing(config: &Config) -> String {
     }
 }
 
-/// How `init` adds one chain: `chain::add` (tests pass their own).
+/// How `init` adds one chain: `chain::add_to` (tests pass their own).
 type AddChain<'a> = dyn FnMut(&mut Chainz, &AddArgs, &mut dyn Ask) -> Result<i32> + 'a;
 
 /// Add chains from chainlist until the user is done. A chain that fails

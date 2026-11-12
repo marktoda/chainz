@@ -164,6 +164,34 @@ pub fn emph(msg: &str) -> String {
     style(msg).yellow().to_string()
 }
 
+/// Warn that `chains` have no signer (`why`), naming the command that
+/// attaches one: after a write that leaves chains signerless (`signer rm
+/// --unassign`, `add` with several signers to choose from).
+pub fn warn_signerless(chains: &[String], why: &str) {
+    let target = match chains {
+        [one] => one.as_str(),
+        _ => "CHAIN",
+    };
+    eprintln!(
+        "{}",
+        warn(&format!(
+            "{} {} no signer ({why}); attach one with `chainz update {target} --signer NAME`",
+            chains.join(", "),
+            if chains.len() == 1 { "has" } else { "have" }
+        ))
+    );
+}
+
+/// `Updated chain 'NAME'`, then each change on its own indented line
+/// (`update`, `edit CHAIN`).
+pub fn updated_chain(name: &str, changes: &[String]) -> String {
+    let mut out = format!("Updated chain '{name}'");
+    for change in changes {
+        out.push_str(&format!("\n  {change}"));
+    }
+    out
+}
+
 /// Say which secrets moved out of `config.toml` (stdout, after the
 /// command's own report).
 pub fn report_moved(moved: &[chainz_core::extract::Moved]) {

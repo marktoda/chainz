@@ -32,13 +32,7 @@ pub fn run(args: &EditArgs) -> Result<i32> {
                 changes = chainz.replace_chain_snippet(&snippet, edited)?;
                 Ok(())
             })?
-            .then(|| {
-                let mut report = format!("Updated chain '{name}'");
-                for change in &changes {
-                    report.push_str(&format!("\n  {change}"));
-                }
-                report
-            })
+            .then(|| ui::updated_chain(&name, &changes))
         }
     };
     println!("{}", saved.as_deref().unwrap_or("No changes"));
