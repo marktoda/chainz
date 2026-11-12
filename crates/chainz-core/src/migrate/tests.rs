@@ -585,10 +585,3 @@ fn v1_encrypted_keys_still_decrypt_after_migration() {
     // A record from before v1 stored its KDF parameters uses v1's defaults.
     assert_eq!(secrets.signers["legacy"].kdf_memory_kib, None);
 }
-
-#[test]
-#[ignore = "prints the migrated fixture for inspection"]
-fn print_fixture_migration() {
-    let plan = plan(FIXTURE).unwrap();
-    println!("{}\n---\n{}", plan.config_toml, plan.summary);
-}
