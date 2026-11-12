@@ -28,4 +28,5 @@ rand.workspace = true
 testing = []
 
 [dev-dependencies]
+chainz-testkit.workspace = true
 tempfile.workspace = true

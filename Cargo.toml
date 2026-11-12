@@ -7,6 +7,7 @@ members = [
     "crates/chainz-serve",
     "crates/chainz-tui",
     "crates/chainz",
+    "crates/chainz-testkit",
 ]
 default-members = ["crates/chainz"]
 
@@ -23,6 +24,8 @@ chainz-core = { path = "crates/chainz-core", version = "2.0.0" }
 chainz-rpc = { path = "crates/chainz-rpc", version = "2.0.0" }
 chainz-serve = { path = "crates/chainz-serve", version = "2.0.0" }
 chainz-tui = { path = "crates/chainz-tui", version = "2.0.0" }
+# Unpublished; dev-dependencies only (no version, so `cargo package` drops it).
+chainz-testkit = { path = "crates/chainz-testkit" }
 anyhow = "1"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }

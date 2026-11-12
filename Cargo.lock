@@ -285,6 +285,7 @@ dependencies = [
  "chainz-os",
  "chainz-rpc",
  "chainz-serve",
+ "chainz-testkit",
  "chainz-tui",
  "clap",
  "clap_complete",
@@ -342,6 +343,7 @@ version = "2.0.0"
 dependencies = [
  "bytes",
  "chainz-os",
+ "chainz-testkit",
  "reqwest",
  "serde",
  "serde_json",
@@ -361,6 +363,7 @@ dependencies = [
  "chainz-core",
  "chainz-os",
  "chainz-rpc",
+ "chainz-testkit",
  "http-body-util",
  "hyper",
  "hyper-util",
@@ -368,6 +371,15 @@ dependencies = [
  "serde",
  "serde_json",
  "sha3",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "chainz-testkit"
+version = "2.0.0"
+dependencies = [
+ "serde_json",
  "tempfile",
  "tokio",
 ]
@@ -382,6 +394,7 @@ dependencies = [
  "chainz-os",
  "chainz-rpc",
  "chainz-serve",
+ "chainz-testkit",
  "ratatui",
  "serde",
  "serde_json",

@@ -1,0 +1,15 @@
+[package]
+name = "chainz-testkit"
+description = "Test support shared by the chainz crates: a JSON-RPC mock, a raw HTTP client, golden files. Never published"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+# No chainz crate may be a dependency: every chainz crate takes this one as a
+# dev-dependency, and `cargo package` drops it (a path with no version).
+[dependencies]
+serde_json.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["time", "net", "io-util"] }
