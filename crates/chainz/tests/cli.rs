@@ -44,7 +44,8 @@ fn ls_on_empty_config_shows_hint_and_writes_nothing() {
         .arg("ls")
         .assert()
         .success()
-        .stdout(predicate::str::contains("No chains configured"));
+        .stdout(predicate::str::contains("no chains configured yet"))
+        .stdout(predicate::str::contains("Quick start:"));
     assert!(
         !sb.config_path().exists(),
         "a read-only command must not create config"

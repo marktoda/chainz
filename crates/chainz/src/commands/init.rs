@@ -24,8 +24,7 @@ use zeroize::Zeroizing;
 pub fn no_command() -> Result<i32> {
     let chainz = open()?;
     if chainz.config().chains.is_empty() {
-        println!("chainz: no chains configured yet.");
-        print!("{}", view::QUICK_START);
+        print!("{}", view::no_chains());
     } else {
         Opt::command().print_help()?;
     }

@@ -32,7 +32,7 @@ pub fn set(args: &ChainSetArgs, command: &[&str]) -> Result<i32> {
         Some(query) => resolve::configured(chainz.config(), query, Policy::Prefix)?
             .0
             .to_string(),
-        None => pick_chain(&chainz, "Chain to change")?,
+        None => pick_chain(&chainz, "Chain to change", "pass the chain to change")?,
     };
     flags.api_key = api_key(args)?;
     let edit = if menu_wanted {

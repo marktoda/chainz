@@ -8,16 +8,16 @@ use chainz_core::Chainz;
 use chainz_core::resolve::{self, ChainRef, Source};
 use chainz_core::runtime::Runtime;
 
-/// Interactive picker over configured chains; errors off a TTY.
-pub fn pick_chain(chainz: &Chainz, message: &str) -> Result<String> {
+/// Interactive picker over configured chains. Off a TTY it fails with
+/// "no chain given: {off_tty}", where `off_tty` says how to name one for
+/// this command.
+pub fn pick_chain(chainz: &Chainz, message: &str, off_tty: &str) -> Result<String> {
     let chains = &chainz.config().chains;
     if chains.is_empty() {
-        bail!("no chains configured; add one with `chainz chain add`");
+        bail!("{}", resolve::NO_CHAINS);
     }
     if !is_tty() {
-        bail!(
-            "no chain given: pass one, set $CHAINZ_CHAIN, or set a default with `chainz use <chain>`"
-        );
+        bail!("no chain given: {off_tty}");
     }
     let items: Vec<String> = chains
         .iter()
@@ -44,7 +44,12 @@ pub fn select_target(
             Ok(target)
         }
         Some((target, _)) => Ok(target),
-        None => pick_chain(chainz, "Select a chain").map(ChainRef::Configured),
+        None => pick_chain(
+            chainz,
+            "Select a chain",
+            "pass one, set $CHAINZ_CHAIN, or set a default with `chainz use <chain>`",
+        )
+        .map(ChainRef::Configured),
     }
 }
 

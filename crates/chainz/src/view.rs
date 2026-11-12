@@ -25,8 +25,10 @@ Quick start:
 On a terminal, `chainz init` walks through the same steps.
 ";
 
-/// Hint shown when no chains are configured.
-const EMPTY_HINT: &str = "No chains configured. Add one with `chainz chain add <chain-id|name>`.";
+/// What `chainz` and `ls` print when no chains are configured.
+pub fn no_chains() -> String {
+    format!("chainz: no chains configured yet.\n{QUICK_START}")
+}
 
 /// The marker for an endpoint's role: `●` active, `◐` failover.
 pub fn marker(active: bool, failover: bool) -> &'static str {
@@ -131,7 +133,7 @@ pub fn chains(config: &Config, reveal: bool) -> Vec<ChainView> {
 /// The compact `ls` table.
 pub fn compact(config: &Config, reveal: bool) -> String {
     if config.chains.is_empty() {
-        return format!("{EMPTY_HINT}\n");
+        return no_chains();
     }
     let rows: Vec<[String; 5]> = config
         .chains

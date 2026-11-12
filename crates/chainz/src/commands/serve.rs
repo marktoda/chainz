@@ -96,7 +96,7 @@ fn start(args: ServeArgs) -> Result<i32> {
 fn preflight() -> Result<()> {
     let chainz = open()?;
     if chainz.config().chains.is_empty() {
-        bail!("no chains configured; add one with `chainz chain add`");
+        bail!("{}", chainz_core::resolve::NO_CHAINS);
     }
     if let Some(info) = running(&Runtime::resolve()?)? {
         bail!(chainz_serve::AlreadyRunning(Some(info)));

@@ -169,9 +169,13 @@ pub fn exact<'c>(config: &'c Config, query: &str) -> Result<Option<(&'c str, &'c
         .map(|(name, chain)| (name.as_str(), chain)))
 }
 
+/// What a command that needs a chain says when none is configured.
+pub const NO_CHAINS: &str =
+    "no chains configured yet; `chainz init` sets one up (or `chainz` shows the quick start)";
+
 fn hint(config: &Config) -> String {
     if config.chains.is_empty() {
-        " (no chains configured; add one with `chainz chain add`)".to_string()
+        format!(" ({NO_CHAINS})")
     } else {
         String::new()
     }

@@ -62,7 +62,11 @@ pub fn use_default(args: &UseArgs) -> Result<i32> {
         Some(query) => resolve::configured(chainz.config(), query, Policy::Prefix)?
             .0
             .to_string(),
-        None => pick_chain(&chainz, "Default chain")?,
+        None => pick_chain(
+            &chainz,
+            "Default chain",
+            "pass the chain to make the default",
+        )?,
     };
     chainz.transact(|tx| {
         tx.set_default(Some(&name));
