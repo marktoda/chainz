@@ -5,15 +5,13 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 use tokio::sync::mpsc;
 
-use crate::client::RpcClient;
+use crate::client::{RpcClient, expect_chain};
 use crate::error::RpcError;
 use crate::hex;
 use crate::target::Target;
 
 /// The deadline for one whole probe.
-pub const PROBE_DEADLINE: Duration = Duration::from_secs(4);
-/// An endpoint more than this many blocks behind the best head is lagging.
-pub const LAG_THRESHOLD: u64 = 20;
+const PROBE_DEADLINE: Duration = Duration::from_secs(4);
 
 /// The outcome of one probe.
 #[derive(Debug, Clone)]
@@ -66,10 +64,7 @@ async fn run(client: &RpcClient, target: &Target, expected: u64) -> Result<u64, 
     let (Some(chain), Some(head)) = (results.next(), results.next()) else {
         return Err(RpcError::InvalidResponse("short batch response".into()));
     };
-    let actual = hex::value_u64(&chain?)?;
-    if actual != expected {
-        return Err(RpcError::ChainMismatch { expected, actual });
-    }
+    expect_chain(expected, hex::value_u64(&chain?)?)?;
     hex::value_u64(&head?)
 }
 

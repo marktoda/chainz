@@ -8,6 +8,7 @@ mod cli;
 mod commands;
 mod complete;
 mod net;
+mod probe;
 mod prompt;
 mod sys;
 mod ui;

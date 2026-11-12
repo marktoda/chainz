@@ -20,7 +20,6 @@ use std::fs::File;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ExitStatus};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Fork ports are allocated from here upward.
@@ -342,7 +341,7 @@ async fn start_fork(supervisor: &mut Supervisor, job: &Job<'_>) -> Result<Runnin
     // per-fork token, never the gateway's token or an endpoint secret.
     // Retries stay on that endpoint: mixing nodes would corrupt the fork.
     let (target, route) = endpoint::upstream(chainz, runtime, parent, &endpoint)?;
-    let upstream = Arc::new(HttpUpstream::new(client.clone()));
+    let upstream = HttpUpstream::new(client.clone());
     let proxy = PinnedProxy::start(upstream, target, RetryPolicy::same_endpoint_transient())
         .await
         .context("unable to start the fork proxy")?;

@@ -1,15 +1,17 @@
 //! `doctor [--fix]`: files, invariants, literal credentials, signers and
 //! RPC health. Messages never echo URLs, header values or secrets.
+//! `doctor --tokens` checks the built-in token registry instead.
+
+mod tokens;
 
 use super::open_lenient;
-use super::rpc::{health_label, probe_chains};
+use crate::probe::{self, Depth, Repair, health_problem};
 use crate::{net, ui};
 use anyhow::Result;
 use chainz_core::extract::{self, Location};
 use chainz_core::labels::{Label, LabelIndex, LabelScope, LabelSource, builtin_tokens};
 use chainz_core::model::{Backend, Config};
 use chainz_core::{Chainz, paths, validate};
-use chainz_rpc::{Health, classify, rank};
 
 #[derive(Default)]
 struct Report {
@@ -34,7 +36,10 @@ impl Report {
     }
 }
 
-pub fn run(fix: bool) -> Result<i32> {
+pub fn run(fix: bool, tokens: bool) -> Result<i32> {
+    if tokens {
+        return tokens::run();
+    }
     let mut chainz = open_lenient()?;
     let mut report = Report::default();
 
@@ -232,53 +237,56 @@ fn rpc_health(chainz: &mut Chainz, fix: bool, report: &mut Report) -> Result<()>
         report.ok("no chains");
         return Ok(());
     }
-    let probed = net::block_on(probe_chains(chainz, &chains, false))?;
-    let store = net::health_store();
-    let mut switches: Vec<(String, String, String)> = Vec::new();
+    let mut store = net::health_store();
+    let probed = net::block_on(probe::probe_chains(
+        chainz,
+        &chains,
+        Depth::Health,
+        &mut store,
+    ))?;
+    let mut repairs: Vec<(String, Repair)> = Vec::new();
     for p in &probed {
         let c = &chainz.config().chains[&p.chain];
-        let Some(active) = p.names.iter().position(|n| *n == c.rpc) else {
+        let Some(active) = p.index_of(&c.rpc) else {
             report.note(&format!(
                 "{}: active endpoint '{}' is a websocket (not probed)",
                 p.chain, c.rpc
             ));
             continue;
         };
-        let health = classify(&p.results);
-        if health[active] == Health::Healthy {
+        let ranking = p.ranking(&store);
+        let Some(problem) = health_problem(&ranking.health[active]) else {
             report.ok(&format!(
                 "{}: {} {}ms",
                 p.chain,
                 c.rpc,
-                p.results[active].latency.as_millis()
+                p.probes[active].result.latency.as_millis()
             ));
             continue;
-        }
+        };
         report.problem(&format!(
-            "{}: active endpoint '{}' is {}",
-            p.chain,
-            c.rpc,
-            health_label(&health[active])
+            "{}: active endpoint '{}' {problem}",
+            p.chain, c.rpc
         ));
-        let p50: Vec<_> = p.names.iter().map(|n| store.p50(c.id, n, 16)).collect();
-        let best = rank(&p.results, &p50)[0];
-        if health[best] == Health::Healthy {
+        if let Some(repair) = Repair::propose(&p.chain, c, p, &ranking) {
             if fix {
-                switches.push((p.chain.clone(), c.rpc.clone(), p.names[best].clone()));
+                repairs.push((c.rpc.clone(), repair));
             } else {
-                println!("  {}", ui::dim(&format!("'{}' is healthy", p.names[best])));
+                println!("  {}", ui::dim(&format!("'{}' is healthy", repair.active)));
             }
         }
     }
-    if !switches.is_empty() {
+    if !repairs.is_empty() {
+        // Only the active endpoint: doctor leaves failover lists to
+        // `rpc bench --fix`.
         chainz.transact(|tx| {
-            for (chain, _, best) in &switches {
-                tx.set_active(chain, best)?;
+            for (_, repair) in &repairs {
+                repair.apply(tx, false)?;
             }
             Ok(())
         })?;
-        for (chain, old, best) in switches {
-            report.fixed(&format!("{chain}: active {old} → {best}"));
+        for (old, repair) in repairs {
+            report.fixed(&format!("{}: active {old} → {}", repair.chain, repair.active));
         }
     }
     Ok(())

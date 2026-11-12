@@ -29,11 +29,13 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use chainz_rpc::control::{RecordStatus, RequestRecord};
-use chainz_rpc::upstream::{LIMIT_EXCEEDED, rpc_error_code};
-use chainz_rpc::{ErrorClass, RetryPolicy, RpcError, Upstream};
-use serde_json::{Value, json};
+use chainz_rpc::error::LIMIT_EXCEEDED;
+use chainz_rpc::upstream::rpc_error_code;
+use chainz_rpc::{ErrorClass, HttpUpstream, RetryPolicy, RpcError};
+use serde_json::Value;
 
 use crate::classify::{self, Kind, Needs, Parsed};
+use crate::http::Reply;
 use crate::inspector::Inspector;
 use crate::metrics::{Metrics, Sample};
 use crate::state::{ChainState, EndpointState, Snapshot};
@@ -53,33 +55,6 @@ const RETRY_PAUSE: Duration = Duration::from_millis(100);
 /// Responses larger than this are not inspected for a JSON-RPC error.
 const MAX_INSPECTED_BODY: usize = 16 * 1024;
 
-/// What the HTTP layer sends back.
-#[derive(Debug, Clone)]
-pub struct Reply {
-    /// HTTP status.
-    pub status: u16,
-    /// JSON body.
-    pub body: Bytes,
-    /// `Retry-After`, on a 429.
-    pub retry_after: Option<Duration>,
-}
-
-impl Reply {
-    /// A JSON-RPC error made by the gateway itself.
-    pub fn error(status: u16, id: &Value, code: i64, message: &str) -> Reply {
-        let body = json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "error": {"code": code, "message": format!("chainz serve: {message}")},
-        });
-        Reply {
-            status,
-            body: Bytes::from(body.to_string()),
-            retry_after: None,
-        }
-    }
-}
-
 /// How one request may be routed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Plan {
@@ -94,7 +69,7 @@ enum Plan {
 /// The request-independent state the router works with.
 pub struct Router {
     snapshot: RwLock<Arc<Snapshot>>,
-    upstream: Arc<dyn Upstream>,
+    upstream: HttpUpstream,
     /// Metrics store.
     pub metrics: Metrics,
     /// Request inspector.
@@ -109,24 +84,16 @@ impl std::fmt::Debug for Router {
 }
 
 impl Router {
-    /// A router over `snapshot`, forwarding through `upstream` with
-    /// `timeout` per attempt.
-    pub fn new(
-        snapshot: Snapshot,
-        upstream: Arc<dyn Upstream>,
-        inspector: Inspector,
-        timeout: Duration,
-    ) -> Self {
+    /// A router over `snapshot`, forwarding through `upstream` (whose
+    /// client sets the per-attempt timeout).
+    pub fn new(snapshot: Snapshot, upstream: HttpUpstream, inspector: Inspector) -> Self {
         Router {
             snapshot: RwLock::new(Arc::new(snapshot)),
             upstream,
             metrics: Metrics::default(),
             inspector,
             // One attempt per call: the router owns every retry decision.
-            policy: RetryPolicy {
-                timeout,
-                ..RetryPolicy::none()
-            },
+            policy: RetryPolicy::none(),
         }
     }
 
@@ -221,7 +188,8 @@ impl Router {
                     class: error.class(),
                     code: None,
                 };
-                (failure_reply(&error, &outcome.endpoint, &id), status)
+                let message = format!("chainz serve: endpoint '{}': {error}", outcome.endpoint);
+                (Reply::failure(&error, &id, message), status)
             }
         };
         self.inspector.push(RequestRecord {
@@ -397,27 +365,24 @@ impl Router {
                 .await;
             let latency_ms = millis(sent.elapsed());
             match result {
-                Ok(response) => {
+                Ok(body) => {
                     // The one parse of the body: the error code, if any.
-                    let code = (response.body.len() <= MAX_INSPECTED_BODY)
-                        .then(|| rpc_error_code(&response.body))
+                    let code = (body.len() <= MAX_INSPECTED_BODY)
+                        .then(|| rpc_error_code(&body))
                         .flatten();
                     let limit_exceeded = code == Some(LIMIT_EXCEEDED);
                     let shift = limit_exceeded && has_next;
                     record(Sample {
                         latency_ms,
                         error: limit_exceeded.then_some(ErrorClass::Rpc),
-                        bytes: response.body.len() as u64,
+                        bytes: body.len() as u64,
                         failover: shift,
                         ..Sample::default()
                     });
                     if !limit_exceeded {
                         endpoint.limiter.on_success();
                     }
-                    let answer = Answer {
-                        body: response.body,
-                        code,
-                    };
+                    let answer = Answer { body, code };
                     return (Ok(answer), shift);
                 }
                 Err(RpcError::RateLimited { retry_after }) => {
@@ -441,7 +406,9 @@ impl Router {
                     backoff *= 2;
                 }
                 Err(error) => {
-                    let transient = is_transient(&error);
+                    // A transient failure may move a read on (`-32005` and
+                    // long 429 waits are handled above).
+                    let transient = error.is_transient();
                     record(Sample {
                         latency_ms,
                         error: Some(error.class()),
@@ -548,35 +515,6 @@ fn tx_hash(result: &str) -> Option<String> {
 
 fn millis(duration: Duration) -> u32 {
     u32::try_from(duration.as_millis()).unwrap_or(u32::MAX)
-}
-
-/// The enumerated errors on which a read may move to the next endpoint
-/// (`-32005` and long 429 waits are handled where they are seen).
-fn is_transient(error: &RpcError) -> bool {
-    match error {
-        RpcError::Connect | RpcError::Timeout => true,
-        RpcError::Http(status) => matches!(status, 502..=504),
-        // From `Upstream::send` this only means the response body could not
-        // be read: the connection died mid-response.
-        RpcError::InvalidResponse(_) => true,
-        _ => false,
-    }
-}
-
-/// The reply for a request no endpoint answered.
-fn failure_reply(error: &RpcError, endpoint: &str, id: &Value) -> Reply {
-    let (status, code) = match error {
-        RpcError::RateLimited { .. } => (429, LIMIT_EXCEEDED),
-        RpcError::Timeout => (504, -32000),
-        RpcError::Http(status) if (400..600).contains(status) => (*status, -32000),
-        _ => (502, -32000),
-    };
-    // `RpcError`'s text never includes a URL or a header value.
-    let mut reply = Reply::error(status, id, code, &format!("endpoint '{endpoint}': {error}"));
-    if let RpcError::RateLimited { retry_after } = error {
-        reply.retry_after = Some(retry_after.unwrap_or(MAX_WAIT));
-    }
-    reply
 }
 
 /// Decide the routing rule for a request: the strictest among its calls.

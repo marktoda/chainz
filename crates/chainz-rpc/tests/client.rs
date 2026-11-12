@@ -205,10 +205,6 @@ async fn typed_helpers() {
                     Resp::result(req, Value::Null)
                 }
             }
-            "eth_feeHistory" => {
-                assert_eq!(params, json!(["0x4", "latest", [25.0, 75.0]]));
-                Resp::result(req, json!({"oldestBlock":"0x1"}))
-            }
             _ => Resp::rpc_error(req, -32601, "method not found"),
         }
     })
@@ -251,12 +247,6 @@ async fn typed_helpers() {
             .await
             .unwrap()
             .is_none()
-    );
-    assert_eq!(
-        c.fee_history(&t, 4, BlockId::Latest, &[25.0, 75.0])
-            .await
-            .unwrap()["oldestBlock"],
-        "0x1"
     );
     let err = c
         .request::<Value>(&t, "eth_foo", json!([]))

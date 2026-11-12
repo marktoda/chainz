@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 /// An adaptive token bucket. Cheap to call from many tasks.
 #[derive(Debug)]
-pub struct AimdLimiter {
+pub(crate) struct AimdLimiter {
     state: Mutex<State>,
 }
 
@@ -38,22 +38,26 @@ struct State {
     decreased: Option<Instant>,
 }
 
+/// Traffic is counted per window this long: the rate the first 429 sets
+/// comes from the requests seen in the current or the previous window.
+const OBSERVE_WINDOW: Duration = Duration::from_secs(1);
+
 impl AimdLimiter {
     /// The lowest rate a run of 429s can push the bucket to, in requests
     /// per second.
-    pub const MIN_RATE: f64 = 1.0;
+    const MIN_RATE: f64 = 1.0;
     /// The least traffic the first 429 is assumed to have come from, in
     /// requests per second. A 429 at a trickle says little about the
     /// endpoint's real limit, so the first step never goes below half this.
-    pub const FIRST_RATE: f64 = 4.0;
+    const FIRST_RATE: f64 = 4.0;
     /// Above this rate the bucket stops limiting.
-    pub const MAX_RATE: f64 = 500.0;
+    const MAX_RATE: f64 = 500.0;
     /// Requests per second added per second of successful traffic.
-    pub const INCREASE: f64 = 1.0;
+    const INCREASE: f64 = 1.0;
     /// At most one decrease per this interval. It is never shorter than
     /// one request at the current rate, because the rate never drops below
     /// [`MIN_RATE`](Self::MIN_RATE) (1 request per second).
-    pub const DECREASE_INTERVAL: Duration = Duration::from_secs(1);
+    const DECREASE_INTERVAL: Duration = Duration::from_secs(1);
 
     /// An unlimited bucket.
     pub fn new(now: Instant) -> Self {
@@ -153,11 +157,12 @@ impl State {
 
     fn observe(&mut self, now: Instant) {
         let elapsed = now.saturating_duration_since(self.window_start);
-        if elapsed >= Duration::from_secs(2) {
+        if elapsed >= 2 * OBSERVE_WINDOW {
+            // The previous window had no traffic either.
             self.prev_count = 0;
             self.window_count = 0;
             self.window_start = now;
-        } else if elapsed >= Duration::from_secs(1) {
+        } else if elapsed >= OBSERVE_WINDOW {
             self.prev_count = self.window_count;
             self.window_count = 0;
             self.window_start = now;

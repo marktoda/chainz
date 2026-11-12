@@ -2,8 +2,6 @@
 //! loopback.
 mod common;
 
-use std::sync::Arc;
-
 use chainz_rpc::{HttpUpstream, RetryPolicy, RpcClient, Target};
 use chainz_serve::PinnedProxy;
 use common::{Mock, R, http};
@@ -12,7 +10,7 @@ use serde_json::json;
 async fn proxy_to(mock: &Mock) -> PinnedProxy {
     let target = Target::new(1, "pinned", &mock.url(), &[]).unwrap();
     PinnedProxy::start(
-        Arc::new(HttpUpstream::new(RpcClient::new())),
+        HttpUpstream::new(RpcClient::new()),
         target,
         RetryPolicy::none(),
     )
@@ -90,7 +88,8 @@ async fn upstream_failures_are_http_errors_without_the_url() {
     assert_eq!(reply.status, 429);
     assert!(reply.head.contains("retry-after: 3"), "{}", reply.head);
     assert!(!reply.body.contains("127.0.0.1"), "{}", reply.body);
-    assert_eq!(reply.json()["error"]["code"], json!(-32000));
+    // The same answer the gateway gives a rate limit.
+    assert_eq!(reply.json()["error"]["code"], json!(-32005));
 
     let mut b = Mock::named("b").await;
     let proxy = proxy_to(&b).await;
@@ -103,6 +102,19 @@ async fn upstream_failures_are_http_errors_without_the_url() {
     ];
     let reply = http(proxy.port(), "POST", &path, &headers, BODY).await;
     assert_eq!(reply.status, 502);
+
+    // An upstream 4xx is passed on, as the gateway does.
+    let c = Mock::start("c", |_| R::Http(403, None)).await;
+    let proxy = proxy_to(&c).await;
+    let path = format!("/{}", proxy.url().rsplit('/').next().unwrap());
+    let host = format!("127.0.0.1:{}", proxy.port());
+    let headers = [
+        ("Host", host.as_str()),
+        ("Content-Type", "application/json"),
+    ];
+    let reply = http(proxy.port(), "POST", &path, &headers, BODY).await;
+    assert_eq!(reply.status, 403);
+    assert_eq!(reply.json()["error"]["code"], json!(-32000));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -18,9 +18,12 @@ pub struct Target {
 }
 
 impl Target {
+    /// The URL schemes an endpoint may use.
+    pub const SCHEMES: [&str; 4] = ["http", "https", "ws", "wss"];
+
     /// Build a target from a URL string and `(name, value)` header pairs.
     ///
-    /// The URL must be `http`, `https`, `ws` or `wss`. Errors never echo the
+    /// The URL must use one of [`Target::SCHEMES`]. Errors never echo the
     /// URL or a header value; an invalid header *value* names its header.
     pub fn new(
         chain_id: u64,
@@ -30,13 +33,10 @@ impl Target {
     ) -> Result<Self, RpcError> {
         let url = url::Url::parse(url.trim())
             .map_err(|_| RpcError::InvalidEndpoint("invalid URL".into()))?;
-        match url.scheme() {
-            "http" | "https" | "ws" | "wss" => {}
-            _ => {
-                return Err(RpcError::InvalidEndpoint(
-                    "unsupported URL scheme (expected http, https, ws or wss)".into(),
-                ));
-            }
+        if !Self::SCHEMES.contains(&url.scheme()) {
+            return Err(RpcError::InvalidEndpoint(
+                "unsupported URL scheme (expected http, https, ws or wss)".into(),
+            ));
         }
         if url.host_str().is_none_or(str::is_empty) {
             return Err(RpcError::InvalidEndpoint("invalid URL".into()));

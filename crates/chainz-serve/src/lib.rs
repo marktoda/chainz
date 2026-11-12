@@ -20,6 +20,7 @@ mod classify;
 mod gateway;
 mod http;
 mod inspector;
+mod limiter;
 mod metrics;
 pub mod pinned;
 mod router;

@@ -48,6 +48,9 @@ pub struct Resp {
     pub headers: Vec<(String, String)>,
     pub body: String,
     pub delay: Duration,
+    /// Promise more body than is sent, then close: a response cut off
+    /// mid-body.
+    pub cut: bool,
 }
 
 impl Resp {
@@ -57,6 +60,7 @@ impl Resp {
             headers: vec![],
             body: String::new(),
             delay: Duration::ZERO,
+            cut: false,
         }
     }
     pub fn json(body: Value) -> Self {
@@ -86,6 +90,10 @@ impl Resp {
     }
     pub fn delay(mut self, d: Duration) -> Self {
         self.delay = d;
+        self
+    }
+    pub fn cut(mut self) -> Self {
+        self.cut = true;
         self
     }
 }
@@ -124,7 +132,7 @@ impl MockHttp {
                     let mut out = format!(
                         "HTTP/1.1 {} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
                         resp.status,
-                        resp.body.len()
+                        resp.body.len() + if resp.cut { 100 } else { 0 }
                     );
                     for (k, v) in &resp.headers {
                         out.push_str(&format!("{k}: {v}\r\n"));

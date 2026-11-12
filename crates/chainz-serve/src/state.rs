@@ -15,9 +15,10 @@ use anyhow::Result;
 use chainz_core::labels::LabelIndex;
 use chainz_core::model::{Chain, Endpoint};
 use chainz_core::{Chainz, LoadMode, StorePaths};
-use chainz_rpc::{AimdLimiter, Capabilities, HealthStore, Target};
+use chainz_rpc::{Capabilities, HealthStore, Target};
 
 use crate::classify::Needs;
+use crate::limiter::AimdLimiter;
 
 /// A failover target must be within this many blocks of the chain's head
 /// high-water mark.

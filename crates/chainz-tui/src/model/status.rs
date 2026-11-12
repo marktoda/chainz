@@ -1,7 +1,8 @@
 //! Classification: ok / lag / slow / down for chains, ok / lagging /
 //! failing for endpoints.
 
-use chainz_rpc::{ErrorClass, HealthSample, LAG_THRESHOLD};
+use chainz_rpc::health::ENDPOINT_LAG;
+use chainz_rpc::{ErrorClass, HealthSample};
 
 use super::state::{ChainState, EndpointState};
 use super::update::Head;
@@ -51,9 +52,9 @@ impl Status {
 pub enum EndpointStatus {
     /// Never probed, or not within [`PROBE_WINDOW_MS`] of the newest probe.
     Unknown,
-    /// Answered within [`LAG_THRESHOLD`] blocks of the best head.
+    /// Answered within [`ENDPOINT_LAG`] blocks of the best head.
     Ok,
-    /// More than [`LAG_THRESHOLD`] blocks behind the best head.
+    /// More than [`ENDPOINT_LAG`] blocks behind the best head.
     Lagging(u64),
     /// The last probe failed.
     Failing(ErrorClass),
@@ -132,7 +133,7 @@ impl ChainState {
                     .zip(sample.head)
                     .map(|(best, head)| best.saturating_sub(head));
                 match behind {
-                    Some(n) if n > LAG_THRESHOLD => (EndpointStatus::Lagging(n), behind),
+                    Some(n) if n > ENDPOINT_LAG => (EndpointStatus::Lagging(n), behind),
                     _ => (EndpointStatus::Ok, behind),
                 }
             })

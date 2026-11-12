@@ -2,7 +2,7 @@
 //! chains themselves. For every entry on a configured chain: the address
 //! has code, and `symbol()` and `decimals()` return what the registry says.
 
-use super::open;
+use crate::commands::open;
 use crate::{net, ui};
 use anyhow::Result;
 use chainz_core::Chainz;
@@ -10,24 +10,14 @@ use chainz_core::labels::{BuiltinToken, builtin_tokens};
 use chainz_core::model::Chain;
 use chainz_core::names;
 use chainz_rpc::erc20::{self, DECIMALS, SYMBOL};
-use chainz_rpc::{BlockId, RetryOn, RetryPolicy, RpcClient, Target};
+use chainz_rpc::{BlockId, RetryPolicy, RpcClient, Target};
 use serde_json::json;
 use std::collections::BTreeMap;
-use std::time::Duration;
 
-/// How each request is retried: up to five attempts on transient failures
-/// (timeouts, connection errors, rate limits, 502–504), waiting 0.5, 1, 2
-/// then 4 s, or a rate limit's `Retry-After` up to 10 s. A public endpoint
-/// asked about many tokens in a row often needs this.
+/// How each request is retried: patiently, since a public endpoint asked
+/// about many tokens in a row often needs it.
 fn retry_policy() -> RetryPolicy {
-    RetryPolicy {
-        max_attempts: 5,
-        backoff: Duration::from_millis(500),
-        max_backoff: Duration::from_secs(4),
-        max_retry_after: Duration::from_secs(10),
-        timeout: Duration::from_secs(10),
-        retry_on: RetryOn::ALL,
-    }
+    RetryPolicy::patient()
 }
 
 /// One chain's entries and how they fared.

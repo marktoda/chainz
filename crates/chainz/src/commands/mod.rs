@@ -11,7 +11,6 @@ mod fork;
 mod rpc;
 mod serve;
 mod signer;
-mod tokens;
 mod top;
 mod var;
 
@@ -44,13 +43,7 @@ pub fn dispatch(opt: Opt) -> Result<i32> {
         Command::Addr { cmd } => addr::run(cmd),
         Command::Label { chain } => addr::label(chain),
         Command::Var { cmd } => var::run(cmd),
-        Command::Doctor { fix, tokens } => {
-            if tokens {
-                tokens::run()
-            } else {
-                doctor::run(fix)
-            }
-        }
+        Command::Doctor { fix, tokens } => doctor::run(fix, tokens),
         Command::Config { cmd } => config::run(cmd),
         Command::Completions { shell } => {
             crate::complete::write_loader(shell, &mut std::io::stdout().lock())?;

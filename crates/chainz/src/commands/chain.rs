@@ -1,6 +1,7 @@
 //! `chain …`, `ls` and `use`.
 
-use super::rpc::{check, probe_urls, report_moved};
+use super::rpc::report_moved;
+use crate::probe::{check, probe_urls, ranked_urls};
 use super::{chain_arg, edit_until_saved, open, pick_chain};
 use crate::cli::{ChainCommand, ListArgs};
 use crate::prompt::{self, is_tty};
@@ -12,7 +13,7 @@ use chainz_core::resolve::Policy;
 use chainz_core::tx::Attach;
 use chainz_core::{names, resolve};
 use chainz_rpc::chainlist::{self, ChainlistEntry};
-use chainz_rpc::{ProbeResult, rank};
+use chainz_rpc::ProbeResult;
 
 pub fn run(cmd: ChainCommand) -> Result<i32> {
     match cmd {
@@ -165,8 +166,12 @@ fn add(
         let id: u64 = query.as_deref().unwrap_or_default().parse()?;
         chainlist::read_cache(&cache).and_then(|all| all.into_iter().find(|e| e.chain_id == id))
     } else {
-        let all = net::block_on(chainlist::fetch_all(&cache, refresh))
+        let registry = net::block_on(chainlist::fetch_all(&cache, refresh))
             .context("chainlist is unavailable")?;
+        if let Some(warning) = &registry.cache_warning {
+            eprintln!("{}", ui::warn(warning));
+        }
+        let all = registry.entries;
         let entry = match &query {
             Some(q) => find_in_chainlist(&all, q)?.clone(),
             None => {
@@ -274,26 +279,14 @@ fn add(
 /// The probed URL to make active: the fastest healthy one, or the user's
 /// pick from the ranked list on a TTY.
 fn choose_active<'a>(probed: &'a [(String, ProbeResult)], chain: &str) -> Result<&'a str> {
-    let results: Vec<ProbeResult> = probed.iter().map(|(_, r)| r.clone()).collect();
-    let order = rank(&results, &vec![None; results.len()]);
-    let Some(&best) = order.first().filter(|&&i| results[i].is_ok()) else {
+    let (ranking, items) = ranked_urls(probed);
+    let Some(best) = ranking.best().filter(|&i| probed[i].1.is_ok()) else {
         bail!("no public RPC for {chain} answered; pass --rpc URL");
     };
     if !is_tty() {
         return Ok(&probed[best].0);
     }
-    let items: Vec<String> = order
-        .iter()
-        .map(|&i| match &probed[i] {
-            (url, r) if r.is_ok() => format!("{}  {}ms", view_url(url), r.latency.as_millis()),
-            (url, _) => format!("{}  unreachable", view_url(url)),
-        })
-        .collect();
-    Ok(&probed[order[prompt::select("Active RPC", &items, 0)?]].0)
-}
-
-fn view_url(url: &str) -> String {
-    chainz_core::redact::url(url, false)
+    Ok(&probed[ranking.order[prompt::select("Active RPC", &items, 0)?]].0)
 }
 
 fn edit_chain(query: &str) -> Result<i32> {

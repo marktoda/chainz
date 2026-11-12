@@ -8,9 +8,13 @@ use std::time::Duration;
 
 use crate::capabilities::Capabilities;
 use crate::error::ErrorClass;
+use crate::health::P50_WINDOW;
 use crate::probe::ProbeResult;
 
 const FILE_NAME: &str = "health.json";
+/// Where a `health.json` that does not parse is moved, so that it is never
+/// overwritten unseen.
+const CORRUPT_NAME: &str = "health.json.corrupt";
 const LOCK_NAME: &str = "health.lock";
 const FORMAT_VERSION: u32 = 1;
 
@@ -79,13 +83,55 @@ impl HealthStore {
     /// Samples kept per endpoint.
     pub const CAPACITY: usize = 64;
 
-    /// Load the store from `state_dir`. A missing or corrupt file yields an
-    /// empty store; other I/O errors (e.g. permissions) are returned.
+    /// The file a store in `state_dir` lives in.
+    pub fn path(state_dir: &Path) -> PathBuf {
+        state_dir.join(FILE_NAME)
+    }
+
+    /// Load the store from `state_dir`. A missing file is an empty store.
+    /// A file that does not parse is moved aside to `health.json.corrupt`
+    /// (so no save overwrites it unseen) and reported as an
+    /// [`io::ErrorKind::InvalidData`] error; other I/O errors (e.g.
+    /// permissions) are returned as they are. After an error, a caller that
+    /// carries on uses [`HealthStore::new`].
     pub fn load(state_dir: &Path) -> io::Result<Self> {
+        let path = Self::path(state_dir);
+        let entries = match read_entries(&path)? {
+            Some(entries) => entries,
+            None => {
+                // Re-checked under the lock: another process may have just
+                // replaced the file with a good one.
+                let lock = lock(state_dir)?;
+                match read_entries(&path)? {
+                    Some(entries) => entries,
+                    None => {
+                        let aside = move_aside(state_dir)?;
+                        drop(lock);
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "{} did not parse; moved it to {}",
+                                path.display(),
+                                aside.display()
+                            ),
+                        ));
+                    }
+                }
+            }
+        };
         Ok(HealthStore {
             dir: Some(state_dir.to_path_buf()),
-            entries: read_entries(&state_dir.join(FILE_NAME))?,
+            entries,
         })
+    }
+
+    /// An empty store that saves to `state_dir` (merging with what is there
+    /// by then).
+    pub fn new(state_dir: &Path) -> Self {
+        HealthStore {
+            dir: Some(state_dir.to_path_buf()),
+            entries: BTreeMap::new(),
+        }
     }
 
     /// An empty store that is never saved ([`save`](Self::save) fails).
@@ -93,19 +139,6 @@ impl HealthStore {
         HealthStore {
             dir: None,
             entries: BTreeMap::new(),
-        }
-    }
-
-    /// The store in `state_dir`, or an empty one when there is no state
-    /// directory or its file can't be read. An unreadable store still
-    /// saves to `state_dir` (merging with what is there by then).
-    pub fn load_or_empty(state_dir: Option<&Path>) -> Self {
-        match state_dir {
-            Some(dir) => Self::load(dir).unwrap_or_else(|_| HealthStore {
-                dir: Some(dir.to_path_buf()),
-                entries: BTreeMap::new(),
-            }),
-            None => Self::empty(),
         }
     }
 
@@ -133,9 +166,13 @@ impl HealthStore {
         self.entry(chain_id, endpoint)?.samples.back()
     }
 
-    /// Median latency over the last `window` successful samples (lower
-    /// median for even counts); `None` when there are none.
-    pub fn p50(&self, chain_id: u64, endpoint: &str, window: usize) -> Option<Duration> {
+    /// Median latency over the last [`P50_WINDOW`] successful samples
+    /// (lower median for even counts); `None` when there are none.
+    pub fn p50(&self, chain_id: u64, endpoint: &str) -> Option<Duration> {
+        self.p50_over(chain_id, endpoint, P50_WINDOW)
+    }
+
+    fn p50_over(&self, chain_id: u64, endpoint: &str, window: usize) -> Option<Duration> {
         let entry = self.entry(chain_id, endpoint)?;
         let mut lat: Vec<u32> = entry
             .samples
@@ -176,12 +213,16 @@ impl HealthStore {
         let Some(dir) = &self.dir else {
             return Err(io::Error::other("the health store has no state directory"));
         };
-        chainz_sys::create_private_dir(dir)?;
-        // Held until `lock` closes at the end of this function.
-        let lock = chainz_sys::open_private(&dir.join(LOCK_NAME))?;
-        lock.lock()?;
-        let path = dir.join(FILE_NAME);
-        let mut merged = read_entries(&path)?;
+        // Held until the end of this function.
+        let _lock = lock(dir)?;
+        let path = Self::path(dir);
+        let mut merged = match read_entries(&path)? {
+            Some(entries) => entries,
+            None => {
+                move_aside(dir)?;
+                BTreeMap::new()
+            }
+        };
         for (key, ours) in &self.entries {
             let theirs = merged.entry(key.clone()).or_default();
             merge_entry(theirs, ours);
@@ -228,14 +269,33 @@ fn merge_entry(into: &mut Entry, ours: &Entry) {
     }
 }
 
-fn read_entries(path: &Path) -> io::Result<BTreeMap<Key, Entry>> {
+/// Take `<state_dir>/health.lock` (creating the directory); released
+/// when the returned file closes.
+fn lock(state_dir: &Path) -> io::Result<fs::File> {
+    chainz_sys::create_private_dir(state_dir)?;
+    let lock = chainz_sys::open_private(&state_dir.join(LOCK_NAME))?;
+    lock.lock()?;
+    Ok(lock)
+}
+
+/// Move a `health.json` that does not parse to `health.json.corrupt`
+/// (replacing an older one). Call under the lock.
+fn move_aside(state_dir: &Path) -> io::Result<PathBuf> {
+    let aside = state_dir.join(CORRUPT_NAME);
+    fs::rename(HealthStore::path(state_dir), &aside)?;
+    Ok(aside)
+}
+
+/// The entries in `path`: empty when it does not exist, `None` when it
+/// does not parse.
+fn read_entries(path: &Path) -> io::Result<Option<BTreeMap<Key, Entry>>> {
     let bytes = match fs::read(path) {
         Ok(b) => b,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Some(BTreeMap::new())),
         Err(e) => return Err(e),
     };
     let Ok(file) = serde_json::from_slice::<FileFormat>(&bytes) else {
-        return Ok(BTreeMap::new());
+        return Ok(None);
     };
     let mut entries = BTreeMap::new();
     for fe in file.endpoints {
@@ -251,7 +311,7 @@ fn read_entries(path: &Path) -> io::Result<BTreeMap<Key, Entry>> {
             },
         );
     }
-    Ok(entries)
+    Ok(Some(entries))
 }
 
 #[cfg(test)]
@@ -286,32 +346,33 @@ mod tests {
     fn p50_over_successful_window() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = HealthStore::load(dir.path()).unwrap();
-        assert_eq!(store.p50(1, "a", 10), None);
+        assert_eq!(store.p50(1, "a"), None);
         for (i, ms) in [100, 10, 20, 30].into_iter().enumerate() {
             store.record(1, "a", sample(i as u64, ms, true));
         }
         store.record(1, "a", sample(9, 1, false)); // failures ignored
-        assert_eq!(store.p50(1, "a", 3), Some(Duration::from_millis(20)));
+        assert_eq!(store.p50_over(1, "a", 3), Some(Duration::from_millis(20)));
         // window 4 => [10, 20, 30, 100], lower median 20
-        assert_eq!(store.p50(1, "a", 4), Some(Duration::from_millis(20)));
-        assert_eq!(store.p50(1, "a", 1), Some(Duration::from_millis(30)));
+        assert_eq!(store.p50_over(1, "a", 4), Some(Duration::from_millis(20)));
+        assert_eq!(store.p50_over(1, "a", 1), Some(Duration::from_millis(30)));
+        assert_eq!(store.p50(1, "a"), Some(Duration::from_millis(20)));
     }
 
     #[test]
-    fn empty_and_load_or_empty() {
+    fn empty_and_new() {
         let mut empty = HealthStore::empty();
         empty.record(1, "a", sample(1, 5, true));
         assert_eq!(empty.samples(1, "a").len(), 1);
         assert!(empty.save().is_err(), "nowhere to save");
-        assert!(HealthStore::load_or_empty(None).samples(1, "a").is_empty());
 
         let root = tempfile::tempdir().unwrap();
         let dir = root.path().join("state");
-        let mut store = HealthStore::load_or_empty(Some(&dir));
+        let mut store = HealthStore::new(&dir);
         store.record(1, "a", sample(1, 5, true));
         store.save().unwrap();
-        let loaded = HealthStore::load_or_empty(Some(&dir));
+        let loaded = HealthStore::load(&dir).unwrap();
         assert_eq!(loaded.samples(1, "a"), vec![sample(1, 5, true)]);
+        assert_eq!(HealthStore::path(&dir), dir.join("health.json"));
     }
 
     #[test]
@@ -340,13 +401,28 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_file_is_empty_store() {
+    fn a_corrupt_file_is_reported_and_moved_aside_not_overwritten() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join(FILE_NAME), b"{not json").unwrap();
-        let mut store = HealthStore::load(dir.path()).unwrap();
-        assert!(store.samples(1, "a").is_empty());
+        let err = HealthStore::load(dir.path()).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains(CORRUPT_NAME), "{err}");
+        assert_eq!(
+            fs::read(dir.path().join(CORRUPT_NAME)).unwrap(),
+            b"{not json"
+        );
+        let mut store = HealthStore::new(dir.path());
         store.record(1, "a", sample(1, 5, true));
         store.save().unwrap();
+        assert_eq!(
+            HealthStore::load(dir.path()).unwrap().samples(1, "a").len(),
+            1
+        );
+
+        // Corrupted behind a running store's back: saving moves it aside too.
+        fs::write(dir.path().join(FILE_NAME), b"[]").unwrap();
+        store.save().unwrap();
+        assert_eq!(fs::read(dir.path().join(CORRUPT_NAME)).unwrap(), b"[]");
         assert_eq!(
             HealthStore::load(dir.path()).unwrap().samples(1, "a").len(),
             1

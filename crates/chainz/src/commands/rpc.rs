@@ -2,6 +2,7 @@
 
 use super::{chain_arg, open};
 use crate::cli::RpcCommand;
+use crate::probe::{self, Depth, Repair, check, probe_urls};
 use crate::prompt::{self, is_tty};
 use crate::{net, ui};
 use anyhow::{Result, anyhow, bail};
@@ -11,7 +12,6 @@ use chainz_core::redact::{self, redact};
 use chainz_core::tx::EndpointRole;
 use chainz_core::{Chainz, names};
 use chainz_rpc::chainlist;
-use chainz_rpc::{Health, HealthSample, ProbeResult, RpcClient, Target, classify, probe, rank};
 use indexmap::IndexMap;
 use serde::Serialize;
 
@@ -157,54 +157,11 @@ fn parse_headers(raw: &[String]) -> Result<IndexMap<String, String>> {
     Ok(out)
 }
 
-/// Check that `endpoint` answers with chain ID `chain_id`.
-pub(super) fn check(
-    chainz: &Chainz,
-    chain: &str,
-    chain_id: u64,
-    ep: &str,
-    endpoint: &Endpoint,
-) -> Result<()> {
-    let target = net::target(chainz, chain, chain_id, ep, endpoint)?;
-    net::block_on(RpcClient::new().check_chain_id(&target, chain_id))
-        .map_err(|e| anyhow!("RPC check failed for {}: {e}", redact(&endpoint.url)))
-}
-
 /// Say which secrets moved out of `config.toml`.
 pub(super) fn report_moved(moved: &[Moved]) {
     for m in moved {
         println!("  moved the secret in {m} (secrets.toml)");
     }
-}
-
-/// Probe `urls` for chain `chain_id`. A URL that is not a valid endpoint is
-/// dropped (with a warning), so each result is paired with the URL it
-/// probed.
-pub(super) fn probe_urls(chain_id: u64, urls: &[String]) -> Vec<(String, ProbeResult)> {
-    let mut probed: Vec<String> = Vec::with_capacity(urls.len());
-    let mut targets = Vec::with_capacity(urls.len());
-    for url in urls {
-        match Target::new(chain_id, format!("rpc{}", targets.len()), url, &[]) {
-            Ok(target) => {
-                probed.push(url.clone());
-                targets.push(target);
-            }
-            Err(e) => eprintln!("{}", ui::warn(&format!("skipping {}: {e}", redact(url)))),
-        }
-    }
-    let mut results = net::block_on(async {
-        let mut rx = chainz_rpc::probe_all(&RpcClient::new(), targets, chain_id);
-        let mut out: Vec<Option<ProbeResult>> = vec![None; probed.len()];
-        while let Some((i, r)) = rx.recv().await {
-            out[i] = Some(r);
-        }
-        out
-    });
-    probed
-        .into_iter()
-        .zip(results.iter_mut())
-        .filter_map(|(url, result)| Some((url, result.take()?)))
-        .collect()
 }
 
 fn add(
@@ -283,177 +240,56 @@ fn rm(chain: &str, name: &str) -> Result<i32> {
     Ok(0)
 }
 
-pub(super) struct Probed {
-    pub chain: String,
-    pub names: Vec<String>,
-    pub results: Vec<ProbeResult>,
-}
-
-/// Probe every HTTP endpoint of `chains` concurrently.
-pub(super) async fn probe_chains(
-    chainz: &Chainz,
-    chains: &[String],
-    caps: bool,
-) -> Result<Vec<Probed>> {
-    let client = RpcClient::new();
-    let mut out = Vec::new();
-    let mut store = net::health_store();
-    for chain in chains {
-        let c = &chainz.config().chains[chain];
-        let mut names = Vec::new();
-        let mut futures = Vec::new();
-        for (ep, e) in &c.rpcs {
-            if e.is_websocket() {
-                continue;
-            }
-            let target = match net::target(chainz, chain, c.id, ep, e) {
-                Ok(t) => t,
-                Err(err) => {
-                    eprintln!("{}", ui::warn(&format!("{err:#}")));
-                    continue;
-                }
-            };
-            names.push(ep.clone());
-            futures.push(probe_one(client.clone(), target, c.id, caps));
-        }
-        let joined = join_all(futures).await;
-        let mut results = Vec::new();
-        for (ep, (result, capabilities)) in names.iter().zip(joined) {
-            store.record(c.id, ep, HealthSample::from_probe(&result));
-            if let Some(capabilities) = capabilities {
-                store.set_capabilities(c.id, ep, capabilities);
-            }
-            results.push(result);
-        }
-        out.push(Probed {
-            chain: chain.clone(),
-            names,
-            results,
-        });
-    }
-    if let Err(e) = store.save() {
-        eprintln!(
-            "{}",
-            ui::warn(&format!("could not save health history: {e}"))
-        );
-    }
-    Ok(out)
-}
-
-async fn probe_one(
-    client: RpcClient,
-    target: Target,
-    chain_id: u64,
-    caps: bool,
-) -> (ProbeResult, Option<chainz_rpc::Capabilities>) {
-    let result = probe(&client, &target, chain_id).await;
-    let capabilities = if caps && result.is_ok() {
-        Some(chainz_rpc::probe_capabilities(&client, &target).await)
-    } else {
-        None
-    };
-    (result, capabilities)
-}
-
-/// Minimal join_all over boxed futures (keeps the futures crate out).
-async fn join_all<F: std::future::Future + Send + 'static>(futures: Vec<F>) -> Vec<F::Output>
-where
-    F::Output: Send + 'static,
-{
-    let mut set = tokio::task::JoinSet::new();
-    for (i, f) in futures.into_iter().enumerate() {
-        set.spawn(async move { (i, f.await) });
-    }
-    let mut out: Vec<Option<F::Output>> = (0..set.len()).map(|_| None).collect();
-    while let Some(res) = set.join_next().await {
-        if let Ok((i, v)) = res {
-            out[i] = Some(v);
-        }
-    }
-    out.into_iter()
-        .map(|v| v.expect("every task completes"))
-        .collect()
-}
-
-pub(super) fn health_label(h: &Health) -> String {
-    match h {
-        Health::Healthy => "ok".into(),
-        Health::Lagging { behind } => format!("lag {behind}"),
-        Health::Failing(class) => class.to_string(),
-    }
-}
-
 fn bench(chain: Option<String>, fix: bool, yes: bool) -> Result<i32> {
     let mut chainz = open()?;
     let chains = chains_for(&chainz, chain)?;
-    let probed = net::block_on(probe_chains(&chainz, &chains, true))?;
-    let store = net::health_store();
-    let mut changes: Vec<(String, String, Vec<String>)> = Vec::new();
+    let mut store = net::health_store();
+    let probed = net::block_on(probe::probe_chains(
+        &chainz,
+        &chains,
+        Depth::Capabilities,
+        &mut store,
+    ))?;
+    let mut repairs: Vec<Repair> = Vec::new();
     for p in &probed {
         let c = &chainz.config().chains[&p.chain];
         println!("{}", ui::section(&p.chain));
-        if p.results.is_empty() {
+        if p.probes.is_empty() {
             println!("  no HTTP endpoints to probe");
             continue;
         }
-        let health = classify(&p.results);
-        let p50: Vec<_> = p.names.iter().map(|n| store.p50(c.id, n, 16)).collect();
-        let order = rank(&p.results, &p50);
-        for &i in &order {
-            let r = &p.results[i];
-            let marker = if c.rpc == p.names[i] {
-                "●"
-            } else if c.failover.contains(&p.names[i]) {
-                "◐"
-            } else {
-                " "
-            };
-            let tags = store
-                .capabilities(c.id, &p.names[i])
-                .map(|c| c.tags().join(" "))
-                .unwrap_or_default();
+        let ranking = p.ranking(&store);
+        probe::print_ranked(c, p, &ranking, &store);
+        let Some(repair) = Repair::propose(&p.chain, c, p, &ranking) else {
+            continue;
+        };
+        if fix {
+            repairs.push(repair);
+        } else if repair.active != c.rpc {
             println!(
-                "  {marker} {:<18} {:>6}ms  {:<10} {}",
-                p.names[i],
-                r.latency.as_millis(),
-                health_label(&health[i]),
-                ui::dim(&tags)
+                "  {}",
+                ui::dim(&format!(
+                    "best: {} (run with --fix to activate)",
+                    repair.active
+                ))
             );
-        }
-        let best = &p.names[order[0]];
-        if health[order[0]] == Health::Healthy {
-            // Proposed failover: the next healthy endpoints without headers
-            // (never route a private header-authenticated request elsewhere).
-            let proposal: Vec<String> = order[1..]
-                .iter()
-                .filter(|&&i| health[i] == Health::Healthy)
-                .map(|&i| p.names[i].clone())
-                .filter(|n| c.rpcs[n].headers.is_empty())
-                .take(2)
-                .collect();
-            if fix {
-                changes.push((p.chain.clone(), best.clone(), proposal));
-            } else if *best != c.rpc {
-                println!(
-                    "  {}",
-                    ui::dim(&format!("best: {best} (run with --fix to activate)"))
-                );
-            }
         }
     }
     if fix {
         let mut write_failover = false;
-        for (chain, best, proposal) in &changes {
+        for r in &repairs {
             println!(
-                "{chain}: active → {best}; proposed failover: {}",
-                if proposal.is_empty() {
+                "{}: active → {}; proposed failover: {}",
+                r.chain,
+                r.active,
+                if r.failover.is_empty() {
                     "-".into()
                 } else {
-                    proposal.join(", ")
+                    r.failover.join(", ")
                 }
             );
         }
-        if changes.iter().any(|(_, _, p)| !p.is_empty()) {
+        if repairs.iter().any(|r| !r.failover.is_empty()) {
             if yes {
                 write_failover = true;
             } else if is_tty() {
@@ -466,13 +302,8 @@ fn bench(chain: Option<String>, fix: bool, yes: bool) -> Result<i32> {
             }
         }
         chainz.transact(|tx| {
-            for (chain, best, proposal) in &changes {
-                tx.set_active(chain, best)?;
-                if write_failover {
-                    let list: Vec<String> =
-                        proposal.iter().filter(|n| *n != best).cloned().collect();
-                    tx.set_failover(chain, &list)?;
-                }
+            for r in &repairs {
+                r.apply(tx, write_failover)?;
             }
             Ok(())
         })?;
@@ -484,13 +315,17 @@ fn discover(chain: &str, refresh: bool, yes: bool) -> Result<i32> {
     let mut chainz = open()?;
     let chain = chain_arg(&chainz, chain)?;
     let c = chainz.config().chains[&chain].clone();
-    let entry = net::block_on(chainlist::find(&net::cache_dir()?, c.id, refresh))?;
+    let registry = net::block_on(chainlist::fetch_all(&net::cache_dir()?, refresh))?;
+    if let Some(warning) = &registry.cache_warning {
+        eprintln!("{}", ui::warn(warning));
+    }
+    let entry = registry.find(c.id)?;
     let known: Vec<&str> = c
         .rpcs
         .values()
         .map(|e| e.url.trim_end_matches('/'))
         .collect();
-    let fresh: Vec<String> = chainlist::public_rpcs(&entry)
+    let fresh: Vec<String> = chainlist::public_rpcs(entry)
         .into_iter()
         .filter(|u| {
             Endpoint::new(u.as_str()).is_http() && !known.contains(&u.trim_end_matches('/'))
@@ -501,24 +336,8 @@ fn discover(chain: &str, refresh: bool, yes: bool) -> Result<i32> {
         return Ok(0);
     }
     let probed = probe_urls(c.id, &fresh);
-    let results: Vec<ProbeResult> = probed.iter().map(|(_, r)| r.clone()).collect();
-    let order = rank(&results, &vec![None; results.len()]);
-    let items: Vec<String> = order
-        .iter()
-        .map(|&i| match &probed[i] {
-            (url, r) if r.is_ok() => {
-                format!("{}  {}ms", redact::url(url, false), r.latency.as_millis())
-            }
-            (url, r) => format!(
-                "{}  {}",
-                redact::url(url, false),
-                r.error
-                    .as_ref()
-                    .map(|e| e.class().to_string())
-                    .unwrap_or_default()
-            ),
-        })
-        .collect();
+    let (ranking, items) = probe::ranked_urls(&probed);
+    let order = ranking.order;
     let answered: Vec<usize> = (0..order.len())
         .filter(|&p| probed[order[p]].1.is_ok())
         .collect();

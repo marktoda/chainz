@@ -75,7 +75,10 @@ pub fn run(chainz: Chainz, runtime: Runtime, options: Options) -> Result<i32> {
 
 /// The persisted health history; empty when it cannot be read.
 fn load_store() -> HealthStore {
-    HealthStore::load_or_empty(chainz_core::paths::state_dir().ok().as_deref())
+    match chainz_core::paths::state_dir() {
+        Ok(dir) => HealthStore::load(&dir).unwrap_or_else(|_| HealthStore::new(&dir)),
+        Err(_) => HealthStore::empty(),
+    }
 }
 
 /// `--once`: poll every chain once and print the result.

@@ -7,10 +7,12 @@ use std::io;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
+use crate::target::Target;
+
 /// The registry URL.
-pub const CHAINLIST_URL: &str = "https://chainid.network/chains.json";
+const CHAINLIST_URL: &str = "https://chainid.network/chains.json";
 /// How long a cached copy is considered fresh.
-pub const CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+const CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 const CACHE_FILE: &str = "chains.json";
 const FETCH_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -61,13 +63,30 @@ pub enum ChainlistError {
     NotFound(u64),
 }
 
+/// The registry as it was read.
+#[derive(Debug)]
+pub struct Registry {
+    /// Every entry, in registry order.
+    pub entries: Vec<ChainlistEntry>,
+    /// Why a successful download could not be cached (only the next fetch
+    /// pays for it): for the caller to show.
+    pub cache_warning: Option<String>,
+}
+
+impl Registry {
+    /// The entry for `chain_id`.
+    pub fn find(&self, chain_id: u64) -> Result<&ChainlistEntry, ChainlistError> {
+        self.entries
+            .iter()
+            .find(|e| e.chain_id == chain_id)
+            .ok_or(ChainlistError::NotFound(chain_id))
+    }
+}
+
 /// All registry entries: the cache when it is fresh (and `refresh` is false),
 /// otherwise a download (which refreshes the cache), falling back to a stale
 /// cache when the download fails.
-pub async fn fetch_all(
-    cache_dir: &Path,
-    refresh: bool,
-) -> Result<Vec<ChainlistEntry>, ChainlistError> {
+pub async fn fetch_all(cache_dir: &Path, refresh: bool) -> Result<Registry, ChainlistError> {
     fetch_all_from(CHAINLIST_URL, cache_dir, refresh, CACHE_TTL).await
 }
 
@@ -75,19 +94,6 @@ pub async fn fetch_all(
 pub fn read_cache(cache_dir: &Path) -> Option<Vec<ChainlistEntry>> {
     let bytes = std::fs::read(cache_dir.join(CACHE_FILE)).ok()?;
     parse(&bytes).ok()
-}
-
-/// The entry for `chain_id` (see [`fetch_all`] for caching).
-pub async fn find(
-    cache_dir: &Path,
-    chain_id: u64,
-    refresh: bool,
-) -> Result<ChainlistEntry, ChainlistError> {
-    fetch_all(cache_dir, refresh)
-        .await?
-        .into_iter()
-        .find(|e| e.chain_id == chain_id)
-        .ok_or(ChainlistError::NotFound(chain_id))
 }
 
 /// Public RPC URLs usable without credentials: entries containing `${` are
@@ -100,10 +106,11 @@ pub fn public_rpcs(entry: &ChainlistEntry) -> Vec<String> {
         if url.contains("${") {
             continue;
         }
-        let lower = url.to_ascii_lowercase();
-        let ok = ["http://", "https://", "ws://", "wss://"]
-            .iter()
-            .any(|s| lower.starts_with(s));
+        let ok = url.split_once("://").is_some_and(|(scheme, _)| {
+            Target::SCHEMES
+                .iter()
+                .any(|s| s.eq_ignore_ascii_case(scheme))
+        });
         if ok && !out.iter().any(|u| u == url) {
             out.push(url.to_string());
         }
@@ -116,29 +123,36 @@ async fn fetch_all_from(
     cache_dir: &Path,
     refresh: bool,
     ttl: Duration,
-) -> Result<Vec<ChainlistEntry>, ChainlistError> {
+) -> Result<Registry, ChainlistError> {
+    let cached = |entries| Registry {
+        entries,
+        cache_warning: None,
+    };
     if !refresh
         && cache_is_fresh(cache_dir, ttl)
         && let Some(entries) = read_cache(cache_dir)
     {
-        return Ok(entries);
+        return Ok(cached(entries));
     }
     match download(url).await {
         Ok(bytes) => match parse(&bytes) {
             Ok(entries) => {
                 // The download succeeded: a cache that can't be written
                 // costs only the next fetch.
-                if let Err(e) = write_cache(cache_dir, &bytes) {
-                    eprintln!(
-                        "warning: could not cache the chainlist registry in {}: {e}",
+                let cache_warning = write_cache(cache_dir, &bytes).err().map(|e| {
+                    format!(
+                        "could not cache the chainlist registry in {}: {e}",
                         cache_dir.display()
-                    );
-                }
-                Ok(entries)
+                    )
+                });
+                Ok(Registry {
+                    entries,
+                    cache_warning,
+                })
             }
-            Err(e) => read_cache(cache_dir).ok_or(e),
+            Err(e) => read_cache(cache_dir).map(cached).ok_or(e),
         },
-        Err(e) => read_cache(cache_dir).ok_or(e),
+        Err(e) => read_cache(cache_dir).map(cached).ok_or(e),
     }
 }
 
@@ -235,10 +249,15 @@ mod tests {
     async fn fresh_cache_is_used_without_fetching() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(CACHE_FILE), SAMPLE).unwrap();
-        let entries = fetch_all_from(&dead_url(), dir.path(), false, CACHE_TTL)
+        let registry = fetch_all_from(&dead_url(), dir.path(), false, CACHE_TTL)
             .await
             .unwrap();
-        assert_eq!(entries.len(), 2);
+        assert_eq!(registry.entries.len(), 2);
+        assert_eq!(registry.find(8453).unwrap().name, "Bare");
+        assert!(matches!(
+            registry.find(5),
+            Err(ChainlistError::NotFound(5))
+        ));
         assert_eq!(read_cache(dir.path()).unwrap().len(), 2);
     }
 
@@ -247,14 +266,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(CACHE_FILE), SAMPLE).unwrap();
         // ttl 0 => stale; refresh => forced fetch; both fall back to cache.
-        let entries = fetch_all_from(&dead_url(), dir.path(), false, Duration::ZERO)
+        let registry = fetch_all_from(&dead_url(), dir.path(), false, Duration::ZERO)
             .await
             .unwrap();
-        assert_eq!(entries.len(), 2);
-        let entries = fetch_all_from(&dead_url(), dir.path(), true, CACHE_TTL)
+        assert_eq!(registry.entries.len(), 2);
+        let registry = fetch_all_from(&dead_url(), dir.path(), true, CACHE_TTL)
             .await
             .unwrap();
-        assert_eq!(entries.len(), 2);
+        assert_eq!(registry.entries.len(), 2);
     }
 
     #[tokio::test]
@@ -291,10 +310,11 @@ mod tests {
         let url = serve_sample_once().await;
         let dir = tempfile::tempdir().unwrap();
         let cache = dir.path().join("nested");
-        let entries = fetch_all_from(&url, &cache, false, CACHE_TTL)
+        let registry = fetch_all_from(&url, &cache, false, CACHE_TTL)
             .await
             .unwrap();
-        assert_eq!(entries.len(), 2);
+        assert_eq!(registry.entries.len(), 2);
+        assert_eq!(registry.cache_warning, None);
         assert_eq!(read_cache(&cache).unwrap()[0].chain_id, 1);
     }
 
@@ -305,7 +325,9 @@ mod tests {
         // The cache dir is a file: the cache can't be written.
         let cache = dir.path().join("not-a-dir");
         std::fs::write(&cache, "").unwrap();
-        let entries = fetch_all_from(&url, &cache, true, CACHE_TTL).await.unwrap();
-        assert_eq!(entries.len(), 2);
+        let registry = fetch_all_from(&url, &cache, true, CACHE_TTL).await.unwrap();
+        assert_eq!(registry.entries.len(), 2);
+        let warning = registry.cache_warning.unwrap();
+        assert!(warning.contains("could not cache"), "{warning}");
     }
 }

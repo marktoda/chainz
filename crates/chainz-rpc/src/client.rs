@@ -11,9 +11,9 @@ use crate::hex;
 use crate::target::Target;
 
 /// Default whole-request timeout for [`RpcClient::new`].
-pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Connect timeout used by every [`RpcClient`].
-pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// A block selector for block-scoped calls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,19 +103,17 @@ impl RpcClient {
         &self,
         target: &Target,
         body: Bytes,
-        timeout: Option<Duration>,
     ) -> Result<RawResponse, RpcError> {
         target.require_http()?;
-        let mut req = self
+        let resp = self
             .http
             .post(target.url().clone())
             .headers(target.headers().clone())
             .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .body(body);
-        if let Some(t) = timeout {
-            req = req.timeout(t);
-        }
-        let resp = req.send().await.map_err(|e| RpcError::from_reqwest(&e))?;
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| RpcError::from_reqwest(&e))?;
         let status = resp.status().as_u16();
         let retry_after = parse_retry_after(resp.headers());
         let body = resp.bytes().await.map_err(|e| RpcError::from_reqwest(&e))?;
@@ -129,7 +127,7 @@ impl RpcClient {
     /// POST a JSON payload and return the parsed body of a 2xx response.
     async fn post_json(&self, target: &Target, payload: &Value) -> Result<Value, RpcError> {
         let body = Bytes::from(serde_json::to_vec(payload).expect("JSON value serializes"));
-        let raw = self.post_raw(target, body, None).await?;
+        let raw = self.post_raw(target, body).await?;
         check_status(&raw)?;
         serde_json::from_slice(&raw.body)
             .map_err(|_| RpcError::InvalidResponse("response is not valid JSON".into()))
@@ -207,12 +205,7 @@ impl RpcClient {
     /// `eth_chainId`, failing with [`RpcError::ChainMismatch`] unless it
     /// equals `expected`.
     pub async fn check_chain_id(&self, t: &Target, expected: u64) -> Result<(), RpcError> {
-        let actual = self.chain_id(t).await?;
-        if actual == expected {
-            Ok(())
-        } else {
-            Err(RpcError::ChainMismatch { expected, actual })
-        }
+        expect_chain(expected, self.chain_id(t).await?)
     }
 
     /// `eth_blockNumber`.
@@ -262,21 +255,15 @@ impl RpcClient {
             .await?;
         hex::decode(&v)
     }
+}
 
-    /// `eth_feeHistory`; the result object is returned as-is.
-    pub async fn fee_history(
-        &self,
-        t: &Target,
-        block_count: u64,
-        newest: BlockId,
-        percentiles: &[f64],
-    ) -> Result<Value, RpcError> {
-        self.request(
-            t,
-            "eth_feeHistory",
-            json!([hex::quantity(block_count), newest.to_param(), percentiles]),
-        )
-        .await
+/// `Err(ChainMismatch)` unless the endpoint's chain ID `actual` is the
+/// `expected` one.
+pub(crate) fn expect_chain(expected: u64, actual: u64) -> Result<(), RpcError> {
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(RpcError::ChainMismatch { expected, actual })
     }
 }
 

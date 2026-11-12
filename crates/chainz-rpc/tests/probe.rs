@@ -1,6 +1,6 @@
 mod common;
 
-use chainz_rpc::{ErrorClass, Health, RpcClient, RpcError, classify, probe, probe_all, rank};
+use chainz_rpc::{ErrorClass, Health, Ranking, RpcClient, RpcError, classify, probe, probe_all};
 use common::*;
 use serde_json::{Value, json};
 
@@ -72,7 +72,7 @@ async fn probe_all_yields_each_index_once_then_closes() {
             Health::Failing(ErrorClass::Connect)
         ]
     );
-    assert_eq!(rank(&results, &[]), vec![0, 1, 2]);
+    assert_eq!(Ranking::new(&results).order, vec![0, 1, 2]);
 
     let mut empty = probe_all(&RpcClient::new(), vec![], 1);
     assert!(empty.recv().await.is_none());

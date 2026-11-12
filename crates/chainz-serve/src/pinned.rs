@@ -16,19 +16,18 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use bytes::Bytes;
 use chainz_core::runtime::{GatewayAddr, LOOPBACK};
-use chainz_rpc::{ErrorClass, RetryPolicy, RpcError, Target, Upstream};
+use chainz_rpc::{HttpUpstream, RetryPolicy, Target};
 use http_body_util::{BodyExt, Limited};
 use hyper::body::Incoming;
-use hyper::header::{ALLOW, CONTENT_TYPE, HOST, HeaderValue, RETRY_AFTER};
+use hyper::header::{ALLOW, CONTENT_TYPE, HOST, HeaderValue};
 use hyper::{Method, Request, Response, StatusCode};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 use crate::auth;
-use crate::http::{self, BoxBody, is_json, json, plain, retry_after_secs};
+use crate::http::{self, BoxBody, Reply, is_json, json, plain};
 
 /// Largest request body accepted.
 const MAX_REQUEST_BODY: usize = 64 * 1024 * 1024;
@@ -52,7 +51,7 @@ impl std::fmt::Debug for PinnedProxy {
 }
 
 struct State {
-    upstream: Arc<dyn Upstream>,
+    upstream: HttpUpstream,
     target: Target,
     policy: RetryPolicy,
     addr: GatewayAddr,
@@ -63,7 +62,7 @@ impl PinnedProxy {
     /// `target` through `upstream`, retried there per `policy`. The
     /// proxy's tasks live on the runtime that calls this.
     pub async fn start(
-        upstream: Arc<dyn Upstream>,
+        upstream: HttpUpstream,
         target: Target,
         policy: RetryPolicy,
     ) -> io::Result<PinnedProxy> {
@@ -157,33 +156,12 @@ async fn handle(state: &State, request: Request<Incoming>) -> Response<BoxBody> 
         .send(&state.target, body, &state.policy)
         .await
     {
-        Ok(response) => json(StatusCode::OK, response.body),
+        Ok(body) => json(StatusCode::OK, body),
         // An HTTP error, so a client (anvil) treats it as a transport
         // failure and never as chain state.
-        Err(error) => failure(&error),
+        Err(error) => {
+            let message = format!("chainz proxy: upstream {error}");
+            Reply::failure(&error, &serde_json::Value::Null, message).into_response()
+        }
     }
-}
-
-fn failure(error: &RpcError) -> Response<BoxBody> {
-    let status = match error.class() {
-        ErrorClass::RateLimited => StatusCode::TOO_MANY_REQUESTS,
-        ErrorClass::Timeout => StatusCode::GATEWAY_TIMEOUT,
-        _ => StatusCode::BAD_GATEWAY,
-    };
-    // `RpcError`'s text never includes a URL or a header value.
-    let body = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": null,
-        "error": {"code": -32000, "message": format!("chainz proxy: upstream {error}")},
-    });
-    let mut response = json(status, Bytes::from(body.to_string()));
-    if let RpcError::RateLimited {
-        retry_after: Some(wait),
-    } = error
-    {
-        response
-            .headers_mut()
-            .insert(RETRY_AFTER, HeaderValue::from(retry_after_secs(*wait)));
-    }
-    response
 }

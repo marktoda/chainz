@@ -1,5 +1,5 @@
 //! JSON-RPC client, endpoint probes, ranking, capability tags, health history,
-//! the [`Upstream`] forwarding trait, the gateway control
+//! [`HttpUpstream`] forwarding, the gateway control
 //! API types and the chainlist registry client for chainz.
 //!
 //! This crate is async (tokio) and deliberately does not depend on
@@ -20,11 +20,10 @@ pub mod client;
 pub mod control;
 pub mod erc20;
 pub mod error;
+pub mod health;
 pub mod hex;
 pub mod history;
-pub mod limiter;
 pub mod probe;
-pub mod rank;
 pub mod target;
 pub mod upstream;
 
@@ -32,8 +31,7 @@ pub use capabilities::{Capabilities, probe_capabilities};
 pub use client::{BlockId, RpcClient};
 pub use error::{ErrorClass, RpcError};
 pub use history::{HealthSample, HealthStore};
-pub use limiter::AimdLimiter;
-pub use probe::{LAG_THRESHOLD, PROBE_DEADLINE, ProbeResult, probe, probe_all};
-pub use rank::{Health, classify, rank};
+pub use health::{EndpointProbe, Health, Ranking, classify};
+pub use probe::{ProbeResult, probe, probe_all};
 pub use target::Target;
-pub use upstream::{HttpUpstream, RetryOn, RetryPolicy, Upstream, UpstreamResponse};
+pub use upstream::{HttpUpstream, RetryOn, RetryPolicy};
