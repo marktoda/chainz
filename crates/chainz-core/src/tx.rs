@@ -52,7 +52,7 @@ pub enum Overwrite {
     Replace,
 }
 
-/// The role of an endpoint added with [`Tx::add_endpoint`].
+/// The role of an endpoint added with [`Tx::add_endpoint_url`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EndpointRole {
     /// Neither active nor in failover.
@@ -258,7 +258,7 @@ impl Tx {
     }
 
     /// Add an endpoint in `role`.
-    pub fn add_endpoint(
+    pub(crate) fn add_endpoint(
         &mut self,
         chain: &str,
         name: &str,
@@ -598,7 +598,7 @@ impl Tx {
     /// Move the literal secrets of `endpoints` (about to be written to
     /// chain `chain`) into `secrets.toml` variables, rewriting the
     /// endpoints to reference them. Returns what moved.
-    pub fn extract_secrets(
+    pub(crate) fn extract_secrets(
         &mut self,
         chain: &str,
         endpoints: &mut [(String, Endpoint)],
