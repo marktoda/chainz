@@ -330,7 +330,7 @@ impl SecretPlan {
 /// Plan moving every literal secret in `config` into variables, reusing
 /// `existing` variables (`secrets.toml`'s `[vars]`) that hold the same
 /// value. Used by `doctor --fix`; `rpc add` and `chain add` extract only
-/// the endpoints they write ([`Tx::extract_secrets`](crate::tx::Tx::extract_secrets)).
+/// the endpoints they write ([`Tx::add_endpoint_url`](crate::tx::Tx::add_endpoint_url)).
 pub fn plan_secret_extraction(config: &Config, existing: &IndexMap<String, String>) -> SecretPlan {
     let mut vars = VarTable::with_vars(existing);
     let mut endpoints = Vec::new();
