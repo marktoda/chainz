@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use chainz_core::runtime::Runtime;
 use chainz_core::store::Notice;
-use chainz_core::{Chainz, LoadMode};
+use chainz_core::{Chainz, LoadMode, StoreStamp};
 use chainz_rpc::HealthStore;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -24,7 +24,7 @@ use ratatui::crossterm::terminal::{
 use ratatui::crossterm::{execute, queue};
 
 use crate::app::{Action, App};
-use crate::data::{self, ConfigFiles, ConfigStamp, Engine, Shared, Tuning};
+use crate::data::{self, Engine, Shared, Tuning};
 use crate::model::State;
 use crate::plan::Plan;
 use crate::ui::theme::Theme;
@@ -142,9 +142,8 @@ struct Dashboard {
     state: State,
     app: App,
     engine: Option<Engine>,
-    /// The config files, and their stamp when `chainz` was read from them.
-    files: ConfigFiles,
-    loaded: ConfigStamp,
+    /// The config files' stamp when `chainz` was read from them.
+    loaded: StoreStamp,
 }
 
 impl Dashboard {
@@ -156,7 +155,6 @@ impl Dashboard {
         reveal: bool,
         shell: Option<ShellFn>,
     ) -> Result<Self> {
-        let files = ConfigFiles::new(chainz.paths());
         let plan = Arc::new(Plan::build(&chainz, reveal));
         let state = State::new(&plan, &store);
         let (sender, events) = std::sync::mpsc::channel();
@@ -171,7 +169,7 @@ impl Dashboard {
             .context("failed to start the async runtime")?;
         // The stamp may be a little newer than what `chainz` read; a change
         // in between is then picked up at the next reload, not now.
-        let loaded = files.stamp();
+        let loaded = chainz.paths().stamp();
         let mut dash = Dashboard {
             engine: None,
             chainz,
@@ -183,7 +181,6 @@ impl Dashboard {
             plan,
             state,
             app,
-            files,
             loaded,
         };
         // Know about a running gateway before the first frame.
@@ -205,13 +202,13 @@ impl Dashboard {
         }
         let changed = self.shared.take_config_changed();
         // A change this dashboard made itself (`s`) is already loaded.
-        (any, changed && self.files.stamp() != self.loaded)
+        (any, changed && self.chainz.paths().stamp() != self.loaded)
     }
 
     /// Start the workers on the current plan.
     fn run_engine(&mut self) {
         let mut engine = Engine::start(self.rt.handle(), &self.shared, &self.plan);
-        engine.watch_config(self.files.clone(), self.loaded);
+        engine.watch_config(self.chainz.paths().clone(), self.loaded);
         self.engine = Some(engine);
     }
 
@@ -244,7 +241,7 @@ impl Dashboard {
 
     /// Re-read the config from disk and restart the workers on it.
     fn reload(&mut self) {
-        self.loaded = self.files.stamp();
+        self.loaded = self.chainz.paths().stamp();
         match Chainz::open_at(self.chainz.paths().clone(), LoadMode::Strict) {
             Ok(chainz) => {
                 self.chainz = chainz;
@@ -268,7 +265,7 @@ impl Dashboard {
         let edited = self.chainz.transact(|tx| tx.set_active(chain, endpoint));
         match edited {
             Ok(()) => {
-                self.loaded = self.files.stamp();
+                self.loaded = self.chainz.paths().stamp();
                 self.start();
                 // The gateway watches the config too; this only makes the
                 // switch immediate.

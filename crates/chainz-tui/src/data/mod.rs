@@ -26,6 +26,7 @@ use std::time::{Duration, Instant};
 use chainz_core::names;
 use chainz_core::route::{self, Route};
 use chainz_core::runtime::Runtime;
+use chainz_core::{StorePaths, StoreStamp};
 use chainz_rpc::{ErrorClass, HealthSample, HealthStore, RpcClient, Target, probe_all};
 use tokio::runtime::Handle;
 use tokio::sync::{Notify, mpsc, watch as channel};
@@ -37,7 +38,6 @@ use crate::plan::{self, ChainPlan, Plan, Source};
 use chainz_os::now_ms;
 
 use watch::GatewayWatch;
-pub use watch::{ConfigFiles, ConfigStamp};
 
 /// What the workers tell the event loop.
 #[derive(Debug, Clone)]
@@ -382,9 +382,10 @@ impl Engine {
         engine
     }
 
-    /// Also tell the event loop when `files` change from `since`.
-    pub fn watch_config(&mut self, files: ConfigFiles, since: ConfigStamp) {
-        let task = watch::config_loop(self.shared.clone(), files, since);
+    /// Also tell the event loop when the config under `paths` changes
+    /// from `since`.
+    pub fn watch_config(&mut self, paths: StorePaths, since: StoreStamp) {
+        let task = watch::config_loop(self.shared.clone(), paths, since);
         self.tasks.push(self.handle.spawn(task));
     }
 

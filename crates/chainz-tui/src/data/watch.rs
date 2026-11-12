@@ -1,13 +1,12 @@
 //! The watchers: a gateway starting or stopping, its metrics and request
 //! stream while it runs, and the config files changing on disk.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use chainz_core::StorePaths;
 use chainz_core::runtime::{GatewayState, Runtime, ServeInfo};
-use chainz_os::FileStamp;
+use chainz_core::{StorePaths, StoreStamp};
 use tokio::sync::watch;
 
 use super::{SayOnce, Shared, Signals, Update, traffic_snapshot};
@@ -131,41 +130,13 @@ async fn follow_feed(shared: Arc<Shared>) {
     }
 }
 
-/// The files a config is read from.
-#[derive(Debug, Clone)]
-pub struct ConfigFiles {
-    config: PathBuf,
-    secrets: PathBuf,
-}
-
-/// The [`FileStamp`]s of a [`ConfigFiles`]: different whenever either
-/// file was rewritten, even within the same second.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ConfigStamp([Option<FileStamp>; 2]);
-
-impl ConfigFiles {
-    /// `config.toml` and `secrets.toml` under `paths`.
-    pub fn new(paths: &StorePaths) -> Self {
-        ConfigFiles {
-            config: paths.config().to_path_buf(),
-            secrets: paths.secrets().to_path_buf(),
-        }
-    }
-
-    /// The files as they are now.
-    pub fn stamp(&self) -> ConfigStamp {
-        let of = |path: &Path| FileStamp::of(path);
-        ConfigStamp([of(&self.config), of(&self.secrets)])
-    }
-}
-
-/// Raise [`Shared::take_config_changed`] whenever `files` differ from what
-/// was seen last, starting from `since`.
-pub(super) async fn config_loop(shared: Arc<Shared>, files: ConfigFiles, since: ConfigStamp) {
+/// Raise [`Shared::take_config_changed`] whenever the config under `paths`
+/// differs from what was seen last, starting from `since`.
+pub(super) async fn config_loop(shared: Arc<Shared>, paths: StorePaths, since: StoreStamp) {
     let mut seen = since;
     loop {
         tokio::time::sleep(shared.tuning.watch_every).await;
-        let now = files.stamp();
+        let now = paths.stamp();
         if now != seen {
             seen = now;
             shared.config_changed.store(true, Ordering::Relaxed);

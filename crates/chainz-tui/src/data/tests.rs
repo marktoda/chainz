@@ -873,9 +873,9 @@ async fn a_config_change_on_disk_is_announced() {
     let config = dir.path().join("config.toml");
     std::fs::write(&config, "version = 2\n").unwrap();
     let (shared, updates) = shared(dir.path(), fast());
-    let files = ConfigFiles::new(&StorePaths::in_dir(dir.path().to_path_buf()));
+    let paths = StorePaths::in_dir(dir.path().to_path_buf());
     let mut engine = Engine::start(&Handle::current(), &shared, &plan(vec![]));
-    engine.watch_config(files.clone(), files.stamp());
+    engine.watch_config(paths.clone(), paths.stamp());
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(!shared.take_config_changed());
     // A new mtime, even on filesystems with coarse timestamps.
