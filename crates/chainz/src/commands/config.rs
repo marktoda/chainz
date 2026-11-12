@@ -26,6 +26,8 @@ fn path(all: bool) -> Result<i32> {
     println!("state    {}", paths::state_dir()?.display());
     println!("cache    {}", paths::cache_dir()?.display());
     println!("runtime  {}", runtime.dir().display());
+    println!("serve    {}", paths::serve_log()?.display());
+    println!("fork     {}", paths::fork_log("<name>")?.display());
     Ok(0)
 }
 

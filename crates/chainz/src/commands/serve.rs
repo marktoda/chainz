@@ -8,19 +8,24 @@ use super::runtime;
 use crate::cli::{ServeArgs, ServeCommand};
 use crate::{net, sys, ui, view};
 use anyhow::{Context, Result, bail};
+use chainz_core::StorePaths;
 use chainz_core::paths;
 use chainz_core::runtime::{GatewayState, LOOPBACK, Runtime, ServeInfo};
 use chainz_rpc::control::{
     ControlClient, EVENTS_BUFFER, EventsOptions, MetricsRow, RecordStatus, RequestRecord, Status,
 };
+use chainz_serve::Event;
 use serde::Serialize;
-use std::io::Write;
+use std::io::{IsTerminal, Write};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// How long `--detach` waits for the background gateway to come up.
 const START_TIMEOUT: Duration = Duration::from_secs(10);
-/// How long `serve stop` waits: the gateway drains for up to 5 s.
-const STOP_TIMEOUT: Duration = Duration::from_secs(8);
+/// How long `serve stop` waits: the gateway's whole shutdown, plus time to
+/// notice the signal and exit.
+const STOP_TIMEOUT: Duration =
+    chainz_serve::SHUTDOWN_BUDGET.saturating_add(Duration::from_millis(750));
 /// Records `serve log -f` shows before following.
 const FOLLOW_BACKLOG: usize = 10;
 
@@ -62,33 +67,111 @@ fn running(runtime: &Runtime) -> Result<Option<ServeInfo>> {
 }
 
 fn start(args: ServeArgs) -> Result<i32> {
-    // Loads (and on first run migrates) the config, so errors surface here
-    // rather than in a background log.
+    preflight()?;
+    if args.detach {
+        return detach();
+    }
+    let mut foreground = Foreground {
+        live: std::io::stderr().is_terminal(),
+        log: args.log.clone(),
+    };
+    let options = chainz_serve::Options {
+        port: args.port,
+        log: args.log,
+        ticks: foreground.live,
+    };
+    chainz_serve::run(
+        StorePaths::resolve()?,
+        runtime()?,
+        paths::state_dir().ok(),
+        options,
+        |event| foreground.show(event),
+    )?;
+    Ok(0)
+}
+
+/// What must hold before a gateway starts, checked here so the errors reach
+/// the terminal rather than a background log: the config loads (migrating
+/// v1 on first run) and has chains, and no gateway runs.
+fn preflight() -> Result<()> {
     let chainz = super::open()?;
     if chainz.config().chains.is_empty() {
         bail!("no chains configured; add one with `chainz chain add`");
     }
-    drop(chainz);
     if let Some(info) = running(&runtime()?)? {
         bail!(chainz_serve::AlreadyRunning(Some(info)));
     }
-    if args.detach {
-        return detach();
-    }
-    chainz_serve::run(chainz_serve::Options {
-        port: args.port,
-        log: args.log,
-    })?;
-    Ok(0)
+    Ok(())
 }
 
-/// Start the gateway as a background process, logging to the state dir,
-/// and wait until it is serving.
+/// The foreground gateway's terminal (or, detached, its log): notices on
+/// stderr, and on a terminal a live one-line summary.
+struct Foreground {
+    live: bool,
+    log: Option<PathBuf>,
+}
+
+impl Foreground {
+    fn say(&self, text: &str) {
+        // Clear the summary line first when there is one.
+        let clear = if self.live { "\r\x1b[K" } else { "" };
+        eprintln!("{clear}chainz serve: {text}");
+    }
+
+    fn show(&mut self, event: Event<'_>) -> Result<()> {
+        match event {
+            Event::Started(gateway) => {
+                let status = gateway.status();
+                self.say(&format!(
+                    "listening on http://{LOOPBACK}:{} ({} chains, pid {})",
+                    gateway.port(),
+                    status.chains.len(),
+                    status.pid
+                ));
+                for warning in gateway.warnings() {
+                    self.say(&format!("warning: {warning}"));
+                }
+                if let Some(log) = &self.log {
+                    self.say(&format!("logging requests to {}", log.display()));
+                }
+                self.say(
+                    "`chainz exec` now routes through the gateway (--direct bypasses it); stop with Ctrl-C or `chainz serve stop`",
+                );
+                // `serve --detach` waits for this: serve.json is out.
+                chainz_sys::detached_ready().context("unable to redirect output to the log")?;
+            }
+            Event::Notice(notice) => self.say(notice),
+            Event::Tick(gateway) => {
+                let s = gateway.summary();
+                let status = gateway.status();
+                eprint!(
+                    "\r\x1b[K:{} │ {} chains │ up {} │ last 60s: {} req, {} err, {} failover, {} rate-limited, p50 {} ms",
+                    status.port,
+                    status.chains.len(),
+                    chainz_core::fmt::uptime(status.uptime_secs),
+                    s.requests,
+                    s.errors,
+                    s.failovers,
+                    s.rate_limited,
+                    s.p50_ms,
+                );
+                let _ = std::io::stderr().flush();
+            }
+            Event::Stopping { drain } => self.say(&format!(
+                "stopping (in-flight requests get up to {} s)",
+                drain.as_secs()
+            )),
+        }
+        Ok(())
+    }
+}
+
 fn detach() -> Result<i32> {
     let runtime = runtime()?;
-    let state = paths::state_dir().context("unable to find the state directory")?;
-    chainz_sys::create_private_dir(&state)?;
-    let log_path = state.join("serve.log");
+    let log_path = paths::serve_log().context("unable to find the state directory")?;
+    if let Some(dir) = log_path.parent() {
+        chainz_sys::create_private_dir(dir)?;
+    }
     // The same command line in the background, ready once serve.json is
     // out; the child keeps our working directory, so a relative --log holds.
     let mut child = chainz_sys::launch_detached(&log_path, sys::LogMode::Append)

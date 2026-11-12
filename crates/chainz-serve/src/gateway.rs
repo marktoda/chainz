@@ -49,6 +49,16 @@ const MAX_REQUEST_BODY: usize = 32 * 1024 * 1024;
 const PROBE_IDLE_AFTER: u64 = 300;
 /// How much slower idle pools are probed (every minute at the default 5 s).
 const IDLE_PROBE_FACTOR: u32 = 12;
+/// How long in-flight requests get to finish on shutdown, by default.
+pub const DRAIN: Duration = Duration::from_secs(5);
+/// What shutdown allows past the drain before aborting the gateway's tasks.
+const DRAIN_SLACK: Duration = Duration::from_millis(250);
+/// How long shutdown waits for the `--log` writer to flush.
+const LOG_WRITER_WAIT: Duration = Duration::from_secs(2);
+/// The longest [`Gateway::shutdown`] takes with the default drain.
+pub const SHUTDOWN_BUDGET: Duration = DRAIN
+    .saturating_add(DRAIN_SLACK)
+    .saturating_add(LOG_WRITER_WAIT);
 
 /// How to start a [`Gateway`].
 pub struct GatewayConfig {
@@ -101,7 +111,7 @@ impl GatewayConfig {
             timeout,
             probe_interval: Duration::from_secs(5),
             watch_interval: Duration::from_millis(500),
-            drain: Duration::from_secs(5),
+            drain: DRAIN,
         }
     }
 }
@@ -380,7 +390,7 @@ impl Gateway {
         let _ = self.stop.send(true);
         // Each task stops on the signal (the servers after draining);
         // whatever is still running at the deadline is aborted.
-        let deadline = tokio::time::Instant::now() + self.drain + Duration::from_millis(250);
+        let deadline = tokio::time::Instant::now() + self.drain + DRAIN_SLACK;
         for mut task in std::mem::take(&mut self.tasks) {
             tokio::select! {
                 _ = &mut task => {}
@@ -392,7 +402,7 @@ impl Gateway {
         }
         self.shared.router.inspector.close_log();
         if let Some(mut writer) = self.log_writer.take()
-            && tokio::time::timeout(Duration::from_secs(2), &mut writer)
+            && tokio::time::timeout(LOG_WRITER_WAIT, &mut writer)
                 .await
                 .is_err()
         {

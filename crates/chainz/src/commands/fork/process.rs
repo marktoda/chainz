@@ -203,11 +203,11 @@ fn stop_orphan(record: &ForkRecord) {
 
 /// The fork's log: anvil's output, and the supervisor's when detached.
 pub fn log_path(name: &str) -> Result<PathBuf> {
-    let dir = paths::state_dir()
-        .context("unable to find the state directory")?
-        .join("forks");
-    chainz_sys::create_private_dir(&dir).context("unable to create the fork log directory")?;
-    Ok(dir.join(format!("{name}.log")))
+    let path = paths::fork_log(name).context("unable to find the state directory")?;
+    if let Some(dir) = path.parent() {
+        chainz_sys::create_private_dir(dir).context("unable to create the fork log directory")?;
+    }
+    Ok(path)
 }
 
 /// The last `lines` lines of the log, indented, for error messages.

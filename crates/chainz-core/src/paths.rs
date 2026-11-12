@@ -4,7 +4,7 @@
 //! | --- | --- |
 //! | `$XDG_CONFIG_HOME/chainz/config.toml` | chains, endpoints, explorers, signer references, labels |
 //! | `$XDG_CONFIG_HOME/chainz/secrets.toml` | variable values, plaintext/encrypted keys (0600) |
-//! | `$XDG_STATE_HOME/chainz/` | endpoint health history, logs |
+//! | `$XDG_STATE_HOME/chainz/` | endpoint health history, logs ([`serve_log`], [`fork_log`]) |
 //! | `$XDG_RUNTIME_DIR/chainz/` (else the state dir) | gateway and fork registry |
 //! | `$XDG_CACHE_HOME/chainz/` | chainlist |
 //!
@@ -40,6 +40,17 @@ pub(crate) fn config_dir() -> io::Result<PathBuf> {
 /// `$XDG_STATE_HOME/chainz`.
 pub fn state_dir() -> io::Result<PathBuf> {
     Ok(xdg("XDG_STATE_HOME", ".local/state")?.join("chainz"))
+}
+
+/// `$XDG_STATE_HOME/chainz/serve.log`: a detached gateway's output.
+pub fn serve_log() -> io::Result<PathBuf> {
+    Ok(state_dir()?.join("serve.log"))
+}
+
+/// `$XDG_STATE_HOME/chainz/forks/<name>.log`: anvil's output, and the
+/// supervisor's when detached.
+pub fn fork_log(name: &str) -> io::Result<PathBuf> {
+    Ok(state_dir()?.join("forks").join(format!("{name}.log")))
 }
 
 /// `$XDG_CACHE_HOME/chainz`.

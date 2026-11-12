@@ -7,7 +7,8 @@
 //! is served on `serve.sock`, never on the TCP port; its types live in
 //! [`chainz_rpc::control`].
 //!
-//! [`run`] is the process entry point; [`Gateway`] is the embeddable server
+//! [`run`] is the process entry point (its caller presents [`Event`]s);
+//! [`Gateway`] is the embeddable server
 //! (tests start it in-process against mock upstreams). [`PinnedProxy`] is
 //! the single-endpoint variant (for forks), and [`auth`] holds the loopback
 //! token and `Host` checks both use.
@@ -25,16 +26,15 @@ mod router;
 mod state;
 mod summary;
 
-use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use chainz_core::StorePaths;
 use chainz_core::runtime::Runtime;
-use chainz_core::{StorePaths, paths};
 use tokio::signal::unix::{SignalKind, signal};
 
-pub use gateway::{Gateway, GatewayConfig};
+pub use gateway::{DRAIN, Gateway, GatewayConfig, SHUTDOWN_BUDGET};
 pub use metrics::Summary;
 pub use pinned::PinnedProxy;
 
@@ -62,15 +62,37 @@ pub struct Options {
     pub port: u16,
     /// Append request records to this file as JSONL.
     pub log: Option<PathBuf>,
+    /// Send [`Event::Tick`] every second (for a live summary line).
+    pub ticks: bool,
 }
 
-/// Run the gateway in the foreground until SIGINT or SIGTERM. SIGHUP
-/// reloads the config. On a terminal, a one-line live summary is kept on
-/// stderr.
-pub fn run(options: Options) -> Result<()> {
-    let paths = StorePaths::resolve()?;
-    let runtime = Runtime::resolve().context("unable to find the runtime directory")?;
-    let state_dir = paths::state_dir().ok();
+/// What [`run`] reports to its caller, which presents it.
+#[derive(Debug)]
+pub enum Event<'a> {
+    /// The gateway serves and `serve.json` is published.
+    Started(&'a Gateway),
+    /// A notice: a reload, a warning.
+    Notice(&'a str),
+    /// A second passed (with [`Options::ticks`]).
+    Tick(&'a Gateway),
+    /// A stop signal arrived: in-flight requests get up to `drain`.
+    Stopping {
+        /// How long in-flight requests may take.
+        drain: Duration,
+    },
+}
+
+/// Run the gateway until SIGINT or SIGTERM; SIGHUP reloads the config.
+/// `paths`, `runtime` and `state_dir` are resolved by the caller (as for
+/// the dashboard). Everything worth showing goes to `on_event`; an error it
+/// returns stops the gateway and is returned.
+pub fn run(
+    paths: StorePaths,
+    runtime: Runtime,
+    state_dir: Option<PathBuf>,
+    options: Options,
+    on_event: impl FnMut(Event<'_>) -> Result<()>,
+) -> Result<()> {
     let mut config = GatewayConfig::new(paths, runtime, state_dir);
     config.port = options.port;
     config.log = options.log;
@@ -81,45 +103,23 @@ pub fn run(options: Options) -> Result<()> {
         .enable_all()
         .build()
         .context("failed to start the async runtime")?
-        .block_on(foreground(config))
+        .block_on(serve(config, options.ticks, on_event))
 }
 
-async fn foreground(config: GatewayConfig) -> Result<()> {
+async fn serve(
+    config: GatewayConfig,
+    ticks: bool,
+    mut on_event: impl FnMut(Event<'_>) -> Result<()>,
+) -> Result<()> {
     let mut terminate = signal(SignalKind::terminate())?;
     let mut interrupt = signal(SignalKind::interrupt())?;
     let mut hangup = signal(SignalKind::hangup())?;
-    let log = config.log.clone();
+    let drain = config.drain;
     let gateway = Gateway::start(config).await?;
     let mut notices = gateway.notices();
-    let live = std::io::stderr().is_terminal();
-    let say = |text: &str| {
-        // Clear the summary line first when there is one.
-        let clear = if live { "\r\x1b[K" } else { "" };
-        eprintln!("{clear}chainz serve: {text}");
-    };
-
-    let status = gateway.status();
-    say(&format!(
-        "listening on http://{}:{} ({} chains, pid {})",
-        chainz_core::runtime::LOOPBACK,
-        gateway.port(),
-        status.chains.len(),
-        status.pid
-    ));
-    for warning in gateway.warnings() {
-        say(&format!("warning: {warning}"));
-    }
-    if let Some(log) = &log {
-        say(&format!("logging requests to {}", log.display()));
-    }
-    say(
-        "`chainz exec` now routes through the gateway (--direct bypasses it); stop with Ctrl-C or `chainz serve stop`",
-    );
-    // `serve --detach` waits for this: serve.json is out.
-    chainz_sys::detached_ready().context("unable to redirect output to the log")?;
-
     let mut ticker = tokio::time::interval(Duration::from_secs(1));
-    loop {
+    let mut outcome = on_event(Event::Started(&gateway));
+    while outcome.is_ok() {
         tokio::select! {
             _ = terminate.recv() => break,
             _ = interrupt.recv() => break,
@@ -129,28 +129,15 @@ async fn foreground(config: GatewayConfig) -> Result<()> {
             }
             notice = notices.recv() => {
                 if let Ok(notice) = notice {
-                    say(&notice);
+                    outcome = on_event(Event::Notice(&notice));
                 }
             }
-            _ = ticker.tick(), if live => {
-                let s = gateway.summary();
-                let status = gateway.status();
-                eprint!(
-                    "\r\x1b[K:{} │ {} chains │ up {} │ last 60s: {} req, {} err, {} failover, {} rate-limited, p50 {} ms",
-                    status.port,
-                    status.chains.len(),
-                    chainz_core::fmt::uptime(status.uptime_secs),
-                    s.requests,
-                    s.errors,
-                    s.failovers,
-                    s.rate_limited,
-                    s.p50_ms,
-                );
-                let _ = std::io::stderr().flush();
-            }
+            _ = ticker.tick(), if ticks => outcome = on_event(Event::Tick(&gateway)),
         }
     }
-    say("stopping (in-flight requests get up to 5 s)");
+    if outcome.is_ok() {
+        outcome = on_event(Event::Stopping { drain });
+    }
     gateway.shutdown().await;
-    Ok(())
+    outcome
 }

@@ -998,7 +998,12 @@ fn config_path_lists_every_location() {
         .args(["config", "path", "--all"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("secrets").and(predicate::str::contains("runtime")));
+        .stdout(
+            predicate::str::contains("secrets")
+                .and(predicate::str::contains("runtime"))
+                .and(predicate::str::contains("serve.log"))
+                .and(predicate::str::contains("forks/<name>.log")),
+        );
 }
 
 #[test]
