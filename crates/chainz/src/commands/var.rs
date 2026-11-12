@@ -35,7 +35,11 @@ fn references(config: &Config, name: &str) -> Vec<String> {
 
 /// Redacted presentation: never any part of the value.
 fn masked(value: &str) -> String {
-    format!("[REDACTED] ({} chars)", value.chars().count())
+    format!(
+        "{} ({} chars)",
+        chainz_core::redact::REDACTED,
+        value.chars().count()
+    )
 }
 
 fn set(args: &VarSetArgs) -> Result<i32> {

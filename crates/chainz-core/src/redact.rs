@@ -2,10 +2,11 @@
 //!
 //! The display policy is [`url()`] and [`header()`]: `${VAR}` templates, hosts
 //! and ordinary paths print verbatim, only credential-shaped parts are
-//! masked as [`REDACTED`], and anything unparseable fails closed. `reveal` prints the value as stored.
+//! masked as [`REDACTED`], and anything unparseable fails closed. `reveal`
+//! prints the value as stored. Every view of a URL, `Debug` output
+//! included, goes through them.
 //!
-//! [`redact`] (every literal part masked) and [`summarize`] (a terse
-//! host label) are the stricter views kept for `Debug` output and compact
+//! [`summarize`] (a terse host label) is the stricter view for compact
 //! listings.
 
 use crate::template;
@@ -29,6 +30,9 @@ pub(crate) fn parse_error(message: &str, span: Option<std::ops::Range<usize>>) -
 /// What replaces a masked value.
 pub const REDACTED: &str = "[REDACTED]";
 
+/// What replaces a URL that does not parse.
+const REDACTED_URL: &str = "[REDACTED URL]";
+
 /// `value` (an endpoint or explorer URL) for display: verbatim with
 /// `reveal`, else with user info, credential-shaped host labels, path
 /// segments and query values, known provider keys and the fragment
@@ -39,7 +43,7 @@ pub fn url(value: &str, reveal: bool) -> String {
         return value.to_string();
     }
     let Ok(parsed) = url::Url::parse(value) else {
-        return "[REDACTED URL]".to_string();
+        return REDACTED_URL.to_string();
     };
     let mut out = format!("{}://", parsed.scheme());
     if !parsed.username().is_empty() || parsed.password().is_some() {
@@ -177,53 +181,6 @@ fn is_public_text(text: &str) -> bool {
     number || version || word
 }
 
-/// Preserve useful public URL structure while removing credential-bearing
-/// values. Malformed input fails closed.
-pub fn redact(input: &str) -> String {
-    let Ok(mut url) = url::Url::parse(input) else {
-        return "[REDACTED URL]".to_string();
-    };
-    if let Some(host) = url.host_str()
-        && !is_local(host)
-        && let Some(domain) = public_domain(host)
-        && domain != host
-    {
-        let _ = url.set_host(Some(&format!("redacted.{domain}")));
-    }
-    if !url.username().is_empty() {
-        let _ = url.set_username("REDACTED");
-    }
-    if url.password().is_some() {
-        let _ = url.set_password(Some("REDACTED"));
-    }
-    if url.query().is_some() {
-        let names: Vec<String> = url
-            .query_pairs()
-            .map(|(name, _)| name.into_owned())
-            .collect();
-        url.set_query(None);
-        for name in names {
-            url.query_pairs_mut().append_pair(&name, "REDACTED");
-        }
-    }
-    if url.path() != "/" && !url.path().is_empty() {
-        let readable_path = urls::unescape_braces(url.path());
-        let templates = variable_templates(&readable_path);
-        let redacted_path = if templates.is_empty() {
-            "/REDACTED".to_string()
-        } else {
-            format!("/REDACTED/{}", templates.join("/"))
-        };
-        url.set_path(&redacted_path);
-    }
-    if url.fragment().is_some() {
-        url.set_fragment(Some("REDACTED"));
-    }
-    // url::Url percent-encodes braces, but variable names are safe public
-    // metadata and keeping ${NAME} intact makes redacted output actionable.
-    urls::unescape_braces(url.as_str())
-}
-
 /// Produce the terse endpoint label used by compact human listings.
 pub fn summarize(value: &str) -> String {
     let Ok(url) = url::Url::parse(value) else {
@@ -265,49 +222,9 @@ pub fn summarize(value: &str) -> String {
     format!("{}://{}{}{}", url.scheme(), display_host, port, suffix)
 }
 
-fn variable_templates(input: &str) -> Vec<String> {
-    template::spans(input)
-        .filter_map(|span| match span {
-            template::Span::Var(name) => Some(format!("${{{name}}}")),
-            _ => None,
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn detailed_redaction_hides_literal_credentials() {
-        let redacted = redact(
-            "https://user:password@private.rpc.example.com/v2/path-secret?token=query-secret#fragment-secret",
-        );
-        for secret in [
-            "user",
-            "password",
-            "path-secret",
-            "query-secret",
-            "fragment-secret",
-            "private",
-        ] {
-            assert!(!redacted.contains(secret), "{redacted}");
-        }
-        assert!(redacted.contains("redacted.example.com"));
-        assert!(redacted.contains("REDACTED"));
-    }
-
-    #[test]
-    fn detailed_redaction_preserves_template_names_and_fails_closed() {
-        let redacted = redact("https://rpc.example.com/literal-secret/${ALCHEMY_KEY}");
-        assert!(redacted.contains("${ALCHEMY_KEY}"));
-        assert!(!redacted.contains("literal-secret"));
-        assert_eq!(
-            redact("not a URL containing literal-secret"),
-            "[REDACTED URL]"
-        );
-        assert_eq!(redact("http://127.0.0.1:8545"), "http://127.0.0.1:8545/");
-    }
 
     #[test]
     fn summary_hides_remote_details_and_keeps_local_endpoints_useful() {

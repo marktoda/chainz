@@ -24,7 +24,7 @@ use crate::grammar::{self, Piece};
 use crate::labels::{LabelError, LabelIndex};
 use crate::model::{Backend, Chain, Config};
 use crate::names::{self, Token};
-use crate::redact::redact;
+use crate::redact;
 use crate::resolve::{self, ChainRef};
 use crate::route::RouteOpts;
 use crate::runtime::{ForkRecord, Runtime};
@@ -115,8 +115,8 @@ impl fmt::Debug for ExplorerContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ExplorerContext")
             .field("name", &self.name)
-            .field("api", &redact(&self.api))
-            .field("key", &self.key.as_ref().map(|_| crate::redact::REDACTED))
+            .field("api", &redact::url(&self.api, false))
+            .field("key", &self.key.as_ref().map(|_| redact::REDACTED))
             .field("key_error", &self.key_error)
             .field("etherscan", &self.etherscan)
             .finish()
@@ -188,17 +188,17 @@ impl EnvVar {
     pub fn display(&self) -> String {
         match self.shown {
             Shown::Plain => self.value.clone(),
-            Shown::Url => redact(&self.value),
+            Shown::Url => redact::url(&self.value, false),
             Shown::Headers => self
                 .value
                 .split(',')
                 .map(|pair| match pair.split_once(':') {
-                    Some((name, _)) => format!("{name}: {}", crate::redact::REDACTED),
-                    None => crate::redact::REDACTED.to_string(),
+                    Some((name, _)) => format!("{name}: {}", redact::REDACTED),
+                    None => redact::REDACTED.to_string(),
                 })
                 .collect::<Vec<_>>()
                 .join(","),
-            Shown::Secret => crate::redact::REDACTED.to_string(),
+            Shown::Secret => redact::REDACTED.to_string(),
         }
     }
 }
@@ -826,7 +826,7 @@ impl<'a> Expander<'a> {
                     .ok_or_else(|| anyhow!("chain '{chain}' has no explorer"))?;
                 Value {
                     value: explorer.api.clone(),
-                    display: redact(&explorer.api),
+                    display: redact::url(&explorer.api, false),
                 }
             }
             "explorer_key" => {
@@ -841,7 +841,7 @@ impl<'a> Expander<'a> {
                 };
                 Value {
                     value: key,
-                    display: crate::redact::REDACTED.to_string(),
+                    display: redact::REDACTED.to_string(),
                 }
             }
             other => {

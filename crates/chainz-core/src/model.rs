@@ -6,7 +6,7 @@
 //! Every `Debug` impl redacts URLs and secret-bearing values.
 
 use crate::address::Address;
-use crate::redact::redact;
+use crate::redact;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize, Serializer};
 use std::fmt;
@@ -193,7 +193,7 @@ impl Endpoint {
 impl fmt::Debug for Endpoint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Endpoint")
-            .field("url", &redact(&self.url))
+            .field("url", &redact::url(&self.url, false))
             .field("headers", &self.headers.keys().collect::<Vec<_>>())
             .finish()
     }
@@ -235,8 +235,8 @@ impl Explorer {
 impl fmt::Debug for Explorer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Explorer")
-            .field("api", &redact(&self.api))
-            .field("key", &self.key.as_ref().map(|_| crate::redact::REDACTED))
+            .field("api", &redact::url(&self.api, false))
+            .field("key", &self.key.as_ref().map(|_| redact::REDACTED))
             .field("url", &self.url)
             .finish()
     }

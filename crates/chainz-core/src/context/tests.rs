@@ -145,6 +145,8 @@ fn rpc_override_exports_headers_and_explain_redacts() {
     assert_eq!(headers.display(), "x-secret: [REDACTED]");
     let rpc = env.iter().find(|e| e.name == "ETH_RPC_URL").unwrap();
     assert!(!rpc.display().contains("inf-key"));
+    // `--explain` shows a URL the way `chain show` does.
+    assert_eq!(rpc.display(), "https://gw.example/rpc/1");
     assert!(
         ctx(
             &f,
@@ -429,6 +431,10 @@ fn deprecated_tokens_warn_and_secrets_are_redacted_for_explain() {
     assert_eq!(out[1].value, "es-key");
     assert_eq!(out[1].display, "[REDACTED]");
     assert!(out[2].value.contains("inf-key") && !out[2].display.contains("inf-key"));
+    assert_eq!(
+        out[2].display,
+        "--rpc-url=https://mainnet.infura.io/v3/${CTX_TEST_INFURA}"
+    );
     // Each warning once, even when repeated non-adjacently.
     assert_eq!(
         e.warnings(),

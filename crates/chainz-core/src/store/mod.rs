@@ -70,7 +70,7 @@ pub struct ExpandedEndpoint {
 impl std::fmt::Debug for ExpandedEndpoint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ExpandedEndpoint")
-            .field("url", &crate::redact::redact(&self.url))
+            .field("url", &crate::redact::url(&self.url, false))
             .field(
                 "headers",
                 &self.headers.iter().map(|(k, _)| k).collect::<Vec<_>>(),

@@ -12,7 +12,7 @@
 //! `Target::new(route.chain_id, &route.endpoint, &route.url, &route.headers)`.
 
 use crate::model::{Chain, Endpoint};
-use crate::redact::redact;
+use crate::redact;
 use crate::runtime::{GatewayState, Runtime, ServeInfo};
 use crate::store::Chainz;
 use anyhow::{Context as _, Result, anyhow};
@@ -89,7 +89,7 @@ impl Route {
             chain_id,
             chain: chain.to_string(),
             endpoint: endpoint.to_string(),
-            display: redact(&url),
+            display: redact::url(&url, false),
             url,
             headers: Vec::new(),
             via_gateway: true,
@@ -172,7 +172,7 @@ impl Chainz {
             endpoint: endpoint_name.to_string(),
             url: expanded.url,
             headers: expanded.headers,
-            display: redact(&endpoint.url),
+            display: redact::url(&endpoint.url, false),
             via_gateway: false,
             websocket: endpoint.is_websocket(),
         })

@@ -57,7 +57,7 @@ impl fmt::Debug for GatewayAddr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("GatewayAddr")
             .field("port", &self.port)
-            .field("token", &"[REDACTED]")
+            .field("token", &crate::redact::REDACTED)
             .finish()
     }
 }
@@ -155,7 +155,7 @@ impl fmt::Debug for ServeInfo {
             .field("format", &self.format)
             .field("pid", &self.pid)
             .field("port", &self.port)
-            .field("token", &"[REDACTED]")
+            .field("token", &crate::redact::REDACTED)
             .field("started_at", &self.started_at)
             .field("version", &self.version)
             .finish()
