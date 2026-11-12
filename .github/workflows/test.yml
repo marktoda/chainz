@@ -81,7 +81,7 @@ jobs:
         run: cargo check --locked --workspace --all-targets
 
   perf:
-    name: Hot-path perf gate (<= 85% of 0.4)
+    name: Hot-path perf gate vs 0.4
     runs-on: ubuntu-latest
     steps:
       - name: Checkout sources

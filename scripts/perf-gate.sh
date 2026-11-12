@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Hot-path performance gate: v2's median must be <= 85% of v1's for
-# `exec 1 -- true` and `ls`, both against the 17-chain migration fixture.
+# Hot-path performance gate: v2's median must be at most MAX_RATIO of v1's
+# (the default below is the gate) for `exec 1 -- true` and `ls`, both
+# against the 17-chain migration fixture.
 #
 #   scripts/perf-gate.sh V1_BIN V2_BIN [MAX_RATIO]
 #
-# V1_BIN is chainz 0.4 as CI builds it: commit c964bce, `cargo build
-# --release`. V2_BIN is this tree's `cargo build --release -p chainz`.
+# V1_BIN is chainz 0.4 as CI builds it (the commit the `perf` job in
+# .github/workflows/test.yml checks out, `cargo build --release`). V2_BIN
+# is this tree's `cargo build --release -p chainz`.
 #
 # Every run uses scratch HOME/XDG directories and CHAINZ_DISABLE_KEYRING, so
 # the caller's real config, keyring and state are never read or written.

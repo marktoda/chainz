@@ -8,18 +8,23 @@ the rules every change keeps. Each crate's rustdoc
 
 ```bash
 nix develop            # optional: toolchain, Foundry, hyperfine, strace
-scripts/check.sh       # fmt, clippy, rustdoc, tests: what CI runs
+scripts/check.sh       # fmt, clippy, rustdoc, tests: CI's checks minus MSRV, perf, package and audit
 ```
 
 `scripts/check.sh lint` and `scripts/check.sh test` run half each. Tests
 that need `anvil` or `strace` skip when it is missing; with
 `CHAINZ_REQUIRE_TOOLS=1` they fail instead, as in CI.
 
-The hot-path gate compares release builds against chainz 0.4 (commit
-`c964bce`), as CI does:
+The hot-path gate compares release builds against the 0.4 baseline the
+`perf` job in `.github/workflows/test.yml` checks out (`scripts/perf-gate.sh`
+holds the ratio):
 
 ```bash
-scripts/perf-gate.sh path/to/0.4/chainz target/release/chainz
+base=$(grep -oE 'ref: [0-9a-f]{40}' .github/workflows/test.yml | cut -c6-)
+git worktree add .worktrees/v1 "$base"
+cargo build --release --manifest-path .worktrees/v1/Cargo.toml
+cargo build --release -p chainz
+scripts/perf-gate.sh .worktrees/v1/target/release/chainz target/release/chainz
 cargo run --release -p chainz-serve --example latency
 ```
 
