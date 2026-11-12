@@ -45,15 +45,8 @@ use chainz_core::Chainz;
 use chainz_core::runtime::Runtime;
 use chainz_rpc::HealthStore;
 
-/// Runs `chainz shell <chain>` for the `e` key and returns when it exits:
-/// an error, including a shell that did not exit cleanly, is shown in the
-/// dashboard's footer.
-pub type ShellFn = Box<dyn FnMut(&str) -> std::io::Result<()>>;
-
-/// Prints a warning for `--once` (an unreadable gateway record, a health
-/// history that cannot be saved); the live dashboard shows them in its
-/// footer instead.
-pub type WarnFn = Box<dyn FnMut(&str)>;
+pub use once::WarnFn;
+pub use term::ShellFn;
 
 /// How `chainz top` was invoked.
 pub struct Options {

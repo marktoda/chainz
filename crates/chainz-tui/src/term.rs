@@ -23,7 +23,6 @@ use ratatui::crossterm::terminal::{
 };
 use ratatui::crossterm::{execute, queue};
 
-use crate::ShellFn;
 use crate::app::{Action, App};
 use crate::data::{self, ConfigFiles, ConfigStamp, Engine, Shared, Tuning};
 use crate::model::State;
@@ -33,6 +32,11 @@ use crate::ui::{self, Ctx};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use chainz_os::now_ms;
+
+/// Runs `chainz shell <chain>` for the `e` key and returns when it exits:
+/// an error, including a shell that did not exit cleanly, is shown in the
+/// dashboard's footer.
+pub type ShellFn = Box<dyn FnMut(&str) -> std::io::Result<()>>;
 
 /// How long to wait for a key before looking at worker updates.
 const POLL: Duration = Duration::from_millis(50);

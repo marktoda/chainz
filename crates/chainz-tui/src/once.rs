@@ -14,9 +14,14 @@ use crate::app::{App, Tab};
 use crate::data::{self, Event, Shared, Tuning};
 use crate::model::State;
 use crate::plan::Plan;
+use crate::snapshot;
 use crate::ui::theme::Theme;
 use crate::ui::{self, Body, Content, Ctx};
-use crate::{WarnFn, snapshot};
+
+/// Prints a warning for `--once` (an unreadable gateway record, a health
+/// history that cannot be saved); the live dashboard shows them in its
+/// footer instead.
+pub type WarnFn = Box<dyn FnMut(&str)>;
 
 /// The wait before retrying a rate-limited request (then twice that).
 const RETRY_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
