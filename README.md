@@ -82,6 +82,7 @@ chainz rpc add base https://base-mainnet.infura.io/v3/'${INFURA_KEY}' --activate
 printf %s "$KEY" | chainz var set INFURA_KEY --stdin
 printf %s "$ETHERSCAN_KEY" | chainz chain set base --explorer etherscan --api-key-stdin
 chainz use base                       # default chain for `exec -- …`
+chainz use                            # show the default
 chainz ls
 chainz doctor
 ```

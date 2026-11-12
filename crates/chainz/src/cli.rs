@@ -61,7 +61,7 @@ pub enum Command {
     /// Print a chain's context as shell exports: eval "$(chainz env base)"
     Env(EnvArgs),
 
-    /// Set the default chain (exec notes on stderr whenever it applies)
+    /// Set the default chain, or show it (exec notes on stderr whenever it applies)
     Use(UseArgs),
 
     /// List chains (alias of `chain ls`)
@@ -217,7 +217,7 @@ pub enum ShellKind {
 
 #[derive(Debug, Args)]
 pub struct UseArgs {
-    /// Chain name, alias, prefix or ID (picker if omitted on a TTY)
+    /// Chain name, alias, prefix or ID (omitted: show the default)
     #[arg(add = ArgValueCompleter::new(complete::configured_chains))]
     pub chain: Option<String>,
     /// Clear the default instead

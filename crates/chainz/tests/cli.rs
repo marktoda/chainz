@@ -1155,8 +1155,20 @@ fn use_sets_default_with_stderr_notice() {
         .stdout("1\n")
         .stderr(predicate::str::contains("default").not());
     sb.cmd().args(["use", "nope"]).assert().failure();
+    // No chain: show the default, never a picker or an error.
+    sb.cmd()
+        .arg("use")
+        .assert()
+        .success()
+        .stdout(predicate::str::starts_with("default: base\n"))
+        .stderr("");
     sb.cmd().args(["use", "--clear"]).assert().success();
     assert!(!sb.config().contains("default ="));
+    sb.cmd()
+        .arg("use")
+        .assert()
+        .success()
+        .stdout("default: none\nSet one with `chainz use <chain>`\n");
 }
 
 #[test]
@@ -2035,7 +2047,6 @@ fn a_missing_chain_off_a_tty_is_a_usage_error() {
         (&["exec", "--", "true"][..], "Usage: chainz exec"),
         (&["shell"], "Usage: chainz shell"),
         (&["env"], "Usage: chainz env"),
-        (&["use"], "Usage: chainz use"),
     ] {
         sb.cmd()
             .args(args)

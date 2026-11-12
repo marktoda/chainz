@@ -86,7 +86,7 @@ The frequent actions are top-level verbs; management lives under nouns. You type
 chainz exec [CHAIN] [--signer S] [--rpc NAME] [--direct] [--expose-key] [--explain] -- CMD...   (alias: x)
 chainz shell [CHAIN] [--signer S] [--rpc NAME] [--direct]     # subshell with the context exported
 chainz env [CHAIN] [--signer S] [--rpc NAME] [--direct] [--shell zsh|bash|fish]   # eval "$(chainz env base)"
-chainz use [CHAIN | --clear]         # set the default chain
+chainz use [CHAIN | --clear]         # set the default chain (no chain: show it)
 chainz ls [--json] [--reveal]        # alias of `chain ls`
 
 # live surfaces
@@ -130,7 +130,7 @@ chainz completions SHELL
 
 **Renames from v1:** `key` becomes `signer` (it holds keystore and 1Password references, not only raw keys). `list` becomes `ls`, with `list` kept as an alias. `update` is `chain set`: one verb for every chain setting, flag-driven or, with no flags on a TTY, v1's menu (RPC / Signer / Explorer / Name / Aliases / Done), applied in one write. `--show-secrets` and `--show` both become `--reveal`. `init` stays as a TTY wizard; off a TTY it prints the quick start, as `chainz` with no arguments does on an empty config. The first signer attaches to every chain without one, and `chain add` attaches the only signer and the `etherscan` explorer when it exists and Etherscan's v2 API covers the chain (`model::ETHERSCAN_CHAIN_IDS`, a built-in list kept like the short-name table; `init` goes by it too, and `chain set --explorer etherscan` elsewhere attaches it with a warning).
 
-**Interactive vs scripted:** pickers open where the design needs a choice (`exec`/`shell`/`env`/`use` with no chain, `chain add` with no chain, `chain set` with no chain, `addr add` with no chain context); off a TTY those fail with a precise usage message (exit 2 for a usage error). `--yes` means "accept without asking" everywhere. Every `rm` (`chain`, `rpc`, `addr`, `var`, `signer`) goes through one confirmation (`prompt::confirm_removal`): asked on a TTY (default no), `--yes` required off one. No command ever blocks on a hidden prompt in a pipeline.
+**Interactive vs scripted:** pickers open where the design needs a choice (`exec`/`shell`/`env` with no chain, `chain add` with no chain, `chain set` with no chain, `addr add` with no chain context); off a TTY those fail with a precise usage message (exit 2 for a usage error). `--yes` means "accept without asking" everywhere. Every `rm` (`chain`, `rpc`, `addr`, `var`, `signer`) goes through one confirmation (`prompt::confirm_removal`): asked on a TTY (default no), `--yes` required off one. No command ever blocks on a hidden prompt in a pipeline.
 
 ## Config v2
 

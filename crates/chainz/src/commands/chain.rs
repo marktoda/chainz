@@ -7,8 +7,7 @@ pub use set::set;
 use crate::cli::{ChainAddArgs, ChainCommand, ChainRmArgs, ChainShowArgs, ListArgs, UseArgs};
 use crate::load::open;
 use crate::probe::{check, probe_urls, ranked_urls};
-use crate::prompt::{Ask, Tty};
-use crate::select::{Missing, pick_chain};
+use crate::prompt::Ask;
 use crate::{net, ui, view};
 use anyhow::{Context, Result, anyhow, bail};
 use chainz_core::Chainz;
@@ -47,7 +46,7 @@ pub fn ls(args: &ListArgs) -> Result<i32> {
     Ok(0)
 }
 
-/// `use [CHAIN]`.
+/// `use [CHAIN]`: with no chain, show the default (never a picker).
 pub fn use_default(args: &UseArgs) -> Result<i32> {
     let mut chainz = open()?;
     if args.clear {
@@ -58,20 +57,16 @@ pub fn use_default(args: &UseArgs) -> Result<i32> {
         println!("Default chain cleared");
         return Ok(0);
     }
-    let name = match &args.chain {
-        Some(query) => resolve::configured(chainz.config(), query, Policy::Prefix)?
-            .0
-            .to_string(),
-        None => pick_chain(
-            &chainz,
-            &mut Tty,
-            "Default chain",
-            &Missing {
-                command: &["use"],
-                off_tty: "pass the chain to make the default",
-            },
-        )?,
+    let Some(query) = &args.chain else {
+        print!(
+            "{}",
+            view::default_chain(chainz.config().default.as_deref())
+        );
+        return Ok(0);
     };
+    let name = resolve::configured(chainz.config(), query, Policy::Prefix)?
+        .0
+        .to_string();
     if chainz.config().default.as_deref() == Some(name.as_str()) {
         println!("No changes ('{name}' is already the default chain)");
         return Ok(0);

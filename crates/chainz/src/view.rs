@@ -30,6 +30,17 @@ pub fn no_chains() -> String {
     format!("chainz: no chains configured yet.\n{QUICK_START}")
 }
 
+/// What `use` with no chain prints: the default chain, and how to change
+/// it.
+pub fn default_chain(default: Option<&str>) -> String {
+    match default {
+        Some(name) => format!(
+            "default: {name}\nChange it with `chainz use <chain>`, or `chainz use --clear`\n"
+        ),
+        None => "default: none\nSet one with `chainz use <chain>`\n".to_string(),
+    }
+}
+
 /// The marker for an endpoint's role: `●` active, `◐` failover.
 pub fn marker(active: bool, failover: bool) -> &'static str {
     if active {

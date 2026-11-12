@@ -91,6 +91,9 @@ changed before 2.0.0; they are listed under Removed and Changed.
 - The config is hand-editable TOML that keeps your ordering and comments;
   `edit` validates on save. Read-only commands no longer take the config
   lock.
+- `use` with no chain prints the default chain (`default: base`, or
+  `default: none`) and how to change it, on a terminal too; it no longer
+  opens a picker or fails off a terminal.
 - `completions <shell>` prints a loader that calls back into chainz instead
   of a static script; re-source it from your shell rc (see README).
 - Flags, one meaning each: `chain add --url URL` (was `--rpc`; repeatable,
@@ -166,7 +169,7 @@ changed before 2.0.0; they are listed under Removed and Changed.
   head`); 1 for an error, or a result the command reports itself (`doctor`
   problems, `addr find` with no match, `serve status` with no gateway); 2
   for every usage error (including a missing chain off a terminal for
-  `exec`, `shell`, `env`, `use`, `addr add`, `chain set` and `chain add`,
+  `exec`, `shell`, `env`, `addr add`, `chain set` and `chain add`,
   `fork stop` with no name, `signer add` or `var set` without the key or
   value off a terminal, and removed commands); 126 and 127 from `exec`
   when the command can't run or doesn't exist; 130 when a prompt is
