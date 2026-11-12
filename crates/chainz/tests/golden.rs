@@ -166,6 +166,7 @@ fn listings() {
         ("signer-ls.txt", &["signer", "ls"]),
         ("signer-ls.json", &["signer", "ls", "--json"]),
         ("var-ls.txt", &["var", "ls"]),
+        ("var-ls-verbose.txt", &["var", "ls", "-v"]),
         ("var-ls.json", &["var", "ls", "--json"]),
         ("addr-ls.json", &["addr", "ls", "--json"]),
     ] {

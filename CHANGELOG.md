@@ -186,6 +186,9 @@ changed before 2.0.0; they are listed under Removed and Changed.
   legend explains `●` active and `◐` failover. `--json` rows add
   `probed_at_ms`. The endpoint lists of `chain show` and `rpc bench` size
   the name column to the longest name too.
+- `var ls` has a header row and summarises what uses each variable
+  (`24 endpoints on 17 chains`, `explorer etherscan`); `-v` lists every
+  config path under it, and `--json` keeps the full `used_by` list.
 
 - Writes say what changed: `chain set` and `update` print each change as
   a transition (`active endpoint: alchemy → infura`) with its side effects

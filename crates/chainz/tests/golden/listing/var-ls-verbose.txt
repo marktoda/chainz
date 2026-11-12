@@ -1,0 +1,7 @@
+NAME               VALUE                  USED BY
+ALCHEMY_KEY        [REDACTED] (20 chars)  1 endpoint on eth
+  chains.eth.rpcs.alchemy
+TEAM               [REDACTED] (4 chars)   1 endpoint on eth
+  chains.eth.rpcs.gw
+ETHERSCAN_API_KEY  [REDACTED] (16 chars)  explorer etherscan
+  explorers.etherscan

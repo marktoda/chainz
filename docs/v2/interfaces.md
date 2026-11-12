@@ -85,7 +85,7 @@ these shapes.
 | `chain show` | one `ChainView` |
 | `rpc ls` | `[{chain, name, url, active, failover, websocket, headers?, latency_ms, head, probed_at_ms, error, tags}]` (an endpoint view plus its latest health; `probed_at_ms` is when that sample was taken) |
 | `signer ls` | `[{name, backend, address, chains}]` |
-| `var ls` | `[{name, value, used_by}]` (`value` is `[REDACTED] (N chars)` unless `--reveal`) |
+| `var ls` | `[{name, value, used_by}]` (`value` is `[REDACTED] (N chars)` unless `--reveal`; `used_by` lists every config path, which the text summarises unless `-v`) |
 | `addr ls` | `[{name, scope, chain_id, address, source, shadowed}]` |
 | `addr find` | the same rows, for one address (exit 1 when empty) |
 | `addr import` | `[{chain, chain_id, name, address, action, reason?, previous?, contract, file}]`; `action` is `added`, `unchanged`, `overwritten` or `skipped` |

@@ -836,6 +836,9 @@ pub struct VarLsArgs {
     /// Print the values
     #[arg(long, alias = "show")]
     pub reveal: bool,
+    /// List every config record that uses each variable
+    #[arg(short, long)]
+    pub verbose: bool,
     /// JSON output
     #[arg(long)]
     pub json: bool,

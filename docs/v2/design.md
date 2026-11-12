@@ -122,7 +122,7 @@ chainz addr add NAME ADDRESS [--chain C | --all-chains]
 chainz addr ls [--chain C] [--builtin] [--json] | rm NAME [--chain C] | find 0x… [--json]
 chainz addr import PATH... [--dry-run] [--prefix P] [--only A,B] [--force] [--json]
 chainz label [--chain C]             # stdin filter: 0x… → name(0x…)
-chainz var set NAME [VALUE | --stdin] | get NAME [--reveal] | ls [--reveal] [--json] | rm NAME
+chainz var set NAME [VALUE | --stdin] | get NAME [--reveal] | ls [-v] [--reveal] [--json] | rm NAME
 chainz doctor [--fix] [--tokens]
 chainz config path [--all] | migrate [--dry-run]
 chainz completions SHELL

@@ -3,12 +3,11 @@
 use crate::cli::{VarCommand, VarGetArgs, VarLsArgs, VarRmArgs, VarSetArgs, usage_error};
 use crate::load::open;
 use crate::prompt::{self, StdinTrim, read_stdin_secret};
-use crate::ui;
+use crate::{ui, view};
 use anyhow::{Result, bail};
-use chainz_core::model::Config;
+use chainz_core::model::{Config, Record};
 use chainz_core::secrets::check_var_name;
 use chainz_core::signer::Prompter;
-use chainz_core::template;
 use serde::Serialize;
 use zeroize::Zeroizing;
 
@@ -21,16 +20,52 @@ pub fn run(cmd: VarCommand) -> Result<i32> {
     }
 }
 
-/// Where `${name}` is referenced in config (chain/endpoint/explorer paths).
+/// Where `${name}` is referenced, as config paths.
 fn references(config: &Config, name: &str) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for (path, value) in config.templated_fields() {
-        if out.last() != Some(&path) && template::references(value).is_ok_and(|r| r.contains(&name))
-        {
-            out.push(path);
+    config
+        .var_uses(name)
+        .iter()
+        .map(ToString::to_string)
+        .collect()
+}
+
+/// What uses a variable, in a few words: `24 endpoints on 17 chains`,
+/// `2 endpoints on eth, explorer etherscan`, or `unused`.
+fn summary(uses: &[Record<'_>]) -> String {
+    let mut chains: Vec<&str> = Vec::new();
+    let mut endpoints = 0;
+    let mut explorers: Vec<&str> = Vec::new();
+    for record in uses {
+        match *record {
+            Record::Endpoint { chain, .. } => {
+                endpoints += 1;
+                if !chains.contains(&chain) {
+                    chains.push(chain);
+                }
+            }
+            Record::Explorer(name) => explorers.push(name),
         }
     }
-    out
+    let mut parts = Vec::new();
+    match chains.as_slice() {
+        [] => {}
+        [chain] => parts.push(format!("{} on {chain}", ui::count(endpoints, "endpoint"))),
+        _ => parts.push(format!(
+            "{} on {}",
+            ui::count(endpoints, "endpoint"),
+            ui::count(chains.len(), "chain")
+        )),
+    }
+    match explorers.as_slice() {
+        [] => {}
+        [name] => parts.push(format!("explorer {name}")),
+        _ => parts.push(ui::count(explorers.len(), "explorer")),
+    }
+    if parts.is_empty() {
+        "unused".into()
+    } else {
+        parts.join(", ")
+    }
 }
 
 /// Redacted presentation: never any part of the value.
@@ -95,31 +130,40 @@ struct VarRow {
 fn ls(args: &VarLsArgs) -> Result<i32> {
     let (reveal, json) = (args.reveal, args.json);
     let chainz = open()?;
-    let rows: Vec<VarRow> = chainz
-        .secrets()?
-        .vars
-        .iter()
-        .map(|(n, v)| VarRow {
-            name: n.clone(),
-            value: if reveal { v.clone() } else { masked(v) },
-            used_by: references(chainz.config(), n),
-        })
-        .collect();
+    let config = chainz.config();
+    let secrets = chainz.secrets()?;
+    let value = |v: &str| if reveal { v.to_string() } else { masked(v) };
     if json {
+        let rows: Vec<VarRow> = secrets
+            .vars
+            .iter()
+            .map(|(n, v)| VarRow {
+                name: n.clone(),
+                value: value(v),
+                used_by: references(config, n),
+            })
+            .collect();
         println!("{}", serde_json::to_string_pretty(&rows)?);
         return Ok(0);
     }
-    if rows.is_empty() {
+    if secrets.vars.is_empty() {
         println!("No variables. Set one with `chainz var set NAME --stdin`.");
         return Ok(0);
     }
-    for r in rows {
-        let used = if r.used_by.is_empty() {
-            "unused".to_string()
-        } else {
-            r.used_by.join(", ")
-        };
-        println!("{:<24} {}  {}", r.name, r.value, ui::dim(&used));
+    let rows: Vec<[String; 3]> = secrets
+        .vars
+        .iter()
+        .map(|(n, v)| [n.clone(), value(v), summary(&config.var_uses(n))])
+        .collect();
+    let lines = view::table_lines(&["NAME", "VALUE", "USED BY"], &rows);
+    println!("{}", lines[0]);
+    for (name, line) in secrets.vars.keys().zip(&lines[1..]) {
+        println!("{line}");
+        if args.verbose {
+            for record in config.var_uses(name) {
+                println!("  {}", ui::dim(&record.to_string()));
+            }
+        }
     }
     Ok(0)
 }
@@ -149,4 +193,35 @@ fn rm(args: &VarRmArgs) -> Result<i32> {
     }
     println!("Removed variable '{name}'");
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn endpoint<'a>(chain: &'a str, endpoint: &'a str) -> Record<'a> {
+        Record::Endpoint { chain, endpoint }
+    }
+
+    #[test]
+    fn summaries_count_endpoints_and_chains() {
+        assert_eq!(summary(&[]), "unused");
+        assert_eq!(summary(&[endpoint("eth", "a")]), "1 endpoint on eth");
+        assert_eq!(
+            summary(&[
+                endpoint("eth", "a"),
+                endpoint("eth", "b"),
+                endpoint("base", "a")
+            ]),
+            "3 endpoints on 2 chains"
+        );
+        assert_eq!(
+            summary(&[endpoint("eth", "a"), Record::Explorer("etherscan")]),
+            "1 endpoint on eth, explorer etherscan"
+        );
+        assert_eq!(
+            summary(&[Record::Explorer("a"), Record::Explorer("b")]),
+            "2 explorers"
+        );
+    }
 }

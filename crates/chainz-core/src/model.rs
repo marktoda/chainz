@@ -477,6 +477,25 @@ impl Signer {
     }
 }
 
+/// A config record that holds `${VAR}` templates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Record<'a> {
+    /// `chains.<chain>.rpcs.<endpoint>`
+    Endpoint { chain: &'a str, endpoint: &'a str },
+    /// `explorers.<explorer>`
+    Explorer(&'a str),
+}
+
+impl fmt::Display for Record<'_> {
+    /// The record's path in `config.toml`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Record::Endpoint { chain, endpoint } => write!(f, "chains.{chain}.rpcs.{endpoint}"),
+            Record::Explorer(name) => write!(f, "explorers.{name}"),
+        }
+    }
+}
+
 impl Config {
     /// Parse `config.toml` text. Errors quote the source line; show them
     /// through the store, which redacts them.
@@ -493,23 +512,43 @@ impl Config {
     }
 
     /// Every value that may hold `${NAME}` templates, with the record it
-    /// belongs to (`chains.<chain>.rpcs.<endpoint>` or
-    /// `explorers.<explorer>`), in file order: endpoint URLs and header
-    /// values, then explorer API URLs and keys.
-    pub fn templated_fields(&self) -> impl Iterator<Item = (String, &str)> {
+    /// belongs to, in file order: endpoint URLs and header values, then
+    /// explorer API URLs and keys.
+    pub fn templated_fields(&self) -> impl Iterator<Item = (Record<'_>, &str)> {
         let endpoints = self.chains.iter().flat_map(|(chain, c)| {
             c.rpcs.iter().flat_map(move |(ep, e)| {
                 std::iter::once(e.url.as_str())
                     .chain(e.headers.values().map(String::as_str))
-                    .map(move |value| (format!("chains.{chain}.rpcs.{ep}"), value))
+                    .map(move |value| {
+                        (
+                            Record::Endpoint {
+                                chain,
+                                endpoint: ep,
+                            },
+                            value,
+                        )
+                    })
             })
         });
         let explorers = self.explorers.iter().flat_map(|(name, e)| {
             std::iter::once(e.api.as_str())
                 .chain(e.key.as_deref())
-                .map(move |value| (format!("explorers.{name}"), value))
+                .map(move |value| (Record::Explorer(name), value))
         });
         endpoints.chain(explorers)
+    }
+
+    /// The records that reference `${name}`, each once, in file order.
+    pub fn var_uses(&self, name: &str) -> Vec<Record<'_>> {
+        let mut out: Vec<Record<'_>> = Vec::new();
+        for (record, value) in self.templated_fields() {
+            if out.last() != Some(&record)
+                && crate::template::references(value).is_ok_and(|r| r.contains(&name))
+            {
+                out.push(record);
+            }
+        }
+        out
     }
 
     /// The chain with ID `id`.

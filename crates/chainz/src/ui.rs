@@ -134,6 +134,14 @@ pub fn item(msg: &str) -> String {
     format!("{} {}", style("▸").cyan(), msg)
 }
 
+/// `1 chain`, `17 chains`: a count with its noun (plural with `s`).
+pub fn count(n: usize, noun: &str) -> String {
+    match n {
+        1 => format!("1 {noun}"),
+        _ => format!("{n} {noun}s"),
+    }
+}
+
 pub fn dim(msg: &str) -> String {
     style(msg).dim().to_string()
 }
@@ -169,6 +177,13 @@ mod tests {
         assert!(fail("broken").contains("✗"));
         assert!(item("step").contains("▸"));
         assert!(section("Keys").contains("Keys"));
+    }
+
+    #[test]
+    fn counts() {
+        assert_eq!(count(1, "chain"), "1 chain");
+        assert_eq!(count(0, "chain"), "0 chains");
+        assert_eq!(count(17, "endpoint"), "17 endpoints");
     }
 
     #[test]
