@@ -47,6 +47,10 @@ bench() { # label v1-args v2-args
   local m1 m2
   m1=$(jq '.results[] | select(.command=="v1") | .median' "$work/$label.json")
   m2=$(jq '.results[] | select(.command=="v2") | .median' "$work/$label.json")
+  [[ $m1 =~ ^[0-9.e-]+$ && $m2 =~ ^[0-9.e-]+$ ]] || {
+    echo "perf-gate: no medians in hyperfine's JSON (written for hyperfine 1.x)" >&2
+    return 1
+  }
   awk -v l="$label" -v a="$m1" -v b="$m2" -v max="$max_ratio" 'BEGIN {
     r = b / a
     printf "%-6s v1 %.2f ms  v2 %.2f ms  ratio %.2f (max %.2f)\n", l, a*1000, b*1000, r, max
