@@ -171,12 +171,3 @@ pub fn lag_blocks(
     };
     behind.max(stale)
 }
-
-pub(super) fn median(values: impl Iterator<Item = u32>) -> Option<u32> {
-    let mut values: Vec<u32> = values.collect();
-    if values.is_empty() {
-        return None;
-    }
-    values.sort_unstable();
-    Some(values[(values.len() - 1) / 2])
-}

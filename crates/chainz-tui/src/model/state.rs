@@ -3,14 +3,18 @@
 
 use std::collections::VecDeque;
 
-use chainz_rpc::health::{self, P50_WINDOW};
+use chainz_rpc::health;
 use chainz_rpc::{HealthSample, HealthStore};
 
 use super::push_capped;
-use super::status::{SLOW_FACTOR, SLOW_FLOOR_MS, lag_blocks, median};
+use super::status::{SLOW_FACTOR, SLOW_FLOOR_MS, lag_blocks};
 use super::traffic::{FEED_CAP, FeedItem, TrafficSnapshot};
 use super::update::{Fault, GatewayInfo, Head, Sheet, Update};
 use crate::plan::{ChainInfo, ChainPlan, EndpointInfo, Plan, SignerPlan, Source};
+
+fn millis(duration: std::time::Duration) -> u32 {
+    u32::try_from(duration.as_millis()).unwrap_or(u32::MAX)
+}
 
 /// The span the Traffic tab's request rate is measured over.
 pub const FEED_RATE_SECS: u64 = 10;
@@ -43,7 +47,7 @@ impl EndpointState {
 
     /// Median latency over the recent successful probes.
     pub fn p50(&self) -> Option<u32> {
-        health::p50(&self.samples).map(|p50| u32::try_from(p50.as_millis()).unwrap_or(u32::MAX))
+        health::p50(&self.samples).map(millis)
     }
 }
 
@@ -135,17 +139,21 @@ impl ChainState {
         }
     }
 
-    /// Median latency of the active endpoint over the recent polls (the
-    /// same window as the probes' [`health::p50`]).
+    /// Median latency of the active endpoint over the recent polls, by
+    /// the probes' rule ([`health::p50`]).
     pub fn p50(&self) -> Option<u32> {
-        median(
-            self.samples
-                .iter()
-                .rev()
-                .flatten()
-                .take(P50_WINDOW)
-                .copied(),
-        )
+        let polls: Vec<HealthSample> = self
+            .samples
+            .iter()
+            .flatten()
+            .map(|&latency_ms| HealthSample {
+                at_ms: 0,
+                latency_ms,
+                head: None,
+                error: None,
+            })
+            .collect();
+        health::p50(&polls).map(millis)
     }
 
     /// Seconds since the head block was produced.
@@ -169,9 +177,11 @@ impl ChainState {
 pub struct State {
     /// Chains, in config order.
     pub chains: Vec<ChainState>,
-    /// Signers, in config order.
+    /// Signers, in config order: the plan's, copied when the state is
+    /// built (it is rebuilt with every new plan).
     pub signers: Vec<SignerPlan>,
-    /// Token label names: the Balances tab's columns.
+    /// Token label names, the Balances tab's columns: the plan's
+    /// [`Plan::token_names`], taken when the state is built.
     pub token_names: Vec<String>,
     /// The running gateway, if any.
     pub gateway: Option<GatewayInfo>,
@@ -259,9 +269,13 @@ impl State {
     }
 
     /// The median latency above which a chain is `slow`: three times the
-    /// median across chains, and never under [`SLOW_FLOOR_MS`].
+    /// (lower) median of the chains' medians, and never under
+    /// [`SLOW_FLOOR_MS`].
     pub fn slow_threshold(&self) -> u32 {
-        median(self.chains.iter().filter_map(ChainState::p50)).map_or(SLOW_FLOOR_MS, |m| {
+        let mut medians: Vec<u32> = self.chains.iter().filter_map(ChainState::p50).collect();
+        medians.sort_unstable();
+        let typical = medians.get(medians.len().saturating_sub(1) / 2);
+        typical.map_or(SLOW_FLOOR_MS, |m| {
             m.saturating_mul(SLOW_FACTOR).max(SLOW_FLOOR_MS)
         })
     }
