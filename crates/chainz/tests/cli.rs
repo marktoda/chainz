@@ -1321,7 +1321,8 @@ fn doctor_reports_dead_rpc_and_plaintext_signer() {
     sb.seed(&[("eth", 1)]);
     sb.cmd().arg("doctor").assert().code(1).stdout(
         predicate::str::contains("plaintext")
-            .and(predicate::str::contains("eth: active endpoint 'local'")),
+            .and(predicate::str::contains("eth: active endpoint 'local'"))
+            .and(predicate::str::contains("`chainz doctor eth --discover`")),
     );
 }
 
@@ -1349,6 +1350,13 @@ fn doctor_groups_one_cause_across_chains() {
         "{text}"
     );
     assert!(!text.contains("eth: active endpoint"), "{text}");
+    // No endpoint can replace it: the next step is --discover.
+    assert!(
+        text.contains(
+            "check your network, or find public endpoints with `chainz doctor CHAIN --discover`"
+        ),
+        "{text}"
+    );
     // Every instance counts; nothing here is for --fix.
     assert!(
         text.contains("8 problems; `--fix` can't repair these"),

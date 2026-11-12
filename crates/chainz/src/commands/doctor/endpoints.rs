@@ -66,6 +66,20 @@ pub(super) fn rpc_health(chainz: &mut Chainz, fix: bool, report: &mut Report) ->
             format!("active endpoint '{ep}' {problem} on {places}")
         });
         let proposed: Vec<Repair> = proposed.into_iter().flatten().collect();
+        if proposed.len() < findings.len() {
+            // Nothing configured can replace it: the next step is finding
+            // other endpoints, as `doctor CHAIN` says.
+            let chain = match findings.as_slice() {
+                [one] => one.on.as_str(),
+                _ => "CHAIN",
+            };
+            println!(
+                "  {}",
+                ui::dim(&format!(
+                    "check your network, or find public endpoints with `chainz doctor {chain} --discover`"
+                ))
+            );
+        }
         if fix {
             repairs.extend(proposed.into_iter().map(|r| (ep.clone(), r)));
             continue;
