@@ -74,14 +74,8 @@ pub fn ranked_urls(probed: &[(String, ProbeResult)]) -> (Ranking, Vec<String>) {
         .iter()
         .map(|&i| {
             let (url, result) = &probed[i];
-            match &result.error {
-                None => format!(
-                    "{}  {}ms",
-                    redact::url(url, false),
-                    result.latency.as_millis()
-                ),
-                Some(e) => format!("{}  {}", redact::url(url, false), e.class().phrase()),
-            }
+            let health = view::health_cell(Some(ranking.health[i]), Some(result.latency));
+            format!("{}  {health}", redact::url(url, false))
         })
         .collect();
     (ranking, items)
@@ -179,16 +173,6 @@ async fn probe_one(
     }
 }
 
-/// The short health word of a ranked list: `ok`, `lag N`, or the error
-/// class.
-pub fn health_label(h: &Health) -> String {
-    match h {
-        Health::Healthy => "ok".into(),
-        Health::Lagging { behind } => format!("lag {behind}"),
-        Health::Failing(class) => class.to_string(),
-    }
-}
-
 /// What is wrong with an endpoint, to end a sentence ("… 'x' is failing
 /// (connection failed)"); `None` when it is healthy.
 pub fn health_problem(h: &Health) -> Option<String> {
@@ -205,9 +189,9 @@ pub fn answered(probes: &ChainProbes) -> (usize, usize) {
     (ok, probes.probes.len())
 }
 
-/// Print `probes` best-first, one line each: role marker, name, probe
-/// latency, health, capability tags. Endpoints that failed come last, in
-/// config order, with `–` for a latency and what went wrong.
+/// Print `probes` best-first, one line each: role marker, name, health
+/// ([`view::health_cell`]), capability tags. Endpoints that failed come
+/// last, in config order, with what went wrong.
 pub fn print_ranked(chain: &Chain, probes: &ChainProbes, ranking: &Ranking, store: &HealthStore) {
     for line in ranked_lines(chain, probes, ranking, store) {
         println!("{line}");
@@ -220,7 +204,7 @@ fn ranked_lines(
     ranking: &Ranking,
     store: &HealthStore,
 ) -> Vec<String> {
-    let rows: Vec<[String; 5]> = ranking
+    let rows: Vec<[String; 4]> = ranking
         .order
         .iter()
         .map(|&i| {
@@ -230,32 +214,23 @@ fn ranked_lines(
                 chain.failover.contains(&p.endpoint),
             )
             .to_string();
-            match ranking.health[i] {
-                Health::Failing(class) => [
-                    marker,
-                    p.endpoint.clone(),
-                    "–".to_string(),
-                    ui::fail(class.phrase()),
-                    String::new(),
-                ],
-                ref health => {
-                    let tags = store
-                        .capabilities(p.chain_id, &p.endpoint)
-                        .map(|c| c.tags().join(" "))
-                        .unwrap_or_default();
-                    [
-                        marker,
-                        p.endpoint.clone(),
-                        format!("{}ms", p.result.latency.as_millis()),
-                        health_label(health),
-                        ui::dim(&tags),
-                    ]
-                }
-            }
+            let tags = match ranking.health[i] {
+                Health::Failing(_) => String::new(),
+                _ => store
+                    .capabilities(p.chain_id, &p.endpoint)
+                    .map(|c| c.tags().join(" "))
+                    .unwrap_or_default(),
+            };
+            [
+                marker,
+                p.endpoint.clone(),
+                view::health_cell(Some(ranking.health[i]), Some(p.result.latency)),
+                ui::dim(&tags),
+            ]
         })
         .collect();
     // No header row: the chain's section title heads the list.
-    view::table_lines(&["", "", "", "", ""], &rows)[1..]
+    view::table_lines(&["", "", "", ""], &rows)[1..]
         .iter()
         .map(|line| format!("  {line}"))
         .collect()
@@ -413,21 +388,25 @@ mod tests {
         );
         assert!(lines[1].contains("slow"), "{lines:?}");
         assert!(lines[2].contains("down"), "{lines:?}");
-        assert!(
-            lines[2].contains("–") && lines[2].contains("✗ timed out"),
-            "{lines:?}"
-        );
+        assert!(lines[2].contains("✗ timed out"), "{lines:?}");
         assert!(!lines[2].contains("ms"), "{lines:?}");
         assert_eq!(answered(&probes), (2, 3));
     }
 
     #[test]
     fn health_words() {
-        assert_eq!(health_label(&Health::Lagging { behind: 30 }), "lag 30");
+        let ms = Some(Duration::from_millis(42));
+        let cell = view::health_cell;
+        assert_eq!(cell(Some(Health::Healthy), ms), "42ms");
         assert_eq!(
-            health_label(&Health::Failing(chainz_rpc::ErrorClass::Connect)),
-            "connect"
+            cell(Some(Health::Lagging { behind: 30 }), ms),
+            "42ms lag 30"
         );
+        assert_eq!(
+            cell(Some(Health::Failing(chainz_rpc::ErrorClass::Timeout)), ms),
+            "✗ timed out"
+        );
+        assert_eq!(cell(None, None), "-");
         assert_eq!(health_problem(&Health::Healthy), None);
         assert_eq!(
             health_problem(&Health::Failing(chainz_rpc::ErrorClass::Connect)).unwrap(),
@@ -460,6 +439,6 @@ mod tests {
         assert!(!items[0].contains("abcdef0123456789"), "{}", items[0]);
         assert!(items[0].ends_with("  12ms"), "{}", items[0]);
         assert!(items[1].starts_with("https://down.example"), "{}", items[1]);
-        assert!(items[1].ends_with("  connection failed"), "{}", items[1]);
+        assert!(items[1].ends_with("  ✗ connection failed"), "{}", items[1]);
     }
 }

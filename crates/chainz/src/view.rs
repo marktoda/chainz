@@ -11,10 +11,11 @@
 use crate::ui;
 use chainz_core::model::{Chain, Config, Endpoint};
 use chainz_core::{fmt, names, redact};
-use chainz_rpc::HealthStore;
+use chainz_rpc::{ErrorClass, Health, HealthSample, HealthStore, classify};
 use console::{Alignment, pad_str, style};
 use serde::Serialize;
 use std::fmt::Write;
+use std::time::Duration;
 
 /// How to start from nothing: `chainz` with no chains, `init` off a
 /// terminal, and the README (a test keeps them identical).
@@ -86,23 +87,55 @@ pub struct EndpointHealth {
     pub head: Option<u64>,
     /// When the latest health sample was taken (unix ms).
     pub probed_at_ms: Option<u64>,
-    pub error: Option<String>,
+    pub error: Option<ErrorClass>,
     pub tags: Vec<String>,
+    /// The latest sample judged against the chain's other endpoints'
+    /// (lagging is relative); `None` when never checked.
+    #[serde(skip)]
+    pub health: Option<Health>,
 }
 
 impl EndpointHealth {
-    pub fn of(store: &HealthStore, chain_id: u64, endpoint: &str) -> Self {
-        let latest = store.latest(chain_id, endpoint);
-        Self {
-            latency_ms: latest.filter(|s| s.error.is_none()).map(|s| s.latency_ms),
-            head: latest.and_then(|s| s.head),
-            probed_at_ms: latest.map(|s| s.at_ms),
-            error: latest.and_then(|s| s.error).map(|c| c.to_string()),
-            tags: store
-                .capabilities(chain_id, endpoint)
-                .map(|c| c.tags())
-                .unwrap_or_default(),
+    /// The health of each of `chain`'s endpoints, in config order.
+    pub fn for_chain(store: &HealthStore, chain: &Chain) -> Vec<Self> {
+        let latest: Vec<Option<&HealthSample>> = chain
+            .rpcs
+            .keys()
+            .map(|name| store.latest(chain.id, name))
+            .collect();
+        let recorded: Vec<&HealthSample> = latest.iter().flatten().copied().collect();
+        let mut judged = classify(&recorded).into_iter();
+        chain
+            .rpcs
+            .keys()
+            .zip(latest)
+            .map(|(name, sample)| Self {
+                latency_ms: sample.filter(|s| s.error.is_none()).map(|s| s.latency_ms),
+                head: sample.and_then(|s| s.head),
+                probed_at_ms: sample.map(|s| s.at_ms),
+                error: sample.and_then(|s| s.error),
+                tags: store
+                    .capabilities(chain.id, name)
+                    .map(|c| c.tags())
+                    .unwrap_or_default(),
+                health: sample.and_then(|_| judged.next()),
+            })
+            .collect()
+    }
+}
+
+/// An endpoint's health in one cell, the same for a recorded sample (`ls
+/// CHAIN`) and a fresh probe (`doctor`, `add`): its latency (`42ms`), with
+/// `lag N` when it is that many blocks behind its peers, or what failed
+/// (`✗ timed out`); `-` when never checked.
+pub fn health_cell(health: Option<Health>, latency: Option<Duration>) -> String {
+    match (health, latency) {
+        (Some(Health::Failing(class)), _) => ui::fail(class.phrase()),
+        (Some(Health::Lagging { behind }), Some(latency)) => {
+            format!("{}ms lag {behind}", latency.as_millis())
         }
+        (_, Some(latency)) => format!("{}ms", latency.as_millis()),
+        (_, None) => "-".to_string(),
     }
 }
 
@@ -126,7 +159,7 @@ impl EndpointView {
         endpoint: &Endpoint,
         chain: &Chain,
         reveal: bool,
-        store: &HealthStore,
+        health: EndpointHealth,
     ) -> Self {
         Self {
             name: name.to_string(),
@@ -139,7 +172,7 @@ impl EndpointView {
             active: chain.rpc == name,
             failover: chain.failover.iter().any(|f| f == name),
             websocket: endpoint.is_websocket(),
-            health: EndpointHealth::of(store, chain.id, name),
+            health,
         }
     }
 
@@ -173,7 +206,8 @@ impl ChainView {
             endpoints: chain
                 .rpcs
                 .iter()
-                .map(|(n, e)| EndpointView::new(n, e, chain, reveal, store))
+                .zip(EndpointHealth::for_chain(store, chain))
+                .map(|((n, e), health)| EndpointView::new(n, e, chain, reveal, health))
                 .collect(),
         }
     }
@@ -327,11 +361,8 @@ fn endpoint_table(endpoints: &[EndpointView], now_ms: u64) -> String {
         .iter()
         .map(|e| {
             let h = &e.health;
-            let health = match (&h.latency_ms, &h.error) {
-                (Some(ms), _) => format!("{ms}ms"),
-                (None, Some(error)) => error.clone(),
-                _ => "-".into(),
-            };
+            let latency = h.latency_ms.map(|ms| Duration::from_millis(u64::from(ms)));
+            let health = health_cell(h.health, latency);
             let checked = h.probed_at_ms.map_or_else(
                 || "-".to_string(),
                 |at| format!("{} ago", fmt::age(now_ms.saturating_sub(at) / 1_000)),
@@ -387,10 +418,12 @@ mod tests {
         let mut endpoints: Vec<EndpointView> = chain
             .rpcs
             .iter()
-            .map(|(n, e)| EndpointView::new(n, e, &chain, false, &store))
+            .zip(EndpointHealth::for_chain(&store, &chain))
+            .map(|((n, e), health)| EndpointView::new(n, e, &chain, false, health))
             .collect();
         endpoints[0].health.latency_ms = Some(42);
         endpoints[0].health.probed_at_ms = Some(now - 120_000);
+        endpoints[0].health.health = Some(Health::Healthy);
         assert_eq!(
             endpoint_table(&endpoints, now),
             "     NAME                      HEALTH  CHECKED  URL

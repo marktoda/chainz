@@ -7,13 +7,13 @@ Chain eth (ethereum, mainnet)
   wallet    0x70997970C51812dc3A010C7d01b50e0d17dc79C8
   labels    @dai @my-safe @myrouter @usdc @usdt @wbtc @weth
 
-     NAME      HEALTH   CHECKED  URL
-  ●  infura    42ms     3m ago   https://mainnet.infura.io/v3/[REDACTED] archive trace logs:10000
-     alchemy   -        -        https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}
-  ◐  gw        timeout  3m ago   https://gw.example.invalid/rpc/1
+     NAME      HEALTH       CHECKED  URL
+  ●  infura    42ms         3m ago   https://mainnet.infura.io/v3/[REDACTED] archive trace logs:10000
+     alchemy   -            -        https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}
+  ◐  gw        ✗ timed out  3m ago   https://gw.example.invalid/rpc/1
       x-api-key: [REDACTED]
       x-team: ${TEAM}
-  ◐  llama     -        -        https://eth.llamarpc.com/
-     llama-ws  -        -        wss://eth.llamarpc.com/
+  ◐  llama     -            -        https://eth.llamarpc.com/
+     llama-ws  -            -        wss://eth.llamarpc.com/
 
 ● active  ◐ failover

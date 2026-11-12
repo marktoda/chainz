@@ -55,7 +55,8 @@ changed before 2.0.0; they are listed under Removed and Changed.
   applies the choices together; with no chain it opens a chain picker
   first. Off a terminal it needs flags.
 - `ls [CHAIN]`: the chain table, or one chain in full (signer and wallet,
-  explorer, failover, labels) with each endpoint's latest health, its age
+  explorer, failover, labels) with each endpoint's latest health (worded
+  as `doctor` words it: `42ms`, `42ms lag 30`, `✗ timed out`), its age
   and capability tags (`NAME HEALTH CHECKED URL`, headers under each
   endpoint, a legend for `●` active and `◐` failover). `ls --json` and
   `ls CHAIN --json` carry the health fields on every endpoint.
