@@ -15,10 +15,10 @@ use anyhow::Result;
 use chainz_core::labels::LabelIndex;
 use chainz_core::model::{Chain, Config, Endpoint};
 use chainz_core::{Chainz, LoadMode, StorePaths, resolve};
+use chainz_os::FileStamp;
 use chainz_rpc::control::ChainStatus;
 use chainz_rpc::health::FAILOVER_LAG;
 use chainz_rpc::{Capabilities, HealthStore, Target};
-use chainz_sys::FileStamp;
 
 use crate::classify::Needs;
 use crate::limiter::AimdLimiter;

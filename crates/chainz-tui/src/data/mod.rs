@@ -34,7 +34,7 @@ use tokio::task::{JoinHandle, JoinSet};
 use crate::gateway::GatewayLink;
 use crate::model::{Fault, GatewayInfo, PROBE_EVERY_MS, Probe, Refresh, Update};
 use crate::plan::{ChainPlan, Plan, Source};
-use chainz_sys::now_ms;
+use chainz_os::now_ms;
 
 use watch::GatewayWatch;
 pub use watch::{ConfigFiles, ConfigStamp};

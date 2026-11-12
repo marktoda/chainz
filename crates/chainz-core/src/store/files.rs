@@ -7,7 +7,7 @@
 use crate::model::{CONFIG_VERSION, Config};
 use crate::paths;
 use anyhow::{Context, Result, anyhow};
-use chainz_sys::PermissionWarning;
+use chainz_os::PermissionWarning;
 use std::path::{Path, PathBuf};
 
 /// Text of a brand-new config file: `header` (comment lines), then the
@@ -100,9 +100,9 @@ pub struct WriteLock {
 impl WriteLock {
     /// Block until the lock for `paths` is held.
     pub fn acquire(paths: &StorePaths) -> Result<Self> {
-        chainz_sys::create_private_dir(&paths.dir)
+        chainz_os::create_private_dir(&paths.dir)
             .with_context(|| format!("failed to create {}", paths.dir.display()))?;
-        let file = chainz_sys::open_private(&paths.lock)
+        let file = chainz_os::open_private(&paths.lock)
             .with_context(|| format!("failed to open {}", paths.lock.display()))?;
         file.lock()
             .with_context(|| format!("failed to lock {}", paths.lock.display()))?;
@@ -151,7 +151,7 @@ pub(crate) fn read(
     access: Access,
 ) -> Result<(Option<String>, Option<PermissionWarning>)> {
     let read = match access {
-        Access::Own => chainz_sys::read_private(path).map(|read| match read {
+        Access::Own => chainz_os::read_private(path).map(|read| match read {
             Some(read) => (Some(read.text), read.warning),
             None => (None, None),
         }),

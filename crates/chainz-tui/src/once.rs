@@ -7,7 +7,7 @@ use std::sync::mpsc::channel;
 use anyhow::{Context, Result};
 use chainz_core::Chainz;
 use chainz_core::runtime::Runtime;
-use chainz_sys::now_ms;
+use chainz_os::now_ms;
 use ratatui::text::Line;
 use unicode_width::UnicodeWidthChar;
 

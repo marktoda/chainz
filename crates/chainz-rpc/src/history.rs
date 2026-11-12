@@ -35,7 +35,7 @@ impl HealthSample {
     /// A sample from a probe result, timestamped now.
     pub fn from_probe(result: &ProbeResult) -> Self {
         HealthSample {
-            at_ms: chainz_sys::now_ms(),
+            at_ms: chainz_os::now_ms(),
             latency_ms: u32::try_from(result.latency.as_millis()).unwrap_or(u32::MAX),
             head: result.head,
             error: result.error.as_ref().map(|e| e.class()),
@@ -227,7 +227,7 @@ impl HealthStore {
                 .collect(),
         };
         let json = serde_json::to_vec_pretty(&file).map_err(io::Error::other)?;
-        chainz_sys::write_private(&path, &json)
+        chainz_os::write_private(&path, &json)
     }
 
     fn entry(&self, chain_id: u64, endpoint: &str) -> Option<&Entry> {
@@ -259,8 +259,8 @@ fn merge_entry(into: &mut Entry, ours: &Entry) {
 /// Take `<state_dir>/health.lock` (creating the directory); released
 /// when the returned file closes.
 fn lock(state_dir: &Path) -> io::Result<fs::File> {
-    chainz_sys::create_private_dir(state_dir)?;
-    let lock = chainz_sys::open_private(&state_dir.join(LOCK_NAME))?;
+    chainz_os::create_private_dir(state_dir)?;
+    let lock = chainz_os::open_private(&state_dir.join(LOCK_NAME))?;
     lock.lock()?;
     Ok(lock)
 }

@@ -884,12 +884,12 @@ pub fn migrate_locked(lock: &WriteLock) -> Result<Option<Summary>> {
         .with_context(|| format!("failed to read {}", source.display()))?;
     let mut plan =
         plan(&text).with_context(|| format!("failed to migrate {}", source.display()))?;
-    chainz_sys::create_private_dir(paths.dir())?;
+    chainz_os::create_private_dir(paths.dir())?;
     if !plan.secrets_toml.is_empty() {
-        chainz_sys::write_private(paths.secrets(), plan.secrets_toml.as_bytes())
+        chainz_os::write_private(paths.secrets(), plan.secrets_toml.as_bytes())
             .with_context(|| format!("failed to write {}", paths.secrets().display()))?;
     }
-    chainz_sys::write_private(paths.config(), plan.config_toml.as_bytes())
+    chainz_os::write_private(paths.config(), plan.config_toml.as_bytes())
         .with_context(|| format!("failed to write {}", paths.config().display()))?;
     let backup = backup_path(&source);
     std::fs::rename(&source, &backup).with_context(|| {

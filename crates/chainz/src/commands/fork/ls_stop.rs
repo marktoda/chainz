@@ -6,8 +6,8 @@ use crate::{net, ui, view};
 use anyhow::{Context as _, Result, bail};
 use chainz_core::fmt::{group, uptime};
 use chainz_core::runtime::{ForkEntry, ForkRecord, Runtime};
+use chainz_os::now_secs;
 use chainz_rpc::RpcClient;
-use chainz_sys::now_secs;
 use serde::Serialize;
 use std::time::Duration;
 

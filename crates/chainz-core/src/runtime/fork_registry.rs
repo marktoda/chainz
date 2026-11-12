@@ -164,8 +164,8 @@ impl Drop for PortReservation {
 /// file nobody else will see would rule nothing out.
 fn lock_path(path: &Path) -> io::Result<Option<File>> {
     loop {
-        let file = chainz_sys::open_private(path)?;
-        if !chainz_sys::try_lock(&file)? {
+        let file = chainz_os::open_private(path)?;
+        if !chainz_os::try_lock(&file)? {
             return Ok(None);
         }
         if same_file(&file, path)? {
@@ -258,7 +258,7 @@ impl Runtime {
     pub fn reserve_port(&self, port: u16) -> io::Result<Option<PortReservation>> {
         self.ensure_dir()?;
         let dir = self.ports_dir();
-        chainz_sys::create_private_dir(&dir)?;
+        chainz_os::create_private_dir(&dir)?;
         let lock = dir.join(format!("{port}.lock"));
         Ok(lock_path(&lock)?.map(|file| PortReservation {
             _file: file,

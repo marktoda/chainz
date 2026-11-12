@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use chainz_core::runtime::{GatewayState, Runtime, ServeInfo};
 use chainz_core::store::StorePaths;
-use chainz_sys::FileStamp;
+use chainz_os::FileStamp;
 use tokio::sync::watch;
 
 use super::{Event, Shared, Signals, Update, traffic_snapshot};

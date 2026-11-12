@@ -70,7 +70,7 @@ impl Capabilities {
 pub async fn probe_capabilities(client: &RpcClient, target: &Target) -> Capabilities {
     let mut caps = Capabilities {
         websocket: target.is_websocket(),
-        probed_at: Some(chainz_sys::now_secs()),
+        probed_at: Some(chainz_os::now_secs()),
         ..Capabilities::default()
     };
     if caps.websocket {

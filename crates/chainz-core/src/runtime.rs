@@ -248,8 +248,8 @@ impl Runtime {
 
     /// Create the directory (and `forks/`) with mode 0700.
     pub fn ensure_dir(&self) -> io::Result<()> {
-        chainz_sys::create_private_dir(&self.forks_dir())?;
-        chainz_sys::create_private_dir(&self.dir)
+        chainz_os::create_private_dir(&self.forks_dir())?;
+        chainz_os::create_private_dir(&self.dir)
     }
 
     /// `serve.lock`.
@@ -278,7 +278,7 @@ impl Runtime {
         let Ok(file) = std::fs::File::open(self.serve_lock_path()) else {
             return false;
         };
-        match chainz_sys::try_lock(&file) {
+        match chainz_os::try_lock(&file) {
             Ok(true) => {
                 let _ = file.unlock();
                 false
@@ -312,8 +312,8 @@ impl Runtime {
     /// `Ok(None)` when another gateway already holds the lock.
     pub fn acquire_serve_lock(&self) -> io::Result<Option<ServeLock>> {
         self.ensure_dir()?;
-        let file = chainz_sys::open_private(&self.serve_lock_path())?;
-        if !chainz_sys::try_lock(&file)? {
+        let file = chainz_os::open_private(&self.serve_lock_path())?;
+        if !chainz_os::try_lock(&file)? {
             return Ok(None);
         }
         let serve_json = self.serve_json_path();
@@ -356,7 +356,7 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> io::Result<Option<T>>
 
 fn write_json<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
     let bytes = serde_json::to_vec_pretty(value).map_err(io::Error::other)?;
-    chainz_sys::write_private(path, &bytes)
+    chainz_os::write_private(path, &bytes)
 }
 
 fn remove_if_exists(path: &Path) -> io::Result<()> {

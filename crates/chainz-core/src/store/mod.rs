@@ -22,7 +22,7 @@ use crate::secrets::{Builtins, Secrets, VarResolver};
 use crate::tx::Tx;
 use crate::validate;
 use anyhow::{Context, Result, anyhow, bail};
-use chainz_sys::PermissionWarning;
+use chainz_os::PermissionWarning;
 use files::{Access, new_config, parse_config};
 use std::cell::{OnceCell, RefCell};
 use std::fmt;
@@ -308,13 +308,13 @@ impl Chainz {
         let (config, secrets) = self.checked(&tx)?;
         let (new_config, new_secrets) = tx.texts();
         if new_secrets != secrets_orig {
-            chainz_sys::write_private(self.paths.secrets(), new_secrets.as_bytes())
+            chainz_os::write_private(self.paths.secrets(), new_secrets.as_bytes())
                 .with_context(|| format!("failed to write {}", self.paths.secrets().display()))?;
         }
         // The first write materializes config.toml even when the edit
         // left the new-file text as it was.
         if new_config != config_orig || config_text.is_none() {
-            chainz_sys::write_private(self.paths.config(), new_config.as_bytes())
+            chainz_os::write_private(self.paths.config(), new_config.as_bytes())
                 .with_context(|| format!("failed to write {}", self.paths.config().display()))?;
         }
         drop(lock);

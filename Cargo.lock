@@ -282,9 +282,9 @@ dependencies = [
  "anyhow",
  "assert_cmd",
  "chainz-core",
+ "chainz-os",
  "chainz-rpc",
  "chainz-serve",
- "chainz-sys",
  "chainz-tui",
  "clap",
  "clap_complete",
@@ -309,7 +309,7 @@ dependencies = [
  "anyhow",
  "argon2",
  "base64 0.22.1",
- "chainz-sys",
+ "chainz-os",
  "dirs",
  "hex",
  "indexmap",
@@ -329,11 +329,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "chainz-os"
+version = "2.0.0"
+dependencies = [
+ "libc",
+ "tempfile",
+]
+
+[[package]]
 name = "chainz-rpc"
 version = "2.0.0"
 dependencies = [
  "bytes",
- "chainz-sys",
+ "chainz-os",
  "reqwest",
  "serde",
  "serde_json",
@@ -350,8 +358,8 @@ dependencies = [
  "anyhow",
  "bytes",
  "chainz-core",
+ "chainz-os",
  "chainz-rpc",
- "chainz-sys",
  "http-body-util",
  "hyper",
  "hyper-util",
@@ -364,23 +372,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "chainz-sys"
-version = "2.0.0"
-dependencies = [
- "libc",
- "tempfile",
-]
-
-[[package]]
 name = "chainz-tui"
 version = "2.0.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
  "chainz-core",
+ "chainz-os",
  "chainz-rpc",
  "chainz-serve",
- "chainz-sys",
  "ratatui",
  "serde",
  "serde_json",

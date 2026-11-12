@@ -31,7 +31,7 @@ use crate::ui::{self, Ctx};
 use crate::{Options, load_store};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
-use chainz_sys::now_ms;
+use chainz_os::now_ms;
 
 /// How long to wait for a key before looking at worker updates.
 const POLL: Duration = Duration::from_millis(50);

@@ -184,7 +184,7 @@ pub fn start(args: ForkArgs) -> Result<i32> {
     if args.detach {
         return detach(&runtime, &name);
     }
-    let detached = chainz_sys::is_detached();
+    let detached = chainz_os::is_detached();
 
     process::install_signal_handlers();
     let claim = runtime
@@ -223,7 +223,7 @@ fn already_running(name: &str) -> anyhow::Error {
 /// Its stderr, and later its stdout, is the log.
 fn detach(runtime: &Runtime, name: &str) -> Result<i32> {
     let log_path = process::log_path(name)?;
-    let mut child = chainz_sys::launch_detached(&log_path, sys::LogMode::Truncate)
+    let mut child = chainz_os::launch_detached(&log_path, sys::LogMode::Truncate)
         .context("unable to start the background supervisor")?;
     let summary = child
         .wait_ready(None)
@@ -396,7 +396,7 @@ async fn start_fork(supervisor: &mut Supervisor, job: &Job<'_>) -> Result<Runnin
     );
     if job.detached {
         // Closing the stdout pipe releases the waiting `--detach` parent.
-        chainz_sys::detached_ready().context("unable to redirect output to the log")?;
+        chainz_os::detached_ready().context("unable to redirect output to the log")?;
         eprintln!("chainz fork: {name} up; {notice}");
     } else {
         use std::io::Write;
@@ -463,7 +463,7 @@ async fn spawn_on_free_port(
             parent: parent.to_string(),
             chain_id,
             fork_block: options.block,
-            started_at: chainz_sys::now_secs(),
+            started_at: chainz_os::now_secs(),
             ready: false,
         };
         supervisor.anvil = Some(anvil);

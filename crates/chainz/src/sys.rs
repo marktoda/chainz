@@ -1,15 +1,15 @@
 //! Process plumbing shared by the background servers (`serve`, `fork`):
-//! private log files and signals. Detaching is `chainz_sys::launch_detached`.
+//! private log files and signals. Detaching is `chainz_os::launch_detached`.
 
 use anyhow::{Context, Result};
 use std::fs::File;
 use std::path::Path;
 
-pub use chainz_sys::LogMode;
+pub use chainz_os::LogMode;
 
 /// Open a private log (mode 0600 when created).
 pub fn open_log(path: &Path, mode: LogMode) -> Result<File> {
-    chainz_sys::open_private_log(path, mode)
+    chainz_os::open_private_log(path, mode)
         .with_context(|| format!("unable to open {}", path.display()))
 }
 

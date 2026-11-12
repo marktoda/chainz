@@ -51,7 +51,7 @@ impl Inspector {
         let mut writer = None;
         let mut sender = None;
         if let Some(path) = log {
-            let file = chainz_sys::open_private_log(path, chainz_sys::LogMode::Append)?;
+            let file = chainz_os::open_private_log(path, chainz_os::LogMode::Append)?;
             let file = tokio::fs::File::from_std(file);
             let (tx, rx) = mpsc::channel(LOG_QUEUE);
             sender = Some(tx);

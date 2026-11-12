@@ -17,7 +17,7 @@ use tokio::time::Instant;
 use super::{Shared, Signals, provider_slots};
 use crate::model::{Fault, Holding, Sheet, Update, Via};
 use crate::plan::{ChainPlan, Plan};
-use chainz_sys::now_ms;
+use chainz_os::now_ms;
 
 /// Read every chain's balances every `balance_every`, and on a refresh.
 ///

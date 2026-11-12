@@ -11,7 +11,7 @@ license.workspace = true
 anyhow.workspace = true
 chainz-core.workspace = true
 chainz-rpc.workspace = true
-chainz-sys.workspace = true
+chainz-os.workspace = true
 tokio = { workspace = true, features = ["signal"] }
 bytes.workspace = true
 serde.workspace = true

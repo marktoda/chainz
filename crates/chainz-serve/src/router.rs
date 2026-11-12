@@ -41,7 +41,7 @@ use crate::inspector::Inspector;
 use crate::metrics::{Metrics, Sample};
 use crate::state::{ChainState, EndpointState, Snapshot};
 use crate::summary;
-use chainz_sys::{now_ms, now_secs};
+use chainz_os::{now_ms, now_secs};
 
 /// The longest a request waits out rate limits on one endpoint before a
 /// read shifts to the next.

@@ -201,7 +201,7 @@ fn parse(bytes: &[u8]) -> Result<Vec<ChainlistEntry>, ChainlistError> {
 
 /// Mode 0600 in a 0700 directory, atomically and durably.
 fn write_cache(cache_dir: &Path, bytes: &[u8]) -> io::Result<()> {
-    chainz_sys::write_private(&cache_dir.join(CACHE_FILE), bytes)
+    chainz_os::write_private(&cache_dir.join(CACHE_FILE), bytes)
 }
 
 #[cfg(test)]

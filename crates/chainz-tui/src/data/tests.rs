@@ -114,8 +114,8 @@ async fn a_hostile_endpoint_does_not_stop_the_poller() {
     assert_eq!(chain.head.as_ref().unwrap().base_fee, Some(u128::MAX));
     // Rendering and the snapshot survive it too.
     let _ = chain.status(state.slow_threshold());
-    let _ = chain.block_age(chainz_sys::now_ms());
-    let snapshot = crate::snapshot::Snapshot::new(&state, chainz_sys::now_ms());
+    let _ = chain.block_age(chainz_os::now_ms());
+    let snapshot = crate::snapshot::Snapshot::new(&state, chainz_os::now_ms());
     let json = serde_json::to_value(&snapshot).unwrap();
     // A saturated base fee is not printed as if it were exact.
     assert_eq!(json["chains"][0]["base_fee_wei"], Value::Null);
@@ -600,7 +600,7 @@ async fn balances_refresh_on_their_interval_and_on_demand() {
 async fn endpoints_are_probed_only_while_focused_and_lag_is_classified() {
     let dir = short_tempdir();
     // Fresh blocks: nothing here is stale against the wall clock.
-    let now = chainz_sys::now_ms() / 1_000;
+    let now = chainz_os::now_ms() / 1_000;
     let probe = |head: u64| {
         MockRpc::calls(move |method, params| match method {
             "eth_chainId" => Ok(json!("0x1")),

@@ -46,7 +46,7 @@ impl<'a> Ctx<'a> {
             app,
             state,
             theme,
-            now_ms: chainz_sys::now_ms(),
+            now_ms: chainz_os::now_ms(),
         }
     }
 }

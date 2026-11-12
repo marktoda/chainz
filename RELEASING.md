@@ -6,11 +6,11 @@ release candidate passes its tests and package-content check. All six share
 the one version in the root `Cargo.toml`, and `cargo publish --workspace`
 uploads them in dependency order:
 
-1. `chainz-sys` (no workspace dependencies)
-2. `chainz-core` (sys)
-3. `chainz-rpc` (sys)
-4. `chainz-serve` (sys, core, rpc)
-5. `chainz-tui` (sys, core, rpc)
+1. `chainz-os` (no workspace dependencies)
+2. `chainz-core` (os)
+3. `chainz-rpc` (os)
+4. `chainz-serve` (os, core, rpc)
+5. `chainz-tui` (os, core, rpc)
 6. `chainz` (all of the above)
 
 ## One-time repository setup

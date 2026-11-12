@@ -10,7 +10,7 @@ use chainz_rpc::{BlockId, RpcClient, RpcError, Target};
 use super::{Shared, Signals, Tuning};
 use crate::model::{Fault, Head, Update};
 use crate::plan::ChainPlan;
-use chainz_sys::now_ms;
+use chainz_os::now_ms;
 
 /// How long to wait before the next head poll: the chain's block time,
 /// kept within `[min_pace, max_pace]` (3–12 s by default). An unknown block

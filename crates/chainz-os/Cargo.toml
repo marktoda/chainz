@@ -1,5 +1,5 @@
 [package]
-name = "chainz-sys"
+name = "chainz-os"
 description = "OS primitives shared by the chainz crates: private files and directories, atomic writes, file locks, file stamps and the clock"
 version.workspace = true
 edition.workspace = true

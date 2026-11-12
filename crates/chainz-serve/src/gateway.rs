@@ -26,7 +26,7 @@ use crate::http::{self, BoxBody, Reply};
 use crate::inspector::Inspector;
 use crate::router::Router;
 use crate::state::{Snapshot, Stamps};
-use chainz_sys::now_secs;
+use chainz_os::now_secs;
 
 /// A chain with no request for this many seconds is idle: its pool is
 /// probed [`IDLE_PROBE_FACTOR`] times less often.
