@@ -1,18 +1,12 @@
-//! End-to-end tests for `chainz serve` and exec auto-routing: the real
-//! binary, a real gateway process, and mock upstreams on loopback.
-//!
-//! Every invocation is sandboxed like `cli.rs`: `HOME` and the four XDG
-//! directories point into a temp dir and the OS keyring is disabled.
-mod common;
+//! `serve` and exec's routing through it: the real binary, a real gateway
+//! process, and mock upstreams. Every gateway a test starts is stopped
+//! when the test ends, pass or fail.
 
-use common::{MockRpc, Request, Sandbox, read_message, send_signal, stderr, wait_until};
-use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use crate::common::*;
+use std::io::{BufRead, BufReader};
 use std::net::TcpStream;
-use std::os::unix::fs::PermissionsExt;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 const WAIT: Duration = Duration::from_secs(10);
 
@@ -32,46 +26,32 @@ fn exec_env(sb: &Sandbox, flags: &[&str]) -> (String, String) {
 }
 
 /// A mock upstream answering every call with its name.
-fn upstream(name: &'static str) -> MockRpc {
-    MockRpc::start(move |_| Ok(serde_json::json!(name)))
+fn upstream(name: &'static str) -> Mock {
+    mock(move |_| Ok(json!(name)))
 }
 
 /// `"<method> <lowercased http head>"` per request `rpc` received.
-fn calls(rpc: &MockRpc) -> Vec<String> {
-    rpc.seen()
+fn calls(rpc: &Mock) -> Vec<String> {
+    rpc.requests()
         .iter()
-        .map(|Request { method, head, .. }| format!("{method} {head}"))
+        .map(|r| format!("{} {}", r.method(), r.head))
         .collect()
 }
 
 /// The gateway's port, from its discovery record.
 fn gateway_port(sb: &Sandbox) -> u16 {
-    let info: serde_json::Value =
+    let info: Value =
         serde_json::from_slice(&fs::read(sb.runtime_file("serve.json")).unwrap()).unwrap();
     info["port"].as_u64().unwrap() as u16
 }
 
-/// POST one JSON-RPC call to a URL the way cast would; returns `result`.
-fn rpc(url: &str, method: &str) -> serde_json::Value {
-    let rest = url.strip_prefix("http://").unwrap();
-    let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
-    let stream = TcpStream::connect(authority).unwrap();
-    stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .unwrap();
-    let body = format!(r#"{{"jsonrpc":"2.0","id":1,"method":"{method}","params":[]}}"#);
-    let request = format!(
-        "POST /{path} HTTP/1.1\r\nHost: {authority}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
-        body.len()
-    );
-    let mut reader = BufReader::new(stream);
-    reader.get_mut().write_all(request.as_bytes()).unwrap();
-    let (_, body) = read_message(&mut reader).expect("a response");
-    let response: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    response["result"].clone()
+/// POST one JSON-RPC call to a URL the way cast would; returns `result`
+/// (`null` for an error).
+fn rpc(url: &str, method: &str) -> Value {
+    chainz_testkit::http::try_rpc(url, method, json!([])).expect("a response")["result"].clone()
 }
 
-fn config(main: &MockRpc, alt: &MockRpc) -> String {
+fn config(main: &Mock, alt: &Mock) -> String {
     format!(
         "version = 2\n[chains.eth]\nid = 1\naliases = [\"mainnet\"]\nrpc = \"main\"\n[chains.eth.rpcs]\nmain = {{ url = \"{}/v3/${{SERVE_TEST_KEY}}\", headers = {{ x-api-key = \"hdrsekrit\" }} }}\nalt = \"{}\"\nsock = \"wss://127.0.0.1:9/ws\"\n",
         main.url(),
@@ -101,6 +81,7 @@ fn exec_routes_through_a_running_gateway_and_direct_bypasses_it() {
     // Start it in the background.
     // Port 0: the OS picks a free one; serve.json says which.
     let request_log = sb.root().join("requests.jsonl");
+    let _stop = StopGateway(&sb);
     let started = sb.ok(&[
         "serve",
         "--detach",
@@ -115,14 +96,9 @@ fn exec_routes_through_a_running_gateway_and_direct_bypasses_it() {
         "{started}"
     );
     for file in ["serve.json", "serve.sock"] {
-        let mode = fs::metadata(sb.runtime_file(file))
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777;
-        assert_eq!(mode, 0o600, "{file}");
+        assert_eq!(mode(&sb.runtime_file(file)), 0o600, "{file}");
     }
-    let info: serde_json::Value =
+    let info: Value =
         serde_json::from_slice(&fs::read(sb.runtime_file("serve.json")).unwrap()).unwrap();
     let token = info["token"].as_str().unwrap().to_string();
     assert_eq!(token.len(), 64);
@@ -188,8 +164,7 @@ fn exec_routes_through_a_running_gateway_and_direct_bypasses_it() {
         row.contains(" alt "),
         "active endpoint after `update --rpc`: {status}"
     );
-    let json: serde_json::Value =
-        serde_json::from_str(&sb.ok(&["serve", "status", "--json"])).unwrap();
+    let json: Value = serde_json::from_str(&sb.ok(&["serve", "status", "--json"])).unwrap();
     assert_eq!(json["running"], true, "{json}");
     assert_eq!(json["port"], port, "{json}");
     assert_eq!(json["chains"][0]["chain"], "eth", "{json}");
@@ -213,12 +188,13 @@ fn exec_routes_through_a_running_gateway_and_direct_bypasses_it() {
     }
 
     // serve log -f: the last records, then new ones as they happen.
-    let mut follow = sb
-        .process()
-        .args(["serve", "log", "-f", "--method", "eth_feeHistory"])
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut follow = ChildGuard(
+        sb.process()
+            .args(["serve", "log", "-f", "--method", "eth_feeHistory"])
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
     // No need to wait for the follower: a request it misses while
     // starting shows up in its backlog instead.
     let mut lines = BufReader::new(follow.stdout.take().unwrap()).lines();
@@ -238,15 +214,15 @@ fn exec_routes_through_a_running_gateway_and_direct_bypasses_it() {
     let stopped = sb.run(&["serve", "status", "--json"]);
     assert_eq!(stopped.status.code(), Some(1));
     assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&stopped.stdout).unwrap(),
-        serde_json::json!({"running": false})
+        serde_json::from_slice::<Value>(&stopped.stdout).unwrap(),
+        json!({"running": false})
     );
 
     // The JSONL log has every request, and nothing secret.
     let jsonl = fs::read_to_string(&request_log).unwrap();
     assert!(jsonl.lines().count() >= 4, "{jsonl}");
     for line in jsonl.lines() {
-        let record: serde_json::Value = serde_json::from_str(line).unwrap();
+        let record: Value = serde_json::from_str(line).unwrap();
         assert_eq!(record["chain"], "eth");
     }
     assert!(!jsonl.contains("sekrit") && !jsonl.contains(&token));
@@ -265,12 +241,13 @@ fn foreground_gateway_reloads_on_sighup_and_drains_on_sigterm() {
     let alt = upstream("alt");
     sb.write_config(&config(&main, &alt));
     sb.ok(&["var", "set", "SERVE_TEST_KEY", "k"]);
-    let mut child = sb
-        .process()
-        .args(["serve", "--port", "0"])
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut child = ChildGuard(
+        sb.process()
+            .args(["serve", "--port", "0"])
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
     // Collect stderr as it comes, to wait on notices.
     let notices = Arc::new(Mutex::new(String::new()));
     let reader = {
@@ -327,12 +304,13 @@ fn foreground_gateway_cleans_up_when_its_stderr_is_closed() {
     let alt = upstream("alt");
     sb.write_config(&config(&main, &alt));
     sb.ok(&["var", "set", "SERVE_TEST_KEY", "k"]);
-    let mut child = sb
-        .process()
-        .args(["serve", "--port", "0"])
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut child = ChildGuard(
+        sb.process()
+            .args(["serve", "--port", "0"])
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
     wait_until("serve.json", WAIT, || {
         sb.runtime_file("serve.json").exists()
     });
@@ -358,8 +336,8 @@ fn serve_refuses_an_empty_config_and_a_busy_port() {
     // The mock's own port is taken.
     let out = sb.run(&["serve", "--port", &main.port.to_string()]);
     assert!(!out.status.success());
-    let stderr = stderr(&out);
-    assert!(stderr.contains("can't listen on 127.0.0.1"), "{stderr}");
+    let err = stderr(&out);
+    assert!(err.contains("can't listen on 127.0.0.1"), "{err}");
     // A failed start leaves nothing behind.
     assert!(!sb.runtime_file("serve.json").exists());
     assert!(!sb.runtime_file("serve.sock").exists());
@@ -367,5 +345,5 @@ fn serve_refuses_an_empty_config_and_a_busy_port() {
     // --detach reports the failure too.
     let out = sb.run(&["serve", "--detach", "--port", &main.port.to_string()]);
     assert!(!out.status.success());
-    assert!(common::stderr(&out).contains("exited during startup"));
+    assert!(stderr(&out).contains("exited during startup"));
 }

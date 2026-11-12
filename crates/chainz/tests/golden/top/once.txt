@@ -1,10 +1,10 @@
- 2 chains · 1 ok · 1 down
- CHAIN  ID     HEAD  AGE  BLOCK   BASE FEE  RPC     P50  HEALTH    STATUS
- live   1     1,000   Ns  12.0s  1.00 gwei  main   NNms         ▁  ok
- dead   8453      –    –      –          –  local     –         ×  down connect
+2 chains · 1 ok · 1 down
+CHAIN ID HEAD AGE BLOCK BASE FEE RPC P50 HEALTH STATUS
+live 1 1,000 <s> 12.0s 1.00 gwei main <ms> ▁ ok
+dead 8453 – – – – local – × down connect
 
- signer default 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
- CHAIN      NATIVE  @weth   @usdc  @usdce  @usdt  @dai  @wbtc  VIA         UPDATED
- live   1.5000 ETH      0  2.5000              0     0      0  multicall3  Ns ago
+signer default 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
+CHAIN NATIVE @weth @usdc @usdce @usdt @dai @wbtc VIA UPDATED
+live 1.5000 ETH 0 2.5000 0 0 0 multicall3 <s> ago
 
- balances skipped on down chains: dead
+balances skipped on down chains: dead

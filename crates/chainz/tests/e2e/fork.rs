@@ -1,27 +1,22 @@
-//! `chainz fork` end to end.
-//!
-//! The upstream is a real `anvil` with no `--fork-url`; `chainz fork`
-//! pins it, proxies it, and a second anvil forks from it through the
-//! proxy. Tests that need anvil are skipped when it is not on `PATH`,
-//! unless `CHAINZ_REQUIRE_TOOLS` is set (CI sets it).
-//!
-//! Every invocation runs in a sandbox (see `common`). Every port is chosen
-//! by the OS or by `chainz fork` itself, never guessed by the test.
-mod common;
+//! `fork`: the upstream is a real `anvil` with no `--fork-url`; `chainz
+//! fork` pins it, proxies it, and a second anvil forks from it through the
+//! proxy. Tests that need anvil skip without it (see [`require_tool`]).
+//! Every port is chosen by the OS or by `chainz fork` itself, never guessed
+//! by the test.
 
-use chainz_rpc::abi;
-use common::{Sandbox, send_signal, stderr, stdout};
-use serde_json::{Value, json};
-use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
-use std::process::{Child, Command, Stdio};
+use crate::common::*;
+use chainz_testkit::abi;
+use chainz_testkit::http::{rpc as call, try_rpc};
+use std::io::{BufRead, BufReader};
+use std::net::TcpListener;
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::thread::JoinHandle;
+use std::time::Instant;
 
 /// The signer's cached address: not one of anvil's dev accounts, so only
 /// impersonation can send from it.
-const TEST_ADDRESS: &str = "0x0000000000000000000000000000000000012345";
+const SIGNER: &str = "0x0000000000000000000000000000000000012345";
 /// An address that only has a balance on the upstream.
 const UPSTREAM_ONLY: &str = "0x000000000000000000000000000000000000dEaD";
 /// A minimal ERC-20: `balanceOf(a)` is `sload(keccak(a . 0))`; every other
@@ -42,11 +37,11 @@ fn seed_local(sb: &Sandbox, rpc_url: &str) {
 
 [signers.default]
 backend = "keyring"
-address = "{TEST_ADDRESS}"
+address = "{SIGNER}"
 
 [signers.ks]
 backend = "keystore"
-address = "{TEST_ADDRESS}"
+address = "{SIGNER}"
 path = "/keys/ks"
 
 [chains.local]
@@ -97,31 +92,6 @@ fn registry_is_empty(sb: &Sandbox) -> bool {
     fs::read_dir(sb.forks_dir()).map_or(true, |mut d| d.next().is_none())
 }
 
-fn anvil_available() -> bool {
-    let found = Command::new("anvil")
-        .arg("--version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success());
-    if !found {
-        assert!(
-            std::env::var_os("CHAINZ_REQUIRE_TOOLS").is_none(),
-            "CHAINZ_REQUIRE_TOOLS is set but anvil is not on PATH"
-        );
-        eprintln!("skipped: anvil is not on PATH");
-    }
-    found
-}
-
-fn wait_for(what: &str, timeout: Duration, mut done: impl FnMut() -> bool) {
-    let deadline = Instant::now() + timeout;
-    while !done() {
-        assert!(Instant::now() < deadline, "timed out waiting for {what}");
-        std::thread::sleep(Duration::from_millis(50));
-    }
-}
-
 /// Whether `pid` is a running (non-zombie) process.
 fn pid_running(pid: u32) -> bool {
     let output = Command::new("ps")
@@ -140,39 +110,13 @@ fn process_args(pid: u32) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
-/// One JSON-RPC call over a fresh connection.
-fn try_rpc(port: u16, method: &str, params: Value) -> Option<Value> {
-    let body = json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).to_string();
-    let response = post(port, "/", &body)?;
-    let value: Value = serde_json::from_str(&response).ok()?;
-    Some(value)
+fn url(port: u16) -> String {
+    format!("http://127.0.0.1:{port}")
 }
 
+/// One JSON-RPC call to 127.0.0.1:`port`, requiring a result.
 fn rpc(port: u16, method: &str, params: Value) -> Value {
-    let response = try_rpc(port, method, params.clone())
-        .unwrap_or_else(|| panic!("{method} on :{port} got no answer"));
-    assert!(
-        response.get("error").is_none(),
-        "{method}{params}: {response}"
-    );
-    response["result"].clone()
-}
-
-/// POST `body` and return the response body.
-fn post(port: u16, path: &str, body: &str) -> Option<String> {
-    let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(30)))
-        .unwrap();
-    let request = format!(
-        "POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    );
-    stream.write_all(request.as_bytes()).ok()?;
-    let mut response = String::new();
-    stream.read_to_string(&mut response).ok()?;
-    let (head, body) = response.split_once("\r\n\r\n")?;
-    head.starts_with("HTTP/1.1 200").then(|| body.to_string())
+    call(&url(port), method, params)
 }
 
 fn balance(port: u16, address: &str) -> String {
@@ -184,8 +128,7 @@ fn balance(port: u16, address: &str) -> String {
 
 /// `balanceOf(holder)` on the test token, as a decimal.
 fn token_balance(port: u16, holder: &str) -> u128 {
-    let selector: String = abi::BALANCE_OF.iter().map(|b| format!("{b:02x}")).collect();
-    let data = format!("0x{selector}{:0>64}", holder.trim_start_matches("0x"));
+    let data = abi::balance_of(holder);
     let result = rpc(
         port,
         "eth_call",
@@ -195,19 +138,9 @@ fn token_balance(port: u16, holder: &str) -> u128 {
     u128::from_str_radix(&hex[hex.len() - 32..], 16).unwrap()
 }
 
-/// A child that is killed when the test ends, pass or fail.
-struct Guard(Child);
-
-impl Drop for Guard {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-
 /// A plain anvil standing in for a real chain's endpoint.
 struct Upstream {
-    _anvil: Guard,
+    _anvil: ChildGuard,
     port: u16,
 }
 
@@ -216,7 +149,7 @@ struct Upstream {
 /// the reaper checks before killing it): a port the OS just handed out,
 /// retried if something else takes it first. Otherwise `--port 0`. Its
 /// output is drained in the background so it never blocks on a full pipe.
-fn spawn_anvil(args: &[&str], pinned: bool) -> (Guard, u16) {
+fn spawn_anvil(args: &[&str], pinned: bool) -> (ChildGuard, u16) {
     for _ in 0..5 {
         let port = if pinned {
             TcpListener::bind("127.0.0.1:0")
@@ -236,7 +169,7 @@ fn spawn_anvil(args: &[&str], pinned: bool) -> (Guard, u16) {
             .spawn()
             .unwrap();
         let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
-        let anvil = Guard(child);
+        let anvil = ChildGuard(child);
         let listening = lines.by_ref().map_while(Result::ok).find_map(|line| {
             let address = line.trim().strip_prefix("Listening on ")?.to_string();
             address.rsplit(':').next()?.parse::<u16>().ok()
@@ -245,8 +178,8 @@ fn spawn_anvil(args: &[&str], pinned: bool) -> (Guard, u16) {
             continue; // exited: lost the port to someone else
         };
         std::thread::spawn(move || lines.for_each(drop));
-        wait_for("anvil", Duration::from_secs(30), || {
-            try_rpc(port, "eth_chainId", json!([])).is_some()
+        wait_until("anvil", Duration::from_secs(30), || {
+            try_rpc(&url(port), "eth_chainId", json!([])).is_some()
         });
         return (anvil, port);
     }
@@ -286,8 +219,10 @@ impl Upstream {
 
 /// A foreground `chainz fork` supervisor and what it printed.
 struct Fork {
-    child: Guard,
+    child: ChildGuard,
     out: Arc<Mutex<String>>,
+    /// Collects the output; done once the supervisor's pipe closes.
+    reader: Option<JoinHandle<()>>,
 }
 
 impl Fork {
@@ -307,7 +242,7 @@ impl Fork {
         let out = Arc::new(Mutex::new(String::new()));
         let pipe = child.stdout.take().unwrap();
         let sink = out.clone();
-        std::thread::spawn(move || {
+        let reader = std::thread::spawn(move || {
             for line in BufReader::new(pipe).lines().map_while(Result::ok) {
                 let mut out = sink.lock().unwrap();
                 out.push_str(&line);
@@ -315,8 +250,9 @@ impl Fork {
             }
         });
         Fork {
-            child: Guard(child),
+            child: ChildGuard(child),
             out,
+            reader: Some(reader),
         }
     }
 
@@ -336,8 +272,11 @@ impl Fork {
             if out.contains(text) {
                 return out;
             }
-            if let Some(status) = self.child.0.try_wait().unwrap() {
-                std::thread::sleep(Duration::from_millis(200));
+            if let Some(status) = self.child.try_wait().unwrap() {
+                // Everything it printed, up to its exit.
+                if let Some(reader) = self.reader.take() {
+                    let _ = reader.join();
+                }
                 panic!("chainz fork exited ({status}):\n{}", self.output());
             }
             assert!(Instant::now() < deadline, "no '{text}' in:\n{out}");
@@ -347,14 +286,12 @@ impl Fork {
 
     /// Wait for the supervisor to exit and return its code.
     fn wait_exit(&mut self) -> Option<i32> {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            if let Some(status) = self.child.0.try_wait().unwrap() {
-                return status.code();
-            }
-            assert!(Instant::now() < deadline, "the supervisor did not exit");
-            std::thread::sleep(Duration::from_millis(50));
-        }
+        let mut status = None;
+        wait_until("the supervisor to exit", Duration::from_secs(30), || {
+            status = self.child.try_wait().unwrap();
+            status.is_some()
+        });
+        status.unwrap().code()
     }
 }
 
@@ -362,7 +299,7 @@ impl Fork {
 
 #[test]
 fn fork_through_proxy_registers_funds_lists_and_stops() {
-    if !anvil_available() {
+    if !require_tool("anvil") {
         return;
     }
     let upstream = Upstream::start();
@@ -410,10 +347,10 @@ fn fork_through_proxy_registers_funds_lists_and_stops() {
 
     // Upstream state is visible through the proxy; funding landed.
     assert_eq!(balance(port, UPSTREAM_ONLY), "0x6124fee993bc0000");
-    assert_eq!(balance(port, TEST_ADDRESS), "0x3635c9adc5dea00000");
-    assert_eq!(token_balance(port, TEST_ADDRESS), 1_500_000);
+    assert_eq!(balance(port, SIGNER), "0x3635c9adc5dea00000");
+    assert_eq!(token_balance(port, SIGNER), 1_500_000);
     // …and only on the fork.
-    assert_eq!(token_balance(upstream.port, TEST_ADDRESS), 0);
+    assert_eq!(token_balance(upstream.port, SIGNER), 0);
 
     // `fork ls`.
     let ls = sb.run(&["fork", "ls"]);
@@ -454,11 +391,11 @@ fn fork_through_proxy_registers_funds_lists_and_stops() {
     let sent = rpc(
         port,
         "eth_sendTransaction",
-        json!([{"from": TEST_ADDRESS, "to": UPSTREAM_ONLY, "value": "0xde0b6b3a7640000"}]),
+        json!([{"from": SIGNER, "to": UPSTREAM_ONLY, "value": "0xde0b6b3a7640000"}]),
     );
     assert!(sent.as_str().is_some_and(|h| h.len() == 66), "{sent}");
     // Anvil may answer before the block is mined: wait for the receipt.
-    wait_for(
+    wait_until(
         "the transaction to be mined",
         Duration::from_secs(30),
         || !rpc(port, "eth_getTransactionReceipt", json!([sent])).is_null(),
@@ -484,7 +421,7 @@ fn fork_through_proxy_registers_funds_lists_and_stops() {
 
 #[test]
 fn ctrl_c_and_sigterm_stop_anvil_and_unregister() {
-    if !anvil_available() {
+    if !require_tool("anvil") {
         return;
     }
     let upstream = Upstream::start();
@@ -495,7 +432,7 @@ fn ctrl_c_and_sigterm_stop_anvil_and_unregister() {
         let out = fork.wait_for_output("ctrl-c to stop");
         let port = fork_port(&sb, "local-fork");
         assert!(!out.contains("funded"), "{out}");
-        assert_eq!(balance(port, TEST_ADDRESS), "0x0", "--no-fund");
+        assert_eq!(balance(port, SIGNER), "0x0", "--no-fund");
         let anvil = anvil_pid(&sb, "local-fork");
         assert!(pid_running(anvil));
 
@@ -511,7 +448,7 @@ fn ctrl_c_and_sigterm_stop_anvil_and_unregister() {
 #[cfg(target_os = "linux")]
 #[test]
 fn kill_9_of_the_supervisor_leaves_no_anvil() {
-    if !anvil_available() {
+    if !require_tool("anvil") {
         return;
     }
     let upstream = Upstream::start();
@@ -524,7 +461,7 @@ fn kill_9_of_the_supervisor_leaves_no_anvil() {
 
     send_signal(fork.pid(), "KILL");
     assert_eq!(fork.wait_exit(), None, "killed by a signal");
-    wait_for(
+    wait_until(
         "anvil to die with its supervisor",
         Duration::from_secs(10),
         || !pid_running(anvil),
@@ -541,7 +478,7 @@ fn kill_9_of_the_supervisor_leaves_no_anvil() {
 /// the next `fork`.
 #[test]
 fn orphaned_anvils_of_dead_supervisors_are_reaped() {
-    if !anvil_available() {
+    if !require_tool("anvil") {
         return;
     }
     let sb = Sandbox::new();
@@ -568,7 +505,7 @@ fn orphaned_anvils_of_dead_supervisors_are_reaped() {
         sb.run(&reaper);
         assert!(record(&sb, "old-fork").is_none(), "{reaper:?}");
         assert!(registry_is_empty(&sb), "{reaper:?}");
-        wait_for("the orphan to be killed", Duration::from_secs(5), || {
+        wait_until("the orphan to be killed", Duration::from_secs(5), || {
             orphan.0.try_wait().unwrap().is_some()
         });
     }
@@ -576,7 +513,7 @@ fn orphaned_anvils_of_dead_supervisors_are_reaped() {
 
 #[test]
 fn detach_returns_once_registered_and_stop_all_stops_it() {
-    if !anvil_available() {
+    if !require_tool("anvil") {
         return;
     }
     let upstream = Upstream::start();
@@ -617,7 +554,7 @@ fn detach_returns_once_registered_and_stop_all_stops_it() {
         "0x63",
         "--chain-id reaches anvil"
     );
-    assert_eq!(balance(port, TEST_ADDRESS), "0x3635c9adc5dea00000");
+    assert_eq!(balance(port, SIGNER), "0x3635c9adc5dea00000");
     let log = sb.state_file("forks/scratch.log");
     assert!(
         fs::read_to_string(&log).unwrap().contains("Listening on"),
@@ -641,7 +578,7 @@ fn detach_returns_once_registered_and_stop_all_stops_it() {
 
 #[test]
 fn block_needs_an_archive_endpoint() {
-    if !anvil_available() {
+    if !require_tool("anvil") {
         return;
     }
     // At genesis the upstream has no state at block 1: not archive.
@@ -674,7 +611,7 @@ fn block_needs_an_archive_endpoint() {
 /// URL is used for this fork only, and the config is not written.
 #[test]
 fn rpc_pins_the_upstream_by_name_or_url() {
-    if !anvil_available() {
+    if !require_tool("anvil") {
         return;
     }
     let upstream = Upstream::start();
@@ -714,25 +651,28 @@ fn rpc_pins_the_upstream_by_name_or_url() {
 /// supervisor's memory.
 #[test]
 fn a_running_gateway_is_used_pinned_to_the_endpoint() {
-    if !anvil_available() {
+    if !require_tool("anvil") {
         return;
     }
     let upstream = Upstream::start();
     let sb = Sandbox::new();
     seed_local(&sb, &upstream.url());
 
-    // A stand-in gateway: forwards every POST to the upstream and records
-    // the paths it was asked for.
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let gateway_port = listener.local_addr().unwrap().port();
-    let paths = Arc::new(Mutex::new(Vec::<String>::new()));
-    let (seen, upstream_port) = (paths.clone(), upstream.port);
-    std::thread::spawn(move || {
-        for stream in listener.incoming().flatten() {
-            let seen = seen.clone();
-            std::thread::spawn(move || relay(stream, upstream_port, &seen));
-        }
+    // A stand-in gateway: forwards every request to the upstream, whatever
+    // its path, and records the paths it was asked for.
+    let upstream_url = upstream.url();
+    let gateway = Mock::http(move |_, request| {
+        let answer = chainz_testkit::http::send(
+            upstream_url.trim_start_matches("http://"),
+            "POST",
+            "/",
+            &[("Content-Type", "application/json")],
+            &String::from_utf8_lossy(&request.body),
+        )
+        .expect("the upstream answers");
+        chainz_testkit::Reply::raw(answer.status, &answer.body)
     });
+    let gateway_port = gateway.port;
     let runtime = sb.path("runtime/chainz");
     fs::create_dir_all(&runtime).unwrap();
     let lock = fs::File::create(runtime.join("serve.lock")).unwrap();
@@ -778,48 +718,13 @@ fn a_running_gateway_is_used_pinned_to_the_endpoint() {
     assert!(!out.contains("gwtoken"), "{out}");
     let log = fs::read_to_string(sb.state_file("forks/local-fork.log"));
     assert!(!log.unwrap().contains("gwtoken"));
-    assert_eq!(balance(port, TEST_ADDRESS), "0x3635c9adc5dea00000");
-    let paths = paths.lock().unwrap().clone();
+    assert_eq!(balance(port, SIGNER), "0x3635c9adc5dea00000");
+    let paths: Vec<String> = gateway.requests().into_iter().map(|r| r.path).collect();
     assert!(!paths.is_empty());
     assert!(paths.iter().all(|p| p == "/gwtoken/local/up"), "{paths:?}");
     send_signal(fork.pid(), "INT");
     assert_eq!(fork.wait_exit(), Some(130));
     drop(lock);
-}
-
-/// Forward one request to the upstream anvil, whatever its path.
-fn relay(stream: TcpStream, upstream_port: u16, seen: &Mutex<Vec<String>>) {
-    let mut reader = BufReader::new(stream);
-    let mut line = String::new();
-    if reader.read_line(&mut line).unwrap_or(0) == 0 {
-        return;
-    }
-    let path = line.split(' ').nth(1).unwrap_or_default().to_string();
-    let mut length = 0;
-    loop {
-        line.clear();
-        if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
-            break;
-        }
-        if let Some((name, value)) = line.split_once(':')
-            && name.eq_ignore_ascii_case("content-length")
-        {
-            length = value.trim().parse().unwrap_or(0);
-        }
-    }
-    let mut body = vec![0; length];
-    if reader.read_exact(&mut body).is_err() {
-        return;
-    }
-    seen.lock().unwrap().push(path);
-    let answer = post(upstream_port, "/", &String::from_utf8_lossy(&body)).unwrap_or_default();
-    let _ = reader.get_mut().write_all(
-        format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{answer}",
-            answer.len()
-        )
-        .as_bytes(),
-    );
 }
 
 // --------------------------------------------------------- without anvil
@@ -948,7 +853,7 @@ fn replay_guards_on_a_fork_context() {
     assert_eq!(
         stdout(&on_fork).trim(),
         format!(
-            "url=http://127.0.0.1:8601 keystore=unset key=unset from={TEST_ADDRESS} chain=local-fork id=31337"
+            "url=http://127.0.0.1:8601 keystore=unset key=unset from={SIGNER} chain=local-fork id=31337"
         )
     );
     let on_chain = sb.run(&["exec", "local", "--signer", "ks", "--", "sh", "-c", show]);

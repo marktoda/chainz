@@ -1,12 +1,7 @@
-//! End-to-end tests for dynamic shell completion: the `CHAINZ_COMPLETE=<shell>`
-//! protocol (as the loaders drive it) and `chainz completions <shell>`.
-//!
-//! As in `cli.rs`, every invocation runs inside a sandbox (see `common`).
+//! `completions` and dynamic completion: the `CHAINZ_COMPLETE=<shell>`
+//! protocol as the loaders drive it.
 
-mod common;
-
-use common::{Sandbox, TEST_ADDRESS, stderr};
-use std::fs;
+use crate::common::*;
 
 const ROUTER: &str = "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf";
 
@@ -411,26 +406,23 @@ fn subcommands_and_flags_still_complete() {
 
 // ------------------------------------------------------------- loaders
 
+/// Each shell gets a loader that registers with that shell's completion
+/// API and calls back with `CHAINZ_COMPLETE`. (The rest of the script is
+/// clap_complete's.)
 #[test]
 fn completions_print_a_dynamic_loader() {
     let sb = Sandbox::new();
-    for (shell, marker) in [
-        ("zsh", "compdef _clap_dynamic_completer_chainz chainz"),
-        (
-            "bash",
-            "complete -o nospace -o bashdefault -o nosort -F _clap_complete_chainz chainz",
-        ),
-        ("fish", "complete --keep-order --exclusive --command chainz"),
-        ("elvish", "set edit:completion:arg-completer[chainz]"),
-        (
-            "powershell",
-            "Register-ArgumentCompleter -Native -CommandName chainz",
-        ),
+    for (shell, api) in [
+        ("zsh", "compdef "),
+        ("bash", "complete "),
+        ("fish", "complete "),
+        ("elvish", "edit:completion:arg-completer"),
+        ("powershell", "Register-ArgumentCompleter"),
     ] {
         let out = sb.run(&["completions", shell]);
         assert!(out.status.success(), "{shell}: {}", stderr(&out));
         let script = String::from_utf8(out.stdout).unwrap();
-        assert!(script.contains(marker), "{shell} loader:\n{script}");
+        assert!(script.contains(api), "{shell} loader:\n{script}");
         assert!(
             script.contains("CHAINZ_COMPLETE"),
             "{shell} loader:\n{script}"

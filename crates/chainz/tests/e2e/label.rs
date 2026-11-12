@@ -1,17 +1,8 @@
-//! End-to-end tests for the address book: `label …` (`label 0x…`, the
-//! stdin filter, add/ls/rm), `@label` expansion in `exec`, and
-//! `doctor --tokens`.
-//!
-//! As in `cli.rs`, every invocation runs inside a sandbox (see `common`).
+//! The address book: `label 0x…`, the stdin filter, `label add/ls/rm`,
+//! and `@label` tokens in `exec`.
 
-mod common;
-
-use chainz_core::labels::{BuiltinToken, builtin_token, builtin_tokens};
-use chainz_rpc::abi;
-use common::{MockRpc, Sandbox, TEST_ADDRESS, stdout};
-use predicates::prelude::*;
-use serde_json::{Value, json};
-use std::collections::HashMap;
+use crate::common::*;
+use chainz_core::labels::{builtin_token, builtin_tokens};
 use std::io::{BufRead, BufReader, Write};
 use std::process::Stdio;
 
@@ -29,21 +20,12 @@ fn eth_and_base() -> Sandbox {
     sb
 }
 
-/// Chains `(name, id, rpc url)` with a plaintext `default` signer.
-fn seeded(chains: &[(&str, u64, &str)]) -> Sandbox {
-    let sb = Sandbox::new();
-    sb.seed_with(chains);
-    sb
-}
-
 /// `chainz exec <chain> -- echo <args>`, returning what echo printed.
 fn echo(sb: &Sandbox, chain: &str, args: &[&str]) -> String {
     let mut all = vec!["exec", chain, "--", "echo"];
     all.extend_from_slice(args);
     sb.ok(&all).trim_end().to_string()
 }
-
-// --------------------------------------------------------------- label
 
 #[test]
 fn label_add_ls_find_rm_roundtrip() {
@@ -252,7 +234,7 @@ fn label_add_defaults_to_the_current_chain_context() {
 }
 
 #[test]
-fn addr_add_rejects_bad_names_addresses_and_overwrites() {
+fn label_add_rejects_bad_names_addresses_and_overwrites() {
     let sb = eth_and_base();
     sb.ok(&["label", "add", "myrouter", ROUTER, "--chain", "base"]);
     let before = sb.config();
@@ -369,7 +351,59 @@ fn shadowing_a_builtin_token_is_allowed_and_noted() {
     );
 }
 
-// ---------------------------------------------------------------- exec
+#[test]
+fn label_ls_and_find_json_and_rm_by_chain_alias() {
+    let sb = eth_and_base();
+    sb.ok(&["update", "base", "--alias", "basechain"]);
+    sb.ok(&["label", "add", "router", ROUTER, "--chain", "base"]);
+    sb.ok(&["label", "add", "usdc", ROUTER, "--chain", "base"]);
+
+    let rows: Value = serde_json::from_str(&sb.ok(&["label", "ls", "--json"])).unwrap();
+    let router = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["name"] == "router")
+        .expect("router listed");
+    assert_eq!(
+        router,
+        &json!({"name": "router", "scope": "base", "chain_id": 8453,
+                "address": ROUTER, "source": "user", "shadowed": false})
+    );
+    // The built-in @usdc on base is hidden by the user's label.
+    let found: Value = serde_json::from_str(&sb.ok(&["label", USDC_BASE, "--json"])).unwrap();
+    assert_eq!(
+        found,
+        json!([{"name": "usdc", "scope": "base", "chain_id": 8453, "address": USDC_BASE,
+                "source": "built-in", "shadowed": true}])
+    );
+    let found: Value = serde_json::from_str(&sb.ok(&["label", ROUTER, "--json"])).unwrap();
+    let names: Vec<&str> = found
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["router", "usdc"], "{found}");
+    // Nothing found: an empty array, and exit 1 as in text mode.
+    sb.cmd()
+        .args(["label", UNKNOWN, "--json"])
+        .assert()
+        .code(1)
+        .stdout("[]\n");
+
+    // --chain takes an alias (exact, like a name or ID; never a prefix).
+    sb.cmd()
+        .args(["label", "rm", "router", "--chain", "basechain", "-y"])
+        .assert()
+        .success()
+        .stdout(format!("Removed @router on base ({ROUTER})\n"));
+    sb.cmd()
+        .args(["label", "rm", "usdc", "--chain", "basech"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("exact chain name"));
+}
 
 #[test]
 fn exec_expands_user_labels_per_chain_and_for_every_chain() {
@@ -436,8 +470,6 @@ fn exec_errors_when_a_label_has_no_address_on_the_chain() {
             "@wbtc has no address on chain 'base' (8453)",
         ));
 }
-
-// ---------------------------------------------------------------- label
 
 #[test]
 fn label_rewrites_addresses_for_the_chain() {
@@ -579,248 +611,4 @@ fn label_exits_quietly_when_the_reader_goes_away() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-}
-
-// ---------------------------------------------------------------- doctor --tokens
-
-/// What the mock chain says about one address.
-#[derive(Clone)]
-struct MockToken {
-    code: bool,
-    symbol: String,
-    decimals: u8,
-}
-
-/// A call's data for a bare `selector`.
-fn selector(selector: [u8; 4]) -> String {
-    let hex: String = selector.iter().map(|b| format!("{b:02x}")).collect();
-    format!("0x{hex}")
-}
-
-fn abi_string(s: &str) -> String {
-    let mut data = vec![0u8; 64];
-    data[31] = 32;
-    data[63] = s.len() as u8;
-    data.extend_from_slice(s.as_bytes());
-    data.resize(64 + s.len().div_ceil(32) * 32, 0);
-    data.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-/// A JSON-RPC server answering `eth_chainId`, `eth_getCode` and the
-/// `symbol()` / `decimals()` calls for the given tokens (keyed by lowercase
-/// address). Unknown addresses have no code and revert.
-fn token_rpc(chain_id: u64, tokens: HashMap<String, MockToken>) -> String {
-    let rpc = MockRpc::start(move |request| {
-        let params = &request.params;
-        let token = |address: &Value| tokens.get(&address.as_str()?.to_ascii_lowercase());
-        match request.method.as_str() {
-            "eth_chainId" => Ok(json!(format!("{chain_id:#x}"))),
-            "eth_getCode" => Ok(json!(if token(&params[0]).is_some_and(|t| t.code) {
-                "0x6080"
-            } else {
-                "0x"
-            })),
-            "eth_call" => {
-                let data = params[0]["data"].as_str().unwrap_or_default();
-                match token(&params[0]["to"]) {
-                    Some(t) if data == selector(abi::SYMBOL) => {
-                        Ok(json!(format!("0x{}", abi_string(&t.symbol))))
-                    }
-                    Some(t) if data == selector(abi::DECIMALS) => {
-                        Ok(json!(format!("0x{:064x}", t.decimals)))
-                    }
-                    _ => Err("execution reverted".into()),
-                }
-            }
-            _ => Err("method not found".into()),
-        }
-    });
-    rpc.url()
-}
-
-fn registry_on(chain_id: u64) -> Vec<&'static BuiltinToken> {
-    builtin_tokens()
-        .iter()
-        .filter(|t| t.chain_id == chain_id)
-        .collect()
-}
-
-fn mock_tokens(chain_id: u64) -> HashMap<String, MockToken> {
-    registry_on(chain_id)
-        .into_iter()
-        .map(|t| {
-            (
-                t.address.to_lower_hex(),
-                MockToken {
-                    code: true,
-                    symbol: t.symbol.clone(),
-                    decimals: t.decimals,
-                },
-            )
-        })
-        .collect()
-}
-
-#[test]
-fn doctor_tokens_passes_when_the_chain_agrees_with_the_registry() {
-    // Arbitrum's USDT answers `USD₮0`: symbols are compared as UTF-8.
-    let base = token_rpc(8453, mock_tokens(8453));
-    let arb = token_rpc(42161, mock_tokens(42161));
-    let sb = seeded(&[("base", 8453, &base), ("arb", 42161, &arb)]);
-    let out = sb.ok(&["doctor", "--tokens"]);
-    for t in registry_on(8453) {
-        let line = format!(
-            "✓ base @{} {} {} ({} decimals)",
-            t.name, t.address, t.symbol, t.decimals
-        );
-        assert!(out.contains(&line), "missing {line:?} in:\n{out}");
-    }
-    assert!(
-        out.contains("✓ arb @usdt 0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9 USD₮0 (6 decimals)"),
-        "{out}"
-    );
-    // Chains that are not configured are reported, not failed.
-    assert!(out.contains("⚠ eth (1): not configured, "), "{out}");
-    let checked = registry_on(8453).len() + registry_on(42161).len();
-    let total = builtin_tokens().len();
-    assert!(
-        out.ends_with(&format!(
-            "✓ {total} registry entries: {checked} ok, 0 failed, {} skipped\n",
-            total - checked
-        )),
-        "{out}"
-    );
-}
-
-#[test]
-fn doctor_tokens_fails_on_any_mismatch() {
-    let mut tokens = mock_tokens(8453);
-    let lower = |name: &str| builtin_token(8453, name).unwrap().address.to_lower_hex();
-    tokens.get_mut(&lower("usdc")).unwrap().symbol = "USDbC".into();
-    tokens.get_mut(&lower("usdt")).unwrap().decimals = 18;
-    tokens.get_mut(&lower("dai")).unwrap().code = false;
-    tokens.remove(&lower("usdce"));
-    let rpc = token_rpc(8453, tokens);
-    // `eth` answers with the wrong chain ID; `op` is unreachable.
-    let wrong = token_rpc(5, HashMap::new());
-    let sb = seeded(&[
-        ("base", 8453, &rpc),
-        ("eth", 1, &wrong),
-        ("op", 10, "http://127.0.0.1:1"),
-    ]);
-    // A shadowing user label is a note.
-    sb.ok(&["label", "add", "weth", ROUTER, "--chain", "base"]);
-    let out = sb.cmd().args(["doctor", "--tokens"]).assert().code(1);
-    let out = String::from_utf8(out.get_output().stdout.clone()).unwrap();
-    let line = |name: &str| {
-        let t = builtin_token(8453, name).unwrap();
-        format!("base @{name} {}", t.address)
-    };
-    assert!(
-        out.contains(&format!("✓ {} WETH (18 decimals)", line("weth"))),
-        "{out}"
-    );
-    assert!(
-        out.contains(&format!(
-            "✗ {}: symbol() is \"USDbC\", the registry says \"USDC\"",
-            line("usdc")
-        )),
-        "{out}"
-    );
-    assert!(
-        out.contains(&format!(
-            "✗ {}: decimals() is 18, the registry says 6",
-            line("usdt")
-        )),
-        "{out}"
-    );
-    assert!(
-        out.contains(&format!("✗ {}: no code at this address", line("dai"))),
-        "{out}"
-    );
-    assert!(
-        out.contains(&format!("✗ {}: no code at this address", line("usdce"))),
-        "{out}"
-    );
-    assert!(
-        out.contains("✗ eth (1): chain ID mismatch: expected 1, endpoint reports 5; "),
-        "{out}"
-    );
-    assert!(
-        out.contains("✗ op (10): could not connect to endpoint; "),
-        "{out}"
-    );
-    let failed = 4 + registry_on(1).len() + registry_on(10).len();
-    assert!(out.contains(&format!(": 1 ok, {failed} failed, ")), "{out}");
-    assert!(!out.contains("127.0.0.1"), "{out}");
-    // Shadowing is a config matter: plain `doctor` notes it, `--tokens`
-    // (which checks the registry against the chain) does not.
-    let shadow = format!("⚠ base: your @weth ({ROUTER}) shadows the built-in token");
-    assert!(!out.contains(&shadow), "{out}");
-    let plain = sb.run(&["doctor"]);
-    assert!(stdout(&plain).contains(&shadow), "{}", stdout(&plain));
-}
-
-#[test]
-fn doctor_tokens_and_fix_conflict() {
-    let sb = eth_and_base();
-    sb.cmd()
-        .args(["doctor", "--tokens", "--fix"])
-        .assert()
-        .code(2)
-        .stderr(predicate::str::contains("cannot be used with"));
-}
-
-#[test]
-fn label_ls_and_find_json_and_rm_by_chain_alias() {
-    let sb = eth_and_base();
-    sb.ok(&["update", "base", "--alias", "basechain"]);
-    sb.ok(&["label", "add", "router", ROUTER, "--chain", "base"]);
-    sb.ok(&["label", "add", "usdc", ROUTER, "--chain", "base"]);
-
-    let rows: Value = serde_json::from_str(&sb.ok(&["label", "ls", "--json"])).unwrap();
-    let router = rows
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|r| r["name"] == "router")
-        .expect("router listed");
-    assert_eq!(
-        router,
-        &json!({"name": "router", "scope": "base", "chain_id": 8453,
-                "address": ROUTER, "source": "user", "shadowed": false})
-    );
-    // The built-in @usdc on base is hidden by the user's label.
-    let found: Value = serde_json::from_str(&sb.ok(&["label", USDC_BASE, "--json"])).unwrap();
-    assert_eq!(
-        found,
-        json!([{"name": "usdc", "scope": "base", "chain_id": 8453, "address": USDC_BASE,
-                "source": "built-in", "shadowed": true}])
-    );
-    let found: Value = serde_json::from_str(&sb.ok(&["label", ROUTER, "--json"])).unwrap();
-    let names: Vec<&str> = found
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|r| r["name"].as_str().unwrap())
-        .collect();
-    assert_eq!(names, ["router", "usdc"], "{found}");
-    // Nothing found: an empty array, and exit 1 as in text mode.
-    sb.cmd()
-        .args(["label", UNKNOWN, "--json"])
-        .assert()
-        .code(1)
-        .stdout("[]\n");
-
-    // --chain takes an alias (exact, like a name or ID; never a prefix).
-    sb.cmd()
-        .args(["label", "rm", "router", "--chain", "basechain", "-y"])
-        .assert()
-        .success()
-        .stdout(format!("Removed @router on base ({ROUTER})\n"));
-    sb.cmd()
-        .args(["label", "rm", "usdc", "--chain", "basech"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("exact chain name"));
 }

@@ -7,22 +7,20 @@
 //! `CHAINZ_DISABLE_KEYRING` is set (the OS keyring is never touched) and
 //! stdin is empty. Never build a `Command` for the binary any other way.
 //!
-//! RPCs are [`MockRpc`]s on loopback; nothing here touches the network.
-#![allow(dead_code)]
+//! RPCs are [`Mock`]s on loopback; nothing here touches the network.
 
-use serde_json::{Value, json};
-use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+pub use chainz_testkit::{
+    Answer, Call, ChildGuard, Mock, TEST_ADDRESS, TEST_ADDRESS_2, TEST_KEY, TEST_KEY_2,
+    require_tool, wait_until,
+};
+pub use predicates::prelude::*;
+pub use serde_json::{Value, json};
+pub use std::fs;
+pub use std::time::Duration;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 use tempfile::TempDir;
-
-/// Well-known anvil test key #0 and its address.
-pub const TEST_KEY: &str = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
-pub const TEST_ADDRESS: &str = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
 
 /// Inherited variables the binary may see; everything else is cleared.
 const ALLOWED: &[&str] = &["PATH", "TMPDIR", "RUST_BACKTRACE", "LLVM_PROFILE_FILE"];
@@ -210,15 +208,6 @@ pub fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
-/// Poll `done` every 20 ms until it holds; fail after `timeout`.
-pub fn wait_until(what: &str, timeout: Duration, mut done: impl FnMut() -> bool) {
-    let deadline = Instant::now() + timeout;
-    while !done() {
-        assert!(Instant::now() < deadline, "timed out waiting for {what}");
-        std::thread::sleep(Duration::from_millis(20));
-    }
-}
-
 /// Send `signal` (e.g. `"TERM"`) to `pid` with `kill(1)`.
 pub fn send_signal(pid: u32, signal: &str) {
     let status = Command::new("kill")
@@ -228,127 +217,66 @@ pub fn send_signal(pid: u32, signal: &str) {
     assert!(status.success(), "kill -{signal} {pid}");
 }
 
-/// One JSON-RPC request a [`MockRpc`] received (batch elements each count).
-#[derive(Clone, Debug)]
-pub struct Request {
-    pub method: String,
-    pub params: Value,
-    /// The HTTP request path.
-    pub path: String,
-    /// The HTTP head, lowercased (request line and headers).
-    pub head: String,
+/// A mock answering each call with `handler`: `Ok(result)`, or
+/// `Err(message)` for a JSON-RPC error (code 3).
+pub fn mock(handler: impl Fn(&Call) -> Result<Value, String> + Send + Sync + 'static) -> Mock {
+    Mock::start(move |call| handler(call).into())
 }
 
-/// What a mock answers: a `result`, or an error message (code 3).
-pub type Reply = Result<Value, String>;
-
-type Handler = dyn Fn(&Request) -> Reply + Send + Sync;
-
-/// A threaded, keep-alive JSON-RPC server on loopback. Every request
-/// (batches too) is answered by its handler and recorded.
-pub struct MockRpc {
-    pub port: u16,
-    seen: Arc<Mutex<Vec<Request>>>,
-}
-
-impl MockRpc {
-    pub fn start(handler: impl Fn(&Request) -> Reply + Send + Sync + 'static) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let seen: Arc<Mutex<Vec<Request>>> = Arc::default();
-        let handler: Arc<Handler> = Arc::new(handler);
-        let log = seen.clone();
-        std::thread::spawn(move || {
-            for stream in listener.incoming().flatten() {
-                let (log, handler) = (log.clone(), handler.clone());
-                std::thread::spawn(move || serve_connection(stream, &log, &*handler));
-            }
-        });
-        MockRpc { port, seen }
-    }
-
-    /// Answers `eth_chainId` with `chain_id`, and nothing else.
-    pub fn chain_id(chain_id: u64) -> Self {
-        Self::start(move |request| match request.method.as_str() {
-            "eth_chainId" => Ok(json!(format!("{chain_id:#x}"))),
-            _ => Err("method not found".into()),
+/// A mock chain: `eth_chainId` is `chain_id`, the head is `head`, and every
+/// answer takes `delay`.
+pub fn chain_rpc(chain_id: u64, head: u64, delay: Duration) -> Mock {
+    mock(move |call| {
+        std::thread::sleep(delay);
+        Ok(match call.method.as_str() {
+            "eth_chainId" => json!(format!("{chain_id:#x}")),
+            "eth_blockNumber" => json!(format!("{head:#x}")),
+            _ => Value::Null,
         })
-    }
-
-    pub fn url(&self) -> String {
-        format!("http://127.0.0.1:{}", self.port)
-    }
-
-    /// Every request so far, in arrival order.
-    pub fn seen(&self) -> Vec<Request> {
-        self.seen.lock().unwrap().clone()
-    }
-
-    /// The methods of every request so far.
-    pub fn methods(&self) -> Vec<String> {
-        self.seen().into_iter().map(|r| r.method).collect()
-    }
+    })
 }
 
-fn serve_connection(stream: TcpStream, log: &Mutex<Vec<Request>>, handler: &Handler) {
-    let mut reader = BufReader::new(stream);
-    while let Some((head, body)) = read_message(&mut reader) {
-        let path = head
-            .lines()
-            .next()
-            .and_then(|l| l.split_whitespace().nth(1))
-            .unwrap_or("/")
-            .to_string();
-        let parsed: Value = serde_json::from_slice(&body).unwrap_or_default();
-        let mut answer = |call: &Value| {
-            let request = Request {
-                method: call["method"].as_str().unwrap_or("?").to_string(),
-                params: call["params"].clone(),
-                path: path.clone(),
-                head: head.clone(),
-            };
-            let reply = handler(&request);
-            log.lock().unwrap().push(request);
-            match reply {
-                Ok(result) => json!({"jsonrpc": "2.0", "id": call["id"], "result": result}),
-                Err(message) => json!({"jsonrpc": "2.0", "id": call["id"],
-                                       "error": {"code": 3, "message": message}}),
-            }
-        };
-        let response = match &parsed {
-            Value::Array(calls) => Value::Array(calls.iter().map(&mut answer).collect()),
-            call => answer(call),
-        }
-        .to_string();
-        let message = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{response}",
-            response.len()
-        );
-        if reader.get_mut().write_all(message.as_bytes()).is_err() {
-            return;
-        }
-    }
+/// A fresh chainlist cache with one entry.
+pub fn seed_chainlist(sb: &Sandbox, name: &str, chain_id: u64, rpcs: &[&str]) {
+    let path = sb.cache_file("chains.json");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let entry = json!([{
+        "name": name, "chainId": chain_id, "shortName": name.to_lowercase(), "rpc": rpcs,
+        "nativeCurrency": {"name": "Ether", "symbol": "ETH", "decimals": 18}
+    }]);
+    fs::write(path, entry.to_string()).unwrap();
 }
 
-/// Read one HTTP message (request or response): lowercased head and body.
-pub fn read_message(reader: &mut BufReader<TcpStream>) -> Option<(String, Vec<u8>)> {
-    let mut head = String::new();
-    loop {
-        let mut line = String::new();
-        if reader.read_line(&mut line).ok()? == 0 {
-            return None;
-        }
-        if line.trim_end().is_empty() {
-            break;
-        }
-        head.push_str(&line.to_ascii_lowercase());
+/// `(active, [(name, url)])` of a chain, URLs revealed.
+pub fn endpoints(sb: &Sandbox, chain: &str) -> (String, Vec<(String, String)>) {
+    let shown: Value = serde_json::from_str(&sb.ok(&["ls", chain, "--json", "--reveal"])).unwrap();
+    let list = shown["endpoints"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            (
+                e["name"].as_str().unwrap().to_string(),
+                e["url"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    (shown["rpc"].as_str().unwrap().to_string(), list)
+}
+
+/// The v1 `config.json` fixture chainz-core's migration tests use.
+pub fn v1_fixture() -> String {
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../chainz-core/tests/fixtures/v1-config.json");
+    fs::read_to_string(path).unwrap()
+}
+
+/// Runs `chainz serve stop` in the sandbox when dropped, so a gateway
+/// started with `serve --detach` never outlives its test.
+pub struct StopGateway<'a>(pub &'a Sandbox);
+
+impl Drop for StopGateway<'_> {
+    fn drop(&mut self) {
+        let _ = self.0.run(&["serve", "stop"]);
     }
-    let length: usize = head
-        .lines()
-        .find_map(|l| l.strip_prefix("content-length:"))
-        .and_then(|v| v.trim().parse().ok())
-        .unwrap_or(0);
-    let mut body = vec![0; length];
-    reader.read_exact(&mut body).ok()?;
-    Some((head, body))
 }

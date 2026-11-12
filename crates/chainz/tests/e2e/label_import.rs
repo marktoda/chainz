@@ -1,13 +1,7 @@
-//! End-to-end tests for `label import`: labels from Foundry broadcast
-//! output. Broadcast trees are written by hand in the shape forge writes
-//! them, inside the sandbox (see `common`).
+//! `label import`: labels from Foundry broadcast output. Broadcast trees
+//! are written by hand in the shape forge writes them.
 
-mod common;
-
-use common::{Sandbox, stderr, stdout};
-use predicates::prelude::*;
-use serde_json::{Value, json};
-use std::fs;
+use crate::common::*;
 use std::path::{Path, PathBuf};
 
 const POOL: &str = "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf";

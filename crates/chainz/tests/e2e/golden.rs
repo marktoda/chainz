@@ -1,68 +1,16 @@
-//! Golden baselines: the exact output of the listing commands, of config
-//! edits on a commented config, of the v1 migration, of `top --once` and
-//! the key shape of `serve status --json`, pinned before the untangle
-//! refactor (plan D6) so every later change to them shows up as a diff.
-//!
-//! Snapshots are plain files under `tests/golden/`. When a change to one is
-//! intended, regenerate them and review the diff:
+//! Golden files: the exact output of the listing commands, of config edits
+//! on a commented config, of the v1 migration, of `top --once` and the key
+//! shape of `serve status --json`, as plain files under `tests/golden/`.
+//! When a change to one is intended, regenerate them and review the diff:
 //!
 //! ```console
-//! CHAINZ_BLESS=1 cargo test -p chainz --test golden
+//! CHAINZ_BLESS=1 cargo test -p chainz --test e2e golden
 //! git diff crates/chainz/tests/golden
 //! ```
-//!
-//! Every invocation runs in a sandbox (see `common`); RPCs are mocks on
-//! loopback and nothing here touches the network.
 
-mod common;
-
-use common::{MockRpc, Sandbox, TEST_KEY, stderr, stdout, wait_until};
-use serde_json::{Value, json};
+use crate::common::*;
+use chainz_testkit::golden;
 use std::collections::BTreeSet;
-use std::fs;
-use std::path::PathBuf;
-use std::time::Duration;
-
-/// Compare `actual` with `tests/golden/<name>`, or rewrite the file when
-/// `CHAINZ_BLESS=1`.
-fn golden(name: &str, actual: &str) {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/golden")
-        .join(name);
-    if std::env::var_os("CHAINZ_BLESS").is_some_and(|v| v == "1") {
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, actual).unwrap();
-        return;
-    }
-    let expected = fs::read_to_string(&path).unwrap_or_else(|e| {
-        panic!(
-            "{}: {e}; run with CHAINZ_BLESS=1 to create it",
-            path.display()
-        )
-    });
-    if expected != actual {
-        let first = expected
-            .lines()
-            .zip(actual.lines())
-            .position(|(e, a)| e != a)
-            .unwrap_or_else(|| expected.lines().count().min(actual.lines().count()));
-        let window = |text: &str| -> String {
-            text.lines()
-                .enumerate()
-                .skip(first.saturating_sub(3))
-                .take(7)
-                .map(|(i, l)| format!("{:>5} | {l}\n", i + 1))
-                .collect()
-        };
-        panic!(
-            "{name} differs from {} at line {} (CHAINZ_BLESS=1 rewrites it)\n--- expected\n{}--- actual\n{}",
-            path.display(),
-            first + 1,
-            window(&expected),
-            window(actual)
-        );
-    }
-}
 
 // ---------------------------------------------------------------- listings
 
@@ -176,7 +124,7 @@ fn listings() {
         let out = sb
             .ok(args)
             .replace(&at.to_string(), &PINNED_AT_MS.to_string());
-        golden(&format!("listing/{file}"), &out);
+        golden!(&format!("listing/{file}"), &out);
     }
     // Listing never writes.
     assert_eq!(sb.config(), LISTING_CONFIG);
@@ -241,7 +189,7 @@ fn add_rpc_keeps_comments_and_order() {
         "extra",
         "--no-check",
     ]);
-    golden("edit/add-rpc.config.toml", &sb.config());
+    golden!("edit/add-rpc.config.toml", &sb.config());
 }
 
 #[test]
@@ -262,28 +210,25 @@ fn label_add_keeps_comments_and_order() {
         "0x4444444444444444444444444444444444444444",
         "--all-chains",
     ]);
-    golden("edit/label-add.config.toml", &sb.config());
+    golden!("edit/label-add.config.toml", &sb.config());
 }
 
 // ---------------------------------------------------------------- migration
 
-/// The automatic migration of the v1 fixture core's migrate tests use
-/// (run by the first command, here `ls`): the summary and the files
-/// written.
+/// The automatic migration of the v1 fixture (run by the first command,
+/// here `ls`): the summary and the files written.
 #[test]
 fn v1_fixture_migration() {
     let sb = Sandbox::new();
-    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../chainz-core/tests/fixtures/v1-config.json");
-    fs::write(sb.dir().join("config.json"), fs::read(fixture).unwrap()).unwrap();
+    fs::write(sb.dir().join("config.json"), v1_fixture()).unwrap();
     let root = sb.root().to_str().unwrap().to_string();
     let scrub = |text: String| text.replace(&root, "<root>");
 
     let real = sb.run(&["ls"]);
     assert!(real.status.success(), "{}", stderr(&real));
-    golden("migrate/migrate.stderr", &scrub(stderr(&real)));
-    golden("migrate/config.toml", &sb.config());
-    golden("migrate/secrets.toml", &sb.secrets());
+    golden!("migrate/migrate.stderr", &scrub(stderr(&real)));
+    golden!("migrate/config.toml", &sb.config());
+    golden!("migrate/secrets.toml", &sb.secrets());
 }
 
 // ---------------------------------------------------------------- serve
@@ -325,8 +270,8 @@ fn shape(value: &Value) -> String {
 #[test]
 fn serve_status_json_key_shape() {
     let sb = Sandbox::new();
-    let upstream = MockRpc::start(|request| {
-        Ok(match request.method.as_str() {
+    let upstream = mock(|call| {
+        Ok(match call.method.as_str() {
             "eth_chainId" => json!("0x1"),
             "eth_blockNumber" => json!("0x64"),
             _ => json!("ok"),
@@ -339,7 +284,7 @@ fn serve_status_json_key_shape() {
 
     let stopped = sb.run(&["serve", "status", "--json"]);
     assert_eq!(stopped.status.code(), Some(1));
-    golden(
+    golden!(
         "serve/status-stopped.keys",
         &shape(&json_of(&stdout(&stopped))),
     );
@@ -351,177 +296,39 @@ fn serve_status_json_key_shape() {
     let port = info["port"].as_u64().unwrap();
     let token = info["token"].as_str().unwrap();
     // One call through the gateway, so the metrics windows have a row.
-    post(port, &format!("/{token}/eth"), "eth_blockNumber");
+    let url = format!("http://127.0.0.1:{port}/{token}/eth");
+    chainz_testkit::http::rpc(&url, "eth_blockNumber", json!([]));
     wait_until("a metrics row", Duration::from_secs(10), || {
         sb.ok(&["serve", "status", "--json"])
             .contains("eth_blockNumber")
     });
     let running = json_of(&sb.ok(&["serve", "status", "--json"]));
-    golden("serve/status-running.keys", &shape(&running));
-}
-
-/// Stops the sandbox's gateway, also when the test fails.
-struct StopGateway<'a>(&'a Sandbox);
-
-impl Drop for StopGateway<'_> {
-    fn drop(&mut self) {
-        let _ = self.0.run(&["serve", "stop"]);
-    }
+    golden!("serve/status-running.keys", &shape(&running));
 }
 
 fn json_of(text: &str) -> Value {
     serde_json::from_str(text).unwrap_or_else(|e| panic!("{e}: {text}"))
 }
 
-/// POST one JSON-RPC call to the gateway on `port`.
-fn post(port: u64, path: &str, method: &str) {
-    use std::io::{BufReader, Write};
-    let stream = std::net::TcpStream::connect(("127.0.0.1", port as u16)).unwrap();
-    stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .unwrap();
-    let body = format!(r#"{{"jsonrpc":"2.0","id":1,"method":"{method}","params":[]}}"#);
-    let request = format!(
-        "POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
-        body.len()
-    );
-    let mut reader = BufReader::new(stream);
-    reader.get_mut().write_all(request.as_bytes()).unwrap();
-    common::read_message(&mut reader).expect("a response");
-}
-
 // ---------------------------------------------------------------- top
 
-/// The `tests/top.rs` fixture: `live` on the mock through a `${VAR}`,
-/// `dead` on a closed port, and a keyring signer with a cached address.
-fn top_sandbox(rpc: &MockRpc) -> Sandbox {
-    let sb = Sandbox::new();
-    sb.write_config(&format!(
-        r#"version = 2
-default = "live"
-
-[chains.live]
-id = 1
-aliases = ["mainnet"]
-signer = "default"
-rpc = "main"
-
-[chains.live.rpcs]
-main = "{rpc}/v3/${{RPC_KEY}}"
-spare = "http://127.0.0.1:1/spare"
-stream = "wss://live.example.org/ws/hunter2"
-
-[chains.dead]
-id = 8453
-rpc = "local"
-
-[chains.dead.rpcs]
-local = "http://127.0.0.1:1"
-
-[signers.default]
-backend = "keyring"
-address = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
-"#,
-        rpc = rpc.url()
-    ));
-    sb.write_secrets("[vars]\nRPC_KEY = \"s3cr3t-key\"\n");
-    sb
-}
-
-fn word(n: u128) -> String {
-    format!("{n:064x}")
-}
-
-/// `(bool, bytes)[]` of successful `uint256` returns, as `aggregate3` gives.
-fn aggregate3_result(values: &[u128]) -> String {
-    let mut out = word(32) + &word(values.len() as u128);
-    for i in 0..values.len() {
-        out += &word((values.len() + i * 4) as u128 * 32);
-    }
-    for value in values {
-        out += &(word(1) + &word(64) + &word(32) + &word(*value));
-    }
-    format!("0x{out}")
-}
-
-/// Mainnet USDC, lower case and without `0x`.
-const USDC: &str = "a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48";
-
-/// The target of every call in `aggregate3` calldata, lower-case hex.
-fn aggregate3_targets(calldata: &str) -> Vec<String> {
-    let args = &calldata[10..];
-    let word = |i: usize| &args[i * 64..(i + 1) * 64];
-    let number = |i: usize| usize::from_str_radix(&word(i)[48..], 16).unwrap();
-    let count = number(1);
-    (0..count)
-        .map(|i| word(2 + number(2 + i) / 32)[24..].to_lowercase())
-        .collect()
-}
-
-/// The `tests/top.rs` mock: chain 1 at head 1,000 with 12 s blocks (the
-/// head stamped with the mock's start time), and a Multicall3 reporting
-/// 1.5 ETH, 2.5 USDC and nothing else.
-///
-/// Every answer takes [`TOP_RPC_DELAY`], so measured latencies have two
-/// digits and the text tables keep their column widths.
-fn top_rpc() -> MockRpc {
-    // One clock reading for every block, so the head and the look-back
-    // block are always exactly 12 s apart.
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    MockRpc::start(move |request| {
-        std::thread::sleep(TOP_RPC_DELAY);
-        Ok(match request.method.as_str() {
-            "eth_getBlockByNumber" => {
-                let number = match request.params[0].as_str().unwrap() {
-                    "latest" => 1_000,
-                    hex => u64::from_str_radix(&hex[2..], 16).unwrap(),
-                };
-                json!({
-                    "number": format!("{number:#x}"),
-                    "timestamp": format!("{:#x}", now - (1_000 - number) * 12),
-                    "baseFeePerGas": "0x3b9aca00",
-                })
-            }
-            "eth_call" => {
-                let calldata = request.params[0]["data"].as_str().unwrap();
-                let values: Vec<u128> = aggregate3_targets(calldata)
-                    .iter()
-                    .enumerate()
-                    .map(|(i, target)| match (i, target.as_str()) {
-                        (0, _) => 1_500_000_000_000_000_000,
-                        (_, USDC) => 2_500_000,
-                        _ => 0,
-                    })
-                    .collect();
-                json!(aggregate3_result(&values))
-            }
-            _ => Value::Null,
-        })
-    })
-}
-
-const TOP_RPC_DELAY: Duration = Duration::from_millis(20);
-
 /// Mask what changes run to run in `top --once` text: latencies (`23ms`)
-/// and ages (`0s`, `1s ago`) become `NNms` and `Ns`, width kept.
+/// become `<ms>` and ages (`0s`, `1s ago`) `<s>`. Column widths follow
+/// those values, so runs of spaces become one; chainz-tui's own goldens pin
+/// the layout from fixed states.
 fn mask_top_text(text: &str) -> String {
-    let mask = |token: &str| -> Option<String> {
-        let digits = token
-            .strip_suffix("ms")
-            .or_else(|| token.strip_suffix('s'))?;
-        if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
-            return None;
-        }
-        Some("N".repeat(digits.len()) + &token[digits.len()..])
+    let mask = |token: &str| -> Option<&str> {
+        let (digits, unit) = match token.strip_suffix("ms") {
+            Some(digits) => (digits, "<ms>"),
+            None => (token.strip_suffix('s')?, "<s>"),
+        };
+        (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())).then_some(unit)
     };
     text.lines()
         .map(|line| {
-            let words: Vec<String> = line
-                .split(' ')
-                .map(|w| mask(w).unwrap_or_else(|| w.to_string()))
+            let words: Vec<&str> = line
+                .split_whitespace()
+                .map(|w| mask(w).unwrap_or(w))
                 .collect();
             words.join(" ") + "\n"
         })
@@ -557,24 +364,24 @@ fn mask_top_json(text: &str) -> String {
         .collect()
 }
 
-/// `top --once` and `--once --json` against the `tests/top.rs` mock. The
-/// mock's port and the clock-dependent values are masked.
+/// `top --once` and `--once --json` against `top.rs`'s fixture, with the
+/// mock's port and the clock-dependent values masked.
 #[test]
 fn top_once() {
-    let rpc = top_rpc();
-    let sb = top_sandbox(&rpc);
+    let rpc = crate::top::chain();
+    let sb = crate::top::fixture(&rpc);
     let host = format!("127.0.0.1:{}", rpc.port);
 
     let text = sb.ok(&["top", "--once"]);
-    golden(
+    golden!(
         "top/once.txt",
-        &mask_top_text(&text.replace(&host, "127.0.0.1:<port>")),
+        &mask_top_text(&text.replace(&host, "127.0.0.1:<port>"))
     );
 
     let json = sb.ok(&["top", "--once", "--json"]);
     json_of(&json);
-    golden(
+    golden!(
         "top/once.json",
-        &mask_top_json(&json).replace(&host, "127.0.0.1:<port>"),
+        &mask_top_json(&json).replace(&host, "127.0.0.1:<port>")
     );
 }

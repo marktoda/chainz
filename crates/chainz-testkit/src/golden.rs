@@ -8,7 +8,7 @@ use std::path::Path;
 /// when `CHAINZ_BLESS=1`: `golden!("listing/ls.txt", &output)`.
 #[macro_export]
 macro_rules! golden {
-    ($name:expr, $actual:expr) => {
+    ($name:expr, $actual:expr $(,)?) => {
         $crate::golden::check(
             &::std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden"),
             $name,
