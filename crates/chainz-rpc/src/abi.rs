@@ -425,14 +425,49 @@ mod tests {
     }
 
     #[test]
-    fn selectors() {
-        assert_eq!(crate::hex::encode(&SYMBOL), "0x95d89b41");
-        assert_eq!(crate::hex::encode(&DECIMALS), "0x313ce567");
-        assert_eq!(
-            crate::hex::encode(&MULTICALL3),
-            "0xca11bde05977b3631167028862be2a173976ca11"
-        );
-        assert_eq!(function_name(BALANCE_OF), Some("balanceOf"));
+    fn selectors_are_the_keccak_of_their_signatures() {
+        use sha3::{Digest, Keccak256};
+        const SIGNATURES: &[&str] = &[
+            "balanceOf(address)",
+            "transfer(address,uint256)",
+            "transferFrom(address,address,uint256)",
+            "approve(address,uint256)",
+            "allowance(address,address)",
+            "totalSupply()",
+            "decimals()",
+            "symbol()",
+            "name()",
+            "owner()",
+            "deposit()",
+            "withdraw(uint256)",
+            "aggregate3((address,bool,bytes)[])",
+            "aggregate((address,bytes)[])",
+            "tryAggregate(bool,(address,bytes)[])",
+            "tryBlockAndAggregate(bool,(address,bytes)[])",
+            "getEthBalance(address)",
+            "slot0()",
+            "getReserves()",
+            "ownerOf(uint256)",
+            "supportsInterface(bytes4)",
+            "DOMAIN_SEPARATOR()",
+            "nonces(address)",
+        ];
+        assert_eq!(FUNCTIONS.len(), SIGNATURES.len());
+        for signature in SIGNATURES {
+            let hash = Keccak256::digest(signature.as_bytes());
+            let selector: [u8; 4] = hash[..4].try_into().unwrap();
+            let name = signature.split('(').next().unwrap();
+            assert_eq!(function_name(selector), Some(name), "{signature}");
+        }
+        for (constant, name) in [
+            (SYMBOL, "symbol"),
+            (DECIMALS, "decimals"),
+            (BALANCE_OF, "balanceOf"),
+            (AGGREGATE3, "aggregate3"),
+            (GET_ETH_BALANCE, "getEthBalance"),
+        ] {
+            assert_eq!(function_name(constant), Some(name));
+        }
         assert_eq!(function_name([0; 4]), None);
     }
 

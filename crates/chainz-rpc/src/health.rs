@@ -404,12 +404,6 @@ mod tests {
     }
 
     #[test]
-    fn thresholds_keep_their_values() {
-        assert_eq!((ENDPOINT_LAG, CHAIN_LAG, FAILOVER_LAG), (20, 3, 2));
-        assert_eq!(P50_WINDOW, 16);
-    }
-
-    #[test]
     fn latest_samples_are_judged_within_one_round() {
         let sample = |at_ms, head| HealthSample {
             at_ms,

@@ -358,6 +358,8 @@ mod tests {
             !needs(&call_at(json!("0x64")), None).any(),
             "unknown head: no claim"
         );
+        // Strict hex: a sign is not a digit.
+        assert!(!needs(&call_at(json!("0x+f")), head).any());
         let storage =
             single(json!({"id":1,"method":"eth_getStorageAt","params":["0x00","0x0","0x1"]}));
         assert!(needs(&storage, head).archive);
@@ -389,9 +391,6 @@ mod tests {
                 m.name
             );
         }
-        // Strict hex: a sign is not a digit.
-        let plus = single(json!({"id":1,"method":"eth_call","params":[{}, "0x+f"]}));
-        assert!(!needs(&plus, Some(1_000)).any());
     }
 
     #[test]

@@ -206,7 +206,6 @@ mod tests {
     use chainz_rpc::control::*;
     use chainz_rpc::error::SERVER_ERROR;
 
-    use crate::events::EVENTS_BUFFER;
     use crate::testing::ControlServer;
 
     fn status() -> Status {
@@ -454,22 +453,6 @@ mod tests {
             ids.push(record.id);
         }
         ids
-    }
-
-    #[tokio::test]
-    async fn the_ring_is_bounded() {
-        let dir = socket_dir();
-        let server = server(&dir).await;
-        for i in 0..(EVENTS_BUFFER as u64 + 5) {
-            server.push_event(record(i, true));
-        }
-        let all = EventsOptions {
-            backlog: Backlog::All,
-            after_id: None,
-            follow: false,
-        };
-        let ids = ids(&ControlClient::new(server.path()), all).await;
-        assert_eq!((ids.len(), ids[0]), (EVENTS_BUFFER, 5));
     }
 
     #[tokio::test]

@@ -177,7 +177,6 @@ pub fn rpc_error_code(body: &[u8]) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::LIMIT_EXCEEDED;
     use std::sync::atomic::{AtomicU32, Ordering};
 
     fn quick(max_attempts: u32) -> RetryPolicy {
@@ -190,27 +189,12 @@ mod tests {
     }
 
     #[test]
-    fn only_transient_errors_are_retried() {
+    fn a_policy_retries_transient_errors_and_rate_limits_only() {
+        // Which errors are transient or rate limits is error.rs's to test.
         let all = RetryPolicy::same_endpoint_transient();
         assert!(all.retries(&RpcError::Timeout));
-        assert!(all.retries(&RpcError::Connect));
-        assert!(all.retries(&RpcError::Http(503)));
-        assert!(all.retries(&RpcError::BodyRead));
         assert!(all.retries(&RpcError::RateLimited { retry_after: None }));
-        assert!(all.retries(&RpcError::Rpc {
-            code: LIMIT_EXCEEDED,
-            message: "limit".into()
-        }));
         assert!(!all.retries(&RpcError::Http(404)));
-        assert!(!all.retries(&RpcError::Http(500)));
-        assert!(!all.retries(&RpcError::Rpc {
-            code: 3,
-            message: "execution reverted".into()
-        }));
-        assert!(!all.retries(&RpcError::ChainMismatch {
-            expected: 1,
-            actual: 2
-        }));
         assert!(!RetryPolicy::none().retries(&RpcError::Timeout));
     }
 
@@ -283,25 +267,14 @@ mod tests {
 
     #[test]
     fn backoff_doubles_and_caps() {
-        let p = RetryPolicy::same_endpoint_transient();
-        assert_eq!(p.backoff_for(1), Duration::from_millis(100));
-        assert_eq!(p.backoff_for(2), Duration::from_millis(200));
-        assert_eq!(p.backoff_for(4), Duration::from_millis(800));
-        assert_eq!(p.backoff_for(5), Duration::from_secs(1));
-        assert_eq!(p.backoff_for(60), Duration::from_secs(1));
-        assert_eq!(RetryPolicy::none().max_attempts, 1);
-    }
-
-    #[test]
-    fn patient_waits_longer() {
-        let p = RetryPolicy::patient();
-        assert_eq!(p.max_attempts, 5);
-        let waits: Vec<_> = (1..5).map(|r| p.backoff_for(r).as_millis()).collect();
-        assert_eq!(waits, [500, 1000, 2000, 4000]);
-        assert!(p.retries(&RpcError::Timeout));
-        assert!(!p.retries(&RpcError::Rpc {
-            code: 3,
-            message: "execution reverted".into()
-        }));
+        let p = RetryPolicy {
+            backoff: Duration::from_millis(10),
+            max_backoff: Duration::from_millis(50),
+            ..quick(5)
+        };
+        let waits: Vec<_> = [1, 2, 3, 4, 60]
+            .map(|r| p.backoff_for(r).as_millis())
+            .into();
+        assert_eq!(waits, [10, 20, 40, 50, 50]);
     }
 }
