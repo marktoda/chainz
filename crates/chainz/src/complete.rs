@@ -14,6 +14,7 @@
 
 use crate::cli::Opt;
 use chainz_core::Chainz;
+use chainz_core::contract::Env;
 use chainz_core::labels::{LabelIndex, LabelSource};
 use chainz_core::model::Config;
 use chainz_core::resolve::{self, ChainRef};
@@ -166,7 +167,7 @@ fn endpoints(current: &OsStr) -> Vec<CompletionCandidate> {
     let typed = typed_chain(&preceding());
     let runtime = Runtime::resolve().ok();
     let Ok(Some((ChainRef::Configured(name), _))) =
-        resolve::select(&config, runtime.as_ref(), typed.as_deref())
+        resolve::select(&config, runtime.as_ref(), typed.as_deref(), Env::process())
     else {
         return Vec::new();
     };
@@ -423,7 +424,7 @@ fn typed_chain(words: &[String]) -> Option<String> {
 fn typed_chain_id(config: &Config, words: &[String]) -> Option<u64> {
     let typed = typed_chain(words);
     let runtime = Runtime::resolve().ok();
-    match resolve::select(config, runtime.as_ref(), typed.as_deref()).ok()?? {
+    match resolve::select(config, runtime.as_ref(), typed.as_deref(), Env::process()).ok()?? {
         (ChainRef::Configured(name), _) => config.chains.get(&name).map(|c| c.id),
         (ChainRef::Fork(fork), _) => Some(fork.chain_id),
     }

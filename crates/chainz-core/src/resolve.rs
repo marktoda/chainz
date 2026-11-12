@@ -10,6 +10,7 @@
 //! or alias (case-insensitive), then an unambiguous prefix of a name or
 //! alias. Destructive commands use [`resolve_exact`]: name or ID only.
 
+use crate::contract::Env;
 use crate::model::Config;
 use crate::runtime::{ForkRecord, Runtime};
 use anyhow::{Result, anyhow, bail};
@@ -126,11 +127,12 @@ pub fn select(
     config: &Config,
     runtime: Option<&Runtime>,
     explicit: Option<&str>,
+    env: Env,
 ) -> Result<Option<(ChainRef, Source)>> {
     if let Some(query) = explicit {
         return resolve(config, runtime, query).map(|c| Some((c, Source::Explicit)));
     }
-    if let Some(env) = std::env::var("CHAINZ_CHAIN").ok().filter(|v| !v.is_empty()) {
+    if let Some(env) = env.chainz_chain() {
         return resolve(config, runtime, &env)
             .map(|c| Some((c, Source::Env)))
             .map_err(|e| e.context("from $CHAINZ_CHAIN"));

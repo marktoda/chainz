@@ -75,7 +75,11 @@ fn fixture() -> Fixture {
     std::fs::create_dir_all(paths.dir()).unwrap();
     std::fs::write(paths.config(), CONFIG).unwrap();
     std::fs::write(paths.secrets(), SECRETS).unwrap();
-    let chainz = Chainz::open_at(paths, LoadMode::Strict).unwrap();
+    // A fixed, empty environment: the developer's shell (an enclosing
+    // `chainz shell`, an exported variable) never changes these tests.
+    let chainz = Chainz::open_at(paths, LoadMode::Strict)
+        .unwrap()
+        .with_env(crate::contract::Env::from_fn(|_| None));
     let runtime = Runtime::at(dir.path().join("run"));
     Fixture {
         _dir: dir,
@@ -90,8 +94,9 @@ fn ctx(f: &Fixture, chain: &str, opts: &ExecOptions) -> Result<Context> {
 }
 
 fn env_map(ctx: &Context) -> HashMap<&'static str, String> {
-    ctx.env()
+    ctx.exports()
         .unwrap()
+        .set
         .into_iter()
         .map(|e| (e.name, e.value))
         .collect()
@@ -134,7 +139,7 @@ fn rpc_override_exports_headers_and_explain_redacts() {
         ..Default::default()
     };
     let c = ctx(&f, "eth", &opts).unwrap();
-    let env = c.env().unwrap();
+    let env = c.exports().unwrap().set;
     let headers = env.iter().find(|e| e.name == "ETH_RPC_HEADERS").unwrap();
     assert_eq!(headers.value, "x-secret: gw-secret");
     assert_eq!(headers.display(), "x-secret: [REDACTED]");
@@ -238,7 +243,7 @@ fn forks_use_anvil_and_never_export_keystore() {
 fn expand(f: &Fixture, chain: &str, args: &[&str]) -> Result<Vec<String>> {
     let opts = ExecOptions::default();
     let c = ctx(f, chain, &opts)?;
-    let e = Expander::new(&f.chainz, &f.runtime, &c, &opts);
+    let e = Expander::new(&f.chainz, &f.runtime, &c, opts.direct);
     let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
     Ok(e.expand_args(&args)?.into_iter().map(|a| a.value).collect())
 }
@@ -383,7 +388,7 @@ fn env_var_debug_redacts_urls() {
     let var = EnvVar {
         name: "VERIFIER_URL",
         value: "https://explorer.example/api?apikey=verifier-secret".into(),
-        secret: true,
+        shown: Shown::Url,
     };
     let debug = format!("{var:?}");
     assert!(!debug.contains("verifier-secret"), "{debug}");
@@ -391,16 +396,17 @@ fn env_var_debug_redacts_urls() {
     let headers = EnvVar {
         name: "ETH_RPC_HEADERS",
         value: "x-key: header-secret".into(),
-        secret: true,
+        shown: Shown::Headers,
     };
     assert_eq!(format!("{headers:?}"), "ETH_RPC_HEADERS=x-key: [REDACTED]");
     let f = fixture();
     let env = ctx(&f, "celo", &ExecOptions::default())
         .unwrap()
-        .env()
-        .unwrap();
+        .exports()
+        .unwrap()
+        .set;
     let verifier = env.iter().find(|e| e.name == "VERIFIER_URL").unwrap();
-    assert!(verifier.secret);
+    assert!(verifier.is_secret());
 }
 
 #[test]
@@ -408,7 +414,7 @@ fn deprecated_tokens_warn_and_secrets_are_redacted_for_explain() {
     let f = fixture();
     let opts = ExecOptions::default();
     let c = ctx(&f, "eth", &opts).unwrap();
-    let e = Expander::new(&f.chainz, &f.runtime, &c, &opts);
+    let e = Expander::new(&f.chainz, &f.runtime, &c, opts.direct);
     let args: Vec<String> = [
         "@chainname",
         "@verifier_api_key",
@@ -431,4 +437,79 @@ fn deprecated_tokens_warn_and_secrets_are_redacted_for_explain() {
             "@verifier_api_key is deprecated; use @explorer_key"
         ]
     );
+}
+
+#[test]
+fn exports_list_unset_contract_vars_and_warnings_once() {
+    let f = fixture();
+    let exports = ctx(&f, "nosigner", &ExecOptions::default())
+        .unwrap()
+        .exports()
+        .unwrap();
+    for name in CONTRACT_VARS {
+        let set = exports.set.iter().any(|v| v.name() == name);
+        assert_ne!(set, exports.unset.contains(&name), "{name}");
+    }
+    assert!(exports.unset.contains(&RAW_PRIVATE_KEY));
+    assert_eq!(exports.warnings.len(), 1, "{:?}", exports.warnings);
+    assert!(exports.warnings[0].starts_with("not exporting the explorer key: "));
+    let mut command = std::process::Command::new("true");
+    exports.apply(&mut command).unwrap();
+    let removed: Vec<_> = command
+        .get_envs()
+        .filter(|(_, v)| v.is_none())
+        .map(|(k, _)| k.to_string_lossy().into_owned())
+        .collect();
+    assert!(removed.iter().any(|k| k == "ETH_KEYSTORE"), "{removed:?}");
+}
+
+#[test]
+fn expose_key_needs_a_signer_and_no_fork_and_an_unlocked_key() {
+    let f = fixture();
+    let expose = ExecOptions {
+        expose_key: true,
+        ..Default::default()
+    };
+    let err = ctx(&f, "nosigner", &expose).unwrap_err().to_string();
+    assert!(
+        err.contains("`chainz chain set nosigner --signer NAME`"),
+        "{err}"
+    );
+    f.runtime
+        .write_fork(&ForkRecord {
+            name: "eth-fork".into(),
+            pid: 1,
+            port: 8602,
+            parent: "eth".into(),
+            chain_id: 1,
+            fork_block: None,
+            started_at: 0,
+        })
+        .unwrap();
+    let err = ctx(&f, "eth-fork", &expose).unwrap_err().to_string();
+    assert!(err.contains("refused on a fork"), "{err}");
+
+    // Listed (redacted) for --explain, but never applied while locked.
+    let c = ctx(&f, "eth", &expose).unwrap();
+    let exports = c.exports().unwrap();
+    let raw = exports
+        .set
+        .iter()
+        .find(|v| v.name() == RAW_PRIVATE_KEY)
+        .unwrap();
+    assert_eq!(raw.display(), "[REDACTED]");
+    let err = exports
+        .apply(&mut std::process::Command::new("true"))
+        .unwrap_err();
+    assert!(err.to_string().contains("not unlocked"), "{err}");
+}
+
+#[test]
+fn explain_is_a_safe_view() {
+    let f = fixture();
+    let c = ctx(&f, "eth", &ExecOptions::default()).unwrap();
+    let view = c.explain();
+    assert_eq!((view.chain, view.chain_id), ("eth", 1));
+    assert!(!view.rpc.contains("inf-key"), "{}", view.rpc);
+    assert!(view.signer.is_some_and(|(name, _, _)| !name.is_empty()));
 }

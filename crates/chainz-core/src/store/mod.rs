@@ -16,6 +16,7 @@ mod files;
 pub use files::{StorePaths, WriteLock, parse_config};
 pub(crate) use files::{new_config_text, redact_parse_error, redact_toml_error};
 
+use crate::contract::Env;
 use crate::migrate::{self, Summary};
 use crate::model::{Config, Endpoint};
 use crate::secrets::{Builtins, Secrets, VarResolver};
@@ -88,6 +89,7 @@ pub struct Chainz {
     secrets: OnceCell<Secrets>,
     notices: RefCell<Vec<Notice>>,
     sink: Option<fn(&Notice)>,
+    env: Env,
 }
 
 impl std::fmt::Debug for Chainz {
@@ -163,7 +165,20 @@ impl Chainz {
             secrets: OnceCell::new(),
             notices: RefCell::new(notices),
             sink: None,
+            env: Env::process(),
         })
+    }
+
+    /// The environment templates and chain selection read (the process
+    /// environment unless [`with_env`](Self::with_env) replaced it).
+    pub fn env(&self) -> Env {
+        self.env
+    }
+
+    /// The same store reading `env` instead of the process environment.
+    pub fn with_env(mut self, env: Env) -> Self {
+        self.env = env;
+        self
     }
 
     /// Take the notices queued so far.
@@ -250,6 +265,7 @@ impl Chainz {
                 chain: Some(chain_name),
             },
             &loader,
+            self.env,
         );
         let url = vars
             .expand(&endpoint.url)

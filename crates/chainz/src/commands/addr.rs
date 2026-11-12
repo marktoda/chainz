@@ -522,7 +522,7 @@ fn exact_chain(config: &Config, query: &str) -> Result<String> {
 pub fn label(chain: Option<String>) -> Result<i32> {
     let chainz = open()?;
     let config = chainz.config();
-    let labeler = match resolve::select(config, Some(&runtime()?), chain.as_deref())? {
+    let labeler = match resolve::select(config, Some(&runtime()?), chain.as_deref(), chainz.env())? {
         Some((target, source)) => {
             if source == Source::Default {
                 note_default(target.name());

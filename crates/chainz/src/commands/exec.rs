@@ -4,65 +4,58 @@
 use super::{open, runtime, select_target};
 use crate::cli::{ContextArgs, ExecArgs, ShellKind};
 use crate::ui;
-use anyhow::{Result, anyhow, bail};
+use anyhow::Result;
 use chainz_core::Chainz;
-use chainz_core::context::{self, CONTRACT_VARS, Context, EnvVar, ExecOptions, Expander};
+use chainz_core::context::{self, Context, ExecOptions, Expander, Exports};
+use chainz_core::contract::RAW_PRIVATE_KEY;
 use chainz_core::runtime::Runtime;
-use chainz_core::signer::{self, SystemKeyBackend};
+use chainz_core::signer::SystemKeyBackend;
 
-/// The options and resolved context for `exec`, `env` or `shell`.
+/// The resolved context for `exec`, `env` or `shell`.
 fn context_for(
     chainz: &Chainz,
     runtime: &Runtime,
     args: &ContextArgs,
-) -> Result<(ExecOptions, Context)> {
+    expose_key: bool,
+) -> Result<Context> {
     let opts = ExecOptions {
         signer: args.signer.clone(),
         rpc: args.rpc.clone(),
         direct: args.direct,
+        expose_key,
     };
     let target = select_target(chainz, runtime, args.chain.as_deref())?;
-    let ctx = context::build(chainz, runtime, &target, &opts)?;
-    Ok((opts, ctx))
+    context::build(chainz, runtime, &target, &opts)
+}
+
+/// The context's exports, with their warnings printed.
+fn exports(ctx: &Context) -> Result<Exports> {
+    let exports = ctx.exports()?;
+    for warning in &exports.warnings {
+        eprintln!("chainz: warning: {warning}");
+    }
+    Ok(exports)
 }
 
 /// `chainz exec`.
 pub fn exec(args: ExecArgs) -> Result<i32> {
     let chainz = open()?;
     let runtime = runtime()?;
-    let (opts, ctx) = context_for(&chainz, &runtime, &args.context)?;
-    let expander = Expander::new(&chainz, &runtime, &ctx, &opts);
+    let mut ctx = context_for(&chainz, &runtime, &args.context, args.expose_key)?;
+    let expander = Expander::new(&chainz, &runtime, &ctx, args.context.direct);
     let argv = expander.expand_args(&args.command)?;
     for warning in expander.warnings() {
         eprintln!("{}", ui::warn(&warning));
     }
-    let mut env = ctx.env()?;
-    if args.expose_key {
-        let signer = expose_key_signer(&ctx)?;
-        // --explain shows the variable redacted: no reason to unlock.
-        let value = if args.explain {
-            String::new()
-        } else {
-            unlock(&chainz, signer)?
-        };
-        env.push(EnvVar {
-            name: "RAW_PRIVATE_KEY",
-            value,
-            secret: true,
-        });
-    }
     if args.explain {
-        print!("{}", explain(&ctx, &env, &argv));
+        // RAW_PRIVATE_KEY shows redacted: no reason to unlock.
+        print!("{}", explain(&ctx, &exports(&ctx)?, &argv));
         return Ok(0);
     }
+    ctx.unlock_key(&chainz, &SystemKeyBackend, &crate::prompt::Terminal)?;
     let mut command = std::process::Command::new(&argv[0].value);
     command.args(argv[1..].iter().map(|a| &a.value));
-    for name in CONTRACT_VARS {
-        command.env_remove(name);
-    }
-    for var in &env {
-        command.env(var.name, &var.value);
-    }
+    exports(&ctx)?.apply(&mut command)?;
     run(command, &argv[0].display)
 }
 
@@ -87,89 +80,46 @@ fn run(mut command: std::process::Command, program: &str) -> Result<i32> {
     Err(spawn_error(program, &error))
 }
 
-/// The signer `--expose-key` would unlock, if it may: never on a fork.
-fn expose_key_signer(ctx: &Context) -> Result<&str> {
-    if ctx.fork.is_some() {
-        bail!(
-            "--expose-key is refused on a fork: a fork shares the real chain ID, so its signatures replay on the real chain. Use `cast send --unlocked` (anvil impersonates ETH_FROM)"
-        );
-    }
-    ctx.signer
-        .as_ref()
-        .map(|s| s.name.as_str())
-        .ok_or_else(|| anyhow!("chain '{}' has no signer: pass --signer", ctx.chain))
-}
-
-/// The signer's private key: keyring, password prompt or `op read`.
-fn unlock(chainz: &Chainz, name: &str) -> Result<String> {
-    let signer = &chainz.config().signers[name];
-    let key = signer::unlock(
-        &SystemKeyBackend,
-        &crate::prompt::Terminal,
-        name,
-        signer,
-        chainz.secrets()?,
-    )?;
-    Ok(key.to_string())
-}
-
-fn explain(ctx: &Context, env: &[EnvVar], argv: &[context::ExpandedArg]) -> String {
+fn explain(ctx: &Context, exports: &Exports, argv: &[context::ExpandedArg]) -> String {
     use std::fmt::Write;
+    let view = ctx.explain();
     let mut out = String::new();
-    let fork = ctx
+    let fork = view
         .fork
-        .as_ref()
-        .map(|f| format!(" fork of {} on :{}", f.parent, f.port))
+        .map(|(parent, port)| format!(" fork of {parent} on :{port}"))
         .unwrap_or_default();
-    writeln!(out, "chain     {} ({}){fork}", ctx.chain, ctx.chain_id).ok();
-    let route = if ctx.rpc.via_gateway {
+    let _ = writeln!(out, "chain     {} ({}){fork}", view.chain, view.chain_id);
+    let route = if view.via_gateway {
         "via gateway"
     } else {
         "direct"
     };
-    writeln!(
+    let _ = writeln!(
         out,
         "rpc       {} {} ({route})",
-        ctx.rpc.endpoint.as_deref().unwrap_or("-"),
-        ctx.rpc.display
-    )
-    .ok();
-    match &ctx.signer {
-        Some(s) => writeln!(
+        view.endpoint.unwrap_or("-"),
+        view.rpc
+    );
+    let _ = match view.signer {
+        Some((name, address, backend)) => writeln!(
             out,
-            "signer    {} {} ({})",
-            s.name,
-            s.address
+            "signer    {name} {} ({backend})",
+            address
                 .map(|a| a.to_string())
                 .unwrap_or_else(|| "no cached address".into()),
-            s.backend
         ),
         None => writeln!(out, "signer    -"),
+    };
+    let _ = writeln!(out, "explorer  {}", view.explorer.unwrap_or("-"));
+    let _ = writeln!(out, "env");
+    for var in &exports.set {
+        let _ = writeln!(out, "  {}={}", var.name(), var.display());
     }
-    .ok();
-    writeln!(
-        out,
-        "explorer  {}",
-        ctx.explorer
-            .as_ref()
-            .map(|e| e.name.as_str())
-            .unwrap_or("-")
-    )
-    .ok();
-    writeln!(out, "env").ok();
-    for var in env {
-        writeln!(out, "  {}={}", var.name, var.display()).ok();
-    }
-    let unset: Vec<&str> = CONTRACT_VARS
-        .iter()
-        .copied()
-        .filter(|name| !env.iter().any(|v| v.name == *name))
-        .collect();
-    if !unset.is_empty() {
-        writeln!(out, "unset     {}", unset.join(" ")).ok();
+    if !exports.unset.is_empty() {
+        let _ = writeln!(out, "unset     {}", exports.unset.join(" "));
     }
     let argv: Vec<String> = argv.iter().map(|a| shell_quote(&a.display)).collect();
-    writeln!(out, "argv      {}", argv.join(" ")).ok();
+    let _ = writeln!(out, "argv      {}", argv.join(" "));
     out
 }
 
@@ -177,32 +127,27 @@ fn explain(ctx: &Context, env: &[EnvVar], argv: &[context::ExpandedArg]) -> Stri
 pub fn shell(args: ContextArgs) -> Result<i32> {
     let chainz = open()?;
     let runtime = runtime()?;
-    let (_, ctx) = context_for(&chainz, &runtime, &args)?;
-    let env = ctx.env()?;
+    let ctx = context_for(&chainz, &runtime, &args, false)?;
+    let exports = exports(&ctx)?;
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
     eprintln!(
         "{}",
-        ui::item(&format!("entering {} shell — ctrl-d to exit", ctx.chain))
+        ui::item(&format!("entering {} shell — ctrl-d to exit", ctx.chain()))
     );
     let mut command = std::process::Command::new(&shell);
-    for name in CONTRACT_VARS {
-        command.env_remove(name);
-    }
-    for var in &env {
-        command.env(var.name, &var.value);
-    }
+    exports.apply(&mut command)?;
     command.env(
         "PS1",
         format!(
             "(⛓ {}) {}",
-            ctx.chain,
+            ctx.chain(),
             std::env::var("PS1").unwrap_or_default()
         ),
     );
     let status = command
         .status()
         .map_err(|error| spawn_error(&shell, &error))?;
-    eprintln!("{}", ui::dim(&format!("left {} shell", ctx.chain)));
+    eprintln!("{}", ui::dim(&format!("left {} shell", ctx.chain())));
     Ok(status.code().unwrap_or(1))
 }
 
@@ -210,8 +155,8 @@ pub fn shell(args: ContextArgs) -> Result<i32> {
 pub fn env(args: ContextArgs, shell: Option<ShellKind>) -> Result<i32> {
     let chainz = open()?;
     let runtime = runtime()?;
-    let (_, ctx) = context_for(&chainz, &runtime, &args)?;
-    let env = ctx.env()?;
+    let ctx = context_for(&chainz, &runtime, &args, false)?;
+    let exports = exports(&ctx)?;
     let kind = shell.unwrap_or_else(|| {
         match std::env::var("SHELL")
             .unwrap_or_default()
@@ -225,18 +170,17 @@ pub fn env(args: ContextArgs, shell: Option<ShellKind>) -> Result<i32> {
         }
     });
     let mut out = String::new();
-    for name in CONTRACT_VARS {
-        if !env.iter().any(|v| v.name == name) && name != "RAW_PRIVATE_KEY" {
-            out.push_str(&match kind {
-                ShellKind::Fish => format!("set -e {name};\n"),
-                _ => format!("unset {name};\n"),
-            });
-        }
-    }
-    for var in &env {
+    // A key the user exported themselves is theirs: `env` never unsets it.
+    for name in exports.unset.iter().filter(|n| **n != RAW_PRIVATE_KEY) {
         out.push_str(&match kind {
-            ShellKind::Fish => format!("set -gx {} {};\n", var.name, fish_quote(&var.value)),
-            _ => format!("export {}={};\n", var.name, shell_quote(&var.value)),
+            ShellKind::Fish => format!("set -e {name};\n"),
+            _ => format!("unset {name};\n"),
+        });
+    }
+    for var in &exports.set {
+        out.push_str(&match kind {
+            ShellKind::Fish => format!("set -gx {} {};\n", var.name(), fish_quote(var.value())),
+            _ => format!("export {}={};\n", var.name(), shell_quote(var.value())),
         });
     }
     print!("{out}");

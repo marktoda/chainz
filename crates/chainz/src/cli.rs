@@ -590,3 +590,24 @@ pub enum ConfigCommand {
         dry_run: bool,
     },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Opt;
+    use clap::CommandFactory;
+
+    /// `exec --help` restates the contract by hand: it must name every
+    /// exported variable and every context token.
+    #[test]
+    fn exec_help_names_the_whole_contract() {
+        let command = Opt::command();
+        let exec = command.find_subcommand("exec").unwrap();
+        let help = exec.get_long_about().unwrap().to_string();
+        for name in chainz_core::contract::CONTRACT_VARS {
+            assert!(help.contains(name), "exec help misses {name}");
+        }
+        for token in chainz_core::names::context_tokens() {
+            assert!(help.contains(&format!("@{token}")), "exec help misses @{token}");
+        }
+    }
+}

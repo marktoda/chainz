@@ -17,7 +17,8 @@
 //! `_3`… on collision. A value some variable already holds reuses that
 //! variable.
 
-use crate::model::{Config, ETHERSCAN_API_KEY, Endpoint, Explorer};
+use crate::contract::ETHERSCAN_API_KEY;
+use crate::model::{Config, Endpoint, Explorer};
 use crate::template;
 use indexmap::IndexMap;
 use std::collections::HashMap;

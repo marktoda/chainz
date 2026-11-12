@@ -313,16 +313,26 @@ and the gateway all use it.
   implemented by the binary (`prompt::Terminal`). `CHAINZ_DISABLE_KEYRING`
   (`signer::DISABLE_KEYRING_VAR`) makes the keyring unavailable for tests and
   the perf gate.
-- Resolver: `resolve::select(config, Some(&runtime), explicit) -> Result<Option<(ChainRef, Source)>>`.
+- Resolver: `resolve::select(config, Some(&runtime), explicit, chainz.env()) -> Result<Option<(ChainRef, Source)>>`.
   It checks the explicit argument, then `$CHAINZ_CHAIN`, then the default.
   Management commands use `resolve_configured` (no forks) or `resolve_exact`
   (rm).
-- Context: `context::build(&chainz, &runtime, &ChainRef, &ExecOptions) -> Result<Context>`,
-  then `Context::env()`, `Expander::new(..).expand_args(&argv)`.
-  `CONTRACT_VARS` lists every name exec owns. Exec sets the ones it has and
-  removes the rest from the child env.
+- Context: `context::build(&chainz, &runtime, &ChainRef, &ExecOptions) -> Result<Context>`
+  (with `expose_key`, it refuses a fork or a chain without a signer), then
+  `Context::unlock_key(&chainz, keys, prompter)` for `--expose-key`,
+  `Context::exports() -> Exports { set, unset, warnings }` computed once, and
+  `Exports::apply(&mut Command)`, which removes every contract variable and
+  sets this context's (it refuses an `--expose-key` context whose key was
+  never unlocked). Each `EnvVar` carries its own secrecy (`display()`
+  redacts). `Context::explain()` is the safe view `--explain` prints.
+  `Expander::new(&chainz, &runtime, &ctx, direct).expand_args(&argv)`.
+  `contract::CONTRACT_VARS` lists every name exec owns (`contract` is a leaf,
+  with `CHAINZ_CHAIN`, `RAW_PRIVATE_KEY` and `ETHERSCAN_API_KEY`).
+- Environment seam: `contract::Env` is where core reads the environment
+  (`Env::process()`, or `Env::from_fn` in tests). `Chainz::with_env` sets it
+  for template resolution and the context; `resolve::select` takes it.
 - Variables: `${NAME}` resolves to the built-ins (`CHAIN_ID`, `CHAIN`), then
-  the process env, then `secrets.toml [vars]`.
+  the environment, then `secrets.toml [vars]`.
 - Shared helpers, so crates don't keep private copies:
   `chainz_core::fmt::{group, uptime, short_address}` (thousands separators,
   `42s`/`12m05s`/`2h03m`/`3d04h`, `0x1234…abcd`);

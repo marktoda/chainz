@@ -122,7 +122,7 @@ pub fn select_target(
     runtime: &Runtime,
     explicit: Option<&str>,
 ) -> Result<ChainRef> {
-    match resolve::select(chainz.config(), Some(runtime), explicit)? {
+    match resolve::select(chainz.config(), Some(runtime), explicit, chainz.env())? {
         Some((target, Source::Default)) => {
             note_default(target.name());
             Ok(target)

@@ -62,13 +62,6 @@ pub struct Chain {
     pub rpcs: IndexMap<String, Endpoint>,
 }
 
-/// The variable forge and chainz both read an Etherscan key from: chainz
-/// exports the chain's explorer key under this name, and an Etherscan
-/// explorer's key is stored in a variable of the same name. The two
-/// coincide on purpose, so `${ETHERSCAN_API_KEY}` from the environment and
-/// from `secrets.toml` mean the same key.
-pub const ETHERSCAN_API_KEY: &str = "ETHERSCAN_API_KEY";
-
 /// Whether `name` is a legal HTTP header name (RFC 9110 token characters).
 pub fn is_header_name(name: &str) -> bool {
     !name.is_empty()
@@ -233,7 +226,7 @@ impl Explorer {
     pub fn etherscan() -> Self {
         Self {
             api: "https://api.etherscan.io/v2/api?chainid=${CHAIN_ID}".to_string(),
-            key: Some(format!("${{{ETHERSCAN_API_KEY}}}")),
+            key: Some(format!("${{{}}}", crate::contract::ETHERSCAN_API_KEY)),
             url: None,
         }
     }

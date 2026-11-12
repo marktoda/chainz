@@ -15,10 +15,12 @@
 //! | `VERIFIER_URL`, `VERIFIER_API_KEY` | explorer API URL and key, non-Etherscan explorers only |
 //! | `ETH_FROM`, `WALLET_ADDRESS` | the signer's cached address |
 //! | `ETH_KEYSTORE` | keystore signer path (never on a fork) |
-//! | `RAW_PRIVATE_KEY` | only with `--expose-key`, never on a fork (added by the caller) |
+//! | `RAW_PRIVATE_KEY` | only with `--expose-key`, never on a fork |
 //! | `CHAIN_NAME` | same as `CHAINZ_CHAIN`; v1 name, kept for one release |
 
 use crate::address::Address;
+use crate::contract::{CHAINZ_CHAIN, CONTRACT_VARS, ETHERSCAN_API_KEY, RAW_PRIVATE_KEY};
+use crate::signer::{KeyBackend, Prompter};
 use crate::grammar::{self, Piece};
 use crate::labels::{LabelError, LabelIndex};
 use crate::model::{Backend, Chain, Config};
@@ -34,23 +36,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::PathBuf;
 use std::rc::Rc;
-
-/// Every variable the exec contract may set. Variables not set for a
-/// context are removed from the child environment.
-pub const CONTRACT_VARS: [&str; 12] = [
-    "ETH_RPC_URL",
-    "ETH_RPC_HEADERS",
-    "CHAIN_ID",
-    "CHAINZ_CHAIN",
-    "CHAIN_NAME",
-    "ETHERSCAN_API_KEY",
-    "VERIFIER_URL",
-    "VERIFIER_API_KEY",
-    "ETH_FROM",
-    "WALLET_ADDRESS",
-    "ETH_KEYSTORE",
-    "RAW_PRIVATE_KEY",
-];
+use zeroize::Zeroizing;
 
 /// Per-invocation options.
 #[derive(Debug, Clone, Default)]
@@ -61,21 +47,24 @@ pub struct ExecOptions {
     pub rpc: Option<String>,
     /// `--direct`: bypass a running gateway.
     pub direct: bool,
+    /// `--expose-key`: export the signer's key as `RAW_PRIVATE_KEY`
+    /// (refused on a fork; the key is read by [`Context::unlock_key`]).
+    pub expose_key: bool,
 }
 
 /// The resolved RPC for a context.
 #[derive(Clone)]
-pub struct RpcContext {
+struct RpcContext {
     /// The URL handed to the tool (secrets expanded).
-    pub url: String,
+    url: String,
     /// Expanded headers (direct mode only; empty through the gateway).
-    pub headers: Vec<(String, String)>,
+    headers: Vec<(String, String)>,
     /// Endpoint name, when a configured endpoint was used.
-    pub endpoint: Option<String>,
+    endpoint: Option<String>,
     /// Whether the URL is the local gateway.
-    pub via_gateway: bool,
+    via_gateway: bool,
     /// Safe-to-print form of the URL.
-    pub display: String,
+    display: String,
 }
 
 impl fmt::Debug for RpcContext {
@@ -94,31 +83,31 @@ impl fmt::Debug for RpcContext {
 
 /// The signer for a context.
 #[derive(Debug, Clone)]
-pub struct SignerContext {
+struct SignerContext {
     /// Signer name.
-    pub name: String,
+    name: String,
     /// Backend.
-    pub backend: Backend,
+    backend: Backend,
     /// Cached address.
-    pub address: Option<Address>,
+    address: Option<Address>,
     /// Keystore file (keystore backend).
-    pub keystore: Option<PathBuf>,
+    keystore: Option<PathBuf>,
 }
 
 /// The explorer for a context.
 #[derive(Clone)]
-pub struct ExplorerContext {
+struct ExplorerContext {
     /// Explorer name.
-    pub name: String,
+    name: String,
     /// API URL, expanded.
-    pub api: String,
+    api: String,
     /// API key, expanded.
-    pub key: Option<String>,
+    key: Option<String>,
     /// Why the configured key could not be expanded (an unset variable,
     /// say). The key is then not exported, and only `@explorer_key` fails.
-    pub key_error: Option<String>,
+    key_error: Option<String>,
     /// Etherscan family (forge handles it natively).
-    pub etherscan: bool,
+    etherscan: bool,
 }
 
 impl fmt::Debug for ExplorerContext {
@@ -137,28 +126,39 @@ impl fmt::Debug for ExplorerContext {
 #[derive(Debug, Clone)]
 pub struct Context {
     /// `CHAINZ_CHAIN`: short name, or fork name.
-    pub chain: String,
-    /// Chain ID.
-    pub chain_id: u64,
+    chain: String,
+    chain_id: u64,
     /// The fork, when the chain is a live fork.
-    pub fork: Option<ForkRecord>,
-    /// RPC.
-    pub rpc: RpcContext,
-    /// Signer.
-    pub signer: Option<SignerContext>,
-    /// Explorer.
-    pub explorer: Option<ExplorerContext>,
+    fork: Option<ForkRecord>,
+    rpc: RpcContext,
+    signer: Option<SignerContext>,
+    explorer: Option<ExplorerContext>,
+    /// `--expose-key` was asked for (and allowed: not a fork, a signer).
+    expose_key: bool,
+    /// The unlocked key, once [`Context::unlock_key`] ran.
+    key: Option<Zeroizing<String>>,
 }
 
-/// One exported variable.
+/// How `--explain` shows a variable's value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Shown {
+    /// As is.
+    Plain,
+    /// A URL, redacted.
+    Url,
+    /// `name: value` pairs, names only.
+    Headers,
+    /// Not at all.
+    Secret,
+}
+
+/// One exported variable. It carries its own secrecy: how `--explain`
+/// shows it is decided where the value is produced.
 #[derive(Clone)]
 pub struct EnvVar {
-    /// Name.
-    pub name: &'static str,
-    /// Value.
-    pub value: String,
-    /// Whether the value is secret (shown redacted by `--explain`).
-    pub secret: bool,
+    name: &'static str,
+    value: String,
+    shown: Shown,
 }
 
 impl fmt::Debug for EnvVar {
@@ -168,11 +168,27 @@ impl fmt::Debug for EnvVar {
 }
 
 impl EnvVar {
+    /// The variable's name.
+    pub fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// The value the tool receives.
+    pub fn value(&self) -> &str {
+        &self.value
+    }
+
+    /// Whether the value may hold a secret (shown redacted).
+    pub fn is_secret(&self) -> bool {
+        self.shown != Shown::Plain
+    }
+
     /// The value as `--explain` prints it.
     pub fn display(&self) -> String {
-        match self.name {
-            "ETH_RPC_URL" | "VERIFIER_URL" => redact(&self.value),
-            "ETH_RPC_HEADERS" => self
+        match self.shown {
+            Shown::Plain => self.value.clone(),
+            Shown::Url => redact(&self.value),
+            Shown::Headers => self
                 .value
                 .split(',')
                 .map(|pair| match pair.split_once(':') {
@@ -181,10 +197,62 @@ impl EnvVar {
                 })
                 .collect::<Vec<_>>()
                 .join(","),
-            _ if self.secret => "[REDACTED]".to_string(),
-            _ => self.value.clone(),
+            Shown::Secret => "[REDACTED]".to_string(),
         }
     }
+}
+
+/// A context's environment, computed once: what to set, which contract
+/// variables to remove, and warnings for the user.
+#[derive(Debug)]
+pub struct Exports {
+    /// Variables to set, in contract order.
+    pub set: Vec<EnvVar>,
+    /// Contract variables this context does not set: removed from the
+    /// child's environment so no value leaks in from an enclosing context.
+    pub unset: Vec<&'static str>,
+    /// Things the user should know (a key that is not exported, say).
+    pub warnings: Vec<String>,
+    /// `--expose-key` without an unlocked key: only `--explain` may use it.
+    locked_key: bool,
+}
+
+impl Exports {
+    /// Apply to `command`: remove every contract variable, then set this
+    /// context's. Refuses when `--expose-key`'s key was never unlocked.
+    pub fn apply(&self, command: &mut std::process::Command) -> Result<()> {
+        if self.locked_key {
+            bail!("--expose-key: the signer's key was not unlocked");
+        }
+        for name in CONTRACT_VARS {
+            command.env_remove(name);
+        }
+        for var in &self.set {
+            command.env(var.name, &var.value);
+        }
+        Ok(())
+    }
+}
+
+/// What `--explain` reports about a context, all safe to print.
+#[derive(Debug, Clone, Copy)]
+pub struct Explain<'a> {
+    /// The chain (or fork) name.
+    pub chain: &'a str,
+    /// Its chain ID.
+    pub chain_id: u64,
+    /// For a fork: its parent chain and anvil port.
+    pub fork: Option<(&'a str, u16)>,
+    /// The endpoint name, when a configured endpoint is used.
+    pub endpoint: Option<&'a str>,
+    /// The RPC URL, redacted.
+    pub rpc: &'a str,
+    /// Whether the RPC goes through the gateway.
+    pub via_gateway: bool,
+    /// The signer: name, cached address, backend.
+    pub signer: Option<(&'a str, Option<Address>, Backend)>,
+    /// The explorer's name.
+    pub explorer: Option<&'a str>,
 }
 
 /// The configured chain behind `target`: its config key (the parent, for a
@@ -220,14 +288,34 @@ pub fn build(
         None => explorer_context(chainz, &chain_name, chain)?,
         Some(_) => None,
     };
+    let name = target.name();
+    if opts.expose_key {
+        if fork.is_some() {
+            bail!(
+                "--expose-key is refused on a fork: a fork shares the real chain ID, so its signatures replay on the real chain. Use `cast send --unlocked` (anvil impersonates ETH_FROM)"
+            );
+        }
+        if signer.is_none() {
+            bail!(no_signer(name));
+        }
+    }
     Ok(Context {
-        chain: target.name().to_string(),
+        chain: name.to_string(),
         chain_id: fork.as_ref().map_or(chain.id, |f| f.chain_id),
         fork,
         rpc,
         signer,
         explorer,
+        expose_key: opts.expose_key,
+        key: None,
     })
+}
+
+/// The error for a chain without a signer, saying how to attach one.
+fn no_signer(chain: &str) -> String {
+    format!(
+        "chain '{chain}' has no signer: pass --signer NAME, or attach one with `chainz chain set {chain} --signer NAME`"
+    )
 }
 
 /// The RPC: a fork's anvil, the gateway, or the endpoint expanded.
@@ -331,6 +419,7 @@ fn explorer_context(
             chain: Some(chain_name),
         },
         &secrets_loader,
+        chainz.env(),
     );
     let api = vars
         .expand(&explorer.api)
@@ -351,18 +440,71 @@ fn explorer_context(
 }
 
 impl Context {
-    /// The environment for this context (without `RAW_PRIVATE_KEY`, which
-    /// the caller adds for `--expose-key`).
-    pub fn env(&self) -> Result<Vec<EnvVar>> {
-        let mut env = Vec::with_capacity(12);
-        let mut push = |name, value: String, secret| {
-            env.push(EnvVar {
-                name,
-                value,
-                secret,
-            })
+    /// `CHAINZ_CHAIN`: the chain's short name, or the fork's name.
+    pub fn chain(&self) -> &str {
+        &self.chain
+    }
+
+    /// The chain ID.
+    pub fn chain_id(&self) -> u64 {
+        self.chain_id
+    }
+
+    /// What `--explain` reports.
+    pub fn explain(&self) -> Explain<'_> {
+        Explain {
+            chain: &self.chain,
+            chain_id: self.chain_id,
+            fork: self.fork.as_ref().map(|f| (f.parent.as_str(), f.port)),
+            endpoint: self.rpc.endpoint.as_deref(),
+            rpc: &self.rpc.display,
+            via_gateway: self.rpc.via_gateway,
+            signer: self
+                .signer
+                .as_ref()
+                .map(|s| (s.name.as_str(), s.address, s.backend)),
+            explorer: self.explorer.as_ref().map(|e| e.name.as_str()),
+        }
+    }
+
+    /// For `--expose-key`: read the signer's key (keyring, password prompt
+    /// or `op read`) so [`exports`](Self::exports) can set
+    /// `RAW_PRIVATE_KEY`. Does nothing without `--expose-key`.
+    pub fn unlock_key(
+        &mut self,
+        chainz: &Chainz,
+        keys: &dyn KeyBackend,
+        prompter: &dyn Prompter,
+    ) -> Result<()> {
+        if !self.expose_key {
+            return Ok(());
+        }
+        let Some(name) = self.signer.as_ref().map(|s| s.name.as_str()) else {
+            bail!(no_signer(&self.chain));
         };
-        push("ETH_RPC_URL", self.rpc.url.clone(), true);
+        let signer = chainz
+            .config()
+            .signers
+            .get(name)
+            .ok_or_else(|| anyhow!("signer '{name}' not found"))?;
+        self.key = Some(crate::signer::unlock(
+            keys,
+            prompter,
+            name,
+            signer,
+            chainz.secrets()?,
+        )?);
+        Ok(())
+    }
+
+    /// The environment for this context. With `--expose-key` and no
+    /// unlocked key, `RAW_PRIVATE_KEY` is listed (for `--explain`) but
+    /// [`Exports::apply`] refuses.
+    pub fn exports(&self) -> Result<Exports> {
+        let mut set = Vec::with_capacity(12);
+        let mut warnings = Vec::new();
+        let mut push = |name, value: String, shown| set.push(EnvVar { name, value, shown });
+        push("ETH_RPC_URL", self.rpc.url.clone(), Shown::Url);
         if !self.rpc.via_gateway && !self.rpc.headers.is_empty() {
             let mut pairs = Vec::with_capacity(self.rpc.headers.len());
             for (name, value) in &self.rpc.headers {
@@ -373,38 +515,52 @@ impl Context {
                 }
                 pairs.push(format!("{name}: {value}"));
             }
-            push("ETH_RPC_HEADERS", pairs.join(","), true);
+            push("ETH_RPC_HEADERS", pairs.join(","), Shown::Headers);
         }
-        push("CHAIN_ID", self.chain_id.to_string(), false);
-        push("CHAINZ_CHAIN", self.chain.clone(), false);
-        push("CHAIN_NAME", self.chain.clone(), false);
+        push("CHAIN_ID", self.chain_id.to_string(), Shown::Plain);
+        push(CHAINZ_CHAIN, self.chain.clone(), Shown::Plain);
+        push("CHAIN_NAME", self.chain.clone(), Shown::Plain);
         if let Some(explorer) = &self.explorer {
             if let Some(error) = &explorer.key_error {
-                eprintln!("chainz: warning: not exporting the explorer key: {error}");
+                warnings.push(format!("not exporting the explorer key: {error}"));
             }
             if let Some(key) = &explorer.key {
-                push(crate::model::ETHERSCAN_API_KEY, key.clone(), true);
+                push(ETHERSCAN_API_KEY, key.clone(), Shown::Secret);
             }
             if !explorer.etherscan {
                 // The API URL may carry a key (`?apikey=`).
-                push("VERIFIER_URL", explorer.api.clone(), true);
+                push("VERIFIER_URL", explorer.api.clone(), Shown::Url);
                 if let Some(key) = &explorer.key {
-                    push("VERIFIER_API_KEY", key.clone(), true);
+                    push("VERIFIER_API_KEY", key.clone(), Shown::Secret);
                 }
             }
         }
         if let Some(signer) = &self.signer {
             if let Some(address) = signer.address {
-                push("ETH_FROM", address.to_string(), false);
-                push("WALLET_ADDRESS", address.to_string(), false);
+                push("ETH_FROM", address.to_string(), Shown::Plain);
+                push("WALLET_ADDRESS", address.to_string(), Shown::Plain);
             }
             if self.fork.is_none()
                 && let Some(path) = &signer.keystore
             {
-                push("ETH_KEYSTORE", path.display().to_string(), false);
+                push("ETH_KEYSTORE", path.display().to_string(), Shown::Plain);
             }
         }
-        Ok(env)
+        if self.expose_key {
+            let value = self.key.as_ref().map(|k| k.to_string()).unwrap_or_default();
+            push(RAW_PRIVATE_KEY, value, Shown::Secret);
+        }
+        let unset = CONTRACT_VARS
+            .iter()
+            .copied()
+            .filter(|name| !set.iter().any(|v| v.name == *name))
+            .collect();
+        Ok(Exports {
+            set,
+            unset,
+            warnings,
+            locked_key: self.expose_key && self.key.is_none(),
+        })
     }
 }
 
@@ -496,17 +652,13 @@ impl Value {
 
 impl<'a> Expander<'a> {
     /// An expander for `ctx`.
-    pub fn new(
-        chainz: &'a Chainz,
-        runtime: &'a Runtime,
-        ctx: &'a Context,
-        opts: &ExecOptions,
-    ) -> Self {
+    /// `direct`: other chains' `@rpc:x` bypass the gateway too (`--direct`).
+    pub fn new(chainz: &'a Chainz, runtime: &'a Runtime, ctx: &'a Context, direct: bool) -> Self {
         Self {
             chainz,
             runtime,
             ctx,
-            direct: opts.direct,
+            direct,
             labels: OnceCell::new(),
             others: RefCell::new(HashMap::new()),
             warnings: RefCell::new(Vec::new()),
@@ -532,7 +684,7 @@ impl<'a> Expander<'a> {
     }
 
     /// Expand one argument.
-    pub fn expand_arg(&self, arg: &str) -> Result<ExpandedArg> {
+    fn expand_arg(&self, arg: &str) -> Result<ExpandedArg> {
         if !grammar::may_contain_tokens(arg) {
             return Ok(ExpandedArg {
                 value: arg.to_string(),
@@ -687,11 +839,7 @@ impl<'a> Expander<'a> {
             "chainid" => Value::public(scope.chain_id().to_string()),
             "chain" => Value::public(chain.to_string()),
             "wallet" => {
-                let signer = scope.signer().ok_or_else(|| {
-                    anyhow!(
-                        "chain '{chain}' has no signer: pass --signer or set `signer` on the chain"
-                    )
-                })?;
+                let signer = scope.signer().ok_or_else(|| anyhow!(no_signer(chain)))?;
                 let address = signer.address.ok_or_else(|| {
                     anyhow!(
                         "signer '{}' has no cached address; re-add it with `chainz signer add`",

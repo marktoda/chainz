@@ -17,6 +17,7 @@
 //!
 //! Nothing here implements `Display`; `Debug` shows names only.
 
+use crate::contract::{CHAINZ_CHAIN, CONTRACT_VARS, Env};
 use crate::template;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -116,7 +117,7 @@ impl Secrets {
 
 /// Built-in template values for one chain context.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct Builtins<'a> {
+pub(crate) struct Builtins<'a> {
     /// `${CHAIN_ID}`.
     pub chain_id: Option<u64>,
     /// `${CHAIN}`: the chain's short name.
@@ -148,34 +149,31 @@ pub fn check_var_name(name: &str) -> anyhow::Result<()> {
 /// Inside a chainz context (`CHAINZ_CHAIN` is set: `chainz shell`, `eval
 /// "$(chainz env …)"`, or a tool `exec` started) the environment is not
 /// consulted for the exec contract's own variables
-/// ([`CONTRACT_VARS`](crate::context::CONTRACT_VARS)): there they hold the
+/// ([`CONTRACT_VARS`](crate::contract::CONTRACT_VARS)): there they hold the
 /// enclosing chain's values, so a nested `chainz exec eth` inside `chainz
 /// shell celo` must not send celo's `ETHERSCAN_API_KEY` to Etherscan.
-pub struct VarResolver<'a> {
+pub(crate) struct VarResolver<'a> {
     builtins: Builtins<'a>,
     secrets: &'a dyn Fn() -> anyhow::Result<&'a Secrets>,
-    env: fn(&str) -> Option<String>,
-}
-
-fn process_env(name: &str) -> Option<String> {
-    std::env::var(name).ok()
+    env: Env,
 }
 
 impl<'a> VarResolver<'a> {
-    /// A resolver over lazily loaded secrets.
-    pub fn new(
+    /// A resolver over lazily loaded secrets and `env`.
+    pub(crate) fn new(
         builtins: Builtins<'a>,
         secrets: &'a dyn Fn() -> anyhow::Result<&'a Secrets>,
+        env: Env,
     ) -> Self {
         Self {
             builtins,
             secrets,
-            env: process_env,
+            env,
         }
     }
 
     /// Look up one name.
-    pub fn lookup(&self, name: &str) -> anyhow::Result<Option<Cow<'a, str>>> {
+    pub(crate) fn lookup(&self, name: &str) -> anyhow::Result<Option<Cow<'a, str>>> {
         if name == CHAIN_ID_VAR
             && let Some(id) = self.builtins.chain_id
         {
@@ -186,9 +184,8 @@ impl<'a> VarResolver<'a> {
         {
             return Ok(Some(Cow::Borrowed(chain)));
         }
-        let shadowed =
-            crate::context::CONTRACT_VARS.contains(&name) && (self.env)("CHAINZ_CHAIN").is_some();
-        if !shadowed && let Some(value) = (self.env)(name) {
+        let shadowed = CONTRACT_VARS.contains(&name) && self.env.var(CHAINZ_CHAIN).is_some();
+        if !shadowed && let Some(value) = self.env.var(name) {
             return Ok(Some(Cow::Owned(value)));
         }
         let secrets = (self.secrets)()?;
@@ -197,7 +194,7 @@ impl<'a> VarResolver<'a> {
 
     /// Expand every template in `input`. Errors name the variable, never a
     /// value.
-    pub fn expand<'i>(&self, input: &'i str) -> anyhow::Result<Cow<'i, str>> {
+    pub(crate) fn expand<'i>(&self, input: &'i str) -> anyhow::Result<Cow<'i, str>> {
         template::expand(input, |name| self.lookup(name))
     }
 }
@@ -231,6 +228,7 @@ mod tests {
                 chain: Some("base"),
             },
             &loader,
+            Env::from_fn(|name| (name == "CHAIN_ID").then(|| "1".to_string())),
         );
         assert_eq!(
             r.expand("${CHAIN_ID}/${CHAIN}/${FROM_FILE}").unwrap(),
@@ -261,8 +259,7 @@ mod tests {
         )
         .unwrap();
         let loader = || Ok(&secrets);
-        let mut r = VarResolver::new(Builtins::default(), &loader);
-        r.env = shell_env;
+        let mut r = VarResolver::new(Builtins::default(), &loader, Env::from_fn(shell_env));
         // A contract variable comes from secrets.toml, not the enclosing
         // chain's export; other variables still prefer the environment.
         assert_eq!(r.expand("${ETHERSCAN_API_KEY}").unwrap(), "own-key");
@@ -271,7 +268,7 @@ mod tests {
         assert!(err.contains("ETH_RPC_URL"), "{err}");
 
         // Outside chainz, the environment wins as usual.
-        r.env = plain_env;
+        r.env = Env::from_fn(plain_env);
         assert_eq!(
             r.expand("${ETHERSCAN_API_KEY}").unwrap(),
             "celo-explorer-key"
@@ -281,7 +278,7 @@ mod tests {
     #[test]
     fn secrets_are_not_loaded_when_unneeded() {
         let loader = || -> anyhow::Result<&Secrets> { anyhow::bail!("must not load") };
-        let r = VarResolver::new(Builtins::default(), &loader);
+        let r = VarResolver::new(Builtins::default(), &loader, Env::from_fn(|_| None));
         assert_eq!(r.expand("https://plain").unwrap(), "https://plain");
     }
 }
