@@ -157,7 +157,7 @@ pub fn check_var_name(name: &str) -> anyhow::Result<()> {
 /// shell celo` must not send celo's `ETHERSCAN_API_KEY` to Etherscan.
 pub(crate) struct VarResolver<'a> {
     builtins: Builtins<'a>,
-    secrets: &'a dyn Fn() -> anyhow::Result<&'a Secrets>,
+    secrets: Box<dyn Fn() -> anyhow::Result<&'a Secrets> + 'a>,
     env: Env,
 }
 
@@ -165,12 +165,12 @@ impl<'a> VarResolver<'a> {
     /// A resolver over lazily loaded secrets and `env`.
     pub(crate) fn new(
         builtins: Builtins<'a>,
-        secrets: &'a dyn Fn() -> anyhow::Result<&'a Secrets>,
+        secrets: impl Fn() -> anyhow::Result<&'a Secrets> + 'a,
         env: Env,
     ) -> Self {
         Self {
             builtins,
-            secrets,
+            secrets: Box::new(secrets),
             env,
         }
     }
@@ -230,7 +230,7 @@ mod tests {
                 chain_id: Some(8453),
                 chain: Some("base"),
             },
-            &loader,
+            loader,
             Env::from_fn(|name| (name == "CHAIN_ID").then(|| "1".to_string())),
         );
         assert_eq!(
@@ -262,7 +262,7 @@ mod tests {
         )
         .unwrap();
         let loader = || Ok(&secrets);
-        let mut r = VarResolver::new(Builtins::default(), &loader, Env::from_fn(shell_env));
+        let mut r = VarResolver::new(Builtins::default(), loader, Env::from_fn(shell_env));
         // A contract variable comes from secrets.toml, not the enclosing
         // chain's export; other variables still prefer the environment.
         assert_eq!(r.expand("${ETHERSCAN_API_KEY}").unwrap(), "own-key");
@@ -281,7 +281,7 @@ mod tests {
     #[test]
     fn secrets_are_not_loaded_when_unneeded() {
         let loader = || -> anyhow::Result<&Secrets> { anyhow::bail!("must not load") };
-        let r = VarResolver::new(Builtins::default(), &loader, Env::from_fn(|_| None));
+        let r = VarResolver::new(Builtins::default(), loader, Env::from_fn(|_| None));
         assert_eq!(r.expand("https://plain").unwrap(), "https://plain");
     }
 }

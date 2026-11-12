@@ -5,7 +5,8 @@
 //! three sources:
 //!
 //! 1. user labels, `[addresses.NAME]` in config (per chain, or `"*"`);
-//! 2. signers (every signer with a cached address is a label on every chain);
+//! 2. signers (every signer with a cached address is a label on every chain;
+//!    one without fails to resolve, saying so);
 //! 3. the compiled-in token registry ([`builtin_tokens`]).
 //!
 //! Lookup of `name` on chain C: user entry for C, then the user `"*"`
@@ -186,6 +187,12 @@ pub enum LabelError {
         /// The chain asked about.
         chain_id: u64,
     },
+    /// The name is a signer without a cached address.
+    #[error("{}", crate::signer::no_cached_address(name))]
+    NoCachedAddress {
+        /// The signer's name.
+        name: String,
+    },
 }
 
 #[derive(Debug, Default)]
@@ -207,7 +214,8 @@ struct Reverse {
 #[derive(Debug, Default)]
 pub struct LabelIndex {
     user: HashMap<String, Entry>,
-    signers: HashMap<String, Address>,
+    /// Every signer, with its cached address if it has one.
+    signers: HashMap<String, Option<Address>>,
     /// User labels, then signers, in config order.
     configured: Vec<Label>,
     reverse: OnceLock<Reverse>,
@@ -254,9 +262,9 @@ impl LabelIndex {
             index.user.insert(name, entry);
         }
         for (name, signer) in &config.signers {
+            let name = name.to_ascii_lowercase();
+            index.signers.insert(name.clone(), signer.address);
             if let Some(address) = signer.address {
-                let name = name.to_ascii_lowercase();
-                index.signers.insert(name.clone(), address);
                 index.configured.push(Label {
                     name,
                     address,
@@ -320,13 +328,17 @@ impl LabelIndex {
                 });
             }
         }
-        if let Some(address) = self.signers.get(&name) {
-            return Ok(Label {
-                name,
-                address: *address,
-                source: LabelSource::Signer,
-                scope: LabelScope::AllChains,
-            });
+        match self.signers.get(&name) {
+            Some(Some(address)) => {
+                return Ok(Label {
+                    name,
+                    address: *address,
+                    source: LabelSource::Signer,
+                    scope: LabelScope::AllChains,
+                });
+            }
+            Some(None) => return Err(LabelError::NoCachedAddress { name }),
+            None => {}
         }
         if let Some(token) = builtin_token(chain_id, &name) {
             return Ok(Label {
@@ -450,6 +462,28 @@ eth = "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf"
 "#,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn a_signer_without_a_cached_address_says_so() {
+        let mut config = config();
+        config.signers.insert(
+            "cold".into(),
+            crate::model::Signer::new(crate::model::Backend::Keyring, None),
+        );
+        let index = LabelIndex::new(&config);
+        let err = index.resolve("cold", 1).unwrap_err();
+        assert_eq!(
+            err,
+            LabelError::NoCachedAddress {
+                name: "cold".into()
+            }
+        );
+        assert!(
+            err.to_string().contains("`chainz signer add cold`"),
+            "{err}"
+        );
+        assert!(index.labels().all(|l| l.name != "cold"));
     }
 
     #[test]

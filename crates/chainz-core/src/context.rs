@@ -27,12 +27,11 @@ use crate::contract::{
 use crate::grammar::{self, Piece};
 use crate::labels::{LabelError, LabelIndex};
 use crate::model::{Backend, Chain, Config};
-use crate::names::{self, Token};
+use crate::names::{self, ContextToken, Token};
 use crate::redact;
 use crate::resolve::{self, ChainRef};
-use crate::route::RouteOpts;
+use crate::route::{Route, RouteOpts};
 use crate::runtime::{ForkRecord, Runtime};
-use crate::secrets::{Builtins, VarResolver};
 use crate::signer::{KeyBackend, Prompter};
 use crate::store::Chainz;
 use anyhow::{Context as _, Result, anyhow, bail};
@@ -56,35 +55,6 @@ pub struct ExecOptions {
     /// `--expose-key`: export the signer's key as `RAW_PRIVATE_KEY`
     /// (refused on a fork; the key is read by [`Context::unlock_key`]).
     pub expose_key: bool,
-}
-
-/// The resolved RPC for a context.
-#[derive(Clone)]
-struct RpcContext {
-    /// The URL handed to the tool (secrets expanded).
-    url: String,
-    /// Expanded headers (direct mode only; empty through the gateway).
-    headers: Vec<(String, String)>,
-    /// Endpoint name, when a configured endpoint was used.
-    endpoint: Option<String>,
-    /// Whether the URL is the local gateway.
-    via_gateway: bool,
-    /// Safe-to-print form of the URL.
-    display: String,
-}
-
-impl fmt::Debug for RpcContext {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RpcContext")
-            .field("url", &self.display)
-            .field(
-                "headers",
-                &self.headers.iter().map(|(k, _)| k).collect::<Vec<_>>(),
-            )
-            .field("endpoint", &self.endpoint)
-            .field("via_gateway", &self.via_gateway)
-            .finish()
-    }
 }
 
 /// The signer for a context.
@@ -136,7 +106,9 @@ pub struct Context {
     chain_id: u64,
     /// The fork, when the chain is a live fork.
     fork: Option<ForkRecord>,
-    rpc: RpcContext,
+    /// Where the RPC requests go (a fork's anvil, the gateway or the
+    /// endpoint).
+    rpc: Route,
     signer: Option<SignerContext>,
     explorer: Option<ExplorerContext>,
     /// `--expose-key` was asked for (and allowed: not a fork, a signer).
@@ -326,42 +298,39 @@ fn no_signer(chain: &str) -> String {
     )
 }
 
-/// The RPC: a fork's anvil, the gateway, or the endpoint expanded.
+/// The RPC: a fork's anvil, the gateway, or the endpoint expanded. A
+/// fork's route names no endpoint.
 fn rpc_context(
     chainz: &Chainz,
     runtime: &Runtime,
     chain_name: &str,
     fork: Option<&ForkRecord>,
     opts: &ExecOptions,
-) -> Result<RpcContext> {
+) -> Result<Route> {
     if let Some(fork) = fork {
         if opts.rpc.is_some() {
             bail!("--rpc does not apply to a fork; it always uses its local anvil");
         }
         let url = fork.rpc_url();
-        return Ok(RpcContext {
+        return Ok(Route {
+            chain_id: fork.chain_id,
+            chain: fork.name.clone(),
+            endpoint: String::new(),
             display: url.clone(),
             url,
             headers: vec![],
-            endpoint: None,
             via_gateway: false,
+            websocket: false,
         });
     }
-    let route = chainz.route(
+    chainz.route(
         chain_name,
         &RouteOpts {
             endpoint: opts.rpc.clone(),
             direct: opts.direct,
         },
         runtime,
-    )?;
-    Ok(RpcContext {
-        url: route.url,
-        headers: route.headers,
-        endpoint: Some(route.endpoint),
-        via_gateway: route.via_gateway,
-        display: route.display,
-    })
+    )
 }
 
 /// The signer named `name`, if any.
@@ -397,15 +366,7 @@ fn explorer_context(
         .explorers
         .get(name)
         .ok_or_else(|| anyhow!("explorer '{name}' not found"))?;
-    let secrets_loader = || chainz.secrets();
-    let vars = VarResolver::new(
-        Builtins {
-            chain_id: Some(chain.id),
-            chain: Some(chain_name),
-        },
-        &secrets_loader,
-        chainz.env(),
-    );
+    let vars = chainz.vars_for(chain_name, chain.id);
     let api = vars
         .expand(&explorer.api)
         .with_context(|| format!("explorer '{name}' api"))?
@@ -441,7 +402,7 @@ impl Context {
             chain: &self.chain,
             chain_id: self.chain_id,
             fork: self.fork.as_ref().map(|f| (f.parent.as_str(), f.port)),
-            endpoint: self.rpc.endpoint.as_deref(),
+            endpoint: self.fork.is_none().then_some(self.rpc.endpoint.as_str()),
             rpc: &self.rpc.display,
             via_gateway: self.rpc.via_gateway,
             signer: self
@@ -549,7 +510,7 @@ impl Context {
     }
 }
 
-/// An expanded argument.
+/// An expanded argument (or one token's value).
 #[derive(Clone)]
 pub struct ExpandedArg {
     /// What the tool receives.
@@ -561,6 +522,16 @@ pub struct ExpandedArg {
 impl fmt::Debug for ExpandedArg {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.display)
+    }
+}
+
+impl ExpandedArg {
+    /// A value that is safe to print as is.
+    fn public(value: String) -> Self {
+        Self {
+            display: value.clone(),
+            value,
+        }
     }
 }
 
@@ -585,7 +556,7 @@ struct Other {
     chain: String,
     chain_id: u64,
     signer: Option<SignerContext>,
-    rpc: OnceCell<RpcContext>,
+    rpc: OnceCell<Route>,
     explorer: OnceCell<Option<ExplorerContext>>,
 }
 
@@ -617,20 +588,6 @@ impl<'s> Scope<'s> {
         match self {
             Scope::Own(ctx) => ctx.signer.as_ref(),
             Scope::Other(other) => other.signer.as_ref(),
-        }
-    }
-}
-
-struct Value {
-    value: String,
-    display: String,
-}
-
-impl Value {
-    fn public(v: String) -> Self {
-        Self {
-            display: v.clone(),
-            value: v,
         }
     }
 }
@@ -670,12 +627,8 @@ impl<'a> Expander<'a> {
 
     /// Expand one argument.
     fn expand_arg(&self, arg: &str) -> Result<ExpandedArg> {
-        // Fast path: no `@`, nothing to tokenize.
         if !arg.contains('@') {
-            return Ok(ExpandedArg {
-                value: arg.to_string(),
-                display: arg.to_string(),
-            });
+            return Ok(ExpandedArg::public(arg.to_string()));
         }
         let pieces = grammar::tokenize(arg);
         let whole = grammar::sole_token(&pieces, arg).is_some();
@@ -713,7 +666,6 @@ impl<'a> Expander<'a> {
 
     fn known_names(&self) -> Vec<&str> {
         let mut names: Vec<&str> = names::context_tokens().collect();
-        names.extend(self.chainz.config().signers.keys().map(String::as_str));
         names.extend(self.labels().names());
         names
     }
@@ -723,29 +675,33 @@ impl<'a> Expander<'a> {
             .get_or_init(|| LabelIndex::new(self.chainz.config()))
     }
 
-    /// Resolve `name` (on the qualified chain if given). `Ok(None)` means
-    /// unknown name; errors are known names that cannot be produced.
-    fn token(&self, name: &str, chain: Option<&str>) -> Result<Option<Value>> {
-        let canonical = match names::token(name) {
+    /// Resolve `name` (on the qualified chain if given): a context token,
+    /// else a label (signers included). `Ok(None)` means unknown name;
+    /// errors are known names that cannot be produced.
+    fn token(&self, name: &str, chain: Option<&str>) -> Result<Option<ExpandedArg>> {
+        let context = match names::token(name) {
             Some(Token::Removed(hint)) => bail!("@{name} was removed in v2: {hint}"),
-            Some(Token::Deprecated(new)) => {
-                self.warn(format!("@{name} is deprecated; use @{new}"));
-                new
+            Some(Token::Deprecated(token)) => {
+                self.warn(format!("@{name} is deprecated; use @{}", token.name()));
+                Some(token)
             }
-            Some(Token::Context) | None => name,
+            Some(Token::Context(token)) => Some(token),
+            None if self.labels().contains(name) => None,
+            None => return Ok(None),
         };
-        let is_context = names::token(canonical) == Some(Token::Context);
-        let is_signer = self.chainz.config().signers.contains_key(canonical);
-        if !is_context && !is_signer && !self.labels().contains(canonical) {
-            return Ok(None);
-        }
-        match chain {
-            None => self.resolve_in(Scope::Own(self.ctx), canonical).map(Some),
+        let other;
+        let scope = match chain {
+            None => Scope::Own(self.ctx),
             Some(chain) => {
-                let other = self.other(chain)?;
-                self.resolve_in(Scope::Other(&other), canonical).map(Some)
+                other = self.other(chain)?;
+                Scope::Other(&other)
             }
+        };
+        match context {
+            Some(token) => self.context_value(scope, token),
+            None => self.label_value(scope, name),
         }
+        .map(Some)
     }
 
     /// The light context of the chain `query` names, built once.
@@ -770,7 +726,7 @@ impl<'a> Expander<'a> {
         Ok(other)
     }
 
-    fn rpc_of<'s>(&self, scope: Scope<'s>) -> Result<&'s RpcContext> {
+    fn rpc_of<'s>(&self, scope: Scope<'s>) -> Result<&'s Route> {
         let other = match scope {
             Scope::Own(ctx) => return Ok(&ctx.rpc),
             Scope::Other(other) => other,
@@ -805,35 +761,35 @@ impl<'a> Expander<'a> {
         Ok(other.explorer.get().expect("set above").as_ref())
     }
 
-    fn resolve_in(&self, scope: Scope<'_>, name: &str) -> Result<Value> {
+    fn context_value(&self, scope: Scope<'_>, token: ContextToken) -> Result<ExpandedArg> {
         let chain = scope.chain();
-        Ok(match name {
-            "rpc" => {
+        Ok(match token {
+            ContextToken::Rpc => {
                 let rpc = self.rpc_of(scope)?;
-                Value {
+                ExpandedArg {
                     value: rpc.url.clone(),
                     display: rpc.display.clone(),
                 }
             }
-            "chainid" => Value::public(scope.chain_id().to_string()),
-            "chain" => Value::public(chain.to_string()),
-            "wallet" => {
+            ContextToken::ChainId => ExpandedArg::public(scope.chain_id().to_string()),
+            ContextToken::Chain => ExpandedArg::public(chain.to_string()),
+            ContextToken::Wallet => {
                 let signer = scope.signer().ok_or_else(|| anyhow!(no_signer(chain)))?;
                 let address = signer
                     .address
                     .ok_or_else(|| anyhow!(crate::signer::no_cached_address(&signer.name)))?;
-                Value::public(address.to_string())
+                ExpandedArg::public(address.to_string())
             }
-            "explorer" => {
+            ContextToken::Explorer => {
                 let explorer = self
                     .explorer_of(scope)?
                     .ok_or_else(|| anyhow!("chain '{chain}' has no explorer"))?;
-                Value {
+                ExpandedArg {
                     value: explorer.api.clone(),
                     display: redact::url(&explorer.api, false),
                 }
             }
-            "explorer_key" => {
+            ContextToken::ExplorerKey => {
                 let explorer = self.explorer_of(scope)?;
                 let key = match explorer {
                     Some(ExplorerContext { key: Some(key), .. }) => key.clone(),
@@ -843,28 +799,23 @@ impl<'a> Expander<'a> {
                     }) => bail!("{error}"),
                     _ => bail!("chain '{chain}' has no explorer key"),
                 };
-                Value {
+                ExpandedArg {
                     value: key,
                     display: redact::REDACTED.to_string(),
                 }
             }
-            other => {
-                if let Some(signer) = self.chainz.config().signers.get(other) {
-                    let address = signer
-                        .address
-                        .ok_or_else(|| anyhow!(crate::signer::no_cached_address(other)))?;
-                    return Ok(Value::public(address.to_string()));
-                }
-                let chain_id = scope.chain_id();
-                match self.labels().resolve(other, chain_id) {
-                    Ok(label) => Value::public(label.address.to_string()),
-                    Err(LabelError::NotOnChain { name, .. }) => {
-                        bail!("@{name} has no address on chain '{chain}' ({chain_id})")
-                    }
-                    Err(e) => return Err(e.into()),
-                }
-            }
         })
+    }
+
+    fn label_value(&self, scope: Scope<'_>, name: &str) -> Result<ExpandedArg> {
+        let (chain, chain_id) = (scope.chain(), scope.chain_id());
+        match self.labels().resolve(name, chain_id) {
+            Ok(label) => Ok(ExpandedArg::public(label.address.to_string())),
+            Err(LabelError::NotOnChain { name, .. }) => {
+                bail!("@{name} has no address on chain '{chain}' ({chain_id})")
+            }
+            Err(e) => Err(e.into()),
+        }
     }
 }
 

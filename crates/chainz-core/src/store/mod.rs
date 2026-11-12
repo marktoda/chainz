@@ -243,6 +243,21 @@ impl Chainz {
         Ok(self.secrets.get_or_init(|| loaded))
     }
 
+    /// The `${VAR}` resolver for chain `chain_name` (ID `chain_id`): the
+    /// built-ins `${CHAIN}` and `${CHAIN_ID}`, then variables as
+    /// [`VarResolver`] looks them up (`secrets.toml` is read only if
+    /// needed).
+    pub(crate) fn vars_for<'a>(&'a self, chain_name: &'a str, chain_id: u64) -> VarResolver<'a> {
+        VarResolver::new(
+            Builtins {
+                chain_id: Some(chain_id),
+                chain: Some(chain_name),
+            },
+            move || self.secrets(),
+            self.env,
+        )
+    }
+
     /// Expand the URL and header values of `endpoint`, named `endpoint_name`
     /// on chain `chain_name` (ID `chain_id`): the built-ins `${CHAIN}` and
     /// `${CHAIN_ID}`, then variables as `VarResolver` looks them up
@@ -256,15 +271,7 @@ impl Chainz {
         endpoint_name: &str,
         endpoint: &Endpoint,
     ) -> Result<ExpandedEndpoint> {
-        let loader = || self.secrets();
-        let vars = VarResolver::new(
-            Builtins {
-                chain_id: Some(chain_id),
-                chain: Some(chain_name),
-            },
-            &loader,
-            self.env,
-        );
+        let vars = self.vars_for(chain_name, chain_id);
         let url = vars
             .expand(&endpoint.url)
             .with_context(|| format!("chain '{chain_name}' endpoint '{endpoint_name}' URL"))?

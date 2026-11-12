@@ -226,7 +226,7 @@ fn gateway_seam_routes_through_serve_unless_direct() {
     };
     let known = rpc("https://gw.example/rpc/1/");
     assert!(known.rpc.via_gateway);
-    assert_eq!(known.rpc.endpoint.as_deref(), Some("gw"));
+    assert_eq!(known.rpc.endpoint, "gw");
     let one_off = rpc("http://127.0.0.1:8545");
     assert!(!one_off.rpc.via_gateway);
     assert_eq!(env_map(&one_off)["ETH_RPC_URL"], "http://127.0.0.1:8545");
@@ -600,22 +600,4 @@ fn every_exported_name_is_a_contract_var() {
         }
     }
     assert!(seen.len() >= 10, "{seen:?}");
-}
-
-#[test]
-fn every_context_token_has_a_resolver() {
-    let f = fixture();
-    let opts = ExecOptions::default();
-    let c = ctx(&f, "eth", &opts).unwrap();
-    let e = Expander::new(&f.chainz, &f.runtime, &c, opts.direct);
-    for name in names::context_tokens() {
-        // A token without a match arm would fall through to the label
-        // lookup and fail as an unknown label.
-        if let Err(err) = e.expand_args(&[format!("@{name}")]) {
-            assert!(
-                !format!("{err:#}").contains("unknown label"),
-                "@{name}: {err:#}"
-            );
-        }
-    }
 }

@@ -1,13 +1,42 @@
 //! Naming rules: chain short names, endpoint names, label names, and the
 //! built-in short-name table used by `add` and v1 migration.
 
+/// A context token: a value of the exec context itself (or of the chain a
+/// `:chain` qualifier names), not an address-book label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ContextToken {
+    /// `@rpc`: the RPC URL.
+    Rpc,
+    /// `@chainid`: the chain ID.
+    ChainId,
+    /// `@chain`: the chain's short (or fork) name.
+    Chain,
+    /// `@wallet`: the signer's cached address.
+    Wallet,
+    /// `@explorer`: the explorer's API URL.
+    Explorer,
+    /// `@explorer_key`: the explorer's API key.
+    ExplorerKey,
+}
+
+impl ContextToken {
+    /// The token's name (without `@`), from [`TOKENS`].
+    pub(crate) fn name(self) -> &'static str {
+        TOKENS
+            .iter()
+            .find(|(_, t)| *t == Token::Context(self))
+            .map(|(n, _)| *n)
+            .expect("every context token is in TOKENS")
+    }
+}
+
 /// What a name in the token grammar's own vocabulary means.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Token {
     /// A context token (`@rpc`, `@wallet`…).
-    Context,
+    Context(ContextToken),
     /// A v1 token kept for one release as an alias of this context token.
-    Deprecated(&'static str),
+    Deprecated(ContextToken),
     /// A removed token; the hint says what replaces it.
     Removed(&'static str),
 }
@@ -16,15 +45,21 @@ pub(crate) enum Token {
 /// removed ones. Labels and signers may not use any of them. The one table
 /// expansion, naming rules and completion read.
 pub(crate) const TOKENS: [(&str, Token); 10] = [
-    ("rpc", Token::Context),
-    ("chainid", Token::Context),
-    ("chain", Token::Context),
-    ("wallet", Token::Context),
-    ("explorer", Token::Context),
-    ("explorer_key", Token::Context),
-    ("chainname", Token::Deprecated("chain")),
-    ("verification_url", Token::Deprecated("explorer")),
-    ("verifier_api_key", Token::Deprecated("explorer_key")),
+    ("rpc", Token::Context(ContextToken::Rpc)),
+    ("chainid", Token::Context(ContextToken::ChainId)),
+    ("chain", Token::Context(ContextToken::Chain)),
+    ("wallet", Token::Context(ContextToken::Wallet)),
+    ("explorer", Token::Context(ContextToken::Explorer)),
+    ("explorer_key", Token::Context(ContextToken::ExplorerKey)),
+    ("chainname", Token::Deprecated(ContextToken::Chain)),
+    (
+        "verification_url",
+        Token::Deprecated(ContextToken::Explorer),
+    ),
+    (
+        "verifier_api_key",
+        Token::Deprecated(ContextToken::ExplorerKey),
+    ),
     (
         "key",
         Token::Removed("pass --expose-key and read $RAW_PRIVATE_KEY instead"),
@@ -40,7 +75,7 @@ pub(crate) fn token(name: &str) -> Option<Token> {
 pub fn context_tokens() -> impl Iterator<Item = &'static str> {
     TOKENS
         .iter()
-        .filter(|(_, t)| *t == Token::Context)
+        .filter(|(_, t)| matches!(t, Token::Context(_)))
         .map(|(n, _)| *n)
 }
 
@@ -239,7 +274,7 @@ pub fn check_label_name<'a>(
         anyhow::bail!("label name '{name}' must match [a-z0-9_-]+");
     }
     match token(name) {
-        Some(Token::Context) => {
+        Some(Token::Context(_)) => {
             anyhow::bail!("'{name}' is a context token (@{name}) and cannot be used as a label")
         }
         Some(Token::Deprecated(_) | Token::Removed(_)) => anyhow::bail!(
