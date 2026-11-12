@@ -796,14 +796,7 @@ mod tests {
     #[tokio::test]
     async fn a_wedged_gateway_times_out() {
         // Accepts connections, reads the request, never answers.
-        // A short directory: a socket path must fit in sockaddr_un.
-        let mut dir = tempfile::tempdir().unwrap();
-        if dir.path().join("serve.sock").as_os_str().len() >= 100 {
-            dir = tempfile::Builder::new()
-                .prefix("cz")
-                .tempdir_in("/tmp")
-                .unwrap();
-        }
+        let dir = chainz_testkit::short_tempdir();
         let socket = dir.path().join("serve.sock");
         let listener = tokio::net::UnixListener::bind(&socket).unwrap();
         let hold = tokio::spawn(async move {

@@ -1,8 +1,8 @@
 //! Test support: a local mock JSON-RPC server and hand-built plans.
 
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, channel};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use chainz_core::Address;
@@ -10,9 +10,6 @@ use chainz_core::route::Route;
 use chainz_core::runtime::Runtime;
 use chainz_rpc::HealthStore;
 use serde_json::{Value, json};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
-use tokio::task::JoinHandle;
 
 use super::{Event, Shared, Tuning};
 use crate::model::Update;
@@ -47,92 +44,27 @@ impl Hit {
     }
 }
 
-/// A JSON-RPC server on a loopback port.
+/// A JSON-RPC server on a loopback port: a [`chainz_testkit::Mock`]
+/// answering whole request bodies.
 pub(crate) struct MockRpc {
     pub(crate) url: String,
-    hits: Arc<Mutex<Vec<Hit>>>,
-    task: JoinHandle<()>,
-}
-
-impl Drop for MockRpc {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
+    mock: chainz_testkit::Mock,
 }
 
 impl MockRpc {
     /// Serve with `handler`, which sees each request's whole JSON body.
     pub(crate) async fn start(handler: impl Fn(&Value) -> Reply + Send + Sync + 'static) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}", listener.local_addr().unwrap());
-        let hits: Arc<Mutex<Vec<Hit>>> = Arc::default();
-        let handler = Arc::new(handler);
-        let recorded = hits.clone();
-        let task = tokio::spawn(async move {
-            loop {
-                let Ok((mut stream, _)) = listener.accept().await else {
-                    continue;
-                };
-                let (handler, recorded) = (handler.clone(), recorded.clone());
-                tokio::spawn(async move {
-                    let mut buf = Vec::new();
-                    let (head_len, body_len) = loop {
-                        let mut chunk = [0u8; 4096];
-                        let Ok(n) = stream.read(&mut chunk).await else {
-                            return;
-                        };
-                        if n == 0 {
-                            return;
-                        }
-                        buf.extend_from_slice(&chunk[..n]);
-                        if let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
-                            let head = String::from_utf8_lossy(&buf[..end]).to_lowercase();
-                            let len = head
-                                .lines()
-                                .find_map(|l| l.strip_prefix("content-length:"))
-                                .and_then(|v| v.trim().parse::<usize>().ok())
-                                .unwrap_or(0);
-                            break (end + 4, len);
-                        }
-                    };
-                    while buf.len() < head_len + body_len {
-                        let mut chunk = [0u8; 4096];
-                        match stream.read(&mut chunk).await {
-                            Ok(n) if n > 0 => buf.extend_from_slice(&chunk[..n]),
-                            _ => return,
-                        }
-                    }
-                    let head = String::from_utf8_lossy(&buf[..head_len]).to_string();
-                    let path = head.split_whitespace().nth(1).unwrap_or("/").to_string();
-                    let body: Value = serde_json::from_slice(&buf[head_len..head_len + body_len])
-                        .unwrap_or(Value::Null);
-                    let reply = handler(&body);
-                    recorded.lock().unwrap().push(Hit {
-                        at: Instant::now(),
-                        path,
-                        body,
-                    });
-                    let response = match reply {
-                        Reply::Json(value) => {
-                            let body = value.to_string();
-                            format!(
-                                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                                body.len()
-                            )
-                        }
-                        Reply::Status(code) => format!(
-                            "HTTP/1.1 {code} Mock\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
-                        ),
-                        Reply::RateLimited(secs) => format!(
-                            "HTTP/1.1 429 Mock\r\nretry-after: {secs}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
-                        ),
-                    };
-                    let _ = stream.write_all(response.as_bytes()).await;
-                    let _ = stream.shutdown().await;
-                });
+        let mock = chainz_testkit::Mock::http(move |_, request| match handler(&request.json()) {
+            Reply::Json(value) => chainz_testkit::Reply::json(value),
+            Reply::Status(code) => chainz_testkit::Reply::status(code),
+            Reply::RateLimited(secs) => {
+                chainz_testkit::Reply::status(429).header("Retry-After", &secs.to_string())
             }
         });
-        MockRpc { url, hits, task }
+        MockRpc {
+            url: mock.url(),
+            mock,
+        }
     }
 
     /// Serve by answering each call (alone or in a batch) with `call`:
@@ -156,12 +88,20 @@ impl MockRpc {
     }
 
     pub(crate) fn hits(&self) -> Vec<Hit> {
-        self.hits.lock().unwrap().clone()
+        self.mock
+            .requests()
+            .into_iter()
+            .map(|r| Hit {
+                at: r.at,
+                body: r.json(),
+                path: r.path,
+            })
+            .collect()
     }
 
     /// Every method received, in order, batches flattened.
     pub(crate) fn methods(&self) -> Vec<String> {
-        self.hits().iter().flat_map(Hit::methods).collect()
+        self.mock.methods()
     }
 }
 
@@ -201,28 +141,7 @@ pub(crate) fn answer(body: &Value, call: &dyn Fn(&str, &Value) -> Result<Value, 
     }
 }
 
-/// ABI-encode `(bool success, bytes returnData)[]` where each successful
-/// entry returns one `uint256`, as `aggregate3` does.
-pub(crate) fn aggregate3_result(values: &[Option<u128>]) -> String {
-    let word = |n: u128| format!("{n:064x}");
-    let mut out = word(32) + &word(values.len() as u128);
-    let mut offset = values.len() as u128 * 32;
-    let mut items = String::new();
-    for value in values {
-        out += &word(offset);
-        match value {
-            Some(v) => {
-                items += &(word(1) + &word(64) + &word(32) + &word(*v));
-                offset += 4 * 32;
-            }
-            None => {
-                items += &(word(0) + &word(64) + &word(0));
-                offset += 3 * 32;
-            }
-        }
-    }
-    format!("0x{out}{items}")
-}
+pub(crate) use chainz_testkit::abi::aggregate3_result;
 
 pub(crate) const HOLDER_A: &str = "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf";
 pub(crate) const HOLDER_B: &str = "0x2B5AD5c4795c026514f8317c7a215E218DcCD6cF";
@@ -347,28 +266,11 @@ pub(crate) fn updates(events: &Receiver<Event>) -> impl Iterator<Item = Update> 
     })
 }
 
-/// A temp dir directly under `/tmp`. A unix socket path must fit in
-/// `sun_path` (108 bytes on Linux, 104 on macOS), and `$TMPDIR` can be
-/// long enough on its own (nix shells, macOS) to push one past it.
-pub(crate) fn short_tempdir() -> tempfile::TempDir {
-    let dir = tempfile::tempdir_in("/tmp").unwrap();
-    let longest = dir.path().join("runtime/serve.sock");
-    let len = longest.as_os_str().len();
-    assert!(
-        len < 100,
-        "socket path {} is {len} bytes, past the unix socket limit",
-        longest.display()
-    );
-    dir
-}
+pub(crate) use chainz_testkit::short_tempdir;
 
 /// Wait (up to ten seconds) until `done` holds.
-pub(crate) async fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !done() {
-        assert!(Instant::now() < deadline, "timed out waiting for {what}");
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+pub(crate) async fn wait_until(what: &str, done: impl FnMut() -> bool) {
+    chainz_testkit::wait_until_async(what, Duration::from_secs(10), done).await;
 }
 
 /// Wait (up to five seconds) for an update that `pick` accepts.

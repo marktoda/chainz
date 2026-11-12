@@ -1,8 +1,7 @@
-
 use std::time::Duration;
 
-use chainz_rpc::{BlockId, ErrorClass, RpcClient, RpcError, Target};
 use crate::common::*;
+use chainz_rpc::{BlockId, ErrorClass, RpcClient, RpcError, Target};
 use serde_json::{Value, json};
 
 async fn request_err(resp: Reply) -> RpcError {
@@ -71,8 +70,7 @@ async fn redirects_are_not_followed() {
     let elsewhere = Mock::http(|_, req| Reply::result(req, json!("0x1")));
     for status in [301, 302, 307, 308] {
         let location = format!("http://localhost:{}/stolen", elsewhere.port);
-        let server =
-            Mock::http(move |_, _| Reply::status(status).header("Location", &location));
+        let server = Mock::http(move |_, _| Reply::status(status).header("Location", &location));
         let err = RpcClient::new()
             .chain_id(&server.target(1))
             .await
@@ -154,8 +152,7 @@ async fn batch_matches_results_by_id() {
 
 #[tokio::test]
 async fn batch_missing_id_and_whole_batch_error() {
-    let server =
-        Mock::http(|_, _| Reply::json(json!([{"jsonrpc":"2.0","id":1,"result":"0x1"}])));
+    let server = Mock::http(|_, _| Reply::json(json!([{"jsonrpc":"2.0","id":1,"result":"0x1"}])));
     let results = RpcClient::new()
         .batch(&server.target(1), &[("a", json!([])), ("b", json!([]))])
         .await

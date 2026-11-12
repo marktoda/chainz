@@ -1,6 +1,5 @@
-
-use chainz_rpc::{Capabilities, RpcClient, Target, probe_capabilities};
 use crate::common::*;
+use chainz_rpc::{Capabilities, RpcClient, Target, probe_capabilities};
 use serde_json::json;
 
 #[tokio::test]

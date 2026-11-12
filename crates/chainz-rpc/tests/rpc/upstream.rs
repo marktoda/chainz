@@ -1,9 +1,8 @@
-
 use std::time::{Duration, Instant};
 
+use crate::common::*;
 use bytes::Bytes;
 use chainz_rpc::{HttpUpstream, RetryPolicy, RpcClient, RpcError};
-use crate::common::*;
 use serde_json::json;
 
 const BODY: &str = r#"{"jsonrpc":"2.0","id":7,"method":"eth_blockNumber","params":[]}"#;

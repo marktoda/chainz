@@ -1,6 +1,5 @@
-
-use chainz_rpc::{ErrorClass, Health, RpcClient, RpcError, classify, probe, probe_all};
 use crate::common::*;
+use chainz_rpc::{ErrorClass, Health, RpcClient, RpcError, classify, probe, probe_all};
 use serde_json::{Value, json};
 
 /// A mock answering the probe batch with the given chain ID and head.

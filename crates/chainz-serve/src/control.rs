@@ -272,18 +272,7 @@ mod tests {
         }
     }
 
-    /// A temp dir short enough for a unix socket path (SUN_LEN is ~104-108
-    /// bytes; a deep `$TMPDIR` would overflow it).
-    fn socket_dir() -> tempfile::TempDir {
-        let dir = tempfile::tempdir().unwrap();
-        if dir.path().join("serve.sock").as_os_str().len() < 100 {
-            return dir;
-        }
-        tempfile::Builder::new()
-            .prefix("cz")
-            .tempdir_in("/tmp")
-            .unwrap()
-    }
+    use chainz_testkit::short_tempdir as socket_dir;
 
     async fn server(dir: &tempfile::TempDir) -> ControlServer {
         ControlServer::start(&dir.path().join("serve.sock"), status(), metrics(5))

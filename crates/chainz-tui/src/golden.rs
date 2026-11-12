@@ -1,8 +1,6 @@
 //! Golden tests for `--once`: the text tables and the JSON document, from
 //! fixed states and a fixed clock. Regenerate with `CHAINZ_BLESS=1`.
 
-use std::path::PathBuf;
-
 use chainz_core::StorePaths;
 use chainz_core::{Chainz, LoadMode};
 use chainz_rpc::{ErrorClass, HealthStore};
@@ -13,24 +11,7 @@ use crate::plan::Plan;
 use crate::ui::tests::{NOW, fixture, with_gateway};
 
 fn golden(name: &str, actual: &str) {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/golden")
-        .join(name);
-    if std::env::var_os("CHAINZ_BLESS").is_some_and(|v| v == "1") {
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, actual).unwrap();
-        return;
-    }
-    let expected = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-        panic!(
-            "{}: {e}; run with CHAINZ_BLESS=1 to create it",
-            path.display()
-        )
-    });
-    assert!(
-        expected == actual,
-        "{name} differs (CHAINZ_BLESS=1 regenerates it)\n── actual ──\n{actual}── expected ──\n{expected}"
-    );
+    chainz_testkit::golden!(name, actual);
 }
 
 /// A plan built by [`Plan::build`] from a real config: registry tokens,
