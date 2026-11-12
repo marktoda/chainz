@@ -1,0 +1,17 @@
+ 6 chains · 3 ok · 1 down · 2 pending
+ CHAIN    ID           HEAD  AGE  BLOCK   BASE FEE  RPC      P50  HEALTH    STATUS
+ eth      1      23,000,000   3s   5.0s  1.50 gwei  infura  70ms         ▁  ok
+ base     8453   38,000,000   3s   5.0s  1.50 gwei  public  70ms         ▁  ok
+ gnosis   100    41,000,000   3s   5.0s  1.50 gwei  public  70ms         ▁  ok
+ polygon  137             …    –      –          –  public     –            …
+ celo     42220           …    –      –          –  forno      –            …
+ devnet   31337           –    –      –          –  local      –         ×  down connect
+
+ signer deployer 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
+ CHAIN         NATIVE    @weth   @usdc   @usdt     @dai   @wbtc  @usdce  VIA        UPDATED
+ eth       0.2500 ETH  <0.0001  2.0000  3.0000  <0.0001  0.0400          multicall  5s ago
+ base      3.0000 ETH  <0.0001  2.0000  4.0000  <0.0001          3.0000  multicall  5s ago
+ gnosis       12.0000                                                    multicall  5s ago
+ polygon  >3.4e38 POL  <0.0001  2.0000  4.0000  <0.0001  0.0500  3.0000  multicall  5s ago
+ celo          0 CELO  <0.0001  1.0000  2.0000           0.0300          multicall  5s ago
+ devnet             –                                                               connect

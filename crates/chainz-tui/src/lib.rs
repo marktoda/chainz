@@ -21,6 +21,8 @@ pub(crate) mod app;
 pub(crate) mod data;
 pub(crate) mod fmt;
 pub(crate) mod gateway;
+#[cfg(test)]
+mod golden;
 pub(crate) mod model;
 pub(crate) mod plan;
 pub(crate) mod snapshot;

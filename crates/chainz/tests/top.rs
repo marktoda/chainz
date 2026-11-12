@@ -86,14 +86,16 @@ fn aggregate3_targets(calldata: &str) -> Vec<String> {
 /// A mock chain 1: head 1,000 with 12 s blocks, and a Multicall3 that
 /// reports 1.5 ETH, 2.5 USDC and nothing of any other token.
 fn mock_rpc() -> MockRpc {
-    MockRpc::start(|request| {
+    // One clock reading for every block, so the head and the look-back
+    // block are always exactly 12 s apart (two readings could straddle a
+    // second boundary and make the block time 12.005 s).
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    MockRpc::start(move |request| {
         Ok(match request.method.as_str() {
             "eth_getBlockByNumber" => {
-                // The head is always fresh: its time is the request's.
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs();
                 let tag = request.params[0].as_str().unwrap();
                 let number = match tag {
                     "latest" => 1_000,

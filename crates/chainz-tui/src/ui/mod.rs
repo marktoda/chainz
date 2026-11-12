@@ -7,7 +7,7 @@ mod chains;
 mod endpoints;
 pub mod grid;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 pub mod theme;
 mod traffic;
 

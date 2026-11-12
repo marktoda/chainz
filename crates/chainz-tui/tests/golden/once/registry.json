@@ -1,0 +1,576 @@
+{
+  "at": 1700000000,
+  "gateway": {
+    "running": false,
+    "port": null
+  },
+  "chains": [
+    {
+      "name": "eth",
+      "id": 1,
+      "aliases": [
+        "mainnet"
+      ],
+      "rpc": "infura",
+      "via_gateway": false,
+      "status": "ok",
+      "head": 23000000,
+      "block_timestamp": 1699999997,
+      "block_age_secs": 3,
+      "block_time_secs": 5.0,
+      "base_fee_wei": "1500000000",
+      "base_fee_gwei": 1.5,
+      "latency_ms": 70,
+      "p50_ms": 70,
+      "lag_blocks": 0,
+      "error": null,
+      "endpoints": [
+        {
+          "name": "infura",
+          "url": "https://redacted.infura.io/REDACTED/${INFURA_KEY}",
+          "active": true,
+          "websocket": false,
+          "status": "unknown",
+          "tags": [],
+          "latency_ms": null,
+          "p50_ms": null,
+          "head": null,
+          "lag_blocks": null,
+          "error": null,
+          "probed_at_ms": null
+        },
+        {
+          "name": "llama",
+          "url": "https://redacted.llamarpc.com/",
+          "active": false,
+          "websocket": false,
+          "status": "unknown",
+          "tags": [],
+          "latency_ms": null,
+          "p50_ms": null,
+          "head": null,
+          "lag_blocks": null,
+          "error": null,
+          "probed_at_ms": null
+        },
+        {
+          "name": "alchemy",
+          "url": "https://redacted.alchemy.com/REDACTED",
+          "active": false,
+          "websocket": false,
+          "status": "unknown",
+          "tags": [],
+          "latency_ms": null,
+          "p50_ms": null,
+          "head": null,
+          "lag_blocks": null,
+          "error": null,
+          "probed_at_ms": null
+        },
+        {
+          "name": "stream",
+          "url": "wss://redacted.example.org/REDACTED",
+          "active": false,
+          "websocket": true,
+          "status": "websocket",
+          "tags": [
+            "ws"
+          ],
+          "latency_ms": null,
+          "p50_ms": null,
+          "head": null,
+          "lag_blocks": null,
+          "error": null,
+          "probed_at_ms": null
+        }
+      ]
+    },
+    {
+      "name": "base",
+      "id": 8453,
+      "aliases": [],
+      "rpc": "public",
+      "via_gateway": false,
+      "status": "ok",
+      "head": 38000000,
+      "block_timestamp": 1699999997,
+      "block_age_secs": 3,
+      "block_time_secs": 5.0,
+      "base_fee_wei": "1500000000",
+      "base_fee_gwei": 1.5,
+      "latency_ms": 70,
+      "p50_ms": 70,
+      "lag_blocks": 0,
+      "error": null,
+      "endpoints": [
+        {
+          "name": "public",
+          "url": "https://redacted.base.org/",
+          "active": true,
+          "websocket": false,
+          "status": "unknown",
+          "tags": [],
+          "latency_ms": null,
+          "p50_ms": null,
+          "head": null,
+          "lag_blocks": null,
+          "error": null,
+          "probed_at_ms": null
+        }
+      ]
+    },
+    {
+      "name": "gnosis",
+      "id": 100,
+      "aliases": [],
+      "rpc": "public",
+      "via_gateway": false,
+      "status": "ok",
+      "head": 41000000,
+      "block_timestamp": 1699999997,
+      "block_age_secs": 3,
+      "block_time_secs": 5.0,
+      "base_fee_wei": "1500000000",
+      "base_fee_gwei": 1.5,
+      "latency_ms": 70,
+      "p50_ms": 70,
+      "lag_blocks": 0,
+      "error": null,
+      "endpoints": [
+        {
+          "name": "public",
+          "url": "https://redacted.gnosischain.com/",
+          "active": true,
+          "websocket": false,
+          "status": "unknown",
+          "tags": [],
+          "latency_ms": null,
+          "p50_ms": null,
+          "head": null,
+          "lag_blocks": null,
+          "error": null,
+          "probed_at_ms": null
+        }
+      ]
+    },
+    {
+      "name": "polygon",
+      "id": 137,
+      "aliases": [],
+      "rpc": "public",
+      "via_gateway": false,
+      "status": "pending",
+      "head": null,
+      "block_timestamp": null,
+      "block_age_secs": null,
+      "block_time_secs": null,
+      "base_fee_wei": null,
+      "base_fee_gwei": null,
+      "latency_ms": null,
+      "p50_ms": null,
+      "lag_blocks": 0,
+      "error": null,
+      "endpoints": [
+        {
+          "name": "public",
+          "url": "https://polygon-rpc.com/",
+          "active": true,
+          "websocket": false,
+          "status": "unknown",
+          "tags": [],
+          "latency_ms": null,
+          "p50_ms": null,
+          "head": null,
+          "lag_blocks": null,
+          "error": null,
+          "probed_at_ms": null
+        }
+      ]
+    },
+    {
+      "name": "celo",
+      "id": 42220,
+      "aliases": [],
+      "rpc": "forno",
+      "via_gateway": false,
+      "status": "pending",
+      "head": null,
+      "block_timestamp": null,
+      "block_age_secs": null,
+      "block_time_secs": null,
+      "base_fee_wei": null,
+      "base_fee_gwei": null,
+      "latency_ms": null,
+      "p50_ms": null,
+      "lag_blocks": 0,
+      "error": null,
+      "endpoints": [
+        {
+          "name": "forno",
+          "url": "https://redacted.celo.org/",
+          "active": true,
+          "websocket": false,
+          "status": "unknown",
+          "tags": [],
+          "latency_ms": null,
+          "p50_ms": null,
+          "head": null,
+          "lag_blocks": null,
+          "error": null,
+          "probed_at_ms": null
+        }
+      ]
+    },
+    {
+      "name": "devnet",
+      "id": 31337,
+      "aliases": [],
+      "rpc": "local",
+      "via_gateway": false,
+      "status": "down",
+      "head": null,
+      "block_timestamp": null,
+      "block_age_secs": null,
+      "block_time_secs": null,
+      "base_fee_wei": null,
+      "base_fee_gwei": null,
+      "latency_ms": null,
+      "p50_ms": null,
+      "lag_blocks": 0,
+      "error": {
+        "class": "connect",
+        "message": "could not connect to endpoint"
+      },
+      "endpoints": [
+        {
+          "name": "local",
+          "url": "http://127.0.0.1:8545/",
+          "active": true,
+          "websocket": false,
+          "status": "unknown",
+          "tags": [],
+          "latency_ms": null,
+          "p50_ms": null,
+          "head": null,
+          "lag_blocks": null,
+          "error": null,
+          "probed_at_ms": null
+        }
+      ]
+    }
+  ],
+  "balances": [
+    {
+      "signer": "deployer",
+      "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+      "chains": [
+        {
+          "chain": "eth",
+          "id": 1,
+          "via": "multicall3",
+          "native": {
+            "symbol": "ETH",
+            "decimals": 18,
+            "raw": "250000000000000000",
+            "formatted": "0.25",
+            "saturated": false
+          },
+          "tokens": [
+            {
+              "name": "dai",
+              "address": "0x6B175474E89094C44Da98b954EedeAC495271d0F",
+              "balance": {
+                "symbol": "DAI",
+                "decimals": 18,
+                "raw": "1000000",
+                "formatted": "0.000000000001",
+                "saturated": false
+              }
+            },
+            {
+              "name": "usdc",
+              "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+              "balance": {
+                "symbol": "USDC",
+                "decimals": 6,
+                "raw": "2000000",
+                "formatted": "2",
+                "saturated": false
+              }
+            },
+            {
+              "name": "usdt",
+              "address": "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+              "balance": {
+                "symbol": "USDT",
+                "decimals": 6,
+                "raw": "3000000",
+                "formatted": "3",
+                "saturated": false
+              }
+            },
+            {
+              "name": "wbtc",
+              "address": "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
+              "balance": {
+                "symbol": "WBTC",
+                "decimals": 8,
+                "raw": "4000000",
+                "formatted": "0.04",
+                "saturated": false
+              }
+            },
+            {
+              "name": "weth",
+              "address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+              "balance": {
+                "symbol": "WETH",
+                "decimals": 18,
+                "raw": "5000000",
+                "formatted": "0.000000000005",
+                "saturated": false
+              }
+            }
+          ],
+          "error": null
+        },
+        {
+          "chain": "base",
+          "id": 8453,
+          "via": "multicall3",
+          "native": {
+            "symbol": "ETH",
+            "decimals": 18,
+            "raw": "3000000000000000000",
+            "formatted": "3",
+            "saturated": false
+          },
+          "tokens": [
+            {
+              "name": "dai",
+              "address": "0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb",
+              "balance": {
+                "symbol": "DAI",
+                "decimals": 18,
+                "raw": "1000000",
+                "formatted": "0.000000000001",
+                "saturated": false
+              }
+            },
+            {
+              "name": "usdc",
+              "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+              "balance": {
+                "symbol": "USDC",
+                "decimals": 6,
+                "raw": "2000000",
+                "formatted": "2",
+                "saturated": false
+              }
+            },
+            {
+              "name": "usdce",
+              "address": "0xd9aAEc86B65D86f6A7B5B1b0c42FFA531710b6CA",
+              "balance": {
+                "symbol": "USDbC",
+                "decimals": 6,
+                "raw": "3000000",
+                "formatted": "3",
+                "saturated": false
+              }
+            },
+            {
+              "name": "usdt",
+              "address": "0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2",
+              "balance": {
+                "symbol": "USDT",
+                "decimals": 6,
+                "raw": "4000000",
+                "formatted": "4",
+                "saturated": false
+              }
+            },
+            {
+              "name": "weth",
+              "address": "0x4200000000000000000000000000000000000006",
+              "balance": {
+                "symbol": "WETH",
+                "decimals": 18,
+                "raw": "5000000",
+                "formatted": "0.000000000005",
+                "saturated": false
+              }
+            }
+          ],
+          "error": null
+        },
+        {
+          "chain": "gnosis",
+          "id": 100,
+          "via": "multicall3",
+          "native": {
+            "symbol": null,
+            "decimals": 18,
+            "raw": "12000000000000000000",
+            "formatted": "12",
+            "saturated": false
+          },
+          "tokens": [],
+          "error": null
+        },
+        {
+          "chain": "polygon",
+          "id": 137,
+          "via": "multicall3",
+          "native": {
+            "symbol": "POL",
+            "decimals": 18,
+            "raw": null,
+            "formatted": null,
+            "saturated": true
+          },
+          "tokens": [
+            {
+              "name": "dai",
+              "address": "0x8f3Cf7ad23Cd3CaDbD9735AFf958023239c6A063",
+              "balance": {
+                "symbol": "DAI",
+                "decimals": 18,
+                "raw": "1000000",
+                "formatted": "0.000000000001",
+                "saturated": false
+              }
+            },
+            {
+              "name": "usdc",
+              "address": "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
+              "balance": {
+                "symbol": "USDC",
+                "decimals": 6,
+                "raw": "2000000",
+                "formatted": "2",
+                "saturated": false
+              }
+            },
+            {
+              "name": "usdce",
+              "address": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+              "balance": {
+                "symbol": "USDC",
+                "decimals": 6,
+                "raw": "3000000",
+                "formatted": "3",
+                "saturated": false
+              }
+            },
+            {
+              "name": "usdt",
+              "address": "0xc2132D05D31c914a87C6611C10748AEb04B58e8F",
+              "balance": {
+                "symbol": "USDT0",
+                "decimals": 6,
+                "raw": "4000000",
+                "formatted": "4",
+                "saturated": false
+              }
+            },
+            {
+              "name": "wbtc",
+              "address": "0x1BFD67037B42Cf73acF2047067bd4F2C47D9BfD6",
+              "balance": {
+                "symbol": "WBTC",
+                "decimals": 8,
+                "raw": "5000000",
+                "formatted": "0.05",
+                "saturated": false
+              }
+            },
+            {
+              "name": "weth",
+              "address": "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270",
+              "balance": {
+                "symbol": "WPOL",
+                "decimals": 18,
+                "raw": "6000000",
+                "formatted": "0.000000000006",
+                "saturated": false
+              }
+            }
+          ],
+          "error": null
+        },
+        {
+          "chain": "celo",
+          "id": 42220,
+          "via": "multicall3",
+          "native": {
+            "symbol": "CELO",
+            "decimals": 18,
+            "raw": "0",
+            "formatted": "0",
+            "saturated": false
+          },
+          "tokens": [
+            {
+              "name": "usdc",
+              "address": "0xcebA9300f2b948710d2653dD7B07f33A8B32118C",
+              "balance": {
+                "symbol": "USDC",
+                "decimals": 6,
+                "raw": "1000000",
+                "formatted": "1",
+                "saturated": false
+              }
+            },
+            {
+              "name": "usdt",
+              "address": "0x48065fbBE25f71C9282ddf5e1cD6D6A887483D5e",
+              "balance": {
+                "symbol": "USD₮",
+                "decimals": 6,
+                "raw": "2000000",
+                "formatted": "2",
+                "saturated": false
+              }
+            },
+            {
+              "name": "wbtc",
+              "address": "0x8aC2901Dd8A1F17a1A4768A6bA4C3751e3995B2D",
+              "balance": {
+                "symbol": "WBTC",
+                "decimals": 8,
+                "raw": "3000000",
+                "formatted": "0.03",
+                "saturated": false
+              }
+            },
+            {
+              "name": "weth",
+              "address": "0x471EcE3750Da237f93B8E339c536989b8978a438",
+              "balance": {
+                "symbol": "CELO",
+                "decimals": 18,
+                "raw": "4000000",
+                "formatted": "0.000000000004",
+                "saturated": false
+              }
+            }
+          ],
+          "error": null
+        },
+        {
+          "chain": "devnet",
+          "id": 31337,
+          "via": null,
+          "native": null,
+          "tokens": [],
+          "error": {
+            "class": "connect",
+            "message": "could not connect to endpoint"
+          }
+        }
+      ]
+    }
+  ],
+  "traffic": null
+}

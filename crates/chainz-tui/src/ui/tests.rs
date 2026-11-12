@@ -15,7 +15,7 @@ use crate::model::{Fault, GatewayInfo, Head, Holding, Probe, Sheet, State, Updat
 use crate::plan::Plan;
 
 /// The frame clock: unix milliseconds.
-const NOW: u64 = 1_700_000_000_000;
+pub(crate) const NOW: u64 = 1_700_000_000_000;
 
 fn empty_store() -> HealthStore {
     HealthStore::empty()
@@ -87,7 +87,7 @@ fn sheet(via: Via, default: (u128, u128, u128), funder: (u128, u128, u128)) -> S
 }
 
 /// Six chains in every state the Chains tab can show.
-fn fixture() -> State {
+pub(crate) fn fixture() -> State {
     let mut state = State::new(&fixture_plan(), &empty_store());
     let eth = 1_000_000_000_000_000_000u128;
     let updates = vec![
@@ -184,7 +184,7 @@ fn fixture() -> State {
     state
 }
 
-fn with_gateway(mut state: State) -> State {
+pub(crate) fn with_gateway(mut state: State) -> State {
     state.apply(Update::Gateway(Some(GatewayInfo { port: 18545 })));
     state.apply(Update::Traffic(Ok(gw::traffic())));
     for item in gw::feed() {

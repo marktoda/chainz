@@ -1,0 +1,10 @@
+{
+  "at": 1700000000,
+  "gateway": {
+    "running": false,
+    "port": null
+  },
+  "chains": [],
+  "balances": [],
+  "traffic": null
+}

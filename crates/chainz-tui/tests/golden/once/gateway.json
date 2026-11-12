@@ -1,0 +1,758 @@
+{
+  "at": 1700000000,
+  "gateway": {
+    "running": true,
+    "port": 18545
+  },
+  "chains": [
+    {
+      "name": "eth",
+      "id": 1,
+      "aliases": [
+        "ethereum",
+        "mainnet"
+      ],
+      "rpc": "infura",
+      "via_gateway": false,
+      "status": "ok",
+      "head": 23481220,
+      "block_timestamp": 1699999996,
+      "block_age_secs": 4,
+      "block_time_secs": 12.0,
+      "base_fee_wei": "410000000",
+      "base_fee_gwei": 0.41,
+      "latency_ms": 48,
+      "p50_ms": 48,
+      "lag_blocks": 0,
+      "error": null,
+      "endpoints": [
+        {
+          "name": "infura",
+          "url": "https://redacted.infura.io/REDACTED",
+          "active": true,
+          "websocket": false,
+          "status": "ok",
+          "tags": [],
+          "latency_ms": 48,
+          "p50_ms": 48,
+          "head": 23481220,
+          "lag_blocks": 0,
+          "error": null,
+          "probed_at_ms": 1699999997000
+        },
+        {
+          "name": "llama",
+          "url": "https://redacted.llamarpc.com/",
+          "active": false,
+          "websocket": false,
+          "status": "lagging",
+          "tags": [],
+          "latency_ms": 131,
+          "p50_ms": 131,
+          "head": 23481186,
+          "lag_blocks": 34,
+          "error": null,
+          "probed_at_ms": 1699999997000
+        },
+        {
+          "name": "publicnode",
+          "url": "https://redacted.publicnode.com/",
+          "active": false,
+          "websocket": false,
+          "status": "failing",
+          "tags": [],
+          "latency_ms": null,
+          "p50_ms": null,
+          "head": null,
+          "lag_blocks": null,
+          "error": "rate_limited",
+          "probed_at_ms": 1699999997000
+        },
+        {
+          "name": "quiknode",
+          "url": "https://redacted.quiknode.pro/REDACTED",
+          "active": false,
+          "websocket": false,
+          "status": "ok",
+          "tags": [],
+          "latency_ms": 1240,
+          "p50_ms": 1240,
+          "head": 23481219,
+          "lag_blocks": 1,
+          "error": null,
+          "probed_at_ms": 1699999997000
+        },
+        {
+          "name": "alchemy-ws",
+          "url": "wss://redacted.alchemy.com/REDACTED",
+          "active": false,
+          "websocket": true,
+          "status": "websocket",
+          "tags": [
+            "ws"
+          ],
+          "latency_ms": null,
+          "p50_ms": null,
+          "head": null,
+          "lag_blocks": null,
+          "error": null,
+          "probed_at_ms": null
+        },
+        {
+          "name": "broken",
+          "url": "https://redacted.example.org/",
+          "active": false,
+          "websocket": false,
+          "status": "invalid",
+          "tags": [],
+          "latency_ms": null,
+          "p50_ms": null,
+          "head": null,
+          "lag_blocks": null,
+          "error": null,
+          "probed_at_ms": null
+        }
+      ]
+    },
+    {
+      "name": "base",
+      "id": 8453,
+      "aliases": [],
+      "rpc": "infura",
+      "via_gateway": false,
+      "status": "ok",
+      "head": 38112904,
+      "block_timestamp": 1699999999,
+      "block_age_secs": 1,
+      "block_time_secs": 2.0,
+      "base_fee_wei": "2000000",
+      "base_fee_gwei": 0.002,
+      "latency_ms": 60,
+      "p50_ms": 60,
+      "lag_blocks": 0,
+      "error": null,
+      "endpoints": [
+        {
+          "name": "infura",
+          "url": "https://redacted.example.org/",
+          "active": true,
+          "websocket": false,
+          "status": "unknown",
+          "tags": [],
+          "latency_ms": null,
+          "p50_ms": null,
+          "head": null,
+          "lag_blocks": null,
+          "error": null,
+          "probed_at_ms": null
+        }
+      ]
+    },
+    {
+      "name": "uni",
+      "id": 130,
+      "aliases": [],
+      "rpc": "infura",
+      "via_gateway": false,
+      "status": "lag",
+      "head": 31770013,
+      "block_timestamp": 1700000000,
+      "block_age_secs": 0,
+      "block_time_secs": 1.0,
+      "base_fee_wei": "400",
+      "base_fee_gwei": 4e-7,
+      "latency_ms": 55,
+      "p50_ms": 55,
+      "lag_blocks": 3,
+      "error": null,
+      "endpoints": [
+        {
+          "name": "infura",
+          "url": "https://redacted.example.org/",
+          "active": true,
+          "websocket": false,
+          "status": "ok",
+          "tags": [],
+          "latency_ms": 55,
+          "p50_ms": 55,
+          "head": 31770016,
+          "lag_blocks": 0,
+          "error": null,
+          "probed_at_ms": 1699999991000
+        }
+      ]
+    },
+    {
+      "name": "zora",
+      "id": 7777777,
+      "aliases": [],
+      "rpc": "uniswap",
+      "via_gateway": false,
+      "status": "slow",
+      "head": 33004118,
+      "block_timestamp": 1699999991,
+      "block_age_secs": 9,
+      "block_time_secs": 2.0,
+      "base_fee_wei": "1000000",
+      "base_fee_gwei": 0.001,
+      "latency_ms": 260,
+      "p50_ms": 260,
+      "lag_blocks": 0,
+      "error": null,
+      "endpoints": [
+        {
+          "name": "uniswap",
+          "url": "https://redacted.example.org/",
+          "active": true,
+          "websocket": false,
+          "status": "unknown",
+          "tags": [],
+          "latency_ms": null,
+          "p50_ms": null,
+          "head": null,
+          "lag_blocks": null,
+          "error": null,
+          "probed_at_ms": null
+        }
+      ]
+    },
+    {
+      "name": "arb",
+      "id": 42161,
+      "aliases": [],
+      "rpc": "uniswap",
+      "via_gateway": false,
+      "status": "down",
+      "head": 284000117,
+      "block_timestamp": 1699999938,
+      "block_age_secs": 62,
+      "block_time_secs": 0.25,
+      "base_fee_wei": "10000000",
+      "base_fee_gwei": 0.01,
+      "latency_ms": 80,
+      "p50_ms": 80,
+      "lag_blocks": 248,
+      "error": {
+        "class": "timeout",
+        "message": "request timed out"
+      },
+      "endpoints": [
+        {
+          "name": "uniswap",
+          "url": "https://redacted.example.org/",
+          "active": true,
+          "websocket": false,
+          "status": "unknown",
+          "tags": [],
+          "latency_ms": null,
+          "p50_ms": null,
+          "head": null,
+          "lag_blocks": null,
+          "error": null,
+          "probed_at_ms": null
+        }
+      ]
+    },
+    {
+      "name": "polygon",
+      "id": 137,
+      "aliases": [],
+      "rpc": "infura",
+      "via_gateway": false,
+      "status": "pending",
+      "head": null,
+      "block_timestamp": null,
+      "block_age_secs": null,
+      "block_time_secs": null,
+      "base_fee_wei": null,
+      "base_fee_gwei": null,
+      "latency_ms": null,
+      "p50_ms": null,
+      "lag_blocks": 0,
+      "error": null,
+      "endpoints": [
+        {
+          "name": "infura",
+          "url": "https://redacted.example.org/",
+          "active": true,
+          "websocket": false,
+          "status": "unknown",
+          "tags": [],
+          "latency_ms": null,
+          "p50_ms": null,
+          "head": null,
+          "lag_blocks": null,
+          "error": null,
+          "probed_at_ms": null
+        }
+      ]
+    }
+  ],
+  "balances": [
+    {
+      "signer": "default",
+      "address": "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf",
+      "chains": [
+        {
+          "chain": "eth",
+          "id": 1,
+          "via": "multicall3",
+          "native": {
+            "symbol": "ETH",
+            "decimals": 18,
+            "raw": "1234500000000000000",
+            "formatted": "1.2345",
+            "saturated": false
+          },
+          "tokens": [
+            {
+              "name": "usdc",
+              "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+              "balance": {
+                "symbol": "USDC",
+                "decimals": 6,
+                "raw": "12345678900",
+                "formatted": "12345.6789",
+                "saturated": false
+              }
+            },
+            {
+              "name": "weth",
+              "address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+              "balance": {
+                "symbol": "WETH",
+                "decimals": 18,
+                "raw": "0",
+                "formatted": "0",
+                "saturated": false
+              }
+            }
+          ],
+          "error": null
+        },
+        {
+          "chain": "base",
+          "id": 8453,
+          "via": "multicall3",
+          "native": {
+            "symbol": "ETH",
+            "decimals": 18,
+            "raw": "500000000000000000",
+            "formatted": "0.5",
+            "saturated": false
+          },
+          "tokens": [
+            {
+              "name": "usdc",
+              "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+              "balance": {
+                "symbol": "USDC",
+                "decimals": 6,
+                "raw": "250000000",
+                "formatted": "250",
+                "saturated": false
+              }
+            },
+            {
+              "name": "weth",
+              "address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+              "balance": {
+                "symbol": "WETH",
+                "decimals": 18,
+                "raw": "125000000000000000",
+                "formatted": "0.125",
+                "saturated": false
+              }
+            }
+          ],
+          "error": null
+        },
+        {
+          "chain": "uni",
+          "id": 130,
+          "via": "batch",
+          "native": {
+            "symbol": "ETH",
+            "decimals": 18,
+            "raw": "0",
+            "formatted": "0",
+            "saturated": false
+          },
+          "tokens": [
+            {
+              "name": "usdc",
+              "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+              "balance": {
+                "symbol": "USDC",
+                "decimals": 6,
+                "raw": "0",
+                "formatted": "0",
+                "saturated": false
+              }
+            },
+            {
+              "name": "weth",
+              "address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+              "balance": {
+                "symbol": "WETH",
+                "decimals": 18,
+                "raw": "0",
+                "formatted": "0",
+                "saturated": false
+              }
+            }
+          ],
+          "error": null
+        },
+        {
+          "chain": "zora",
+          "id": 7777777,
+          "via": "batch",
+          "native": {
+            "symbol": "ETH",
+            "decimals": 18,
+            "raw": "1000000000000000",
+            "formatted": "0.001",
+            "saturated": false
+          },
+          "tokens": [
+            {
+              "name": "weth",
+              "address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+              "balance": null
+            }
+          ],
+          "error": null
+        },
+        {
+          "chain": "arb",
+          "id": 42161,
+          "via": null,
+          "native": null,
+          "tokens": [
+            {
+              "name": "usdc",
+              "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+              "balance": null
+            },
+            {
+              "name": "weth",
+              "address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+              "balance": null
+            }
+          ],
+          "error": {
+            "class": "timeout",
+            "message": "request timed out"
+          }
+        },
+        {
+          "chain": "polygon",
+          "id": 137,
+          "via": null,
+          "native": null,
+          "tokens": [
+            {
+              "name": "usdc",
+              "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+              "balance": null
+            },
+            {
+              "name": "weth",
+              "address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+              "balance": null
+            }
+          ],
+          "error": null
+        }
+      ]
+    },
+    {
+      "signer": "funder",
+      "address": "0x2B5AD5c4795c026514f8317c7a215E218DcCD6cF",
+      "chains": [
+        {
+          "chain": "eth",
+          "id": 1,
+          "via": "multicall3",
+          "native": {
+            "symbol": "ETH",
+            "decimals": 18,
+            "raw": "50000000000000000",
+            "formatted": "0.05",
+            "saturated": false
+          },
+          "tokens": [
+            {
+              "name": "usdc",
+              "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+              "balance": {
+                "symbol": "USDC",
+                "decimals": 6,
+                "raw": "0",
+                "formatted": "0",
+                "saturated": false
+              }
+            },
+            {
+              "name": "weth",
+              "address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+              "balance": {
+                "symbol": "WETH",
+                "decimals": 18,
+                "raw": "0",
+                "formatted": "0",
+                "saturated": false
+              }
+            }
+          ],
+          "error": null
+        },
+        {
+          "chain": "base",
+          "id": 8453,
+          "via": "multicall3",
+          "native": {
+            "symbol": "ETH",
+            "decimals": 18,
+            "raw": "0",
+            "formatted": "0",
+            "saturated": false
+          },
+          "tokens": [
+            {
+              "name": "usdc",
+              "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+              "balance": {
+                "symbol": "USDC",
+                "decimals": 6,
+                "raw": "0",
+                "formatted": "0",
+                "saturated": false
+              }
+            },
+            {
+              "name": "weth",
+              "address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+              "balance": {
+                "symbol": "WETH",
+                "decimals": 18,
+                "raw": "0",
+                "formatted": "0",
+                "saturated": false
+              }
+            }
+          ],
+          "error": null
+        },
+        {
+          "chain": "uni",
+          "id": 130,
+          "via": "batch",
+          "native": {
+            "symbol": "ETH",
+            "decimals": 18,
+            "raw": "1",
+            "formatted": "0.000000000000000001",
+            "saturated": false
+          },
+          "tokens": [
+            {
+              "name": "usdc",
+              "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+              "balance": {
+                "symbol": "USDC",
+                "decimals": 6,
+                "raw": "5",
+                "formatted": "0.000005",
+                "saturated": false
+              }
+            },
+            {
+              "name": "weth",
+              "address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+              "balance": {
+                "symbol": "WETH",
+                "decimals": 18,
+                "raw": "0",
+                "formatted": "0",
+                "saturated": false
+              }
+            }
+          ],
+          "error": null
+        },
+        {
+          "chain": "zora",
+          "id": 7777777,
+          "via": "batch",
+          "native": null,
+          "tokens": [
+            {
+              "name": "weth",
+              "address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+              "balance": null
+            }
+          ],
+          "error": null
+        },
+        {
+          "chain": "arb",
+          "id": 42161,
+          "via": null,
+          "native": null,
+          "tokens": [
+            {
+              "name": "usdc",
+              "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+              "balance": null
+            },
+            {
+              "name": "weth",
+              "address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+              "balance": null
+            }
+          ],
+          "error": {
+            "class": "timeout",
+            "message": "request timed out"
+          }
+        },
+        {
+          "chain": "polygon",
+          "id": 137,
+          "via": null,
+          "native": null,
+          "tokens": [
+            {
+              "name": "usdc",
+              "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+              "balance": null
+            },
+            {
+              "name": "weth",
+              "address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+              "balance": null
+            }
+          ],
+          "error": null
+        }
+      ]
+    }
+  ],
+  "traffic": {
+    "version": "2.0.0-test",
+    "port": 18545,
+    "uptime_secs": 7380,
+    "chains": [
+      {
+        "chain": "eth",
+        "active": "infura",
+        "head": 23481220
+      },
+      {
+        "chain": "base",
+        "active": "infura",
+        "head": 38112904
+      }
+    ],
+    "windows": [
+      {
+        "window_secs": 60,
+        "requests": 742,
+        "errors": 3,
+        "rate_limited": 12,
+        "failovers": 1,
+        "bytes": 379904,
+        "methods": [
+          {
+            "name": "eth_call",
+            "requests": 600,
+            "errors": 0,
+            "rate_limited": 12,
+            "failovers": 1,
+            "p50_ms": 50,
+            "p95_ms": 210
+          },
+          {
+            "name": "eth_getLogs",
+            "requests": 120,
+            "errors": 3,
+            "rate_limited": 0,
+            "failovers": 0,
+            "p50_ms": 210,
+            "p95_ms": 630
+          },
+          {
+            "name": "eth_blockNumber",
+            "requests": 22,
+            "errors": 0,
+            "rate_limited": 0,
+            "failovers": 0,
+            "p50_ms": 31,
+            "p95_ms": 93
+          }
+        ],
+        "endpoints": [
+          {
+            "name": "eth/infura",
+            "requests": 422,
+            "errors": 0,
+            "rate_limited": 0,
+            "failovers": 0,
+            "p50_ms": 39,
+            "p95_ms": 120
+          },
+          {
+            "name": "base/infura",
+            "requests": 200,
+            "errors": 0,
+            "rate_limited": 12,
+            "failovers": 1,
+            "p50_ms": 70,
+            "p95_ms": 210
+          },
+          {
+            "name": "eth/llama",
+            "requests": 120,
+            "errors": 3,
+            "rate_limited": 0,
+            "failovers": 0,
+            "p50_ms": 210,
+            "p95_ms": 630
+          }
+        ]
+      },
+      {
+        "window_secs": 900,
+        "requests": 9000,
+        "errors": 0,
+        "rate_limited": 0,
+        "failovers": 0,
+        "bytes": 4608000,
+        "methods": [
+          {
+            "name": "eth_call",
+            "requests": 9000,
+            "errors": 0,
+            "rate_limited": 0,
+            "failovers": 0,
+            "p50_ms": 50,
+            "p95_ms": 150
+          }
+        ],
+        "endpoints": [
+          {
+            "name": "eth/infura",
+            "requests": 9000,
+            "errors": 0,
+            "rate_limited": 0,
+            "failovers": 0,
+            "p50_ms": 50,
+            "p95_ms": 150
+          }
+        ]
+      }
+    ]
+  }
+}
