@@ -29,8 +29,9 @@ use tokio::sync::{Notify, watch};
 use tokio::task::{JoinHandle, JoinSet};
 
 use crate::gateway::GatewayLink;
-use crate::model::{Fault, GatewayInfo, Probe, Update, now_ms};
+use crate::model::{Fault, GatewayInfo, Probe, Update};
 use crate::plan::{ChainPlan, Plan};
+use chainz_sys::now_ms;
 
 /// Every interval and deadline the workers use; tests shrink them.
 #[derive(Debug, Clone)]

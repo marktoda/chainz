@@ -37,9 +37,10 @@ use chainz_rpc::HealthStore;
 
 use crate::app::{App, Tab};
 use crate::data::{Shared, Tuning};
-use crate::model::{State, now_ms};
+use crate::model::State;
 use crate::plan::Plan;
 use crate::ui::theme::Theme;
+use chainz_sys::now_ms;
 
 /// Runs `chainz shell <chain>` for the `e` key and returns when it exits:
 /// an error, including a shell that did not exit cleanly, is shown in the

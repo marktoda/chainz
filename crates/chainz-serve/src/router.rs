@@ -37,7 +37,8 @@ use crate::classify::{self, Kind, Needs, Parsed};
 use crate::inspector::Inspector;
 use crate::metrics::{Metrics, Sample};
 use crate::state::{ChainState, EndpointState, Snapshot};
-use crate::{now_ms, summary};
+use crate::summary;
+use chainz_sys::{now_ms, now_secs};
 
 /// The longest a request waits out rate limits on one endpoint before a
 /// read shifts to the next.
@@ -352,13 +353,8 @@ impl Router {
         attempts: &mut u32,
     ) -> (Result<Answer, RpcError>, bool) {
         let record = |sample: Sample| {
-            self.metrics.record(
-                now_ms() / 1000,
-                &chain.name,
-                &endpoint.name,
-                method,
-                &sample,
-            );
+            self.metrics
+                .record(now_secs(), &chain.name, &endpoint.name, method, &sample);
         };
         // How long this request may wait for a bucket slot in all.
         let allowance = if has_next { MAX_WAIT } else { MAX_QUEUE };
@@ -381,7 +377,7 @@ impl Router {
                     // or tell the client how long to wait. Nothing was sent,
                     // so this is no upstream attempt.
                     self.metrics.record_refusal(
-                        now_ms() / 1000,
+                        now_secs(),
                         &chain.name,
                         &endpoint.name,
                         method,

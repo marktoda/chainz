@@ -61,17 +61,6 @@ pub(crate) fn legacy_home_config() -> io::Result<PathBuf> {
     Ok(home()?.join(".chainz.json"))
 }
 
-/// Create `dir` (and parents) and restrict it to the owner.
-pub fn ensure_private_dir(dir: &Path) -> io::Result<()> {
-    std::fs::create_dir_all(dir)?;
-    use std::os::unix::fs::PermissionsExt;
-    let meta = std::fs::metadata(dir)?;
-    if meta.permissions().mode() & 0o077 != 0 {
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
-    }
-    Ok(())
-}
-
 /// Expand a leading `~/` against `$HOME`.
 pub fn expand_tilde(path: &str) -> PathBuf {
     match path.strip_prefix("~/") {
@@ -82,151 +71,16 @@ pub fn expand_tilde(path: &str) -> PathBuf {
     }
 }
 
-/// Follow `path` through any symlinks to the file they finally name (which
-/// need not exist yet). A path that is not a symlink is returned as is.
-fn resolve_symlinks(path: &Path) -> io::Result<PathBuf> {
-    let mut current = path.to_path_buf();
-    // The kernel's own limit on nested links (Linux MAXSYMLINKS).
-    for _ in 0..40 {
-        match std::fs::symlink_metadata(&current) {
-            Ok(meta) if meta.file_type().is_symlink() => {
-                let target = std::fs::read_link(&current)?;
-                current = match current.parent() {
-                    Some(parent) if target.is_relative() => parent.join(target),
-                    _ => target,
-                };
-            }
-            Ok(_) => return Ok(current),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(current),
-            Err(e) => return Err(e),
-        }
-    }
-    Err(io::Error::other(format!(
-        "too many levels of symbolic links at {}",
-        path.display()
-    )))
-}
-
-/// Atomically and durably replace `path` with `contents`, mode 0600:
-/// temp file in the same directory, fsync, rename, fsync the directory.
+/// Read a private file with [`chainz_sys::read_private`], printing its
+/// permission warning to stderr. `Ok(None)` when the file does not exist.
 ///
-/// A symlinked `path` (a dotfiles checkout, say) stays a symlink: the file
-/// it points to is replaced instead. Only a directory chainz owns, the one
-/// holding a regular `path`, is created and restricted to the owner.
-pub fn write_atomically(path: &Path, contents: &[u8]) -> io::Result<()> {
-    use std::io::Write;
-    let target = resolve_symlinks(path)?;
-    let dir = target
-        .parent()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
-    if target == path {
-        ensure_private_dir(dir)?;
-    }
-    let name = target
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let mut temp = tempfile::Builder::new()
-        .prefix(&format!(".{name}."))
-        .tempfile_in(dir)?;
-    use std::os::unix::fs::PermissionsExt;
-    temp.as_file()
-        .set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    temp.write_all(contents)?;
-    temp.as_file().sync_all()?;
-    temp.persist(&target).map_err(|e| e.error)?;
-    std::fs::File::open(dir)?.sync_all()?;
-    Ok(())
-}
-
-/// Read a file and tighten its permissions to 0600 if group/other bits are
-/// set. `Ok(None)` when the file does not exist.
-///
-/// Only a file the current user owns is tightened, and a failed `chmod` is
-/// a warning on stderr, not an error: a read-only config (a home-manager
-/// symlink into `/nix/store`, say) must stay readable.
+/// Transitional (plan D2, stream S1): core should return the warning as a
+/// notice for the bin to print instead.
 pub fn read_private(path: &Path) -> io::Result<Option<String>> {
-    let uid = current_uid();
-    read_private_as(path, uid)
-}
-
-fn read_private_as(path: &Path, uid: u32) -> io::Result<Option<String>> {
-    use std::io::Read;
-    let mut file = match std::fs::File::open(path) {
-        Ok(file) => file,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e),
-    };
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
-    let meta = file.metadata()?;
-    if meta.permissions().mode() & 0o077 != 0
-        && meta.uid() == uid
-        && let Err(e) = file.set_permissions(std::fs::Permissions::from_mode(0o600))
-    {
-        eprintln!(
-            "chainz: warning: could not restrict {} to mode 0600: {e}",
-            path.display()
-        );
-    }
-    let mut text = String::new();
-    file.read_to_string(&mut text)?;
-    Ok(Some(text))
-}
-
-fn current_uid() -> u32 {
-    // SAFETY: getuid has no preconditions and cannot fail.
-    unsafe { libc::getuid() }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn writes_through_a_symlink_to_its_target() {
-        let dir = tempfile::tempdir().unwrap();
-        let real_dir = dir.path().join("dotfiles");
-        std::fs::create_dir(&real_dir).unwrap();
-        let real = real_dir.join("config.toml");
-        std::fs::write(&real, "old").unwrap();
-        let config_dir = dir.path().join("chainz");
-        std::fs::create_dir(&config_dir).unwrap();
-        let link = config_dir.join("config.toml");
-        std::os::unix::fs::symlink("../dotfiles/config.toml", &link).unwrap();
-
-        write_atomically(&link, b"new").unwrap();
-        assert!(
-            std::fs::symlink_metadata(&link)
-                .unwrap()
-                .file_type()
-                .is_symlink()
-        );
-        assert_eq!(std::fs::read_to_string(&real).unwrap(), "new");
-        assert_eq!(std::fs::read_to_string(&link).unwrap(), "new");
-
-        // A plain path is still replaced in place.
-        let plain = config_dir.join("secrets.toml");
-        write_atomically(&plain, b"s").unwrap();
-        assert_eq!(std::fs::read_to_string(&plain).unwrap(), "s");
-    }
-
-    #[test]
-    fn read_private_leaves_files_of_other_users_alone() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.toml");
-        std::fs::write(&path, "x").unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
-
-        // Someone else's file (a home-manager link into /nix/store, say)
-        // is read without a chmod.
-        let other = current_uid().wrapping_add(1);
-        assert_eq!(read_private_as(&path, other).unwrap().as_deref(), Some("x"));
-        assert_eq!(mode(&path), 0o644);
-
-        // Our own file is tightened.
-        assert_eq!(read_private(&path).unwrap().as_deref(), Some("x"));
-        assert_eq!(mode(&path), 0o600);
-    }
+    Ok(chainz_sys::read_private(path)?.map(|read| {
+        if let Some(warning) = read.warning {
+            eprintln!("chainz: warning: {warning}");
+        }
+        read.text
+    }))
 }

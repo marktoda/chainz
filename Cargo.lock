@@ -284,6 +284,7 @@ dependencies = [
  "chainz-core",
  "chainz-rpc",
  "chainz-serve",
+ "chainz-sys",
  "chainz-tui",
  "clap",
  "clap_complete",
@@ -308,13 +309,12 @@ dependencies = [
  "anyhow",
  "argon2",
  "base64 0.22.1",
+ "chainz-sys",
  "dirs",
- "fs2",
  "hex",
  "indexmap",
  "k256",
  "keyring",
- "libc",
  "rand 0.9.5",
  "rpassword",
  "serde",
@@ -334,6 +334,7 @@ version = "2.0.0"
 dependencies = [
  "bytes",
  "chainz-rpc",
+ "chainz-sys",
  "reqwest",
  "serde",
  "serde_json",
@@ -351,6 +352,7 @@ dependencies = [
  "bytes",
  "chainz-core",
  "chainz-rpc",
+ "chainz-sys",
  "hex",
  "http-body-util",
  "hyper",
@@ -363,12 +365,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "chainz-sys"
+version = "2.0.0"
+dependencies = [
+ "libc",
+ "tempfile",
+]
+
+[[package]]
 name = "chainz-tui"
 version = "2.0.0"
 dependencies = [
  "anyhow",
  "chainz-core",
  "chainz-rpc",
+ "chainz-sys",
  "ratatui",
  "serde",
  "serde_json",
@@ -881,16 +892,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
 dependencies = [
  "percent-encoding",
-]
-
-[[package]]
-name = "fs2"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
-dependencies = [
- "libc",
- "winapi",
 ]
 
 [[package]]

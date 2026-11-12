@@ -31,7 +31,6 @@ use crate::edit::{self, NewChain};
 use crate::extract::{self, VarTable};
 use crate::model::{Backend, Endpoint, Explorer, Signer};
 use crate::names;
-use crate::paths;
 use crate::secrets::{BUILTIN_VARS, SignerSecret};
 use crate::store::{StorePaths, WriteLock};
 use crate::template;
@@ -925,12 +924,12 @@ pub fn migrate_locked(paths: &StorePaths) -> Result<Option<Summary>> {
         .with_context(|| format!("failed to read {}", source.display()))?;
     let mut plan =
         plan(&text).with_context(|| format!("failed to migrate {}", source.display()))?;
-    paths::ensure_private_dir(&paths.dir)?;
+    chainz_sys::create_private_dir(&paths.dir)?;
     if !plan.secrets_toml.is_empty() {
-        paths::write_atomically(&paths.secrets, plan.secrets_toml.as_bytes())
+        chainz_sys::write_private(&paths.secrets, plan.secrets_toml.as_bytes())
             .with_context(|| format!("failed to write {}", paths.secrets.display()))?;
     }
-    paths::write_atomically(&paths.config, plan.config_toml.as_bytes())
+    chainz_sys::write_private(&paths.config, plan.config_toml.as_bytes())
         .with_context(|| format!("failed to write {}", paths.config.display()))?;
     let backup = backup_path(&source);
     std::fs::rename(&source, &backup).with_context(|| {

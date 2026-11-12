@@ -117,8 +117,8 @@ impl Runtime {
 
     /// Create the directory (and `forks/`) with mode 0700.
     pub fn ensure_dir(&self) -> io::Result<()> {
-        paths::ensure_private_dir(&self.forks_dir())?;
-        paths::ensure_private_dir(&self.dir)
+        chainz_sys::create_private_dir(&self.forks_dir())?;
+        chainz_sys::create_private_dir(&self.dir)
     }
 
     /// `serve.lock`.
@@ -149,35 +149,24 @@ impl Runtime {
     /// Whether a gateway holds `serve.lock`: one non-blocking `flock`
     /// attempt. A missing lock file means no gateway; nothing is created.
     pub fn serve_running(&self) -> bool {
-        use fs2::FileExt;
         let Ok(file) = std::fs::File::open(self.serve_lock_path()) else {
             return false;
         };
-        match file.try_lock_exclusive() {
-            Ok(()) => {
-                let _ = FileExt::unlock(&file);
+        match chainz_sys::try_lock(&file) {
+            Ok(true) => {
+                let _ = file.unlock();
                 false
             }
-            Err(_) => true,
+            Ok(false) | Err(_) => true,
         }
     }
 
     /// For the gateway: take `serve.lock` for the process lifetime.
     /// `Ok(None)` when another gateway already holds it.
     pub fn acquire_serve_lock(&self) -> io::Result<Option<ServeLock>> {
-        use fs2::FileExt;
         self.ensure_dir()?;
-        let mut options = std::fs::OpenOptions::new();
-        options.read(true).write(true).create(true).truncate(false);
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-        let file = options.open(self.serve_lock_path())?;
-        match file.try_lock_exclusive() {
-            Ok(()) => Ok(Some(ServeLock { _file: file })),
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(None),
-            Err(e) if e.raw_os_error() == fs2::lock_contended_error().raw_os_error() => Ok(None),
-            Err(e) => Err(e),
-        }
+        let file = chainz_sys::open_private(&self.serve_lock_path())?;
+        Ok(chainz_sys::try_lock(&file)?.then_some(ServeLock { _file: file }))
     }
 
     /// Read `serve.json`; `Ok(None)` if absent.
@@ -259,7 +248,7 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> io::Result<Option<T>>
 
 fn write_json<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
     let bytes = serde_json::to_vec_pretty(value).map_err(io::Error::other)?;
-    paths::write_atomically(path, &bytes)
+    chainz_sys::write_private(path, &bytes)
 }
 
 fn remove_if_exists(path: &Path) -> io::Result<()> {

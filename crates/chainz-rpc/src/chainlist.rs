@@ -3,7 +3,7 @@
 //! Cached as `<cache_dir>/chains.json` for 24 hours; a stale cache is used
 //! when the registry can't be reached.
 
-use std::io::{self, Write};
+use std::io;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
@@ -185,14 +185,9 @@ fn parse(bytes: &[u8]) -> Result<Vec<ChainlistEntry>, ChainlistError> {
         .collect())
 }
 
+/// Mode 0600 in a 0700 directory, atomically and durably.
 fn write_cache(cache_dir: &Path, bytes: &[u8]) -> io::Result<()> {
-    std::fs::create_dir_all(cache_dir)?;
-    let mut tmp = tempfile::NamedTempFile::new_in(cache_dir)?;
-    tmp.write_all(bytes)?;
-    tmp.as_file().sync_all()?;
-    tmp.persist(cache_dir.join(CACHE_FILE))
-        .map_err(|e| e.error)?;
-    Ok(())
+    chainz_sys::write_private(&cache_dir.join(CACHE_FILE), bytes)
 }
 
 #[cfg(test)]

@@ -8,6 +8,7 @@ means changing every caller in the same commit.
 
 | Crate | Role | Async / network |
 |---|---|---|
+| `chainz-sys` | OS primitives: private dirs and files, atomic writes, `flock`, file stamps, the clock (no chainz dependencies) | none |
 | `chainz-core` | config, secrets, migration, resolver, tokenizer, context, labels, runtime registry | none (sync; no tokio, reqwest or hyper) |
 | `chainz-rpc` | JSON-RPC client, probes, ranking, health history, `Upstream`, control protocol, chainlist | tokio + reqwest (rustls) |
 | `chainz-serve` | gateway: `run(Options)`, embeddable `Gateway::start(GatewayConfig)` | hyper 1 + tokio (multi-thread) |

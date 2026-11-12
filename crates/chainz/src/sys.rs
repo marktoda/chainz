@@ -5,20 +5,12 @@ use anyhow::{Context, Result};
 use std::fs::File;
 use std::path::Path;
 
-/// Open a log for appending (mode 0600 when created), optionally emptying
-/// it first.
-pub fn open_log(path: &Path, truncate: bool) -> Result<File> {
-    let mut options = std::fs::OpenOptions::new();
-    options.append(true).create(true);
-    use std::os::unix::fs::OpenOptionsExt;
-    options.mode(0o600);
-    let file = options
-        .open(path)
-        .with_context(|| format!("unable to open {}", path.display()))?;
-    if truncate {
-        file.set_len(0)?;
-    }
-    Ok(file)
+pub use chainz_sys::LogMode;
+
+/// Open a private log (mode 0600 when created).
+pub fn open_log(path: &Path, mode: LogMode) -> Result<File> {
+    chainz_sys::open_private_log(path, mode)
+        .with_context(|| format!("unable to open {}", path.display()))
 }
 
 /// Start `command` in a new session (`setsid`): no controlling terminal,
@@ -69,20 +61,5 @@ mod tests {
             assert!(signal_process(pid, 0).is_err(), "{pid}");
         }
         assert!(signal_process(std::process::id(), 0).is_ok());
-    }
-
-    #[test]
-    fn logs_are_private_and_appended() {
-        use std::io::Write;
-        use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("x.log");
-        open_log(&path, false).unwrap().write_all(b"a").unwrap();
-        open_log(&path, false).unwrap().write_all(b"b").unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "ab");
-        open_log(&path, true).unwrap().write_all(b"c").unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "c");
-        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600);
     }
 }

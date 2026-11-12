@@ -90,9 +90,9 @@ fn detach(args: &ServeArgs) -> Result<i32> {
     use std::process::{Command, Stdio};
     let runtime = runtime()?;
     let state = paths::state_dir().context("unable to find the state directory")?;
-    paths::ensure_private_dir(&state)?;
+    chainz_sys::create_private_dir(&state)?;
     let log_path = state.join("serve.log");
-    let log = sys::open_log(&log_path, false)?;
+    let log = sys::open_log(&log_path, sys::LogMode::Append)?;
 
     let exe = std::env::current_exe().context("can't find the chainz executable")?;
     let mut command = Command::new(exe);

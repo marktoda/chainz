@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Poll;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use bytes::Bytes;
@@ -32,12 +32,13 @@ use tokio::net::{TcpListener, UnixListener};
 use tokio::sync::{broadcast, watch};
 use tokio::task::{JoinHandle, JoinSet};
 
+use crate::auth;
 use crate::http::{self, BoxBody, is_json, json, plain, retry_after_secs};
 use crate::inspector::Inspector;
 use crate::metrics::Summary;
 use crate::router::{Reply, Router};
 use crate::state::Snapshot;
-use crate::{auth, now_ms};
+use chainz_sys::{FileStamp, now_secs};
 
 /// The default gateway port (8545 stays free for anvil).
 pub const DEFAULT_PORT: u16 = 18545;
@@ -270,7 +271,7 @@ impl Gateway {
             pid: std::process::id(),
             port,
             token: shared.token.clone(),
-            started_at: now_ms() / 1000,
+            started_at: now_secs(),
             version: env!("CARGO_PKG_VERSION").to_string(),
         };
         if let Err(error) = config.runtime.write_serve_info(&info) {
@@ -355,7 +356,7 @@ impl Gateway {
 
     /// Totals over the last minute.
     pub fn summary(&self) -> Summary {
-        self.shared.router.metrics.summary(now_ms() / 1000)
+        self.shared.router.metrics.summary(now_secs())
     }
 
     /// Notices (reloads, warnings) as they happen.
@@ -523,7 +524,7 @@ async fn control(
             serde_json::to_vec(&shared.status()).unwrap_or_default(),
         ),
         (&Method::GET, METRICS_PATH) => {
-            let snapshot = shared.router.metrics.snapshot(now_ms() / 1000);
+            let snapshot = shared.router.metrics.snapshot(now_secs());
             json(
                 StatusCode::OK,
                 serde_json::to_vec(&snapshot).unwrap_or_default(),
@@ -646,7 +647,7 @@ async fn probe_loop(
             _ = ticker.tick() => {}
             _ = stopped.changed() => return,
         }
-        let now = now_ms() / 1000;
+        let now = now_secs();
         let snapshot = shared.router.snapshot();
         let mut round = JoinSet::new();
         // Each probed chain's best head this round.
@@ -698,46 +699,20 @@ async fn probe_loop(
     }
 }
 
-/// Enough of a file's metadata to see that it changed. Config writes are
-/// atomic renames, so the inode changes even when the size and the
-/// (coarse-grained) modification time come out the same.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Stamp {
-    modified: Option<SystemTime>,
-    len: u64,
-    dev: u64,
-    ino: u64,
-    ctime: (i64, i64),
-}
-
-impl Stamp {
-    fn of(path: &Path) -> Option<Stamp> {
-        use std::os::unix::fs::MetadataExt;
-        let meta = std::fs::metadata(path).ok()?;
-        Some(Stamp {
-            modified: meta.modified().ok(),
-            len: meta.len(),
-            dev: meta.dev(),
-            ino: meta.ino(),
-            ctime: (meta.ctime(), meta.ctime_nsec()),
-        })
-    }
-}
-
 /// The files the watcher follows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Stamps {
-    config: Option<Stamp>,
-    secrets: Option<Stamp>,
-    health: Option<Stamp>,
+    config: Option<FileStamp>,
+    secrets: Option<FileStamp>,
+    health: Option<FileStamp>,
 }
 
 impl Stamps {
     fn take(paths: &StorePaths, state_dir: Option<&Path>) -> Stamps {
         Stamps {
-            config: Stamp::of(&paths.config),
-            secrets: Stamp::of(&paths.secrets),
-            health: state_dir.and_then(|dir| Stamp::of(&dir.join("health.json"))),
+            config: FileStamp::of(&paths.config),
+            secrets: FileStamp::of(&paths.secrets),
+            health: state_dir.and_then(|dir| FileStamp::of(&dir.join("health.json"))),
         }
     }
 }
@@ -768,29 +743,5 @@ async fn watch_loop(
             let _ = tokio::task::spawn_blocking(move || snapshot.refresh_capabilities(&dir)).await;
         }
         seen = now;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_same_size_atomic_rewrite_changes_the_stamp() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.toml");
-        std::fs::write(&path, "a = 1\n").unwrap();
-        let before = Stamp::of(&path).unwrap();
-        // Same length, same modification time: only the inode (and ctime)
-        // tell the files apart.
-        let tmp = dir.path().join("config.toml.tmp");
-        std::fs::write(&tmp, "a = 2\n").unwrap();
-        let file = std::fs::File::options().write(true).open(&tmp).unwrap();
-        file.set_modified(before.modified.unwrap()).unwrap();
-        drop(file);
-        std::fs::rename(&tmp, &path).unwrap();
-        let after = Stamp::of(&path).unwrap();
-        assert_eq!((after.len, after.modified), (before.len, before.modified));
-        assert_ne!(after, before);
     }
 }

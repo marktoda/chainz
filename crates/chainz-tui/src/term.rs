@@ -24,11 +24,12 @@ use ratatui::crossterm::{execute, queue};
 
 use crate::app::{Action, App};
 use crate::data::{Engine, Shared, Tuning};
-use crate::model::{State, Update, now_ms};
+use crate::model::{State, Update};
 use crate::plan::Plan;
 use crate::ui::theme::Theme;
 use crate::ui::{self, Ctx};
 use crate::{Options, fmt, load_store};
+use chainz_sys::now_ms;
 
 /// How long to wait for a key before looking at worker updates.
 const POLL: Duration = Duration::from_millis(50);

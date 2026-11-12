@@ -19,6 +19,7 @@ chainz-core.workspace = true
 chainz-rpc.workspace = true
 chainz-serve.workspace = true
 chainz-tui.workspace = true
+chainz-sys.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

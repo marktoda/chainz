@@ -8,6 +8,7 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
+chainz-sys.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -15,11 +16,11 @@ tokio.workspace = true
 reqwest.workspace = true
 bytes.workspace = true
 url.workspace = true
-tempfile.workspace = true
 
 [features]
 # `control::MockControlServer`, for tests of control clients.
 mock = []
 
 [dev-dependencies]
+tempfile.workspace = true
 chainz-rpc = { path = ".", features = ["mock"] }

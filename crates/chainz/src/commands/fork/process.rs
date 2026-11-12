@@ -219,7 +219,7 @@ fn read_pids(runtime: &Runtime, name: &str) -> Option<Pids> {
 /// Update the sidecar (atomic).
 pub fn write_pids(runtime: &Runtime, name: &str, pids: &Pids) -> Result<()> {
     let bytes = serde_json::to_vec(pids)?;
-    paths::write_atomically(&pids_path(runtime, name), &bytes)
+    chainz_sys::write_private(&pids_path(runtime, name), &bytes)
         .context("unable to write the fork's pid file")
 }
 
@@ -340,7 +340,7 @@ pub fn log_path(name: &str) -> Result<PathBuf> {
     let dir = paths::state_dir()
         .context("unable to find the state directory")?
         .join("forks");
-    paths::ensure_private_dir(&dir).context("unable to create the fork log directory")?;
+    chainz_sys::create_private_dir(&dir).context("unable to create the fork log directory")?;
     Ok(dir.join(format!("{name}.log")))
 }
 

@@ -1,11 +1,17 @@
 # Releasing chainz
 
 Releases are intentionally tag-gated. Pushing a version tag publishes the
-workspace's five crates (`chainz-core`, `chainz-rpc`, `chainz-serve`,
-`chainz-tui` and `chainz`) and creates a GitHub release, but only after the
-release candidate passes its tests and package-content check. All five share
+workspace's six crates and creates a GitHub release, but only after the
+release candidate passes its tests and package-content check. All six share
 the one version in the root `Cargo.toml`, and `cargo publish --workspace`
-uploads them in dependency order.
+uploads them in dependency order:
+
+1. `chainz-sys` (no workspace dependencies)
+2. `chainz-core` (sys)
+3. `chainz-rpc` (sys)
+4. `chainz-serve` (sys, core, rpc)
+5. `chainz-tui` (sys, core, rpc)
+6. `chainz` (all of the above)
 
 ## One-time repository setup
 
@@ -20,7 +26,7 @@ uploads them in dependency order.
    so CI is where the fork tests run.
 2. Replace `Unreleased` in `CHANGELOG.md` with the release date.
 3. Set the intended version in the root `Cargo.toml`, in both
-   `[workspace.package]` and the four `[workspace.dependencies]` path
+   `[workspace.package]` and the five `[workspace.dependencies]` path
    entries, then run `cargo update -w` so `Cargo.lock` records it.
 4. Run `cargo fmt --all -- --check`,
    `cargo clippy --locked --workspace --all-targets -- -D warnings`,

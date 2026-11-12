@@ -78,17 +78,11 @@ pub struct WriteLock(std::fs::File);
 impl WriteLock {
     /// Block until the lock at `paths.lock` is held.
     pub fn acquire(paths: &StorePaths) -> Result<Self> {
-        use fs2::FileExt;
-        paths::ensure_private_dir(&paths.dir)
+        chainz_sys::create_private_dir(&paths.dir)
             .with_context(|| format!("failed to create {}", paths.dir.display()))?;
-        let mut options = std::fs::OpenOptions::new();
-        options.read(true).write(true).create(true).truncate(false);
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-        let file = options
-            .open(&paths.lock)
+        let file = chainz_sys::open_private(&paths.lock)
             .with_context(|| format!("failed to open {}", paths.lock.display()))?;
-        file.lock_exclusive()
+        file.lock()
             .with_context(|| format!("failed to lock {}", paths.lock.display()))?;
         Ok(Self(file))
     }
@@ -96,7 +90,7 @@ impl WriteLock {
 
 impl Drop for WriteLock {
     fn drop(&mut self) {
-        let _ = fs2::FileExt::unlock(&self.0);
+        let _ = self.0.unlock();
     }
 }
 
@@ -329,11 +323,11 @@ impl Chainz {
         validate::validate(&config, Some(&secrets))
             .context("refusing to write an invalid config")?;
         if new_secrets != secrets_orig {
-            paths::write_atomically(&self.paths.secrets, new_secrets.as_bytes())
+            chainz_sys::write_private(&self.paths.secrets, new_secrets.as_bytes())
                 .with_context(|| format!("failed to write {}", self.paths.secrets.display()))?;
         }
         if new_config != config_orig || config_text.is_none() {
-            paths::write_atomically(&self.paths.config, new_config.as_bytes())
+            chainz_sys::write_private(&self.paths.config, new_config.as_bytes())
                 .with_context(|| format!("failed to write {}", self.paths.config.display()))?;
         }
         self.config = config;

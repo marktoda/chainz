@@ -17,7 +17,7 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ExitStatus};
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 /// Fork ports are allocated from here upward.
 const FIRST_PORT: u16 = 8601;
@@ -129,12 +129,6 @@ fn summary_line(record: &ForkRecord, block: u64) -> String {
     )
 }
 
-pub(super) fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
-}
-
 pub(super) fn anvil_target(chain_id: u64, port: u16) -> Result<Target> {
     Target::new(chain_id, "anvil", &format!("http://127.0.0.1:{port}"), &[])
         .map_err(|e| anyhow!("{e}"))
@@ -203,7 +197,7 @@ fn detach(runtime: &Runtime, name: &str) -> Result<i32> {
     use std::io::Read;
     use std::process::{Command, Stdio};
     let log_path = process::log_path(name)?;
-    let log = sys::open_log(&log_path, true)?;
+    let log = sys::open_log(&log_path, sys::LogMode::Truncate)?;
     let exe = std::env::current_exe().context("unable to find the chainz binary")?;
     let mut command = Command::new(exe);
     command
@@ -341,7 +335,13 @@ async fn start_fork(supervisor: &mut Supervisor<'_>, job: &Job<'_>) -> Result<Ru
         .context("unable to start the fork proxy")?;
 
     let log_path = process::log_path(name)?;
-    let log = sys::open_log(&log_path, !job.detached)?;
+    // Detached, `detach` already emptied the log before starting us.
+    let mode = if job.detached {
+        sys::LogMode::Append
+    } else {
+        sys::LogMode::Truncate
+    };
+    let log = sys::open_log(&log_path, mode)?;
     let chain_id = args.chain_id.unwrap_or(chain.id);
     let port = spawn_on_free_port(supervisor, job, &proxy.url(), &log, &log_path).await?;
 
@@ -364,7 +364,7 @@ async fn start_fork(supervisor: &mut Supervisor<'_>, job: &Job<'_>) -> Result<Ru
         parent: parent.to_string(),
         chain_id,
         fork_block: args.block,
-        started_at: now_secs(),
+        started_at: chainz_sys::now_secs(),
     };
     runtime
         .write_fork(&record)

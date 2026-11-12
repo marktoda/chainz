@@ -2,9 +2,9 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fs;
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use crate::capabilities::Capabilities;
 use crate::error::ErrorClass;
@@ -31,7 +31,7 @@ impl HealthSample {
     /// A sample from a probe result, timestamped now.
     pub fn from_probe(result: &ProbeResult) -> Self {
         HealthSample {
-            at_ms: now_ms(),
+            at_ms: chainz_sys::now_ms(),
             latency_ms: u32::try_from(result.latency.as_millis()).unwrap_or(u32::MAX),
             head: result.head,
             error: result.error.as_ref().map(|e| e.class()),
@@ -176,8 +176,9 @@ impl HealthStore {
         let Some(dir) = &self.dir else {
             return Err(io::Error::other("the health store has no state directory"));
         };
-        create_private_dir(dir)?;
-        let lock = open_private(&dir.join(LOCK_NAME))?;
+        chainz_sys::create_private_dir(dir)?;
+        // Held until `lock` closes at the end of this function.
+        let lock = chainz_sys::open_private(&dir.join(LOCK_NAME))?;
         lock.lock()?;
         let path = dir.join(FILE_NAME);
         let mut merged = read_entries(&path)?;
@@ -198,9 +199,7 @@ impl HealthStore {
                 .collect(),
         };
         let json = serde_json::to_vec_pretty(&file).map_err(io::Error::other)?;
-        let result = write_atomic(dir, &path, &json);
-        let _ = lock.unlock();
-        result
+        chainz_sys::write_private(&path, &json)
     }
 
     fn entry(&self, chain_id: u64, endpoint: &str) -> Option<&Entry> {
@@ -253,42 +252,6 @@ fn read_entries(path: &Path) -> io::Result<BTreeMap<Key, Entry>> {
         );
     }
     Ok(entries)
-}
-
-fn create_private_dir(dir: &Path) -> io::Result<()> {
-    let mut builder = fs::DirBuilder::new();
-    builder.recursive(true);
-    use std::os::unix::fs::DirBuilderExt;
-    builder.mode(0o700);
-    builder.create(dir)
-}
-
-fn open_private(path: &Path) -> io::Result<fs::File> {
-    let mut opts = fs::OpenOptions::new();
-    opts.create(true).truncate(false).read(true).write(true);
-    use std::os::unix::fs::OpenOptionsExt;
-    opts.mode(0o600);
-    opts.open(path)
-}
-
-fn write_atomic(dir: &Path, path: &Path, data: &[u8]) -> io::Result<()> {
-    // NamedTempFile is created with mode 0600 on unix.
-    let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
-    tmp.write_all(data)?;
-    tmp.as_file().sync_all()?;
-    tmp.persist(path).map_err(|e| e.error)?;
-    if let Ok(d) = fs::File::open(dir) {
-        let _ = d.sync_all();
-    }
-    Ok(())
-}
-
-/// Unix time in milliseconds.
-pub(crate) fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

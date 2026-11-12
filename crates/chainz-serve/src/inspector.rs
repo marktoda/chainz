@@ -56,10 +56,8 @@ impl Inspector {
         let mut writer = None;
         let mut sender = None;
         if let Some(path) = log {
-            let mut options = tokio::fs::OpenOptions::new();
-            options.append(true).create(true);
-            options.mode(0o600);
-            let file = options.open(path).await?;
+            let file = chainz_sys::open_private_log(path, chainz_sys::LogMode::Append)?;
+            let file = tokio::fs::File::from_std(file);
             let (tx, rx) = mpsc::channel(queue);
             sender = Some(tx);
             writer = Some(tokio::spawn(write_log(file, rx, dropped.clone(), notices)));

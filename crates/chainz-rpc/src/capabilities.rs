@@ -5,7 +5,6 @@ use serde_json::{Value, json};
 use crate::client::{BlockId, RpcClient};
 use crate::error::RpcError;
 use crate::hex;
-use crate::history::now_ms;
 use crate::target::Target;
 
 /// The `eth_getLogs` block ranges tried, largest first.
@@ -71,7 +70,7 @@ impl Capabilities {
 pub async fn probe_capabilities(client: &RpcClient, target: &Target) -> Capabilities {
     let mut caps = Capabilities {
         websocket: target.is_websocket(),
-        probed_at: Some(now_ms() / 1000),
+        probed_at: Some(chainz_sys::now_secs()),
         ..Capabilities::default()
     };
     if caps.websocket {

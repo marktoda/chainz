@@ -27,7 +27,7 @@ mod summary;
 
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use chainz_core::runtime::Runtime;
@@ -37,13 +37,6 @@ use tokio::signal::unix::{SignalKind, signal};
 pub use gateway::{DEFAULT_PORT, Gateway, GatewayConfig};
 pub use metrics::Summary;
 pub use pinned::PinnedProxy;
-
-/// Unix time in milliseconds.
-pub(crate) fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
-}
 
 /// Options for [`run`].
 #[derive(Debug, Clone)]

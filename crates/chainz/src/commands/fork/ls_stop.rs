@@ -1,13 +1,14 @@
 //! `fork ls` and `fork stop`.
 
 use super::process;
-use super::start::{anvil_target, now_secs};
+use super::start::anvil_target;
 use crate::commands::runtime;
 use crate::{net, view};
 use anyhow::{Context as _, Result, bail};
 use chainz_core::fmt::{group, uptime};
 use chainz_core::runtime::ForkRecord;
 use chainz_rpc::RpcClient;
+use chainz_sys::now_secs;
 use serde::Serialize;
 use std::time::Duration;
 
