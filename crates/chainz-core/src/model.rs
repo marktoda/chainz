@@ -188,6 +188,12 @@ impl Endpoint {
 }
 
 impl Endpoint {
+    /// Whether two endpoint URLs are the same endpoint: equal up to a
+    /// trailing `/`.
+    pub fn same_url(a: &str, b: &str) -> bool {
+        a.trim_end_matches('/') == b.trim_end_matches('/')
+    }
+
     /// The part of [`Endpoint::check_url`] every stored URL must pass
     /// (validation applies it to the config): non-empty, no whitespace,
     /// well-formed `${NAME}` templates.
@@ -575,13 +581,12 @@ impl Chain {
         }
     }
 
-    /// The endpoint at `url`, if this chain has one. URLs that differ only
-    /// by a trailing `/` are the same endpoint.
+    /// The endpoint at `url`, if this chain has one
+    /// ([`Endpoint::same_url`]).
     pub fn endpoint_at(&self, url: &str) -> Option<&str> {
-        let url = url.trim_end_matches('/');
         self.rpcs
             .iter()
-            .find(|(_, e)| e.url.trim_end_matches('/') == url)
+            .find(|(_, e)| Endpoint::same_url(&e.url, url))
             .map(|(name, _)| name.as_str())
     }
 
