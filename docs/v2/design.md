@@ -294,8 +294,8 @@ One `rpc` module gives every feature the same client, the same idea of endpoint 
 
 **Lifecycle.** It runs in the foreground with a live one-line summary, or with `--detach` as a background process.
 
-- **Liveness:** the gateway holds an exclusive `flock` on `serve.lock` for its whole life. `exec` tries the lock without blocking. If it gets the lock, no gateway is running and `exec` goes direct. This replaces a PID check, which PID reuse can fool.
-- **Config changes:** the gateway watches `config.toml` and reloads on change, so `chainz chain set --rpc` takes effect immediately.
+- **Liveness:** the gateway holds an exclusive `flock` on `serve.lock` for its whole life. `exec` probes it with one shared, non-blocking `flock` that it releases at once. If the probe gets the lock, no gateway is running and `exec` goes direct. A gateway starting at that moment waits out the probe instead of failing. This replaces a PID check, which PID reuse can fool.
+- **Config changes:** the gateway watches `config.toml` and `secrets.toml` and reloads on change (also on SIGHUP or a control `reload`), so `chainz chain set --rpc` takes effect immediately.
 - **Shutdown:** `serve stop` sends SIGTERM, and in-flight requests drain for up to 5 seconds (the same drain as a fork's proxy).
 - **Limits and errors:** both proxies take request bodies up to 64 MiB and answer an upstream failure the same way: 429 with `Retry-After` and JSON-RPC code -32005 for a rate limit, 504 for a timeout, the upstream's own 4xx or 5xx, else 502, with an error body that never names the URL.
 
