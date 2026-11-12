@@ -1,6 +1,6 @@
 //! `update [CHAIN]`: one patch to one chain, from flags or, with none on a
-//! TTY, from the v1-style menu. Either way it is one
-//! `ChainEdit` applied in one transaction.
+//! TTY, from a menu. Either way it is one `ChainEdit` applied in one
+//! transaction.
 
 use crate::cli::{UpdateArgs, usage_error};
 use crate::load::open;
@@ -139,7 +139,7 @@ const MENU: [&str; 6] = ["RPC", "Signer", "Explorer", "Name", "Aliases", "Done"]
 /// The index of `Done` in [`MENU`].
 const DONE: usize = MENU.len() - 1;
 
-/// The v1-style menu over chain `name`: each pick edits one field of the
+/// The menu over chain `name`: each pick edits one field of the
 /// patch, and `Done` returns it (nothing is written until then).
 ///
 /// Every picker starts on the field's value (pending, else current), so

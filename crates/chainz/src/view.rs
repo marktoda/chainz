@@ -4,9 +4,10 @@
 //! Redaction happens when a view is built, so renderers cannot leak raw
 //! secrets: `chainz_core::redact` masks only credential-shaped parts
 //! (`${VAR}` templates, hosts and ordinary paths print as they are).
-//! `--reveal` here shows raw config values (templates unexpanded). Resolved secret values are printed only where the user
-//! asks for them: `var ls --reveal`, `exec`'s
-//! environment (`env`, `exec` and its subshell, `exec --expose-key`), and `top --reveal`.
+//! `--reveal` here shows raw config values (templates unexpanded).
+//! Resolved secret values are printed only where the user asks for them:
+//! `var ls --reveal`, `exec`'s environment (`env`, `exec` and its
+//! subshell, `exec --expose-key`), and `top --reveal`.
 
 use crate::ui;
 use chainz_core::labels::{LabelIndex, LabelSource};

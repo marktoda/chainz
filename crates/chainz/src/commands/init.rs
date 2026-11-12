@@ -2,9 +2,9 @@
 //!
 //! `init` on a terminal composes the other commands' flows: chains (the
 //! `add` flow), a signer (the `signer add` flow, which attaches it to
-//! those chains), an Etherscan key (`update --explorer etherscan
-//! --api-key`), and a default chain. Off a terminal it prints the quick
-//! start.
+//! those chains), an Etherscan key (attached to every chain Etherscan
+//! covers that has no explorer), and a default chain (as `use` sets it).
+//! Off a terminal it prints the quick start.
 
 use super::{chain, signer};
 use crate::cli::{AddArgs, SignerAddArgs};

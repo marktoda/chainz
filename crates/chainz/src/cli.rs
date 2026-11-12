@@ -1,8 +1,9 @@
-//! The whole CLI surface (clap definitions only). Handlers live in
-//! `commands/`, one module per command; each takes its `…Args` struct.
-//! Conversions to core options happen here, or in the handler when they
-//! need I/O (reading a key from stdin, say). Dynamic completion is
-//! declared on the arguments (`add = complete::…`, see `complete`).
+//! The whole CLI surface: clap definitions, and the help built from them.
+//! Handlers live in `commands/`, one module per command; each takes its
+//! `…Args` struct. Conversions to core options that need nothing else
+//! happen here (`ExecOptions::from`); the rest are the handler's (an
+//! `update` patch, a key read from stdin). Dynamic completion is declared
+//! on the arguments (`add = complete::…`, see `complete`).
 //! [`usage_error`] words a handler's own usage errors the way clap does.
 
 use crate::complete;
