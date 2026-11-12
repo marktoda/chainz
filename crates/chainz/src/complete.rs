@@ -1,4 +1,4 @@
-//! Dynamic shell completion: `COMPLETE=<shell> chainz -- <words…>` prints
+//! Dynamic shell completion: `CHAINZ_COMPLETE=<shell> chainz -- <words…>` prints
 //! candidates, and `chainz completions <shell>` prints the loader that
 //! wires a shell to that protocol (clap_complete's `CompleteEnv`).
 //!
@@ -29,7 +29,7 @@ use std::ffi::OsStr;
 use std::io::Write;
 
 /// The variable that switches the binary into completion mode.
-pub const VAR: &str = "COMPLETE";
+pub const VAR: &str = "CHAINZ_COMPLETE";
 
 /// Whether the shell is asking for completions (the only hot-path cost).
 pub fn requested() -> bool {
@@ -343,7 +343,7 @@ fn describe(label: &chainz_core::labels::Label) -> String {
 // Context: the command line and the config, read without side effects.
 
 /// The words before the one being completed, starting with the binary.
-/// The shell passes them after `--` (`COMPLETE=zsh chainz -- chainz …`),
+/// The shell passes them after `--` (`CHAINZ_COMPLETE=zsh chainz -- chainz …`),
 /// with the cursor word's index in `_CLAP_COMPLETE_INDEX` (bash, zsh,
 /// elvish) or last (fish, powershell).
 fn preceding() -> Vec<String> {

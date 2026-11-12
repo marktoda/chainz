@@ -1,4 +1,4 @@
-//! End-to-end tests for dynamic shell completion: the `COMPLETE=<shell>`
+//! End-to-end tests for dynamic shell completion: the `CHAINZ_COMPLETE=<shell>`
 //! protocol (as the loaders drive it) and `chainz completions <shell>`.
 //!
 //! As in `cli.rs`, every invocation runs inside a sandbox (see `common`).
@@ -67,7 +67,7 @@ fn fish(sb: &Sandbox, words: &[&str]) -> Vec<String> {
 fn fish_all(sb: &Sandbox, words: &[&str]) -> Vec<String> {
     let out = sb
         .process()
-        .env("COMPLETE", "fish")
+        .env("CHAINZ_COMPLETE", "fish")
         .arg("--")
         .arg("chainz")
         .args(words)
@@ -90,7 +90,7 @@ fn fish_all(sb: &Sandbox, words: &[&str]) -> Vec<String> {
 fn bash(sb: &Sandbox, words: &[&str], index: usize) -> Vec<String> {
     let out = sb
         .process()
-        .env("COMPLETE", "bash")
+        .env("CHAINZ_COMPLETE", "bash")
         .env("_CLAP_COMPLETE_INDEX", index.to_string())
         .env("_CLAP_COMPLETE_COMP_TYPE", "9")
         .env("_CLAP_IFS", "\n")
@@ -202,7 +202,7 @@ fn rpc_follows_chainz_chain_when_no_chain_is_typed() {
     let sb = fixture();
     let out = sb
         .process()
-        .env("COMPLETE", "fish")
+        .env("CHAINZ_COMPLETE", "fish")
         .env("CHAINZ_CHAIN", "base")
         .args(["--", "chainz", "exec", "--rpc", ""])
         .output()
@@ -235,7 +235,7 @@ fn completion_output_never_contains_secret_values() {
     let sb = fixture();
     let out = sb
         .process()
-        .env("COMPLETE", "fish")
+        .env("CHAINZ_COMPLETE", "fish")
         .args(["--", "chainz", "var", "get", ""])
         .output()
         .unwrap();
@@ -308,7 +308,7 @@ fn exec_words_without_at_complete_files() {
     let out = sb
         .process()
         .current_dir(sb.root())
-        .env("COMPLETE", "fish")
+        .env("CHAINZ_COMPLETE", "fish")
         .args(["--", "chainz", "exec", "base", "--", "bash", "scr"])
         .output()
         .unwrap();
@@ -325,7 +325,7 @@ fn bash_and_zsh_protocols_use_the_cursor_index() {
     );
     let out = sb
         .process()
-        .env("COMPLETE", "zsh")
+        .env("CHAINZ_COMPLETE", "zsh")
         .env("_CLAP_COMPLETE_INDEX", "4")
         .env("_CLAP_IFS", "\n")
         .args(["--", "chainz", "exec", "base", "--rpc", "q"])
@@ -404,14 +404,17 @@ fn completions_print_a_dynamic_loader() {
         assert!(out.status.success(), "{shell}: {}", stderr(&out));
         let script = String::from_utf8(out.stdout).unwrap();
         assert!(script.contains(marker), "{shell} loader:\n{script}");
-        assert!(script.contains("COMPLETE"), "{shell} loader:\n{script}");
+        assert!(
+            script.contains("CHAINZ_COMPLETE"),
+            "{shell} loader:\n{script}"
+        );
     }
 }
 
 #[test]
 fn complete_env_without_words_prints_the_loader() {
     let sb = Sandbox::new();
-    let out = sb.process().env("COMPLETE", "zsh").output().unwrap();
+    let out = sb.process().env("CHAINZ_COMPLETE", "zsh").output().unwrap();
     assert!(out.status.success());
     assert!(
         String::from_utf8(out.stdout)
@@ -425,7 +428,7 @@ fn unknown_shell_fails_silently() {
     let sb = fixture();
     let out = sb
         .process()
-        .env("COMPLETE", "tcsh")
+        .env("CHAINZ_COMPLETE", "tcsh")
         .args(["--", "chainz", "exec", ""])
         .output()
         .unwrap();
@@ -438,9 +441,23 @@ fn complete_zero_is_not_completion_mode() {
     let sb = fixture();
     let out = sb
         .process()
-        .env("COMPLETE", "0")
+        .env("CHAINZ_COMPLETE", "0")
         .args(["exec", "eth", "--", "true"])
         .output()
         .unwrap();
     assert!(out.status.success(), "{}", stderr(&out));
+}
+
+#[test]
+fn a_generic_complete_variable_is_ignored() {
+    // Other tools use `COMPLETE`; a stray one must not hijack `exec`.
+    let sb = fixture();
+    let out = sb
+        .process()
+        .env("COMPLETE", "zsh")
+        .args(["exec", "eth", "--", "true"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(out.stdout.is_empty());
 }

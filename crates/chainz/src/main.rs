@@ -16,7 +16,7 @@ mod view;
 use clap::Parser;
 
 fn main() {
-    // Shell completion requests (`COMPLETE=zsh chainz -- …`): one env
+    // Shell completion requests (`CHAINZ_COMPLETE=zsh chainz -- …`): one env
     // lookup on every other run.
     if complete::requested() {
         complete::run();
