@@ -195,14 +195,9 @@ impl Endpoint {
     }
 
     /// The part of [`Endpoint::check_url`] every stored URL must pass
-    /// (validation applies it to the config): non-empty, no whitespace,
-    /// well-formed `${NAME}` templates.
-    pub fn check_url_text(url: &str) -> anyhow::Result<()> {
-        if url.trim().is_empty() || url.chars().any(char::is_whitespace) {
-            anyhow::bail!("the endpoint URL is empty or malformed");
-        }
-        crate::template::references(url)?;
-        Ok(())
+    /// (validation applies it to the config): see [`check_stored_url`].
+    pub(crate) fn check_url_text(url: &str) -> anyhow::Result<()> {
+        check_stored_url(url, "the endpoint URL")
     }
 }
 
@@ -254,15 +249,22 @@ impl Explorer {
 
 impl Explorer {
     /// The rule every stored explorer `api` URL must pass (validation
-    /// applies it to the config, v1 migration to what it imports):
-    /// non-empty, no whitespace, well-formed `${NAME}` templates.
-    pub fn check_api_text(api: &str) -> anyhow::Result<()> {
-        if api.trim().is_empty() || api.chars().any(char::is_whitespace) {
-            anyhow::bail!("the api URL is empty or malformed");
-        }
-        crate::template::references(api)?;
-        Ok(())
+    /// applies it to the config, v1 migration to what it imports): see
+    /// [`check_stored_url`].
+    pub(crate) fn check_api_text(api: &str) -> anyhow::Result<()> {
+        check_stored_url(api, "the api URL")
     }
+}
+
+/// The one rule for every URL stored in the config (endpoint and explorer):
+/// non-empty, no whitespace, well-formed `${NAME}` templates. `what` names
+/// the field in the error.
+fn check_stored_url(url: &str, what: &str) -> anyhow::Result<()> {
+    if url.trim().is_empty() || url.chars().any(char::is_whitespace) {
+        anyhow::bail!("{what} is empty or malformed");
+    }
+    crate::template::references(url)?;
+    Ok(())
 }
 
 impl fmt::Debug for Explorer {
