@@ -201,29 +201,26 @@ pub fn show(view: &ChainView, extra: &[(String, String)]) -> String {
     } else {
         ui::dim(&format!(" ({})", view.aliases.join(", ")))
     };
-    writeln!(
+    let _ = writeln!(
         out,
         "{} {}{}",
         style("Chain").cyan().bold(),
         ui::emph(&view.name),
         aliases
-    )
-    .ok();
-    writeln!(out, "  id        {}", view.id).ok();
-    writeln!(
+    );
+    let _ = writeln!(out, "  id        {}", view.id);
+    let _ = writeln!(
         out,
         "  default   {}",
         if view.default { "yes" } else { "no" }
-    )
-    .ok();
-    writeln!(out, "  signer    {}", view.signer.as_deref().unwrap_or("-")).ok();
-    writeln!(
+    );
+    let _ = writeln!(out, "  signer    {}", view.signer.as_deref().unwrap_or("-"));
+    let _ = writeln!(
         out,
         "  explorer  {}",
         view.explorer.as_deref().unwrap_or("-")
-    )
-    .ok();
-    writeln!(
+    );
+    let _ = writeln!(
         out,
         "  failover  {}",
         if view.failover.is_empty() {
@@ -231,21 +228,20 @@ pub fn show(view: &ChainView, extra: &[(String, String)]) -> String {
         } else {
             view.failover.join(", ")
         }
-    )
-    .ok();
+    );
     for (k, v) in extra {
-        writeln!(out, "  {k:<9} {v}").ok();
+        let _ = writeln!(out, "  {k:<9} {v}");
     }
-    writeln!(out, "  {}", style("endpoints").bold()).ok();
+    let _ = writeln!(out, "  {}", style("endpoints").bold());
     for e in &view.endpoints {
         let marker = match (e.active, e.failover) {
             (true, _) => style(e.marker()).green().to_string(),
             (false, true) => style(e.marker()).yellow().to_string(),
             _ => e.marker().to_string(),
         };
-        writeln!(out, "  {marker} {:<16} {}", e.name, e.url).ok();
+        let _ = writeln!(out, "  {marker} {:<16} {}", e.name, e.url);
         for (k, v) in &e.headers {
-            writeln!(out, "      {}", ui::dim(&format!("{k}: {v}"))).ok();
+            let _ = writeln!(out, "      {}", ui::dim(&format!("{k}: {v}")));
         }
     }
     out

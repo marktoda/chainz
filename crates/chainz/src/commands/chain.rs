@@ -194,7 +194,7 @@ impl Found {
 
 /// Look the chain up as `source` says.
 fn find_chain(args: &ChainAddArgs, source: ChainSource, ask: &mut dyn Ask) -> Result<Found> {
-    let cache = net::cache_dir()?;
+    let cache = chainz_core::paths::cache_dir()?;
     if let ChainSource::Offline { id } = source {
         let cached = chainlist::read_cache(&cache)
             .and_then(|all| all.into_iter().find(|e| e.chain_id == id));

@@ -124,8 +124,9 @@ fn files(chainz: &Chainz, fix: bool, report: &mut Report) {
             report.problem(&msg);
             if fix {
                 use std::os::unix::fs::PermissionsExt;
-                if std::fs::set_permissions(path, std::fs::Permissions::from_mode(want)).is_ok() {
-                    report.fixed(&msg);
+                match std::fs::set_permissions(path, std::fs::Permissions::from_mode(want)) {
+                    Ok(()) => report.fixed(&msg),
+                    Err(e) => report.note(&format!("could not chmod {}: {e}", path.display())),
                 }
             }
         }
@@ -165,7 +166,13 @@ fn shadowed_tokens(config: &Config, report: &Report) {
 
 fn credentials(chainz: &mut Chainz, fix: bool, report: &mut Report) -> Result<()> {
     let config = chainz.config().clone();
-    let vars = chainz.secrets().map(|s| s.vars.clone()).unwrap_or_default();
+    // Planning against a secrets.toml that does not parse would propose
+    // variables that may already exist: report it (above) and stop here.
+    let Ok(secrets) = chainz.secrets() else {
+        report.note("credentials not checked: secrets.toml does not parse");
+        return Ok(());
+    };
+    let vars = secrets.vars.clone();
     let plan = extract::plan_secret_extraction(&config, &vars);
     let mut found = 0;
     // Credentials in a URL that only a person can move (user info, a key

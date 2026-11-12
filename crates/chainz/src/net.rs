@@ -1,7 +1,7 @@
 //! Bridge from config to `chainz-rpc`: async runtime, targets, health store.
 //! Never used by `exec`, `env`, `ls` or `shell`.
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Result, anyhow};
 use chainz_core::model::Endpoint;
 use chainz_core::route::Route;
 use chainz_core::{Chainz, paths};
@@ -77,9 +77,4 @@ pub fn health_store() -> HealthStore {
         );
         HealthStore::new(&dir)
     })
-}
-
-/// The chainlist cache directory.
-pub fn cache_dir() -> Result<std::path::PathBuf> {
-    paths::cache_dir().context("unable to find the cache directory")
 }
