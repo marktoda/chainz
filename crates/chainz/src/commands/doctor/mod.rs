@@ -49,10 +49,13 @@ pub fn run(args: &DoctorArgs) -> Result<i32> {
     files(&chainz, fix, &mut report);
 
     println!("{}", ui::section("config"));
-    let secrets = chainz.secrets().ok().cloned();
-    if secrets.is_none() {
-        report.problem("secrets.toml does not parse");
-    }
+    let secrets = match chainz.secrets() {
+        Ok(secrets) => Some(secrets.clone()),
+        Err(e) => {
+            report.problem(&format!("{e:#}"));
+            None
+        }
+    };
     let issues = validate::issues(chainz.config(), secrets.as_ref());
     if issues.is_empty() {
         report.ok(&format!(
@@ -114,12 +117,12 @@ fn files(chainz: &Chainz, fix: bool, report: &mut Report) {
         report.note("no config.toml yet (add a chain with `chainz chain add`)");
     }
     for (path, want) in [
-        (&p.dir(), 0o700),
-        (&p.secrets(), 0o600),
-        (&p.config(), 0o600),
+        (&p.dir(), chainz_os::PRIVATE_DIR_MODE),
+        (&p.secrets(), chainz_os::PRIVATE_FILE_MODE),
+        (&p.config(), chainz_os::PRIVATE_FILE_MODE),
     ] {
         let Some(m) = mode(path) else { continue };
-        if m & 0o077 != 0 {
+        if !chainz_os::is_private_mode(m) {
             let msg = format!("{} is mode {m:o}, expected {want:o}", path.display());
             report.problem(&msg);
             if fix {

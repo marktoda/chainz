@@ -31,7 +31,7 @@ fn context_for(
 fn exports(ctx: &Context) -> Result<Exports> {
     let exports = ctx.exports()?;
     for warning in &exports.warnings {
-        eprintln!("chainz: warning: {warning}");
+        eprintln!("{}", ui::warn(warning));
     }
     Ok(exports)
 }

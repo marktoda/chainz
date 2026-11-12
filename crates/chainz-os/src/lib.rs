@@ -27,6 +27,16 @@ use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsE
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+/// The mode of a private directory.
+pub const PRIVATE_DIR_MODE: u32 = 0o700;
+/// The mode of a private file.
+pub const PRIVATE_FILE_MODE: u32 = 0o600;
+
+/// Whether permission bits `mode` give nothing to group or other.
+pub fn is_private_mode(mode: u32) -> bool {
+    mode & 0o077 == 0
+}
+
 /// Create `dir` (and any missing parents) and restrict it to the owner.
 ///
 /// A new `dir` is created mode 0700. An existing one with group or other
@@ -36,7 +46,7 @@ pub fn create_private_dir(dir: &Path) -> io::Result<()> {
     if let Some(parent) = dir.parent().filter(|p| !p.as_os_str().is_empty()) {
         fs::create_dir_all(parent)?;
     }
-    match fs::DirBuilder::new().mode(0o700).create(dir) {
+    match fs::DirBuilder::new().mode(PRIVATE_DIR_MODE).create(dir) {
         Ok(()) => return Ok(()),
         Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
         Err(e) => return Err(e),
@@ -48,8 +58,8 @@ pub fn create_private_dir(dir: &Path) -> io::Result<()> {
             format!("{} exists and is not a directory", dir.display()),
         ));
     }
-    if meta.permissions().mode() & 0o077 != 0 {
-        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+    if !is_private_mode(meta.permissions().mode()) {
+        fs::set_permissions(dir, fs::Permissions::from_mode(PRIVATE_DIR_MODE))?;
     }
     Ok(())
 }
@@ -76,7 +86,7 @@ pub fn write_private(path: &Path, contents: &[u8]) -> io::Result<()> {
         .prefix(&format!(".{name}."))
         .tempfile_in(dir)?;
     temp.as_file()
-        .set_permissions(fs::Permissions::from_mode(0o600))?;
+        .set_permissions(fs::Permissions::from_mode(PRIVATE_FILE_MODE))?;
     temp.write_all(contents)?;
     temp.as_file().sync_all()?;
     temp.persist(&target).map_err(|e| e.error)?;
@@ -157,9 +167,9 @@ fn read_private_as(path: &Path, uid: u32) -> io::Result<Option<PrivateText>> {
     };
     let meta = file.metadata()?;
     let mut warning = None;
-    if meta.permissions().mode() & 0o077 != 0
+    if !is_private_mode(meta.permissions().mode())
         && meta.uid() == uid
-        && let Err(error) = file.set_permissions(fs::Permissions::from_mode(0o600))
+        && let Err(error) = file.set_permissions(fs::Permissions::from_mode(PRIVATE_FILE_MODE))
     {
         warning = Some(PermissionWarning {
             path: path.to_path_buf(),
@@ -184,7 +194,7 @@ pub fn open_private(path: &Path) -> io::Result<File> {
         .write(true)
         .create(true)
         .truncate(false)
-        .mode(0o600)
+        .mode(PRIVATE_FILE_MODE)
         .open(path)
 }
 
@@ -202,7 +212,7 @@ pub fn open_private_log(path: &Path, mode: LogMode) -> io::Result<File> {
     let file = fs::OpenOptions::new()
         .append(true)
         .create(true)
-        .mode(0o600)
+        .mode(PRIVATE_FILE_MODE)
         .open(path)?;
     if mode == LogMode::Truncate {
         file.set_len(0)?;

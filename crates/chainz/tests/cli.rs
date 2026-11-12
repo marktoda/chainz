@@ -991,6 +991,18 @@ fn doctor_reports_semantically_invalid_config() {
 }
 
 #[test]
+fn doctor_says_where_secrets_do_not_parse_without_quoting_them() {
+    let sb = Sandbox::new();
+    sb.write_config("version = 2\n[chains.eth]\nid = 1\nrpc = \"a\"\n[chains.eth.rpcs]\na = \"http://127.0.0.1:1\"\n");
+    sb.write_secrets("[vars]\nK = \"s3cret-value\" x\n");
+    sb.cmd().arg("doctor").assert().code(1).stdout(
+        predicate::str::contains("secrets.toml: ")
+            .and(predicate::str::contains("(at byte"))
+            .and(predicate::str::contains("s3cret").not()),
+    );
+}
+
+#[test]
 fn config_path_lists_every_location() {
     let sb = Sandbox::new();
     sb.cmd()
