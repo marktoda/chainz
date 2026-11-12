@@ -36,6 +36,11 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 bytes = "1"
 url = "2"
 tempfile = "3"
+sha3 = "0.10"
+hex = "0.4"
+rand = "0.9"
+zeroize = "1"
+libc = "0.2"
 
 [profile.release]
 lto = "thin"

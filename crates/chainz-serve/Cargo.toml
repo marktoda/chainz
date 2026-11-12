@@ -18,9 +18,9 @@ serde_json.workspace = true
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio", "http1", "server-graceful"] }
 http-body-util = "0.1"
-sha3 = "0.10"
-hex = "0.4"
-rand = "0.9"
+sha3.workspace = true
+hex.workspace = true
+rand.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
