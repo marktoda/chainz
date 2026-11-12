@@ -83,11 +83,8 @@ impl WriteLock {
             .with_context(|| format!("failed to create {}", paths.dir.display()))?;
         let mut options = std::fs::OpenOptions::new();
         options.read(true).write(true).create(true).truncate(false);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
         let file = options
             .open(&paths.lock)
             .with_context(|| format!("failed to open {}", paths.lock.display()))?;
@@ -390,15 +387,12 @@ mod tests {
             })
             .unwrap();
         assert!(paths.secrets.exists() && paths.config.exists());
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&paths.secrets)
-                .unwrap()
-                .permissions()
-                .mode();
-            assert_eq!(mode & 0o777, 0o600);
-        }
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&paths.secrets)
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
         let reloaded = Chainz::open_at(paths.clone(), LoadMode::Strict).unwrap();
         assert_eq!(reloaded.secrets().unwrap().vars["K"], "value");
 
@@ -447,18 +441,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = StorePaths::in_dir(dir.path().to_path_buf());
         std::fs::write(&paths.config, NEW_CONFIG).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&paths.config, std::fs::Permissions::from_mode(0o644))
-                .unwrap();
-            Chainz::open_at(paths.clone(), LoadMode::Strict).unwrap();
-            let mode = std::fs::metadata(&paths.config)
-                .unwrap()
-                .permissions()
-                .mode();
-            assert_eq!(mode & 0o777, 0o600);
-        }
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&paths.config, std::fs::Permissions::from_mode(0o644)).unwrap();
+        Chainz::open_at(paths.clone(), LoadMode::Strict).unwrap();
+        let mode = std::fs::metadata(&paths.config)
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 
     #[test]

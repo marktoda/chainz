@@ -17,7 +17,6 @@
 pub mod capabilities;
 pub mod chainlist;
 pub mod client;
-#[cfg(unix)]
 pub mod control;
 pub mod erc20;
 pub mod error;

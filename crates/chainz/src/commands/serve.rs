@@ -171,14 +171,8 @@ fn stop() -> Result<i32> {
 /// SIGTERM: the gateway drains in-flight requests, then exits. The PID
 /// comes from `serve.json` while `serve.lock` is held, so it is the
 /// gateway's.
-#[cfg(unix)]
 fn terminate(pid: u32) -> Result<()> {
     sys::signal_process(pid, libc::SIGTERM).context("failed to signal the gateway")
-}
-
-#[cfg(not(unix))]
-fn terminate(_pid: u32) -> Result<()> {
-    bail!("`chainz serve stop` is not supported on this platform")
 }
 
 /// `serve status --json`.

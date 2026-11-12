@@ -29,11 +29,9 @@ clap_complete = { version = "4.6", features = ["unstable-dynamic"] }
 console = "0.16"
 dialoguer = { version = "0.12", features = ["fuzzy-select"] }
 zeroize = "1"
+libc = "0.2"
 tempfile.workspace = true
 toml_edit.workspace = true
-
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
 
 [dev-dependencies]
 assert_cmd = "2"

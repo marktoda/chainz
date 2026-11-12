@@ -3,8 +3,6 @@
 //!
 //! Every invocation is sandboxed like `cli.rs`: `HOME` and the four XDG
 //! directories point into a temp dir and the OS keyring is disabled.
-#![cfg(unix)]
-
 mod common;
 
 use common::{MockRpc, Request, Sandbox, read_message, send_signal, stderr, wait_until};

@@ -1,8 +1,6 @@
 //! Hermetic gateway tests: an in-process gateway against scripted mock
 //! upstreams on loopback. Nothing here touches the network or the real
 //! config.
-#![cfg(unix)]
-
 mod common;
 
 use std::sync::Arc;

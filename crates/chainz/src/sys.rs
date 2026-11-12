@@ -10,11 +10,8 @@ use std::path::Path;
 pub fn open_log(path: &Path, truncate: bool) -> Result<File> {
     let mut options = std::fs::OpenOptions::new();
     options.append(true).create(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
+    use std::os::unix::fs::OpenOptionsExt;
+    options.mode(0o600);
     let file = options
         .open(path)
         .with_context(|| format!("unable to open {}", path.display()))?;
@@ -26,28 +23,22 @@ pub fn open_log(path: &Path, truncate: bool) -> Result<File> {
 
 /// Start `command` in a new session (`setsid`): no controlling terminal,
 /// its own process group, so the terminal's Ctrl-C and hangup never reach
-/// it. A no-op off Unix.
+/// it.
 pub fn detach(command: &mut std::process::Command) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        // SAFETY: setsid is async-signal-safe.
-        unsafe {
-            command.pre_exec(|| {
-                if libc::setsid() == -1 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
+    use std::os::unix::process::CommandExt;
+    // SAFETY: setsid is async-signal-safe.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
     }
-    #[cfg(not(unix))]
-    let _ = command;
 }
 
 /// Send `signal` to process `pid` (or, negative, to a process group).
 /// `false` when it could not be delivered.
-#[cfg(unix)]
 pub fn signal(pid: i32, signal: libc::c_int) -> bool {
     // SAFETY: plain syscall.
     unsafe { libc::kill(pid, signal) == 0 }
@@ -56,7 +47,6 @@ pub fn signal(pid: i32, signal: libc::c_int) -> bool {
 /// Send `signal` to process `pid`, refusing PIDs that are not a single
 /// real process (0, 1, or past `i32::MAX`, which `kill` would read as a
 /// group or as "every process").
-#[cfg(unix)]
 pub fn signal_process(pid: u32, sig: libc::c_int) -> std::io::Result<()> {
     let raw = i32::try_from(pid)
         .ok()
@@ -69,7 +59,7 @@ pub fn signal_process(pid: u32, sig: libc::c_int) -> std::io::Result<()> {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

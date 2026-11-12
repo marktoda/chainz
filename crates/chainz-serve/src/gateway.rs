@@ -240,11 +240,8 @@ impl Gateway {
         let unix = SocketPath::new(&sock)
             .and_then(|short| UnixListener::bind(short.as_path()))
             .with_context(|| format!("can't bind the control socket {}", sock.display()))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600))?;
-        }
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600))?;
 
         let (notices, _) = broadcast::channel(64);
         let (inspector, log_writer) =

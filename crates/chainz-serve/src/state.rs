@@ -391,12 +391,9 @@ mod tests {
     fn write(dir: &Path, config: &str, secrets: &str) -> StorePaths {
         fs::write(dir.join("config.toml"), config).unwrap();
         fs::write(dir.join("secrets.toml"), secrets).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            for f in ["config.toml", "secrets.toml"] {
-                fs::set_permissions(dir.join(f), fs::Permissions::from_mode(0o600)).unwrap();
-            }
+        use std::os::unix::fs::PermissionsExt;
+        for f in ["config.toml", "secrets.toml"] {
+            fs::set_permissions(dir.join(f), fs::Permissions::from_mode(0o600)).unwrap();
         }
         StorePaths::in_dir(dir.to_path_buf())
     }

@@ -169,11 +169,8 @@ impl Runtime {
         self.ensure_dir()?;
         let mut options = std::fs::OpenOptions::new();
         options.read(true).write(true).create(true).truncate(false);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
         let file = options.open(self.serve_lock_path())?;
         match file.try_lock_exclusive() {
             Ok(()) => Ok(Some(ServeLock { _file: file })),

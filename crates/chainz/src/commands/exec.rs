@@ -80,20 +80,11 @@ fn spawn_error(program: &str, error: &std::io::Error) -> anyhow::Error {
     })
 }
 
-#[cfg(unix)]
 fn run(mut command: std::process::Command, program: &str) -> Result<i32> {
     use std::os::unix::process::CommandExt;
     // execvp: same PID; signals and the exit status belong to the command.
     let error = command.exec();
     Err(spawn_error(program, &error))
-}
-
-#[cfg(not(unix))]
-fn run(mut command: std::process::Command, program: &str) -> Result<i32> {
-    let status = command
-        .status()
-        .map_err(|error| spawn_error(program, &error))?;
-    Ok(status.code().unwrap_or(1))
 }
 
 /// The signer `--expose-key` would unlock, if it may: never on a fork.

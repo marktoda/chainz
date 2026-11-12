@@ -92,17 +92,11 @@ pub fn run(fix: bool) -> Result<i32> {
     }
 }
 
-#[cfg(unix)]
 fn mode(path: &std::path::Path) -> Option<u32> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::metadata(path)
         .ok()
         .map(|m| m.permissions().mode() & 0o777)
-}
-
-#[cfg(not(unix))]
-fn mode(_: &std::path::Path) -> Option<u32> {
-    None
 }
 
 fn files(chainz: &Chainz, fix: bool, report: &mut Report) {
@@ -117,7 +111,6 @@ fn files(chainz: &Chainz, fix: bool, report: &mut Report) {
         if m & 0o077 != 0 {
             let msg = format!("{} is mode {m:o}, expected {want:o}", path.display());
             report.problem(&msg);
-            #[cfg(unix)]
             if fix {
                 use std::os::unix::fs::PermissionsExt;
                 if std::fs::set_permissions(path, std::fs::Permissions::from_mode(want)).is_ok() {

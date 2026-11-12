@@ -23,12 +23,10 @@ hex = "0.4"
 fs2 = "0.4"
 dirs = "6"
 zeroize = "1"
+libc = "0.2"
 aes-gcm = "0.10"
 argon2 = "0.5"
 base64 = "0.22"
 rand = "0.9"
 rpassword = "7"
 keyring = { version = "3", features = ["apple-native", "sync-secret-service", "vendored"] }
-
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"

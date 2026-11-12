@@ -1,7 +1,5 @@
 //! The pinned (single-endpoint) proxy against a scripted mock upstream on
 //! loopback.
-#![cfg(unix)]
-
 mod common;
 
 use std::sync::Arc;

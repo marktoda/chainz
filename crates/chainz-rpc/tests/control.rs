@@ -1,5 +1,3 @@
-#![cfg(unix)]
-
 use std::collections::BTreeMap;
 use std::time::Duration;
 

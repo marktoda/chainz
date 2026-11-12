@@ -64,13 +64,10 @@ pub(crate) fn legacy_home_config() -> io::Result<PathBuf> {
 /// Create `dir` (and parents) and restrict it to the owner.
 pub fn ensure_private_dir(dir: &Path) -> io::Result<()> {
     std::fs::create_dir_all(dir)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let meta = std::fs::metadata(dir)?;
-        if meta.permissions().mode() & 0o077 != 0 {
-            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
-        }
+    use std::os::unix::fs::PermissionsExt;
+    let meta = std::fs::metadata(dir)?;
+    if meta.permissions().mode() & 0o077 != 0 {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
     }
     Ok(())
 }
@@ -132,16 +129,12 @@ pub fn write_atomically(path: &Path, contents: &[u8]) -> io::Result<()> {
     let mut temp = tempfile::Builder::new()
         .prefix(&format!(".{name}."))
         .tempfile_in(dir)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        temp.as_file()
-            .set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    }
+    use std::os::unix::fs::PermissionsExt;
+    temp.as_file()
+        .set_permissions(std::fs::Permissions::from_mode(0o600))?;
     temp.write_all(contents)?;
     temp.as_file().sync_all()?;
     temp.persist(&target).map_err(|e| e.error)?;
-    #[cfg(unix)]
     std::fs::File::open(dir)?.sync_all()?;
     Ok(())
 }
@@ -153,10 +146,7 @@ pub fn write_atomically(path: &Path, contents: &[u8]) -> io::Result<()> {
 /// a warning on stderr, not an error: a read-only config (a home-manager
 /// symlink into `/nix/store`, say) must stay readable.
 pub fn read_private(path: &Path) -> io::Result<Option<String>> {
-    #[cfg(unix)]
     let uid = current_uid();
-    #[cfg(not(unix))]
-    let uid = 0;
     read_private_as(path, uid)
 }
 
@@ -167,28 +157,22 @@ fn read_private_as(path: &Path, uid: u32) -> io::Result<Option<String>> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e),
     };
-    #[cfg(unix)]
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let meta = file.metadata()?;
+    if meta.permissions().mode() & 0o077 != 0
+        && meta.uid() == uid
+        && let Err(e) = file.set_permissions(std::fs::Permissions::from_mode(0o600))
     {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        let meta = file.metadata()?;
-        if meta.permissions().mode() & 0o077 != 0
-            && meta.uid() == uid
-            && let Err(e) = file.set_permissions(std::fs::Permissions::from_mode(0o600))
-        {
-            eprintln!(
-                "chainz: warning: could not restrict {} to mode 0600: {e}",
-                path.display()
-            );
-        }
+        eprintln!(
+            "chainz: warning: could not restrict {} to mode 0600: {e}",
+            path.display()
+        );
     }
-    #[cfg(not(unix))]
-    let _ = uid;
     let mut text = String::new();
     file.read_to_string(&mut text)?;
     Ok(Some(text))
 }
 
-#[cfg(unix)]
 fn current_uid() -> u32 {
     // SAFETY: getuid has no preconditions and cannot fail.
     unsafe { libc::getuid() }
@@ -198,7 +182,6 @@ fn current_uid() -> u32 {
 mod tests {
     use super::*;
 
-    #[cfg(unix)]
     #[test]
     fn writes_through_a_symlink_to_its_target() {
         let dir = tempfile::tempdir().unwrap();
@@ -227,7 +210,6 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&plain).unwrap(), "s");
     }
 
-    #[cfg(unix)]
     #[test]
     fn read_private_leaves_files_of_other_users_alone() {
         use std::os::unix::fs::PermissionsExt;

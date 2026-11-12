@@ -17,19 +17,13 @@
 //!
 //! Unix only (process groups, signals, `PR_SET_PDEATHSIG`).
 
-#[cfg(unix)]
 mod endpoint;
-#[cfg(unix)]
 mod fund;
-#[cfg(unix)]
 mod ls_stop;
-#[cfg(unix)]
 mod process;
-#[cfg(unix)]
 mod start;
 
 /// `chainz fork …`.
-#[cfg(unix)]
 pub fn run(
     cmd: Option<crate::cli::ForkCommand>,
     args: crate::cli::ForkArgs,
@@ -40,13 +34,4 @@ pub fn run(
         Some(ForkCommand::Ls { json }) => ls_stop::ls(json),
         Some(ForkCommand::Stop { name, all }) => ls_stop::stop(name.as_deref(), all),
     }
-}
-
-/// `chainz fork …`.
-#[cfg(not(unix))]
-pub fn run(
-    _cmd: Option<crate::cli::ForkCommand>,
-    _args: crate::cli::ForkArgs,
-) -> anyhow::Result<i32> {
-    anyhow::bail!("`chainz fork` is supported on Linux and macOS only")
 }

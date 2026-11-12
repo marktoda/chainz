@@ -451,14 +451,8 @@ fn live_forks() -> Vec<ForkRecord> {
     all_forks().into_iter().filter(|f| alive(f.pid)).collect()
 }
 
-#[cfg(unix)]
 fn alive(pid: u32) -> bool {
     i32::try_from(pid).is_ok_and(|pid| pid > 1 && crate::sys::signal(pid, 0))
-}
-
-#[cfg(not(unix))]
-fn alive(_: u32) -> bool {
-    true
 }
 
 /// Prefix-filtered, deduplicated candidates in insertion order.

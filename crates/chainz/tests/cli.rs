@@ -66,7 +66,6 @@ fn completions_generate_for_zsh_and_bash() {
 // ---------------------------------------------------------------- config files
 
 #[test]
-#[cfg(unix)]
 fn config_and_secrets_are_owner_only() {
     let sb = Sandbox::new();
     sb.cmd()
@@ -79,7 +78,6 @@ fn config_and_secrets_are_owner_only() {
 }
 
 #[test]
-#[cfg(unix)]
 fn loose_permissions_are_tightened_on_load() {
     let sb = Sandbox::new();
     sb.seed(&[("eth", 1)]);

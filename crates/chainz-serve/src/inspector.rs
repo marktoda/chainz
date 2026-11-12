@@ -58,7 +58,6 @@ impl Inspector {
         if let Some(path) = log {
             let mut options = tokio::fs::OpenOptions::new();
             options.append(true).create(true);
-            #[cfg(unix)]
             options.mode(0o600);
             let file = options.open(path).await?;
             let (tx, rx) = mpsc::channel(queue);

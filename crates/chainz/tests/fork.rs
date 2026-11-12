@@ -7,8 +7,6 @@
 //!
 //! Every invocation runs in a sandbox (see `common`). Every port is chosen
 //! by the OS or by `chainz fork` itself, never guessed by the test.
-#![cfg(unix)]
-
 mod common;
 
 use common::{Sandbox, send_signal, stderr, stdout};

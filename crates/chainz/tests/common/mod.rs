@@ -192,16 +192,11 @@ impl Sandbox {
     }
 }
 
-#[cfg(unix)]
 pub fn set_mode(path: &Path, mode: u32) {
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
 }
 
-#[cfg(not(unix))]
-pub fn set_mode(_: &Path, _: u32) {}
-
-#[cfg(unix)]
 pub fn mode(path: &Path) -> u32 {
     use std::os::unix::fs::PermissionsExt;
     fs::metadata(path).unwrap().permissions().mode() & 0o777

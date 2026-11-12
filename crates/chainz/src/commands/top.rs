@@ -43,7 +43,7 @@ pub fn run(once: bool, json: bool, reveal: bool) -> Result<i32> {
     )
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::exited;
     use std::os::unix::process::ExitStatusExt;

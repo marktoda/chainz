@@ -258,22 +258,16 @@ fn read_entries(path: &Path) -> io::Result<BTreeMap<Key, Entry>> {
 fn create_private_dir(dir: &Path) -> io::Result<()> {
     let mut builder = fs::DirBuilder::new();
     builder.recursive(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
-    }
+    use std::os::unix::fs::DirBuilderExt;
+    builder.mode(0o700);
     builder.create(dir)
 }
 
 fn open_private(path: &Path) -> io::Result<fs::File> {
     let mut opts = fs::OpenOptions::new();
     opts.create(true).truncate(false).read(true).write(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
+    use std::os::unix::fs::OpenOptionsExt;
+    opts.mode(0o600);
     opts.open(path)
 }
 
@@ -283,7 +277,6 @@ fn write_atomic(dir: &Path, path: &Path, data: &[u8]) -> io::Result<()> {
     tmp.write_all(data)?;
     tmp.as_file().sync_all()?;
     tmp.persist(path).map_err(|e| e.error)?;
-    #[cfg(unix)]
     if let Ok(d) = fs::File::open(dir) {
         let _ = d.sync_all();
     }
@@ -377,13 +370,10 @@ mod tests {
         assert_eq!(loaded.samples(1, "a"), vec![sample(1, 5, true)]);
         assert_eq!(loaded.capabilities(1, "a"), Some(&caps));
 
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
-            assert_eq!(mode(&dir.join(FILE_NAME)), 0o600);
-            assert_eq!(mode(&dir), 0o700);
-        }
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dir.join(FILE_NAME)), 0o600);
+        assert_eq!(mode(&dir), 0o700);
     }
 
     #[test]
