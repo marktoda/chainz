@@ -56,8 +56,9 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y strace
 
       - name: Verify release candidate
-        # Fork tests skip here (no anvil): this job holds the publish token,
-        # so it installs no extra third-party actions. CI on main runs them.
+        # Fork tests skip here, each printing SKIPPED (no anvil): this job
+        # holds the publish token, so it installs no extra third-party
+        # actions. CI on main runs them with CHAINZ_REQUIRE_TOOLS=1.
         run: scripts/check.sh test
 
       - name: Verify package contents

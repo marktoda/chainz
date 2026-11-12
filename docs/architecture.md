@@ -37,7 +37,7 @@ expanded) and hand it in. The five library crates are published only so
 - **The hot path is offline.** `exec`, `env` and `ls` call only core (and
   `ls` reads the recorded health file). They start no runtime, open no
   socket and spawn no thread before `execvp`. The crate split enforces it at
-  compile time; `crates/chainz/tests/strace.rs` checks it at run time.
+  compile time; `crates/chainz/tests/e2e/hot_path.rs` checks it at run time.
 - **Keys are unlocked only for `--expose-key`.** Everything else (`@wallet`,
   `ETH_FROM`, balances, fork funding, keystore signers) uses the cached
   address.

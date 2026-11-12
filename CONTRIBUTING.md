@@ -61,16 +61,39 @@ the port back.
 
 ## Tests
 
-- **End to end:** `crates/chainz/tests/`. Every run of the binary goes
-  through the sandbox in `tests/common`, which clears the environment,
-  points `HOME` and the XDG dirs at a temp dir, disables the keyring and
-  empties stdin. RPCs are local mocks; no test uses the network.
+- **End to end:** `crates/chainz/tests/e2e/`, one test binary with a module
+  per command (`add.rs`, `exec.rs`, `doctor.rs`, …). A test of one command
+  goes in that command's module; `cli.rs` holds what every command shares
+  (usage errors, removed spellings), `config.rs` the config files
+  themselves, `hot_path.rs` the strace check of `exec`'s fast path. Every
+  run of the binary goes through `Sandbox` in `e2e/common.rs`, which clears
+  the environment, points `HOME` and the XDG dirs at a temp dir, disables
+  the keyring and empties stdin. A gateway or process a test starts is
+  wrapped in `StopGateway` or `ChildGuard`, so a failing test leaves
+  nothing running.
+- **Integration tests** of the library crates are one binary each too:
+  `crates/chainz-rpc/tests/rpc/` and `crates/chainz-serve/tests/serve/`.
 - **Golden files** pin output that people and scripts read
-  (`crates/chainz/tests/golden/`, `crates/chainz-tui/tests/golden/`).
+  (`crates/chainz/tests/golden/`, written by `e2e/golden.rs`, and
+  `crates/chainz-tui/tests/golden/`). Mask what varies run to run (ports,
+  latencies, ages) rather than sleeping it into shape.
   `CHAINZ_BLESS=1 cargo test` rewrites them; review the diff.
 - **Unit tests** sit beside the code in each crate. `chainz-serve`'s
   `testing` feature runs the real control handler over canned state for
-  clients' tests.
+  clients' tests; `chainz-core`'s gives `TempStore`, `MemoryKeyBackend`
+  and `ForkRecord::sample`.
+- **`crates/chainz-testkit`** is the shared harness, a dev-dependency of
+  every crate and never published (it depends on no chainz crate, and
+  `cargo package` drops it): `Mock`, a JSON-RPC server answering per call
+  or per request that records what it was sent; a raw HTTP client;
+  `golden!`; `wait_until` and `wait_until_async` (poll, never sleep a
+  guess); `short_tempdir` for unix sockets; `require_tool`, which prints
+  `SKIPPED` when `anvil` or `strace` is missing; `ChildGuard`; ABI
+  encoders with hand-written selectors; and the anvil test keys. Reach for
+  it before writing another mock or helper.
+- RPCs are local mocks; no test uses the network. A failure path that
+  retries (a closed port, a 503) costs real backoff time: answer with an
+  error the code doesn't retry instead.
 
 ## Docs
 
