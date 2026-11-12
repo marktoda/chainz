@@ -5,8 +5,10 @@ use anyhow::{Result, anyhow};
 use chainz_core::model::Endpoint;
 use chainz_core::route::Route;
 use chainz_core::{Chainz, paths};
+use chainz_rpc::chainlist::{self, ChainlistError, Registry};
 use chainz_rpc::{HealthStore, Target};
 use std::future::Future;
+use std::path::Path;
 
 use crate::ui;
 
@@ -83,4 +85,15 @@ pub fn health_store() -> HealthStore {
         );
         HealthStore::new(&dir)
     })
+}
+
+/// The chain registry (chainid.network), from the cache under `cache` when
+/// it is fresh and `refresh` is off; a download that could not be cached
+/// is said on stderr.
+pub fn chainlist(cache: &Path, refresh: bool) -> Result<Registry, ChainlistError> {
+    let registry = block_on(chainlist::fetch_all(cache, refresh))?;
+    if let Some(warning) = &registry.cache_warning {
+        eprintln!("{}", ui::warn(warning));
+    }
+    Ok(registry)
 }

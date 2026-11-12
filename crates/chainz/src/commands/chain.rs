@@ -208,11 +208,7 @@ fn find_chain(args: &ChainAddArgs, source: ChainSource, ask: &mut dyn Ask) -> Re
             .and_then(|all| all.into_iter().find(|e| e.chain_id == id));
         return Ok(Found::Offline { id, cached });
     }
-    let registry = net::block_on(chainlist::fetch_all(&cache, args.refresh))
-        .context("chainlist is unavailable")?;
-    if let Some(warning) = &registry.cache_warning {
-        eprintln!("{}", ui::warn(warning));
-    }
+    let registry = net::chainlist(&cache, args.refresh).context("chainlist is unavailable")?;
     let all = registry.entries;
     let entry = match &args.chain {
         Some(q) => find_in_chainlist(&all, q)?.clone(),

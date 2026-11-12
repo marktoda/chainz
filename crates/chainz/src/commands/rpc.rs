@@ -218,13 +218,7 @@ fn discover(args: &DiscoverArgs) -> Result<i32> {
     let mut chainz = open()?;
     let (chain, c) = resolve::configured(chainz.config(), &args.chain, Policy::Prefix)?;
     let (chain, c) = (chain.to_string(), c.clone());
-    let registry = net::block_on(chainlist::fetch_all(
-        &chainz_core::paths::cache_dir()?,
-        args.refresh,
-    ))?;
-    if let Some(warning) = &registry.cache_warning {
-        eprintln!("{}", ui::warn(warning));
-    }
+    let registry = net::chainlist(&chainz_core::paths::cache_dir()?, args.refresh)?;
     let entry = registry.find(c.id)?;
     let fresh: Vec<String> = chainlist::public_rpcs(entry)
         .into_iter()
