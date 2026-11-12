@@ -1,5 +1,5 @@
 //! Bridge from config to `chainz-rpc`: async runtime, targets, health store.
-//! Never used by `exec`, `env`, `ls` or `shell`.
+//! Never used by `exec`, `env` or `ls`.
 
 use anyhow::{Result, anyhow};
 use chainz_core::model::Endpoint;

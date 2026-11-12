@@ -7,12 +7,13 @@ use anyhow::Result;
 use chainz_core::runtime::Runtime;
 use chainz_tui::{Mode, Options};
 
-/// `e` in the dashboard: `chainz shell <chain>`, as the user would run it.
+/// `e` in the dashboard: `chainz exec <chain>` (a subshell), as the user
+/// would run it.
 /// A shell that does not exit cleanly is an error, so the dashboard says
 /// so instead of "back from `<chain>`".
 fn shell(chain: &str) -> std::io::Result<()> {
     let status = std::process::Command::new(std::env::current_exe()?)
-        .args(["shell", chain])
+        .args(["exec", chain])
         .status()?;
     exited(status)
 }
@@ -21,10 +22,10 @@ fn exited(status: std::process::ExitStatus) -> std::io::Result<()> {
     match status.code() {
         Some(0) => Ok(()),
         Some(code) => Err(std::io::Error::other(format!(
-            "`chainz shell` exited with status {code}"
+            "`chainz exec` exited with status {code}"
         ))),
         None => Err(std::io::Error::other(format!(
-            "`chainz shell` was stopped by a signal ({status})"
+            "`chainz exec` was stopped by a signal ({status})"
         ))),
     }
 }
@@ -60,7 +61,7 @@ mod tests {
     fn a_shell_that_fails_is_reported() {
         assert!(exited(ExitStatus::from_raw(0)).is_ok());
         let failed = exited(ExitStatus::from_raw(2 << 8)).unwrap_err();
-        assert_eq!(failed.to_string(), "`chainz shell` exited with status 2");
+        assert_eq!(failed.to_string(), "`chainz exec` exited with status 2");
         // Killed by SIGKILL: no exit code.
         let killed = exited(ExitStatus::from_raw(9)).unwrap_err();
         assert!(killed.to_string().contains("signal"), "{killed}");

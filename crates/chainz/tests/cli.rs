@@ -1053,10 +1053,14 @@ fn exec_passes_through_exit_code() {
 }
 
 #[test]
-fn exec_without_command_or_unknown_chain_fails() {
+fn exec_with_an_unknown_chain_fails() {
     let sb = Sandbox::new();
     sb.seed(&[("eth", 1)]);
-    sb.cmd().args(["exec", "eth"]).assert().failure();
+    sb.cmd()
+        .args(["exec", "ethh"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("ethh"));
     sb.cmd()
         .args(["exec", "ethh", "--", "true"])
         .assert()
@@ -1213,16 +1217,25 @@ fn use_sets_default_with_stderr_notice() {
 }
 
 #[test]
-fn shell_exports_context_and_passes_exit_code() {
+fn exec_without_a_command_opens_a_subshell_and_passes_its_exit_code() {
     let sb = Sandbox::new();
     sb.seed(&[("eth", 1)]);
+    for exec in ["exec", "x"] {
+        sb.cmd()
+            .env("SHELL", "sh")
+            .args([exec, "eth"])
+            .write_stdin("echo $CHAIN_ID $CHAINZ_CHAIN; exit 3\n")
+            .assert()
+            .code(3)
+            .stdout("1 eth\n")
+            .stderr(predicate::str::contains("entering eth shell"));
+    }
     sb.cmd()
         .env("SHELL", "sh")
-        .args(["shell", "eth"])
-        .write_stdin("echo $CHAIN_ID $CHAINZ_CHAIN; exit 3\n")
+        .args(["exec", "eth", "--explain"])
         .assert()
-        .code(3)
-        .stdout("1 eth\n");
+        .success()
+        .stdout(predicate::str::contains("argv      sh (subshell)"));
 }
 
 #[test]
@@ -1977,6 +1990,7 @@ fn removed_spellings_are_unknown() {
         &["label", "find", TEST_ADDRESS],
         &["label", TEST_ADDRESS, "--chain", "eth"],
         &["config", "path"],
+        &["shell", "eth"],
     ] {
         let out = sb.run(argv);
         assert_eq!(out.status.code(), Some(2), "{argv:?}: {}", stderr(&out));
@@ -2133,7 +2147,7 @@ fn a_missing_chain_off_a_tty_is_a_usage_error() {
     sb.seed(&[("eth", 1), ("base", 8453)]);
     for (args, usage) in [
         (&["exec", "--", "true"][..], "Usage: chainz exec"),
-        (&["shell"], "Usage: chainz shell"),
+        (&["exec"], "Usage: chainz exec"),
         (&["env"], "Usage: chainz env"),
     ] {
         sb.cmd()

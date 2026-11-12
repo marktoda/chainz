@@ -33,7 +33,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use chainz_os::now_ms;
 
-/// Runs `chainz shell <chain>` for the `e` key and returns when it exits:
+/// Runs `chainz exec <chain>` for the `e` key and returns when it exits:
 /// an error, including a shell that did not exit cleanly, is shown in the
 /// dashboard's footer.
 pub type ShellFn = Box<dyn FnMut(&str) -> std::io::Result<()>>;
@@ -297,7 +297,7 @@ impl Dashboard {
         self.app.notify(text.join(" · "), warning, now_ms());
     }
 
-    /// Hand the terminal to `chainz shell <chain>` and take it back.
+    /// Hand the terminal to `chainz exec <chain>` and take it back.
     fn shell(&mut self, screen: &mut Screen, chain: &str) -> Result<()> {
         let Some(mut shell) = self.shell.take() else {
             self.app.notify("no shell available", true, now_ms());

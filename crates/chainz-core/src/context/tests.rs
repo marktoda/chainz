@@ -76,7 +76,7 @@ fn fixture() -> Fixture {
     std::fs::write(paths.config(), CONFIG).unwrap();
     std::fs::write(paths.secrets(), SECRETS).unwrap();
     // A fixed, empty environment: the developer's shell (an enclosing
-    // `chainz shell`, an exported variable) never changes these tests.
+    // an `exec` subshell, an exported variable) never changes these tests.
     let chainz = Chainz::open_at(paths, LoadMode::Strict)
         .unwrap()
         .with_env(crate::contract::Env::from_fn(|_| None));

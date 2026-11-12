@@ -40,7 +40,8 @@ pub fn usage_error(path: &[&str], message: &str) -> anyhow::Error {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Run a command with a chain's context: environment and @tokens
+    /// Run a command with a chain's context: environment and @tokens (no
+    /// command: open a subshell)
     ///
     /// Exported: ETH_RPC_URL, ETH_RPC_HEADERS (direct only), CHAIN_ID,
     /// CHAINZ_CHAIN, ETHERSCAN_API_KEY, VERIFIER_URL/VERIFIER_API_KEY
@@ -51,12 +52,12 @@ pub enum Command {
     /// any signer name (@funder), labels (@usdc, @myrouter), and
     /// `@name:chain` for another chain. `@@` is a literal @.
     ///
+    /// With no command, $SHELL opens with the context exported (ctrl-d
+    /// leaves it).
+    ///
     /// Example: chainz exec base -- cast balance @wallet
     #[command(visible_alias = "x", verbatim_doc_comment)]
     Exec(ExecArgs),
-
-    /// Open a subshell with a chain's context exported
-    Shell(ContextArgs),
 
     /// Print a chain's context as shell exports: eval "$(chainz env base)"
     Env(EnvArgs),
@@ -145,7 +146,7 @@ pub enum Command {
     Completions(CompletionsArgs),
 }
 
-/// The context selectors shared by `exec`, `env` and `shell`.
+/// The context selectors shared by `exec` and `env`.
 #[derive(Debug, Clone, Default, Args)]
 pub struct ContextArgs {
     /// Chain name, alias, prefix, ID, or fork name
@@ -184,8 +185,8 @@ pub struct ExecArgs {
     /// Print the context, exported names and rewritten argv, then exit
     #[arg(long)]
     pub explain: bool,
-    /// The command to run (after --)
-    #[arg(last = true, required = true, value_name = "CMD", add = ArgValueCompleter::new(complete::exec_words))]
+    /// The command to run (after --); none opens a subshell
+    #[arg(last = true, value_name = "CMD", add = ArgValueCompleter::new(complete::exec_words))]
     pub command: Vec<String>,
 }
 

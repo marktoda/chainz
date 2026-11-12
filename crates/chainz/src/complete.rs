@@ -80,7 +80,7 @@ fn completer_path() -> String {
 // Completers. Each filters by the current word's prefix itself (clap does
 // not filter `ArgValueCompleter` output).
 
-/// `exec`/`shell`/`env`'s chain: configured chains and live forks (and,
+/// `exec`/`env`'s chain: configured chains and live forks (and,
 /// after `exec --`, the command's words).
 pub fn context_chains(current: &OsStr) -> Vec<CompletionCandidate> {
     // `exec -- @w`: with no chain typed, clap offers the word to CHAIN.

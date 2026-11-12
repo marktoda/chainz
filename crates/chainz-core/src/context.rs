@@ -4,7 +4,7 @@
 //!
 //! **Environment** (exported only when the value exists; every other
 //! contract variable is removed from the child's environment so a value
-//! never leaks in from an enclosing `chainz shell`):
+//! never leaks in from an enclosing `exec` subshell):
 //!
 //! | Variable | Value |
 //! | --- | --- |

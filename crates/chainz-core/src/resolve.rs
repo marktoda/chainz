@@ -2,7 +2,7 @@
 //!
 //! Which chain a command means, first match wins:
 //! 1. the explicit argument;
-//! 2. `$CHAINZ_CHAIN` (set by `chainz shell` and `chainz env`);
+//! 2. `$CHAINZ_CHAIN` (set by an `exec` subshell and `chainz env`);
 //! 3. `default` in config (callers print `chainz: <name> (default)`);
 //! 4. otherwise the caller opens a picker on a TTY, or fails.
 //!

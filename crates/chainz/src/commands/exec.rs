@@ -1,4 +1,4 @@
-//! The hot path: `exec`, `shell`, `env`. Only `chainz-core` APIs: no
+//! The hot path: `exec` (with no command, a subshell) and `env`. Only `chainz-core` APIs: no
 //! async runtime, no sockets, no threads before `execvp`.
 
 use crate::cli::{ContextArgs, EnvArgs, ExecArgs, ShellKind};
@@ -12,7 +12,7 @@ use chainz_core::contract::RAW_PRIVATE_KEY;
 use chainz_core::runtime::Runtime;
 use chainz_core::signer::SystemKeyBackend;
 
-/// The resolved context for `command`: `exec`, `env` or `shell`.
+/// The resolved context for `command`: `exec` or `env`.
 fn context_for(
     command: &str,
     chainz: &Chainz,
@@ -42,11 +42,14 @@ fn exports(ctx: &Context) -> Result<Exports> {
     Ok(exports)
 }
 
-/// `chainz exec`.
+/// `chainz exec`: the command with the context, or with none, a subshell.
 pub fn exec(args: &ExecArgs) -> Result<i32> {
     let chainz = open()?;
     let runtime = Runtime::resolve()?;
     let mut ctx = context_for("exec", &chainz, &runtime, &args.context, args.expose_key)?;
+    if args.command.is_empty() {
+        return shell(&chainz, ctx, args.explain);
+    }
     let expander = Expander::new(&chainz, &runtime, &ctx, args.context.direct);
     let argv = expander.expand_args(&args.command)?;
     for warning in expander.warnings() {
@@ -54,7 +57,8 @@ pub fn exec(args: &ExecArgs) -> Result<i32> {
     }
     if args.explain {
         // RAW_PRIVATE_KEY shows redacted: no reason to unlock.
-        print!("{}", explain(&ctx, &exports(&ctx)?, &argv));
+        let argv: Vec<String> = argv.iter().map(|a| shell_quote(&a.display)).collect();
+        print!("{}", explain(&ctx, &exports(&ctx)?, &argv.join(" ")));
         return Ok(0);
     }
     ctx.unlock_key(&chainz, &SystemKeyBackend, &crate::prompt::Terminal)?;
@@ -85,7 +89,8 @@ fn run(mut command: std::process::Command, program: &str) -> Result<i32> {
     Err(spawn_error(program, &error))
 }
 
-fn explain(ctx: &Context, exports: &Exports, argv: &[context::ExpandedArg]) -> String {
+/// The `--explain` text; `argv` is the command line as it would run.
+fn explain(ctx: &Context, exports: &Exports, argv: &str) -> String {
     use std::fmt::Write;
     let view = ctx.explain();
     let mut out = String::new();
@@ -123,18 +128,23 @@ fn explain(ctx: &Context, exports: &Exports, argv: &[context::ExpandedArg]) -> S
     if !exports.unset.is_empty() {
         let _ = writeln!(out, "unset     {}", exports.unset.join(" "));
     }
-    let argv: Vec<String> = argv.iter().map(|a| shell_quote(&a.display)).collect();
-    let _ = writeln!(out, "argv      {}", argv.join(" "));
+    let _ = writeln!(out, "argv      {argv}");
     out
 }
 
-/// `chainz shell`: a subshell with the context exported.
-pub fn shell(args: &ContextArgs) -> Result<i32> {
-    let chainz = open()?;
-    let runtime = Runtime::resolve()?;
-    let ctx = context_for("shell", &chainz, &runtime, args, false)?;
-    let exports = exports(&ctx)?;
+/// `chainz exec CHAIN` with no command: `$SHELL` with the context
+/// exported (the key too with `--expose-key`), until it exits.
+fn shell(chainz: &Chainz, mut ctx: Context, explain_only: bool) -> Result<i32> {
     let shell = user_shell();
+    if explain_only {
+        print!(
+            "{}",
+            explain(&ctx, &exports(&ctx)?, &format!("{} (subshell)", shell_quote(&shell)))
+        );
+        return Ok(0);
+    }
+    ctx.unlock_key(chainz, &SystemKeyBackend, &crate::prompt::Terminal)?;
+    let exports = exports(&ctx)?;
     eprintln!(
         "{}",
         ui::item(&format!("entering {} shell — ctrl-d to exit", ctx.chain()))

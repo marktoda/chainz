@@ -149,7 +149,7 @@ pub fn check_var_name(name: &str) -> anyhow::Result<()> {
 /// Resolves `${NAME}` for one context: built-ins, then the environment,
 /// then `secrets.toml` (loaded lazily, only when the environment misses).
 ///
-/// Inside a chainz context (`CHAINZ_CHAIN` is set: `chainz shell`, `eval
+/// Inside a chainz context (`CHAINZ_CHAIN` is set: an `exec` subshell, `eval
 /// "$(chainz env …)"`, or a tool `exec` started) the environment is not
 /// consulted for the exec contract's own variables
 /// ([`CONTRACT_VARS`](crate::contract::CONTRACT_VARS)): there they hold the

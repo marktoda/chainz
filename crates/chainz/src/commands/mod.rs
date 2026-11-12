@@ -26,7 +26,6 @@ pub fn dispatch(opt: Opt) -> Result<i32> {
     };
     match cmd {
         Command::Exec(args) => exec::exec(&args),
-        Command::Shell(args) => exec::shell(&args),
         Command::Env(args) => exec::env(&args),
         Command::Use(args) => chain::use_default(&args),
         Command::Ls(args) => chain::ls(&args),

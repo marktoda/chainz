@@ -39,7 +39,7 @@ pub const ETH_KEYSTORE: &str = "ETH_KEYSTORE";
 
 /// Every variable the exec contract may set. Variables not set for a
 /// context are removed from the child environment, so a value never
-/// leaks in from an enclosing `chainz shell`.
+/// leaks in from an enclosing `exec` subshell.
 pub const CONTRACT_VARS: [&str; 12] = [
     ETH_RPC_URL,
     ETH_RPC_HEADERS,

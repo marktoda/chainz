@@ -204,7 +204,7 @@ fn label_add_defaults_to_the_current_chain_context() {
         .stderr(predicate::str::contains("Usage: chainz label add"));
     assert!(!sb.config().contains("addresses"));
 
-    // $CHAINZ_CHAIN (set inside `chainz shell`).
+    // $CHAINZ_CHAIN (set inside an `exec` subshell).
     sb.cmd()
         .env("CHAINZ_CHAIN", "base")
         .args(["label", "add", "myrouter", ROUTER])
