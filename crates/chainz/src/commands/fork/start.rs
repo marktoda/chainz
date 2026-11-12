@@ -8,9 +8,9 @@ use crate::{net, sys, ui};
 use anyhow::{Context as _, Result, anyhow, bail};
 use chainz_core::Chainz;
 use chainz_core::fmt::{group, short_address};
+use chainz_core::forks;
 use chainz_core::model::{Chain, Config};
-use chainz_core::names::{self, RESERVED_FORK_NAMES};
-use chainz_core::runtime::{ForkRecord, LOOPBACK, Runtime, loopback_url};
+use chainz_core::runtime::{ForkClaim, ForkRecord, LOOPBACK, Runtime, loopback_url};
 use chainz_rpc::{HttpUpstream, RetryPolicy, RpcClient, Target};
 use chainz_serve::PinnedProxy;
 use std::fs::File;
@@ -26,47 +26,6 @@ const FIRST_PORT: u16 = 8601;
 const SUPERVISOR_ENV: &str = "CHAINZ_FORK_SUPERVISOR";
 /// How long anvil may take to come up (it fetches the fork block first).
 const READY_TIMEOUT: Duration = Duration::from_secs(120);
-/// Chains anvil can't fork.
-const UNFORKABLE: &[(u64, &str)] = &[(324, "zkSync Era"), (300, "zkSync Sepolia")];
-
-/// Reject chains anvil can't fork, before anything starts.
-fn ensure_forkable(chain_name: &str, chain_id: u64) -> Result<()> {
-    match UNFORKABLE.iter().find(|(id, _)| *id == chain_id) {
-        Some((_, label)) => bail!(
-            "'{chain_name}' can't be forked: anvil does not support {label} (chain {chain_id}), which is not EVM-equivalent"
-        ),
-        None => Ok(()),
-    }
-}
-
-/// A fork name must be a valid chain name, not a `fork` subcommand, and
-/// must not shadow a configured chain's name or alias or a live fork.
-fn validate_name(config: &Config, live: &[String], name: &str) -> Result<()> {
-    if RESERVED_FORK_NAMES.contains(&name) {
-        bail!("a fork can't be named '{name}': it is a `chainz fork` subcommand");
-    }
-    if !names::is_valid_chain_name(name) {
-        bail!(
-            "invalid fork name '{name}': use lowercase letters, digits, '-' and '_', not digits only"
-        );
-    }
-    for (chain_name, chain) in &config.chains {
-        if chain_name.eq_ignore_ascii_case(name) {
-            bail!("fork name '{name}' is taken by a configured chain; pick another with --name");
-        }
-        if chain.matches_alias(name) {
-            bail!(
-                "fork name '{name}' is an alias of configured chain '{chain_name}'; pick another with --name"
-            );
-        }
-    }
-    if live.iter().any(|l| l == name) {
-        bail!(
-            "fork '{name}' is already running; stop it with `chainz fork stop {name}` or pick another with --name"
-        );
-    }
-    Ok(())
-}
 
 /// The first port from `start` upward that is not busy.
 fn first_free_port(start: u16, mut busy: impl FnMut(u16) -> bool) -> Option<u16> {
@@ -144,18 +103,19 @@ pub fn start(args: ForkArgs) -> Result<i32> {
     let parent = chain_arg(&chainz, query)?;
     let config = chainz.config();
     let chain = &config.chains[&parent];
-    ensure_forkable(&parent, chain.id)?;
+    forks::check_forkable(&parent, chain.id)?;
 
-    process::reap(&runtime);
+    process::reap(&runtime)?;
     let name = args
         .name
         .clone()
-        .unwrap_or_else(|| format!("{parent}-fork"));
-    let live: Vec<String> = process::entries(&runtime)
-        .into_iter()
-        .map(|e| e.name)
-        .collect();
-    validate_name(config, &live, &name)?;
+        .unwrap_or_else(|| forks::default_fork_name(&parent));
+    forks::check_fork_name(config, &name)?;
+    // Said before anything starts; claiming the name below is the check
+    // that holds when two forks race for it.
+    if runtime.fork_live(&name).unwrap_or(false) {
+        return Err(already_running(&name));
+    }
     let funding = plan_funding(config, &parent, chain, &args)?;
     match args.port {
         Some(0) => bail!("--port 0 is not a usable port"),
@@ -169,12 +129,11 @@ pub fn start(args: ForkArgs) -> Result<i32> {
     }
 
     process::install_signal_handlers();
-    process::claim(&runtime, &name)?;
-    let mut supervisor = Supervisor {
-        runtime: &runtime,
-        name: name.clone(),
-        anvil: None,
-    };
+    let claim = runtime
+        .claim_fork(&name)
+        .context("unable to claim the fork name")?
+        .ok_or_else(|| already_running(&name))?;
+    let mut supervisor = Supervisor { anvil: None, claim };
     let job = Job {
         chainz: &chainz,
         runtime: &runtime,
@@ -188,6 +147,12 @@ pub fn start(args: ForkArgs) -> Result<i32> {
     let code = net::block_on(supervise(&mut supervisor, &job));
     drop(supervisor);
     code
+}
+
+fn already_running(name: &str) -> anyhow::Error {
+    anyhow!(
+        "fork '{name}' is already running; stop it with `chainz fork stop {name}` or pick another with --name"
+    )
 }
 
 /// `--detach`: re-exec this command as a background supervisor in its own
@@ -216,7 +181,7 @@ fn detach(runtime: &Runtime, name: &str) -> Result<i32> {
     }
     print!("{summary}");
     let registered = runtime
-        .read_fork(name)
+        .fork(name)
         .ok()
         .flatten()
         .is_some_and(|record| record.pid == child.id());
@@ -251,19 +216,18 @@ struct Job<'a> {
 }
 
 /// Owns the claim on the name and the anvil child. Dropping it stops
-/// anvil and removes the registry entry, on every exit path.
-struct Supervisor<'a> {
-    runtime: &'a Runtime,
-    name: String,
+/// anvil, then releases the claim (which removes the fork's files), on
+/// every exit path.
+struct Supervisor {
     anvil: Option<Child>,
+    claim: ForkClaim,
 }
 
-impl Drop for Supervisor<'_> {
+impl Drop for Supervisor {
     fn drop(&mut self) {
         if let Some(mut anvil) = self.anvil.take() {
             process::stop_child(&mut anvil);
         }
-        process::release(self.runtime, &self.name);
     }
 }
 
@@ -276,12 +240,11 @@ struct Running {
 
 /// Start the fork, then wait. A stop signal exits with 128 + its number
 /// (130 for Ctrl-C) whether it arrives while starting or once running.
-async fn supervise(supervisor: &mut Supervisor<'_>, job: &Job<'_>) -> Result<i32> {
+async fn supervise(supervisor: &mut Supervisor, job: &Job<'_>) -> Result<i32> {
     let running = tokio::select! {
         result = start_fork(supervisor, job) => result?,
         code = process::shutdown() => return Ok(code),
     };
-    let me = std::process::id();
     loop {
         if let Some(code) = process::shutdown_requested() {
             eprintln!("{}", ui::dim(&format!("stopped {}", job.name)));
@@ -300,17 +263,11 @@ async fn supervise(supervisor: &mut Supervisor<'_>, job: &Job<'_>) -> Result<i32
             );
             return Ok(1);
         }
-        // `fork stop` (or a reaper) removed the record: stand down.
-        if let Ok(record) = job.runtime.read_fork(job.name)
-            && record.is_none_or(|r| r.pid != me)
-        {
-            return Ok(0);
-        }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 }
 
-async fn start_fork(supervisor: &mut Supervisor<'_>, job: &Job<'_>) -> Result<Running> {
+async fn start_fork(supervisor: &mut Supervisor, job: &Job<'_>) -> Result<Running> {
     let Job {
         chainz,
         runtime,
@@ -343,7 +300,8 @@ async fn start_fork(supervisor: &mut Supervisor<'_>, job: &Job<'_>) -> Result<Ru
     };
     let log = sys::open_log(&log_path, mode)?;
     let chain_id = args.chain_id.unwrap_or(chain.id);
-    let port = spawn_on_free_port(supervisor, job, &proxy.url(), &log, &log_path).await?;
+    let mut record = spawn_on_free_port(supervisor, job, &proxy.url(), &log, &log_path).await?;
+    let port = record.port;
 
     // Deals walk upstream state through the proxy: allow them time.
     let anvil_client = RpcClient::with_timeout(Duration::from_secs(90));
@@ -357,17 +315,10 @@ async fn start_fork(supervisor: &mut Supervisor<'_>, job: &Job<'_>) -> Result<Ru
         None => None,
     };
 
-    let record = ForkRecord {
-        name: name.to_string(),
-        pid: std::process::id(),
-        port,
-        parent: parent.to_string(),
-        chain_id,
-        fork_block: args.block,
-        started_at: chainz_sys::now_secs(),
-    };
-    runtime
-        .write_fork(&record)
+    record.ready = true;
+    supervisor
+        .claim
+        .register(&record)
         .context("unable to register the fork")?;
 
     println!("{}", summary_line(&record, block));
@@ -406,16 +357,18 @@ async fn start_fork(supervisor: &mut Supervisor<'_>, job: &Job<'_>) -> Result<Ru
 /// Spawn anvil on `--port`, or on the first free port from
 /// [`FIRST_PORT`] up, and wait until it serves. Another process can take an
 /// auto-allocated port between the check and anvil's bind (parallel forks
-/// do): then the next port is tried, up to five times. Returns the port.
+/// do): then the next port is tried, up to five times. Registers each
+/// anvil (not yet ready) as it is spawned, and returns the record.
 async fn spawn_on_free_port(
-    supervisor: &mut Supervisor<'_>,
+    supervisor: &mut Supervisor,
     job: &Job<'_>,
     fork_url: &str,
     log: &File,
     log_path: &Path,
-) -> Result<u16> {
+) -> Result<ForkRecord> {
     let Job {
         runtime,
+        parent,
         chain,
         name,
         args,
@@ -429,10 +382,12 @@ async fn spawn_on_free_port(
         let port = match args.port {
             Some(port) => port,
             None => {
-                let taken: Vec<u16> = process::entries(runtime)
+                let taken: Vec<u16> = runtime
+                    .forks()
+                    .unwrap_or_default()
                     .into_iter()
-                    .filter(|e| e.name != name)
-                    .filter_map(|e| e.port)
+                    .filter(|e| e.live && e.name != name)
+                    .filter_map(|e| e.record.ok().flatten().map(|r| r.port))
                     .collect();
                 first_free_port(from, |p| taken.contains(&p) || port_busy(p))
                     .ok_or_else(|| anyhow!("no free port from {FIRST_PORT} upward"))?
@@ -446,18 +401,26 @@ async fn spawn_on_free_port(
             chain_id: args.chain_id,
         };
         let anvil = process::spawn_anvil(&spec, log)?;
-        process::write_pids(
-            runtime,
-            name,
-            &process::Pids {
-                supervisor: std::process::id(),
-                anvil: Some(anvil.id()),
-                port: Some(port),
-            },
-        )?;
-        let anvil = supervisor.anvil.insert(anvil);
+        let record = ForkRecord {
+            format: ForkRecord::FORMAT,
+            name: name.to_string(),
+            pid: std::process::id(),
+            anvil_pid: anvil.id(),
+            port,
+            parent: parent.to_string(),
+            chain_id,
+            fork_block: args.block,
+            started_at: chainz_sys::now_secs(),
+            ready: false,
+        };
+        supervisor.anvil = Some(anvil);
+        supervisor
+            .claim
+            .register(&record)
+            .context("unable to register the fork")?;
+        let anvil = supervisor.anvil.as_mut().expect("just spawned");
         match wait_ready(anvil, chain_id, port, log_path, log_start).await? {
-            None => return Ok(port),
+            None => return Ok(record),
             Some(status) => {
                 supervisor.anvil = None;
                 // Lost a race for an auto-allocated port (the winner may
@@ -583,36 +546,6 @@ rpcs.a = "https://a"
     }
 
     #[test]
-    fn name_rules() {
-        let c = config();
-        let live = vec!["base-fork".to_string()];
-        let check = |name: &str| validate_name(&c, &live, name).map_err(|e| e.to_string());
-        assert_eq!(check("eth-fork"), Ok(()));
-        assert_eq!(check("scratch_2"), Ok(()));
-        // Reserved subcommand names.
-        assert!(check("ls").unwrap_err().contains("subcommand"));
-        assert!(check("list").unwrap_err().contains("subcommand"));
-        assert!(check("stop").unwrap_err().contains("subcommand"));
-        // Configured chain names and aliases, case-insensitively.
-        assert!(check("base").unwrap_err().contains("configured chain"));
-        assert!(check("mainnet").unwrap_err().contains("alias of"));
-        // A live fork.
-        assert!(check("base-fork").unwrap_err().contains("already running"));
-        // Shape: a chain ID must never resolve to a fork, and the name is
-        // a file name in the registry.
-        for bad in ["8453", "", "Base", "a b", "a/b", "../x", "a.b", "-x", "@x"] {
-            assert!(check(bad).unwrap_err().contains("invalid"), "{bad:?}");
-        }
-    }
-
-    #[test]
-    fn unforkable_chains_are_rejected_up_front() {
-        let err = ensure_forkable("zksync", 324).unwrap_err().to_string();
-        assert!(err.contains("zkSync Era") && err.contains("324"), "{err}");
-        assert!(ensure_forkable("base", 8453).is_ok());
-    }
-
-    #[test]
     fn ports_are_allocated_upward_skipping_busy_ones() {
         assert_eq!(first_free_port(FIRST_PORT, |_| false), Some(8601));
         assert_eq!(
@@ -676,13 +609,16 @@ rpcs.a = "https://a"
     #[test]
     fn summary() {
         let record = ForkRecord {
+            format: ForkRecord::FORMAT,
             name: "base-fork".into(),
             pid: 1,
+            anvil_pid: 2,
             port: 8601,
             parent: "base".into(),
             chain_id: 8453,
             fork_block: None,
             started_at: 0,
+            ready: true,
         };
         assert_eq!(
             summary_line(&record, 38_112_904),

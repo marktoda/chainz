@@ -35,3 +35,26 @@ pub fn run(
         Some(ForkCommand::Stop { name, all }) => ls_stop::stop(name.as_deref(), all),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use chainz_core::forks::RESERVED_FORK_NAMES;
+    use clap::CommandFactory;
+
+    /// A fork named like a `fork` subcommand could never be stopped by
+    /// name: the reserved list is exactly the subcommands and aliases.
+    #[test]
+    fn reserved_fork_names_are_the_fork_subcommands() {
+        let cli = crate::cli::Opt::command();
+        let fork = cli.find_subcommand("fork").expect("fork command");
+        let mut names: Vec<&str> = fork
+            .get_subcommands()
+            .filter(|c| c.get_name() != "help")
+            .flat_map(|c| std::iter::once(c.get_name()).chain(c.get_all_aliases()))
+            .collect();
+        names.sort_unstable();
+        let mut reserved = RESERVED_FORK_NAMES.to_vec();
+        reserved.sort_unstable();
+        assert_eq!(names, reserved);
+    }
+}

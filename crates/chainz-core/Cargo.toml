@@ -29,4 +29,5 @@ rand.workspace = true
 keyring = { version = "3", features = ["apple-native", "sync-secret-service", "vendored"] }
 
 [dev-dependencies]
+libc.workspace = true
 tempfile.workspace = true

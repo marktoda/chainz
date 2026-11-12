@@ -8,9 +8,10 @@
 //! | `serve.lock` | gateway | exclusive `flock` held for the gateway's whole life |
 //! | `serve.json` | gateway | [`ServeInfo`]: port, auth token, pid (mode 0600) |
 //! | `serve.sock` | gateway | control API unix socket (mode 0600) |
+//! | `forks/<name>.lock` | fork supervisor | exclusive `flock` held for the fork's whole life; holds its PID |
 //! | `forks/<name>.json` | fork supervisor | [`ForkRecord`] |
 //!
-//! Liveness of the gateway is the lock, never a PID check: `exec` makes one
+//! Liveness of the gateway and of each fork is its lock, never a PID check: `exec` makes one
 //! non-blocking `flock` attempt; if it gets the lock, no gateway runs.
 //! [`Runtime::gateway`] is the one answer to "is a gateway running".
 //! Everything here is synchronous and opens no sockets.
@@ -24,6 +25,9 @@ use std::fmt;
 use std::io;
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
+
+mod fork_registry;
+pub use fork_registry::{ForkClaim, ForkEntry, ForkRecord};
 
 /// The address every chainz server binds and hands out (IPv4 only).
 pub const LOOPBACK: Ipv4Addr = Ipv4Addr::LOCALHOST;
@@ -181,33 +185,6 @@ impl ServeInfo {
     }
 }
 
-/// A live fork, `forks/<name>.json`. Forks resolve by name only and keep
-/// their parent's chain ID.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ForkRecord {
-    /// Fork name (e.g. `base-fork`); never collides with a configured chain.
-    pub name: String,
-    /// Supervisor process ID.
-    pub pid: u32,
-    /// Anvil's loopback port.
-    pub port: u16,
-    /// Parent chain's short name.
-    pub parent: String,
-    /// Chain ID the fork reports (the parent's unless `--chain-id`).
-    pub chain_id: u64,
-    /// Block the fork was pinned to, if any.
-    pub fork_block: Option<u64>,
-    /// Unix seconds.
-    pub started_at: u64,
-}
-
-impl ForkRecord {
-    /// The fork's JSON-RPC URL.
-    pub fn rpc_url(&self) -> String {
-        loopback_url(self.port)
-    }
-}
-
 /// Whether a gateway runs, from [`Runtime::gateway`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GatewayState {
@@ -294,11 +271,6 @@ impl Runtime {
         self.dir.join("forks")
     }
 
-    /// `forks/<name>.json`.
-    pub(crate) fn fork_path(&self, name: &str) -> PathBuf {
-        self.forks_dir().join(format!("{name}.json"))
-    }
-
     /// Whether a gateway holds `serve.lock`: one non-blocking `flock`
     /// attempt. A missing lock file means no gateway; nothing is created.
     fn serve_locked(&self) -> bool {
@@ -363,45 +335,6 @@ impl Runtime {
             _file: file,
             serve_json,
         }))
-    }
-
-    /// Every fork record (unparseable files are skipped).
-    pub fn list_forks(&self) -> io::Result<Vec<ForkRecord>> {
-        let entries = match std::fs::read_dir(self.forks_dir()) {
-            Ok(entries) => entries,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(e) => return Err(e),
-        };
-        let mut forks = Vec::new();
-        for entry in entries {
-            let path = entry?.path();
-            if path.extension().is_some_and(|e| e == "json")
-                && let Ok(Some(record)) = read_json::<ForkRecord>(&path)
-            {
-                forks.push(record);
-            }
-        }
-        forks.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(forks)
-    }
-
-    /// One fork by exact name; `Ok(None)` if absent. Never creates files.
-    pub fn read_fork(&self, name: &str) -> io::Result<Option<ForkRecord>> {
-        if name.is_empty() || name.contains(['/', '\\', '.']) {
-            return Ok(None);
-        }
-        read_json(&self.fork_path(name))
-    }
-
-    /// Write `forks/<name>.json` atomically.
-    pub fn write_fork(&self, record: &ForkRecord) -> io::Result<()> {
-        self.ensure_dir()?;
-        write_json(&self.fork_path(&record.name), record)
-    }
-
-    /// Remove `forks/<name>.json` (missing is fine).
-    pub fn remove_fork(&self, name: &str) -> io::Result<()> {
-        remove_if_exists(&self.fork_path(name))
     }
 }
 
@@ -548,27 +481,5 @@ mod tests {
         let url = addr.url("base", Some("llama"));
         let path = url.strip_prefix("http://127.0.0.1:18545").unwrap();
         assert_eq!(parse(path), Some(("tok", Some("base"), Some("llama"))));
-    }
-
-    #[test]
-    fn fork_records_round_trip() {
-        let dir = tempfile::tempdir().unwrap();
-        let rt = Runtime::at(dir.path());
-        assert!(rt.list_forks().unwrap().is_empty());
-        let record = ForkRecord {
-            name: "base-fork".into(),
-            pid: 42,
-            port: 8601,
-            parent: "base".into(),
-            chain_id: 8453,
-            fork_block: Some(1),
-            started_at: 0,
-        };
-        rt.write_fork(&record).unwrap();
-        assert_eq!(rt.read_fork("base-fork").unwrap(), Some(record.clone()));
-        assert_eq!(rt.read_fork("../x").unwrap(), None);
-        assert_eq!(rt.list_forks().unwrap(), vec![record]);
-        rt.remove_fork("base-fork").unwrap();
-        assert!(rt.list_forks().unwrap().is_empty());
     }
 }

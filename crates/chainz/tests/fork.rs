@@ -85,11 +85,11 @@ fn fork_port(sb: &Sandbox, name: &str) -> u16 {
         .unwrap() as u16
 }
 
-/// The anvil PID from the fork's sidecar.
+/// The anvil PID from the fork's record.
 fn anvil_pid(sb: &Sandbox, name: &str) -> u32 {
-    let bytes = fs::read(sb.forks_dir().join(format!("{name}.pids"))).unwrap();
-    let pids: Value = serde_json::from_slice(&bytes).unwrap();
-    pids["anvil"].as_u64().unwrap() as u32
+    record(sb, name).expect("registered")["anvil_pid"]
+        .as_u64()
+        .unwrap() as u32
 }
 
 fn registry_is_empty(sb: &Sandbox) -> bool {
@@ -552,16 +552,13 @@ fn orphaned_anvils_of_dead_supervisors_are_reaped() {
     for reaper in [vec!["fork", "ls"], vec!["fork", "local"]] {
         let (mut orphan, port) = spawn_anvil(&[], true);
         fs::create_dir_all(sb.forks_dir()).unwrap();
+        // A record with no lock holder: its supervisor is gone.
         fs::write(
             sb.forks_dir().join("old-fork.json"),
-            json!({"name": "old-fork", "pid": dead_pid, "port": port, "parent": "local",
-                   "chain_id": 31337, "fork_block": null, "started_at": 0})
+            json!({"format": 1, "name": "old-fork", "pid": dead_pid,
+                   "anvil_pid": orphan.0.id(), "port": port, "parent": "local",
+                   "chain_id": 31337, "fork_block": null, "started_at": 0, "ready": true})
             .to_string(),
-        )
-        .unwrap();
-        fs::write(
-            sb.forks_dir().join("old-fork.pids"),
-            json!({"supervisor": dead_pid, "anvil": orphan.0.id(), "port": port}).to_string(),
         )
         .unwrap();
 
@@ -861,11 +858,15 @@ fn replay_guards_on_a_fork_context() {
     fs::create_dir_all(sb.forks_dir()).unwrap();
     fs::write(
         sb.forks_dir().join("local-fork.json"),
-        json!({"name": "local-fork", "pid": std::process::id(), "port": 8601,
-               "parent": "local", "chain_id": 31337, "fork_block": null, "started_at": 0})
+        json!({"format": 1, "name": "local-fork", "pid": std::process::id(),
+               "anvil_pid": 1, "port": 8601, "parent": "local", "chain_id": 31337,
+               "fork_block": null, "started_at": 0, "ready": true})
         .to_string(),
     )
     .unwrap();
+    // Live while its lock is held: this test stands in for the supervisor.
+    let lock = fs::File::create(sb.forks_dir().join("local-fork.lock")).unwrap();
+    lock.try_lock().unwrap();
 
     // --expose-key is refused, with or without --explain.
     for extra in [&["--expose-key"][..], &["--expose-key", "--explain"][..]] {

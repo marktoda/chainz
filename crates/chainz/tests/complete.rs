@@ -146,24 +146,20 @@ fn chain_arguments_complete_names_and_aliases() {
 fn chain_arguments_include_live_forks_only() {
     let sb = fixture();
     fs::create_dir_all(sb.forks_dir()).unwrap();
-    let record = |name: &str, pid: u32| {
+    let record = |name: &str| {
         serde_json::json!({
-            "name": name, "pid": pid, "port": 8601, "parent": "base",
-            "chain_id": 8453, "fork_block": null, "started_at": 0
+            "format": 1, "name": name, "pid": std::process::id(), "anvil_pid": 1,
+            "port": 8601, "parent": "base", "chain_id": 8453, "fork_block": null,
+            "started_at": 0, "ready": true
         })
         .to_string()
     };
-    // This test process is alive; PID 0x7ffffffe is not.
-    fs::write(
-        sb.forks_dir().join("base-fork.json"),
-        record("base-fork", std::process::id()),
-    )
-    .unwrap();
-    fs::write(
-        sb.forks_dir().join("dead-fork.json"),
-        record("dead-fork", 0x7fff_fffe),
-    )
-    .unwrap();
+    // A fork is live while its lock is held: this test holds base-fork's.
+    for name in ["base-fork", "dead-fork"] {
+        fs::write(sb.forks_dir().join(format!("{name}.json")), record(name)).unwrap();
+    }
+    let lock = fs::File::create(sb.forks_dir().join("base-fork.lock")).unwrap();
+    lock.try_lock().unwrap();
     assert_set(fish(&sb, &["exec", "b"]), &["base", "base-fork"]);
     // Configured-only arguments never offer forks; `fork stop` offers all.
     assert_set(fish(&sb, &["rpc", "ls", "b"]), &["base"]);

@@ -1,19 +1,11 @@
-//! Process plumbing for forks: signals, liveness, the anvil child, and
-//! reaping what a dead supervisor left behind.
-//!
-//! A [`ForkRecord`](chainz_core::runtime::ForkRecord) is what other
-//! commands read (`exec`, `top`), and it is written only once the fork is
-//! up. Each fork also has a sidecar, `forks/<name>.pids`, created
-//! (exclusively) before anvil starts and naming the supervisor, then
-//! anvil and its port: it is both the claim on the name and what lets a
-//! later `chainz fork` find an orphaned anvil, including one whose
-//! supervisor died before registering.
+//! Process plumbing for forks: signals, the anvil child, and stopping
+//! processes. Which forks exist and which are alive is the core registry
+//! ([`Runtime::forks`]): a fork lives while its supervisor holds its lock.
 
 use crate::sys::{self, signal};
-use anyhow::{Context as _, Result, anyhow, bail};
+use anyhow::{Context as _, Result, anyhow};
 use chainz_core::paths;
-use chainz_core::runtime::Runtime;
-use serde::{Deserialize, Serialize};
+use chainz_core::runtime::{ForkEntry, ForkRecord, Runtime};
 use std::fs::File;
 use std::io;
 use std::path::PathBuf;
@@ -105,19 +97,6 @@ fn proc_info(pid: u32) -> Option<ProcInfo> {
     })
 }
 
-/// Whether `pid` is a live `chainz fork` supervisor. A recycled PID that
-/// now belongs to something else counts as dead.
-pub fn supervisor_alive(pid: u32) -> bool {
-    if !pid_exists(pid) {
-        return false;
-    }
-    match proc_info(pid) {
-        Some(info) => !info.zombie && info.args.iter().any(|a| a == "fork"),
-        // Exists but can't be inspected: assume it is ours.
-        None => true,
-    }
-}
-
 /// Whether `pid` is a live anvil on `port`. Only a process that provably
 /// looks like our anvil is ever signalled.
 pub fn anvil_alive(pid: u32, port: Option<u16>) -> bool {
@@ -182,157 +161,44 @@ pub fn kill_anvil(pid: u32, port: Option<u16>) {
 /// loaded machine is slow at all of it.
 const SUPERVISOR_GRACE: Duration = Duration::from_secs(10);
 
-/// Stop a supervisor: SIGTERM (it stops anvil and removes its record),
-/// then SIGKILL after [`SUPERVISOR_GRACE`].
-pub fn stop_supervisor(pid: u32) {
-    if !supervisor_alive(pid) {
-        return;
-    }
-    if sys::signal_process(pid, libc::SIGTERM).is_err() {
-        return;
-    }
-    if !wait_until(SUPERVISOR_GRACE, || !supervisor_alive(pid)) {
-        let _ = sys::signal_process(pid, libc::SIGKILL);
-        wait_until(Duration::from_secs(2), || !supervisor_alive(pid));
-    }
+/// Whether a supervisor still holds `name`'s lock. An unreadable lock
+/// counts as held: nothing is removed under a fork that may be alive.
+fn live(runtime: &Runtime, name: &str) -> bool {
+    runtime.fork_live(name).unwrap_or(true)
 }
 
-/// The sidecar: `forks/<name>.pids`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Pids {
-    /// Supervisor process ID.
-    pub supervisor: u32,
-    /// Anvil's process ID, once spawned.
-    pub anvil: Option<u32>,
-    /// Anvil's port, once chosen.
-    pub port: Option<u16>,
-}
-
-fn pids_path(runtime: &Runtime, name: &str) -> PathBuf {
-    runtime.forks_dir().join(format!("{name}.pids"))
-}
-
-fn read_pids(runtime: &Runtime, name: &str) -> Option<Pids> {
-    serde_json::from_slice(&std::fs::read(pids_path(runtime, name)).ok()?).ok()
-}
-
-/// Update the sidecar (atomic).
-pub fn write_pids(runtime: &Runtime, name: &str, pids: &Pids) -> Result<()> {
-    let bytes = serde_json::to_vec(pids)?;
-    chainz_sys::write_private(&pids_path(runtime, name), &bytes)
-        .context("unable to write the fork's pid file")
-}
-
-/// Claim `name` for this process. Fails if another live supervisor has it.
-pub fn claim(runtime: &Runtime, name: &str) -> Result<()> {
-    use std::io::Write;
-    runtime
-        .ensure_dir()
-        .context("unable to create the runtime directory")?;
-    let pids = Pids {
-        supervisor: std::process::id(),
-        anvil: None,
-        port: None,
-    };
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
+/// Stop a fork: SIGTERM its supervisor (which stops anvil and removes the
+/// fork's files), SIGKILL after [`SUPERVISOR_GRACE`], then reap whatever
+/// is left, anvil included.
+pub fn stop(runtime: &Runtime, entry: &ForkEntry) -> Result<()> {
+    // Signalled only while it holds the lock, so the PID is the holder's.
+    if let Some(pid) = entry.supervisor
+        && live(runtime, &entry.name)
+        && sys::signal_process(pid, libc::SIGTERM).is_ok()
+        && !wait_until(SUPERVISOR_GRACE, || !live(runtime, &entry.name))
+        && live(runtime, &entry.name)
     {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
+        let _ = sys::signal_process(pid, libc::SIGKILL);
+        wait_until(Duration::from_secs(2), || !live(runtime, &entry.name));
     }
-    match options.open(pids_path(runtime, name)) {
-        Ok(mut file) => Ok(file.write_all(&serde_json::to_vec(&pids)?)?),
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => bail!(
-            "fork '{name}' is already starting or running; stop it with `chainz fork stop {name}` or pick another --name"
-        ),
-        Err(e) => Err(e).context("unable to claim the fork name"),
-    }
+    runtime
+        .reap_fork(&entry.name, stop_orphan)
+        .with_context(|| format!("unable to remove fork '{}'", entry.name))?;
+    Ok(())
 }
 
-/// Remove a fork's record and sidecar.
-pub fn forget(runtime: &Runtime, name: &str) {
-    let _ = runtime.remove_fork(name);
-    let _ = std::fs::remove_file(pids_path(runtime, name));
+/// Remove every fork whose supervisor is gone, killing an anvil it left.
+/// Returns the names reaped.
+pub fn reap(runtime: &Runtime) -> Result<Vec<String>> {
+    runtime
+        .reap_forks(stop_orphan)
+        .context("unable to clean up the fork registry")
 }
 
-/// Remove a fork's record and sidecar if this process still owns them.
-pub fn release(runtime: &Runtime, name: &str) {
-    if read_pids(runtime, name).is_none_or(|p| p.supervisor == std::process::id()) {
-        forget(runtime, name);
-    }
-}
-
-/// A fork known to the registry: registered, or still starting.
-#[derive(Debug, Clone)]
-pub struct Entry {
-    /// Fork name.
-    pub name: String,
-    /// Supervisor PID.
-    pub supervisor: u32,
-    /// Anvil PID, when known.
-    pub anvil: Option<u32>,
-    /// Anvil port, when known.
-    pub port: Option<u16>,
-}
-
-/// Every fork with a record or a sidecar.
-pub fn entries(runtime: &Runtime) -> Vec<Entry> {
-    let mut names: Vec<String> = runtime
-        .list_forks()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|r| r.name)
-        .collect();
-    if let Ok(dir) = std::fs::read_dir(runtime.forks_dir()) {
-        for entry in dir.flatten() {
-            let path = entry.path();
-            if path.extension().is_some_and(|e| e == "pids")
-                && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
-            {
-                names.push(stem.to_string());
-            }
-        }
-    }
-    names.sort();
-    names.dedup();
-    names
-        .into_iter()
-        .filter_map(|name| {
-            let record = runtime.read_fork(&name).ok().flatten();
-            let pids = read_pids(runtime, &name);
-            let supervisor = record
-                .as_ref()
-                .map(|r| r.pid)
-                .or(pids.as_ref().map(|p| p.supervisor))?;
-            Some(Entry {
-                supervisor,
-                anvil: pids.as_ref().and_then(|p| p.anvil),
-                port: record
-                    .as_ref()
-                    .map(|r| r.port)
-                    .or(pids.as_ref().and_then(|p| p.port)),
-                name,
-            })
-        })
-        .collect()
-}
-
-/// Remove every fork whose supervisor is dead, killing its orphaned anvil
-/// (Linux's `PR_SET_PDEATHSIG` normally has already; macOS has no
-/// equivalent). Returns the names reaped.
-pub fn reap(runtime: &Runtime) -> Vec<String> {
-    let mut reaped = Vec::new();
-    for entry in entries(runtime) {
-        if supervisor_alive(entry.supervisor) {
-            continue;
-        }
-        if let Some(anvil) = entry.anvil {
-            kill_anvil(anvil, entry.port);
-        }
-        forget(runtime, &entry.name);
-        reaped.push(entry.name);
-    }
-    reaped
+/// A dead fork's anvil, if it is still there (macOS has no
+/// `PR_SET_PDEATHSIG`).
+fn stop_orphan(record: &ForkRecord) {
+    kill_anvil(record.anvil_pid, Some(record.port));
 }
 
 /// The fork's log: anvil's output, and the supervisor's when detached.
@@ -469,18 +335,6 @@ mod tests {
     use super::*;
     use chainz_core::runtime::ForkRecord;
 
-    fn record(name: &str, pid: u32, port: u16) -> ForkRecord {
-        ForkRecord {
-            name: name.into(),
-            pid,
-            port,
-            parent: "base".into(),
-            chain_id: 8453,
-            fork_block: None,
-            started_at: 0,
-        }
-    }
-
     /// A PID that existed and is gone.
     fn dead_pid() -> u32 {
         let mut child = Command::new("true").spawn().unwrap();
@@ -492,17 +346,12 @@ mod tests {
     #[test]
     fn liveness_needs_a_real_matching_process() {
         let dead = dead_pid();
-        assert!(!supervisor_alive(dead) && !anvil_alive(dead, None));
-        // This test process is alive, but is neither a supervisor nor anvil.
+        assert!(!anvil_alive(dead, None));
+        // This test process is alive, but is not anvil.
         let me = std::process::id();
         assert!(pid_exists(me));
         assert!(!anvil_alive(me, None));
-        assert!(!supervisor_alive(0));
-        // A zombie is not alive.
-        let mut child = Command::new("true").spawn().unwrap();
-        std::thread::sleep(Duration::from_millis(200));
-        assert!(!supervisor_alive(child.id()));
-        child.wait().unwrap();
+        assert!(!anvil_alive(0, None));
     }
 
     #[test]
@@ -530,57 +379,30 @@ mod tests {
     }
 
     #[test]
-    fn claims_are_exclusive_and_released_by_their_owner() {
+    fn reaping_signals_only_a_process_that_is_provably_anvil() {
         let dir = tempfile::tempdir().unwrap();
         let rt = Runtime::at(dir.path());
-        claim(&rt, "base-fork").unwrap();
-        let err = claim(&rt, "base-fork").unwrap_err().to_string();
-        assert!(err.contains("already starting or running"), "{err}");
-        // Releasing is a no-op for someone else's claim.
-        let mut theirs = read_pids(&rt, "base-fork").unwrap();
-        theirs.supervisor += 1;
-        write_pids(&rt, "base-fork", &theirs).unwrap();
-        release(&rt, "base-fork");
-        assert_eq!(entries(&rt).len(), 1);
-        forget(&rt, "base-fork");
-        claim(&rt, "base-fork").unwrap();
-        forget(&rt, "base-fork");
-        assert!(entries(&rt).is_empty());
-    }
-
-    #[test]
-    fn reaps_records_of_dead_supervisors_only() {
-        let dir = tempfile::tempdir().unwrap();
-        let rt = Runtime::at(dir.path());
-        let dead = dead_pid();
-        rt.write_fork(&record("gone-fork", dead, 8601)).unwrap();
-        write_pids(
-            &rt,
-            "gone-fork",
-            &Pids {
-                supervisor: dead,
-                anvil: Some(dead_pid()),
-                port: Some(8601),
-            },
+        // A dead fork (no lock holder) whose record names this test
+        // process as its anvil: reaped, and nothing is signalled.
+        let record = ForkRecord {
+            format: ForkRecord::FORMAT,
+            name: "gone-fork".into(),
+            pid: dead_pid(),
+            anvil_pid: std::process::id(),
+            port: 8601,
+            parent: "base".into(),
+            chain_id: 8453,
+            fork_block: None,
+            started_at: 0,
+            ready: true,
+        };
+        rt.ensure_dir().unwrap();
+        std::fs::write(
+            rt.forks_dir().join("gone-fork.json"),
+            serde_json::to_vec(&record).unwrap(),
         )
         .unwrap();
-        // A sidecar with no record: a supervisor that died while starting.
-        write_pids(
-            &rt,
-            "half-fork",
-            &Pids {
-                supervisor: dead,
-                anvil: None,
-                port: None,
-            },
-        )
-        .unwrap();
-        let found = entries(&rt);
-        assert_eq!(found.len(), 2);
-        assert_eq!(found[0].port, Some(8601));
-        assert_eq!((found[1].name.as_str(), found[1].port), ("half-fork", None));
-        assert_eq!(reap(&rt), vec!["gone-fork", "half-fork"]);
-        assert!(rt.list_forks().unwrap().is_empty());
+        assert_eq!(reap(&rt).unwrap(), ["gone-fork"]);
         assert!(std::fs::read_dir(rt.forks_dir()).unwrap().next().is_none());
     }
 }

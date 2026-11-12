@@ -315,6 +315,7 @@ dependencies = [
  "indexmap",
  "k256",
  "keyring",
+ "libc",
  "rand 0.9.5",
  "serde",
  "serde_json",

@@ -3,10 +3,10 @@
 use super::process;
 use super::start::anvil_target;
 use crate::commands::runtime;
-use crate::{net, view};
+use crate::{net, ui, view};
 use anyhow::{Context as _, Result, bail};
 use chainz_core::fmt::{group, uptime};
-use chainz_core::runtime::ForkRecord;
+use chainz_core::runtime::{ForkEntry, ForkRecord};
 use chainz_rpc::RpcClient;
 use chainz_sys::now_secs;
 use serde::Serialize;
@@ -16,11 +16,17 @@ use std::time::Duration;
 /// one busy fetching fork state, or a loaded machine, can be slow.
 const HEIGHT_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// One row of `fork ls --json`.
+/// One row of `fork ls --json`: the command's own contract, not the
+/// registry's record format.
 #[derive(Serialize)]
 struct ForkRow<'a> {
-    #[serde(flatten)]
-    record: &'a ForkRecord,
+    name: &'a str,
+    pid: u32,
+    port: u16,
+    parent: &'a str,
+    chain_id: u64,
+    fork_block: Option<u64>,
+    started_at: u64,
     url: String,
     /// The fork's current block height, if it answered.
     block: Option<u64>,
@@ -29,10 +35,16 @@ struct ForkRow<'a> {
 
 pub fn ls(json: bool) -> Result<i32> {
     let runtime = runtime()?;
-    process::reap(&runtime);
-    let forks = runtime
-        .list_forks()
+    process::reap(&runtime)?;
+    let entries = runtime
+        .forks()
         .context("unable to read the fork registry")?;
+    for entry in &entries {
+        if let (true, Err(e)) = (entry.live, &entry.record) {
+            eprintln!("{}", ui::warn(&format!("fork '{}': {e}", entry.name)));
+        }
+    }
+    let forks: Vec<&ForkRecord> = entries.iter().filter_map(|e| e.ready()).collect();
     if forks.is_empty() && !json {
         println!("no forks running (start one with `chainz fork CHAIN`)");
         return Ok(0);
@@ -43,7 +55,13 @@ pub fn ls(json: bool) -> Result<i32> {
         .iter()
         .zip(heights)
         .map(|(record, block)| ForkRow {
-            record,
+            name: &record.name,
+            pid: record.pid,
+            port: record.port,
+            parent: &record.parent,
+            chain_id: record.chain_id,
+            fork_block: record.fork_block,
+            started_at: record.started_at,
             url: record.rpc_url(),
             block,
             uptime_secs: now.saturating_sub(record.started_at),
@@ -57,12 +75,12 @@ pub fn ls(json: bool) -> Result<i32> {
         .iter()
         .map(|row| {
             [
-                row.record.name.clone(),
+                row.name.to_string(),
                 row.url.clone(),
-                row.record.parent.clone(),
+                row.parent.to_string(),
                 row.block.map_or_else(|| "-".to_string(), group),
                 uptime(row.uptime_secs),
-                row.record.pid.to_string(),
+                row.pid.to_string(),
             ]
         })
         .collect();
@@ -74,7 +92,7 @@ pub fn ls(json: bool) -> Result<i32> {
 }
 
 /// Every fork's block height, asked concurrently.
-async fn heights(forks: &[ForkRecord]) -> Vec<Option<u64>> {
+async fn heights(forks: &[&ForkRecord]) -> Vec<Option<u64>> {
     let client = RpcClient::with_timeout(HEIGHT_TIMEOUT);
     let mut set = tokio::task::JoinSet::new();
     for (index, fork) in forks.iter().enumerate() {
@@ -99,9 +117,11 @@ async fn heights(forks: &[ForkRecord]) -> Vec<Option<u64>> {
 
 pub fn stop(name: Option<&str>, all: bool) -> Result<i32> {
     let runtime = runtime()?;
-    process::reap(&runtime);
-    let entries = process::entries(&runtime);
-    let targets: Vec<process::Entry> = match (name, all) {
+    process::reap(&runtime)?;
+    let entries = runtime
+        .forks()
+        .context("unable to read the fork registry")?;
+    let targets: Vec<ForkEntry> = match (name, all) {
         (_, true) => entries,
         (Some(name), false) => {
             let live: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
@@ -118,11 +138,7 @@ pub fn stop(name: Option<&str>, all: bool) -> Result<i32> {
         return Ok(0);
     }
     for entry in targets {
-        process::stop_supervisor(entry.supervisor);
-        if let Some(anvil) = entry.anvil {
-            process::kill_anvil(anvil, entry.port);
-        }
-        process::forget(&runtime, &entry.name);
+        process::stop(&runtime, &entry)?;
         println!("stopped {}", entry.name);
     }
     Ok(0)

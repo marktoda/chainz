@@ -18,7 +18,7 @@ use chainz_core::contract::Env;
 use chainz_core::labels::LabelIndex;
 use chainz_core::model::Config;
 use chainz_core::resolve::{self, ChainRef};
-use chainz_core::runtime::{ForkRecord, Runtime};
+use chainz_core::runtime::{ForkEntry, Runtime};
 use clap::{Command, CommandFactory};
 use clap_complete::engine::{
     ArgValueCompleter, CompletionCandidate, PathCompleter, ValueCompleter,
@@ -151,7 +151,7 @@ fn chains(current: &OsStr, with_forks: bool) -> Vec<CompletionCandidate> {
         }
     }
     if with_forks {
-        for fork in live_forks() {
+        for fork in forks().iter().filter_map(ForkEntry::ready) {
             out.push(&fork.name, format!("fork of {}", fork.parent));
         }
     }
@@ -232,8 +232,12 @@ fn fork_names(current: &OsStr) -> Vec<CompletionCandidate> {
         return Vec::new();
     };
     let mut out = Candidates::new(prefix);
-    for fork in all_forks() {
-        out.push(&fork.name, format!("fork of {}", fork.parent));
+    for fork in forks() {
+        let about = match &fork.record {
+            Ok(Some(record)) => format!("fork of {}", record.parent),
+            _ => "fork".to_string(),
+        };
+        out.push(&fork.name, about);
     }
     out.done()
 }
@@ -433,19 +437,12 @@ fn load_config() -> Option<Config> {
         .map(|chainz| chainz.config().clone())
 }
 
-fn all_forks() -> Vec<ForkRecord> {
+/// Every fork in the registry, live or not (read-only).
+fn forks() -> Vec<ForkEntry> {
     Runtime::resolve()
         .ok()
-        .and_then(|runtime| runtime.list_forks().ok())
+        .and_then(|runtime| runtime.forks().ok())
         .unwrap_or_default()
-}
-
-fn live_forks() -> Vec<ForkRecord> {
-    all_forks().into_iter().filter(|f| alive(f.pid)).collect()
-}
-
-fn alive(pid: u32) -> bool {
-    i32::try_from(pid).is_ok_and(|pid| pid > 1 && crate::sys::signal(pid, 0))
 }
 
 /// Prefix-filtered, deduplicated candidates in insertion order.
