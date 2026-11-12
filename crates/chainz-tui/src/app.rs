@@ -40,45 +40,169 @@ impl Tab {
     }
 
     /// The key hints the footer shows on this tab, most useful first; the
-    /// last one (quit) is always shown. Each names a binding of
-    /// [`App::on_key`] on this tab.
-    pub fn hints(self) -> &'static [(&'static str, &'static str)] {
+    /// last one (quit) is always shown. They come from the bindings
+    /// [`App::on_key`] dispatches through.
+    pub fn hints(self) -> Vec<(&'static str, &'static str)> {
+        self.bindings()
+            .iter()
+            .chain(COMMON)
+            .filter(|b| !b.hint.is_empty())
+            .map(|b| (b.label, b.hint))
+            .collect()
+    }
+
+    /// This tab's own bindings, before [`COMMON`]; hinted ones in footer
+    /// order.
+    fn bindings(self) -> &'static [Binding] {
         match self {
-            Tab::Chains => &[
-                ("enter", "endpoints"),
-                ("b", "balances"),
-                ("r", "refresh"),
-                ("s", "set rpc"),
-                ("e", "exec shell"),
-                ("/", "filter"),
-                ("y", "copy url"),
-                ("q", "quit"),
-            ],
-            Tab::Endpoints => &[
-                ("s", "set rpc"),
-                ("h/l", "chain"),
-                ("r", "probe now"),
-                ("y", "copy url"),
-                ("e", "exec shell"),
-                ("esc", "back"),
-                ("q", "quit"),
-            ],
-            Tab::Balances => &[
-                ("h/l", "signer"),
-                ("r", "refresh"),
-                ("y", "copy address"),
-                ("/", "filter"),
-                ("e", "exec shell"),
-                ("q", "quit"),
-            ],
-            Tab::Traffic => &[("r", "refresh"), (TAB_KEYS, "tabs"), ("q", "quit")],
+            Tab::Chains => CHAINS_KEYS,
+            Tab::Endpoints => ENDPOINTS_KEYS,
+            Tab::Balances => BALANCES_KEYS,
+            Tab::Traffic => TRAFFIC_KEYS,
         }
     }
 }
 
-/// The number keys that pick a tab, as the footer names them.
-const TAB_KEYS: &str = "1-4";
-const _: () = assert!(Tab::ALL.len() == 4, "TAB_KEYS names one key per tab");
+const CHAINS_KEYS: &[Binding] = {
+    use KeyCode::{Char, Enter};
+    &[
+        bind(
+            "enter",
+            "endpoints",
+            &[Enter],
+            Command::Open(Tab::Endpoints),
+        ),
+        bind("b", "balances", &[Char('b')], Command::Open(Tab::Balances)),
+        bind("r", "refresh", &[Char('r')], Command::Refresh),
+        bind("s", "set rpc", &[Char('s')], Command::SetRpc),
+        bind("e", "exec shell", &[Char('e')], Command::Shell),
+        bind("/", "filter", &[Char('/')], Command::Filter),
+        bind("y", "copy url", &[Char('y')], Command::Copy),
+    ]
+};
+const ENDPOINTS_KEYS: &[Binding] = {
+    use KeyCode::{Char, Esc, Right};
+    &[
+        bind("s", "set rpc", &[Char('s')], Command::SetRpc),
+        bind("h/l", "chain", &[Char('l'), Right], Command::Sidestep(1)),
+        bind("r", "probe now", &[Char('r')], Command::Refresh),
+        bind("y", "copy url", &[Char('y')], Command::Copy),
+        bind("e", "exec shell", &[Char('e')], Command::Shell),
+        bind("esc", "back", &[Esc], Command::Back),
+    ]
+};
+const BALANCES_KEYS: &[Binding] = {
+    use KeyCode::{Char, Right};
+    &[
+        bind("h/l", "signer", &[Char('l'), Right], Command::Sidestep(1)),
+        bind("r", "refresh", &[Char('r')], Command::Refresh),
+        bind("y", "copy address", &[Char('y')], Command::Copy),
+        bind("/", "filter", &[Char('/')], Command::Filter),
+        bind("e", "exec shell", &[Char('e')], Command::Shell),
+    ]
+};
+const TRAFFIC_KEYS: &[Binding] = {
+    use KeyCode::Char;
+    &[
+        bind("r", "refresh", &[Char('r')], Command::Refresh),
+        bind(
+            "1-4",
+            "tabs",
+            &[Char('1'), Char('2'), Char('3'), Char('4')],
+            Command::NumberedTab,
+        ),
+    ]
+};
+
+const _: () = assert!(Tab::ALL.len() == 4, "the `1-4` hint names one key per tab");
+
+/// What a key does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Command {
+    Quit,
+    /// Clear the filter, else go back to the Chains tab.
+    Back,
+    Open(Tab),
+    /// The tab a digit key names.
+    NumberedTab,
+    NextTab,
+    PreviousTab,
+    /// Move the selection by this many rows.
+    Step(isize),
+    /// The next (or previous) signer or chain, by tab.
+    Sidestep(isize),
+    Filter,
+    Refresh,
+    SetRpc,
+    Shell,
+    Copy,
+}
+
+/// One key binding, and its footer hint (`label: hint`) when it has one.
+#[derive(Debug)]
+struct Binding {
+    keys: &'static [KeyCode],
+    label: &'static str,
+    hint: &'static str,
+    command: Command,
+}
+
+const fn bind(
+    label: &'static str,
+    hint: &'static str,
+    keys: &'static [KeyCode],
+    command: Command,
+) -> Binding {
+    Binding {
+        keys,
+        label,
+        hint,
+        command,
+    }
+}
+
+const fn hidden(keys: &'static [KeyCode], command: Command) -> Binding {
+    bind("", "", keys, command)
+}
+
+/// The bindings of every tab, after its own ([`Tab::bindings`]).
+const COMMON: &[Binding] = {
+    use KeyCode::{
+        BackTab, Char, Down, End, Esc, Home, Left, PageDown, PageUp, Right, Tab as TabKey, Up,
+    };
+    &[
+        hidden(&[Esc], Command::Back),
+        hidden(
+            &[
+                Char('1'),
+                Char('2'),
+                Char('3'),
+                Char('4'),
+                Char('5'),
+                Char('6'),
+                Char('7'),
+                Char('8'),
+                Char('9'),
+            ],
+            Command::NumberedTab,
+        ),
+        hidden(&[TabKey], Command::NextTab),
+        hidden(&[BackTab], Command::PreviousTab),
+        hidden(&[Char('b')], Command::Open(Tab::Balances)),
+        hidden(&[Char('j'), Down], Command::Step(1)),
+        hidden(&[Char('k'), Up], Command::Step(-1)),
+        hidden(&[PageDown], Command::Step(10)),
+        hidden(&[PageUp], Command::Step(-10)),
+        hidden(&[Char('g'), Home], Command::Step(isize::MIN)),
+        hidden(&[Char('G'), End], Command::Step(isize::MAX)),
+        hidden(&[Char('l'), Right], Command::Sidestep(1)),
+        hidden(&[Char('h'), Left], Command::Sidestep(-1)),
+        hidden(&[Char('r')], Command::Refresh),
+        hidden(&[Char('s')], Command::SetRpc),
+        hidden(&[Char('y')], Command::Copy),
+        bind("q", "quit", &[Char('q')], Command::Quit),
+    ]
+};
 
 /// A table that remembers its scroll position between frames.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -322,51 +446,50 @@ impl App {
             self.scroll(ScrollSlot::Chains).set(0);
             return Action::None;
         }
-        match key.code {
-            KeyCode::Char('q') => return Action::Quit,
-            KeyCode::Esc => {
+        let command = self
+            .tab
+            .bindings()
+            .iter()
+            .chain(COMMON)
+            .find(|b| b.keys.contains(&key.code))
+            .map(|b| b.command);
+        match command {
+            None => {}
+            Some(Command::Quit) => return Action::Quit,
+            Some(Command::Back) => {
                 if !self.filter.is_empty() {
                     self.filter.clear();
                 } else if self.tab != Tab::Chains {
                     self.tab = Tab::Chains;
                 }
             }
-            KeyCode::Char(c @ '1'..='9') => {
-                let n = c as usize - '1' as usize;
-                if let Some(tab) = Tab::ALL.get(n) {
+            Some(Command::Open(tab)) => self.open(tab, state),
+            Some(Command::NumberedTab) => {
+                if let KeyCode::Char(c @ '1'..='9') = key.code
+                    && let Some(tab) = Tab::ALL.get(c as usize - '1' as usize)
+                {
                     self.open(*tab, state);
                 }
             }
-            KeyCode::Tab => {
+            Some(Command::NextTab) => {
                 let next = (self.tab.index() + 1) % Tab::ALL.len();
                 self.open(Tab::ALL[next], state);
             }
-            KeyCode::BackTab => {
+            Some(Command::PreviousTab) => {
                 let previous = (self.tab.index() + Tab::ALL.len() - 1) % Tab::ALL.len();
                 self.open(Tab::ALL[previous], state);
             }
-            KeyCode::Char('b') => self.open(Tab::Balances, state),
-            KeyCode::Char('j') | KeyCode::Down => self.step(state, 1),
-            KeyCode::Char('k') | KeyCode::Up => self.step(state, -1),
-            KeyCode::PageDown => self.step(state, 10),
-            KeyCode::PageUp => self.step(state, -10),
-            KeyCode::Char('g') | KeyCode::Home => self.step(state, isize::MIN),
-            KeyCode::Char('G') | KeyCode::End => self.step(state, isize::MAX),
-            KeyCode::Char('l') | KeyCode::Right => self.sidestep(state, 1),
-            KeyCode::Char('h') | KeyCode::Left => self.sidestep(state, -1),
-            KeyCode::Char('/') if matches!(self.tab, Tab::Chains | Tab::Balances) => {
-                self.filtering = true;
-            }
-            KeyCode::Enter if self.tab == Tab::Chains => self.open(Tab::Endpoints, state),
-            KeyCode::Char('r') => return self.refresh(now_ms),
-            KeyCode::Char('s') => return self.set_rpc(state, now_ms),
-            KeyCode::Char('e') if self.tab != Tab::Traffic => {
+            Some(Command::Step(delta)) => self.step(state, delta),
+            Some(Command::Sidestep(delta)) => self.sidestep(state, delta),
+            Some(Command::Filter) => self.filtering = true,
+            Some(Command::Refresh) => return self.refresh(now_ms),
+            Some(Command::SetRpc) => return self.set_rpc(state, now_ms),
+            Some(Command::Shell) => {
                 if let Some(chain) = self.selected(state) {
                     return Action::Shell(chain.info.name.clone());
                 }
             }
-            KeyCode::Char('y') => return self.copy(state),
-            _ => {}
+            Some(Command::Copy) => return self.copy(state),
         }
         Action::None
     }
@@ -464,16 +587,23 @@ mod tests {
 
     const NOW: u64 = 1_700_000_000_000;
 
-    /// `s` does one thing (set the active RPC; on Chains it opens the
-    /// endpoint list for that) and reads the same on both tabs.
+    /// A hinted binding is the one `on_key` uses for its keys on that tab:
+    /// no hint is shadowed by an earlier binding of the same key.
     #[test]
-    fn s_reads_the_same_on_every_tab() {
-        let s: Vec<&str> = [Tab::Chains, Tab::Endpoints]
-            .into_iter()
-            .flat_map(|tab| tab.hints().iter().filter(|(k, _)| *k == "s"))
-            .map(|(_, name)| *name)
-            .collect();
-        assert_eq!(s, ["set rpc", "set rpc"]);
+    fn every_hint_names_the_binding_its_keys_reach() {
+        for tab in Tab::ALL {
+            let bindings: Vec<&Binding> = tab.bindings().iter().chain(COMMON).collect();
+            for (i, hinted) in bindings
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| !b.hint.is_empty())
+            {
+                for key in hinted.keys {
+                    let first = bindings.iter().position(|b| b.keys.contains(key));
+                    assert_eq!(first, Some(i), "{tab:?}: {} {key:?}", hinted.label);
+                }
+            }
+        }
     }
 
     fn state() -> State {
