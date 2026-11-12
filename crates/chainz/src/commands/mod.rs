@@ -53,7 +53,7 @@ pub fn dispatch(opt: Opt) -> Result<i32> {
         }
         Command::Config { cmd } => config::run(cmd),
         Command::Completions { shell } => {
-            clap_complete::generate(shell, &mut Opt::command(), "chainz", &mut std::io::stdout());
+            crate::complete::write_loader(shell, &mut std::io::stdout().lock())?;
             Ok(0)
         }
     }

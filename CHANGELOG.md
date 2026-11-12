@@ -45,12 +45,18 @@ A ground-up rewrite as a local multichain workbench. The design is in
 - `rpc bench` and `rpc discover` probe, rank and tag endpoints.
   `doctor --tokens` verifies the built-in token registry on chain.
 - Foundry keystore signers (`--backend keystore`), exported as `ETH_KEYSTORE`.
+- Dynamic shell completions: `source <(chainz completions zsh)` (or bash,
+  fish, elvish, powershell) completes chain names, aliases and live forks,
+  the typed chain's endpoints for `--rpc`, signers, labels, variables, and
+  `exec`'s `@tokens`, including `@label:chain`, from the current config.
 - Per-endpoint HTTP headers (`rpc add --header "name: value"`), applied by
   probes and the gateway, and exported as `ETH_RPC_HEADERS` on direct
   connections. (This was unreleased in 0.x; v1 configs that use it migrate.)
 
 ### Changed
 
+- `completions <shell>` prints a loader that calls back into chainz instead
+  of a static script; re-source it from your shell rc (see README).
 - The config is hand-editable TOML that keeps your ordering;
   `config edit` and `chain edit` validate on save.
 - Read-only commands no longer take the config lock.

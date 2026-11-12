@@ -145,7 +145,18 @@ pub enum Command {
         cmd: ConfigCommand,
     },
 
-    /// Generate shell completions
+    /// Print the shell loader for dynamic completions
+    ///
+    /// The loader calls back into chainz as you type, so chain names,
+    /// endpoints, signers, labels, variables and exec's @tokens come from
+    /// your current config. Load it at shell startup:
+    ///
+    ///   zsh:        source <(chainz completions zsh)      (after compinit)
+    ///   bash:       source <(chainz completions bash)
+    ///   fish:       chainz completions fish | source
+    ///   elvish:     eval (chainz completions elvish | slurp)
+    ///   powershell: chainz completions powershell | Out-String | Invoke-Expression
+    #[command(verbatim_doc_comment)]
     Completions {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
