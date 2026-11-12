@@ -218,11 +218,6 @@ impl Dashboard {
         }
     }
 
-    /// Stop the workers.
-    fn stop(&mut self) {
-        self.engine = None;
-    }
-
     /// Move the workers to the config as it is now: a running engine
     /// restarts only what changed; a stopped one starts.
     fn start(&mut self) {
@@ -299,7 +294,7 @@ impl Dashboard {
     /// Hand the terminal to a shell for `chain` and take it back.
     fn shell(&mut self, screen: &mut Screen, chain: &str) -> Result<()> {
         // Nothing polls while the dashboard is not on screen.
-        self.stop();
+        self.engine = None;
         restore();
         let outcome = {
             // ^C belongs to the shell: while we wait, the signal must not
@@ -474,7 +469,7 @@ mod tests {
 
         // `e`: the workers stop while the shell has the terminal, and the
         // shell leaves a broken config behind.
-        dash.stop();
+        dash.engine = None;
         write_config(&paths, "version = 2\n[chains.eth\n");
         dash.reload();
         assert!(dash.engine.is_some(), "the workers run on the old config");

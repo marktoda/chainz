@@ -61,8 +61,6 @@ pub struct ChainState {
     pub source: Source,
     /// The last head read successfully.
     pub head: Option<Head>,
-    /// When the last poll finished, unix milliseconds.
-    pub polled_at_ms: Option<u64>,
     /// Why the last poll failed, if it did.
     pub fault: Option<Fault>,
     /// Whether the last poll went through the gateway.
@@ -116,7 +114,6 @@ impl ChainState {
             info: plan.info.clone(),
             source: plan.source,
             head: None,
-            polled_at_ms: None,
             fault: None,
             via_gateway: false,
             block_time: None,
@@ -218,7 +215,6 @@ impl State {
             chain.balances_at_ms = old.balances_at_ms;
             if old.source == chain.source {
                 chain.head = old.head.clone();
-                chain.polled_at_ms = old.polled_at_ms;
                 chain.fault = old.fault.clone();
                 chain.via_gateway = old.via_gateway;
                 chain.lag = old.lag;
@@ -303,7 +299,6 @@ impl State {
                 let Some(c) = self.chain_from(&chain, source) else {
                     return;
                 };
-                c.polled_at_ms = Some(at_ms);
                 c.via_gateway = via_gateway;
                 if block_time.is_some() {
                     c.block_time = block_time;

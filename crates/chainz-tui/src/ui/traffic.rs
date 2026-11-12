@@ -58,7 +58,7 @@ fn feed_grid(ctx: Ctx, rows: usize) -> Grid {
         };
         grid.rows.push(vec![
             Cell::new(
-                fmt::age(ctx.now_ms.saturating_sub(item.at_ms) / 1_000),
+                core_fmt::age(ctx.now_ms.saturating_sub(item.at_ms) / 1_000),
                 t.dim(),
             ),
             Cell::new(item.chain.clone(), t.text()),

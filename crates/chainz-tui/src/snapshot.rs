@@ -174,7 +174,7 @@ pub struct TokenBalance {
 }
 
 fn amount(a: view::Amount) -> Amount {
-    let raw = a.exact();
+    let raw = view::exact(a.raw);
     Amount {
         symbol: a.symbol.to_string(),
         decimals: a.decimals,

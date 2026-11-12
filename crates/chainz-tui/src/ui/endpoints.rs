@@ -24,7 +24,7 @@ pub(super) fn body(ctx: Ctx) -> Body {
         Some(at) => Span::styled(
             format!(
                 "probed {} ago",
-                fmt::age(ctx.now_ms.saturating_sub(at) / 1_000)
+                core_fmt::age(ctx.now_ms.saturating_sub(at) / 1_000)
             ),
             t.dim(),
         ),

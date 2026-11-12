@@ -113,19 +113,12 @@ pub fn exact(raw: u128) -> Option<u128> {
 /// An amount in raw units.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Amount<'a> {
-    /// Raw units; [`SATURATED`] when the read saturated (see [`Amount::exact`]).
+    /// Raw units; [`SATURATED`] when the read saturated (see [`exact`]).
     pub raw: u128,
     /// Decimals.
     pub decimals: u8,
     /// Currency symbol.
     pub symbol: &'a str,
-}
-
-impl Amount<'_> {
-    /// The raw value, unless it is [`SATURATED`].
-    pub fn exact(&self) -> Option<u128> {
-        exact(self.raw)
-    }
 }
 
 /// One balance cell.

@@ -225,21 +225,19 @@ async fn a_poller_paces_by_the_idle_flag_and_the_last_retry_after() {
 }
 
 #[test]
-fn faults_keep_the_code_and_the_retry_after() {
+fn faults_keep_the_retry_after() {
     let limited = RpcError::RateLimited {
         retry_after: Some(Duration::from_secs(7)),
     };
     let fault = Fault::from(&limited);
     assert_eq!(fault.class, FaultClass::Rpc(ErrorClass::RateLimited));
     assert_eq!(fault.retry_after, Some(Duration::from_secs(7)));
-    assert_eq!(fault.code, None);
     let rpc = |code: i64, message: &str| {
         Fault::from(&RpcError::Rpc {
             code,
             message: message.into(),
         })
     };
-    assert_eq!(rpc(-32005, "limit exceeded").code, Some(-32005));
     // "Limit exceeded" is the code, not a substring of the message.
     assert!(rpc(-32005, "limit exceeded").rate_limited);
     assert!(fault.rate_limited);

@@ -63,7 +63,7 @@ fn row(r: &ChainRow, t: Theme) -> Vec<Cell> {
                 Status::Down(_) => t.dim(),
                 _ => t.text(),
             };
-            Cell::new(fmt::age(age), style)
+            Cell::new(core_fmt::age(age), style)
         }),
         r.block_time_secs
             .map_or_else(blank, |secs| Cell::new(fmt::block_time(secs), t.dim())),

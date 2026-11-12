@@ -17,10 +17,6 @@ use crate::plan::{Plan, Source};
 /// The frame clock: unix milliseconds.
 pub(crate) const NOW: u64 = 1_700_000_000_000;
 
-fn empty_store() -> HealthStore {
-    HealthStore::empty()
-}
-
 fn fixture_plan() -> std::sync::Arc<Plan> {
     let eth = chain(
         "eth",
@@ -108,7 +104,7 @@ fn sheet(via: Via, default: (u128, u128, u128), funder: (u128, u128, u128)) -> S
 
 /// Six chains in every state the Chains tab can show.
 pub(crate) fn fixture() -> State {
-    let mut state = State::new(&fixture_plan(), &empty_store());
+    let mut state = State::new(&fixture_plan(), &HealthStore::empty());
     let eth = 1_000_000_000_000_000_000u128;
     let updates = vec![
         // eth: its endpoints probed, one of them ahead of nobody.
@@ -357,7 +353,7 @@ fn chains_tab_narrows_by_dropping_columns_never_rows() {
 #[test]
 fn chains_tab_empty_filtered_and_scrolled() {
     // No chains configured.
-    let nothing = State::new(&plan(vec![]), &empty_store());
+    let nothing = State::new(&plan(vec![]), &HealthStore::empty());
     let text = frame(&app(Tab::Chains), &nothing, 80, 12);
     assert!(text.contains("No chains configured yet."), "{text}");
     assert!(text.contains("chainz add base"), "{text}");
@@ -468,7 +464,7 @@ fn endpoints_tab_redacts_urls_and_follows_the_selection() {
     assert!(frame(&second, &state, 100, 11).contains("▸  llama"));
 
     // No chains at all.
-    let nothing = State::new(&plan(vec![]), &empty_store());
+    let nothing = State::new(&plan(vec![]), &HealthStore::empty());
     assert!(frame(&app(Tab::Endpoints), &nothing, 80, 10).contains("No chain selected."));
 }
 
@@ -577,7 +573,7 @@ fn balances_tab_empty_states() {
 
     let mut bare = (*fixture_plan()).clone();
     bare.signers.clear();
-    let state = State::new(&bare, &empty_store());
+    let state = State::new(&bare, &HealthStore::empty());
     let text = frame(&app(Tab::Balances), &state, 100, 12);
     assert!(text.contains("No signer has a cached address."), "{text}");
     assert!(text.contains("chainz signer add NAME"), "{text}");

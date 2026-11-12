@@ -1,6 +1,5 @@
 //! Number, time and text formatting shared by the renderer and `--once`.
 
-pub use chainz_core::fmt::age;
 use chainz_core::fmt::group;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 

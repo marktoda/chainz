@@ -33,8 +33,6 @@ pub struct Fault {
     pub class: FaultClass,
     /// Human-readable text; never a URL or a header value.
     pub message: String,
-    /// The JSON-RPC error code, when the endpoint answered with one.
-    pub code: Option<i64>,
     /// How long a rate-limited endpoint asked to be left alone
     /// (`Retry-After`), when it said.
     pub retry_after: Option<Duration>,
@@ -44,12 +42,11 @@ pub struct Fault {
 }
 
 impl Fault {
-    /// A fault of RPC class `class`, with no code and no retry hint.
+    /// A fault of RPC class `class`, with no retry hint.
     pub fn new(class: ErrorClass, message: impl Into<String>) -> Self {
         Fault {
             class: FaultClass::Rpc(class),
             message: message.into(),
-            code: None,
             retry_after: None,
             rate_limited: false,
         }
@@ -60,7 +57,6 @@ impl Fault {
         Fault {
             class: FaultClass::Internal,
             message: message.into(),
-            code: None,
             retry_after: None,
             rate_limited: false,
         }
@@ -72,10 +68,6 @@ impl From<&RpcError> for Fault {
         Fault {
             class: FaultClass::Rpc(error.class()),
             message: error.to_string(),
-            code: match error {
-                RpcError::Rpc { code, .. } => Some(*code),
-                _ => None,
-            },
             retry_after: match error {
                 RpcError::RateLimited { retry_after } => *retry_after,
                 _ => None,

@@ -18,7 +18,7 @@ fn balance_cell(balance: Balance, with_symbol: bool, t: Theme) -> Cell {
         Balance::Failed => Cell::new("?", t.warn()),
         Balance::Read(amount) => {
             let style = if amount.raw == 0 { t.faint() } else { t.text() };
-            let text = match amount.exact() {
+            let text = match view::exact(amount.raw) {
                 Some(raw) => fmt::units(raw, amount.decimals),
                 // Past what a u128 holds: 3.4e38 raw units or more.
                 None => ">3.4e38".into(),
@@ -113,7 +113,10 @@ pub(crate) fn body(ctx: Ctx) -> Body {
         cells.push(match (&chain.balance_fault, chain.balances_at_ms) {
             (Some(fault), _) => Cell::new(fault.class.to_string(), t.bad()),
             (None, Some(at)) => Cell::new(
-                format!("{} ago", fmt::age(ctx.now_ms.saturating_sub(at) / 1_000)),
+                format!(
+                    "{} ago",
+                    core_fmt::age(ctx.now_ms.saturating_sub(at) / 1_000)
+                ),
                 t.dim(),
             ),
             (None, None) => Cell::new("…", t.faint()),
