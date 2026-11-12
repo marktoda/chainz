@@ -8,6 +8,10 @@ use std::time::Duration;
 /// limits inside a 2xx answer.
 pub const LIMIT_EXCEEDED: i64 = -32005;
 
+/// The generic JSON-RPC server error code, for an error with no more
+/// specific code (the chainz proxies answer with it when no upstream did).
+pub const SERVER_ERROR: i64 = -32000;
+
 /// An error from talking to one JSON-RPC endpoint.
 ///
 /// The `Display` text is safe to show to users and to log: it never includes

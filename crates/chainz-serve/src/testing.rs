@@ -12,7 +12,8 @@ use tokio::net::UnixListener;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
-use crate::control::{self, ControlState, EventRing};
+use crate::control::{self, ControlState};
+use crate::events::EventRing;
 use crate::http;
 
 struct Canned {

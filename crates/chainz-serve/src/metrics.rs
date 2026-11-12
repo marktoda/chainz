@@ -13,6 +13,8 @@ use std::sync::Mutex;
 use chainz_rpc::ErrorClass;
 use chainz_rpc::control::{MetricsRow, MetricsSnapshot, MetricsTotals, MetricsWindow, Window};
 
+use crate::percentile::percentile;
+
 const SHORT_WINDOW: u64 = Window::Short.secs();
 const LONG_WINDOW: u64 = Window::Long.secs();
 
@@ -239,21 +241,6 @@ impl Metrics {
             windows: vec![short.finish(Window::Short), long.finish(Window::Long)],
         }
     }
-
-    /// Totals over the short window. Series with no traffic left are
-    /// dropped here too, so they don't pile up while nobody asks for a
-    /// snapshot.
-    pub fn summary(&self, now: u64) -> MetricsTotals {
-        let mut store = self.lock();
-        store.prune(now);
-        let mut all = Bucket::default();
-        for s in store.series.values_mut() {
-            if let Some(total) = s.short.total(now) {
-                all.merge(&total);
-            }
-        }
-        totals(all)
-    }
 }
 
 /// One window's rows, and their totals overall and per chain.
@@ -313,16 +300,6 @@ fn row(key: &Key, mut total: Bucket) -> MetricsRow {
         failovers: total.failovers,
         bytes: total.bytes,
     }
-}
-
-/// Nearest-rank percentile; 0 for no samples.
-fn percentile(samples: &mut [u32], pct: usize) -> u32 {
-    if samples.is_empty() {
-        return 0;
-    }
-    samples.sort_unstable();
-    let rank = (samples.len() * pct).div_ceil(100).max(1);
-    samples[rank - 1]
 }
 
 #[cfg(test)]
@@ -398,7 +375,7 @@ mod tests {
                 ("eth", "llama", "eth_call")
             ]
         );
-        let s = m.summary(10);
+        let s = m.snapshot(10).windows[0].totals.unwrap();
         assert_eq!((s.requests, s.errors, s.p50_ms), (3, 0, 5));
     }
 
@@ -427,12 +404,6 @@ mod tests {
         let store = m.lock();
         assert_eq!(store.series.len(), 1);
         assert!(store.series.keys().all(|k| k.2 == "eth_call"));
-        drop(store);
-
-        // `summary` (the live status line) prunes too.
-        m.record(later, "eth", "a", "eth_getLogs", &ok(1));
-        m.summary(later + LONG_WINDOW + LONG_BUCKET);
-        assert!(m.lock().series.is_empty());
     }
 
     #[test]
@@ -446,7 +417,7 @@ mod tests {
         assert_eq!((row.rate_limited, row.failovers), (2, 1));
         assert_eq!((row.p50_ms, row.p95_ms), (40, 40), "no zero latencies");
         assert!(row.errors.is_empty());
-        let s = m.summary(10);
+        let s = m.snapshot(10).windows[0].totals.unwrap();
         assert_eq!((s.requests, s.rate_limited, s.p50_ms), (1, 2, 40));
     }
 
@@ -467,18 +438,9 @@ mod tests {
         let eth = short.chains["eth"];
         assert_eq!((eth.requests, eth.p50_ms, eth.p95_ms), (4, 10, 70));
         assert_eq!(short.chains["base"].requests, 1);
-        assert_eq!(m.summary(10), all, "the live line agrees with status");
         // An idle window still says so.
         let idle = Metrics::default().snapshot(10).windows.remove(0);
         assert_eq!(idle.totals, Some(MetricsTotals::default()));
         assert!(idle.chains.is_empty());
-    }
-
-    #[test]
-    fn percentiles() {
-        assert_eq!(percentile(&mut [], 50), 0);
-        assert_eq!(percentile(&mut [7], 95), 7);
-        assert_eq!(percentile(&mut [4, 1, 3, 2], 50), 2);
-        assert_eq!(percentile(&mut [4, 1, 3, 2], 95), 4);
     }
 }

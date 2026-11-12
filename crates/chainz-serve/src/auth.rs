@@ -10,6 +10,10 @@
 //! The servers listen on `127.0.0.1` only, so `Host: [::1]` (a client that
 //! connected over IPv6) can't be one of their own requests and is refused.
 
+use std::net::Ipv4Addr;
+
+use chainz_core::runtime::LOOPBACK;
+
 /// Random bytes in a token (256 bits).
 pub const TOKEN_BYTES: usize = 32;
 
@@ -31,8 +35,9 @@ pub fn token_matches(given: &str, expected: &str) -> bool {
             == 0
 }
 
-/// Whether a `Host` header value names this server: `127.0.0.1` or
-/// `localhost` (any case), with `port` or with no port. A missing header
+/// Whether a `Host` header value names this server: the address every
+/// listener binds ([`LOOPBACK`], `127.0.0.1`) or `localhost` (any case),
+/// with `port` or with no port. A missing header
 /// (or one that isn't text) is refused.
 pub fn host_allowed(host: Option<&str>, port: u16) -> bool {
     let Some(host) = host else {
@@ -42,7 +47,7 @@ pub fn host_allowed(host: Option<&str>, port: u16) -> bool {
         Some((name, port)) => (name, Some(port)),
         None => (host, None),
     };
-    (name == "127.0.0.1" || name.eq_ignore_ascii_case("localhost"))
+    (name.parse::<Ipv4Addr>() == Ok(LOOPBACK) || name.eq_ignore_ascii_case("localhost"))
         && host_port.is_none_or(|p| p.parse() == Ok(port))
 }
 

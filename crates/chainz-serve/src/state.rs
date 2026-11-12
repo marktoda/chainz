@@ -320,8 +320,9 @@ impl ChainState {
     }
 }
 
-/// The files a snapshot was built from, as they were just before it was
-/// read: the watcher reloads when they change.
+/// The files a snapshot was built from, as they were just before they were
+/// read: the watcher reloads when the config files change, and re-reads
+/// capability tags when the health store does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Stamps {
     /// `config.toml`.
@@ -341,6 +342,12 @@ impl Stamps {
             health: state_dir.and_then(|dir| FileStamp::of(&HealthStore::path(dir))),
         }
     }
+
+    /// Whether the config files are as in `other` (the health store
+    /// aside).
+    pub fn same_config(&self, other: &Stamps) -> bool {
+        (self.config, self.secrets) == (other.config, other.secrets)
+    }
 }
 
 /// Everything the router needs, built from one read of the config.
@@ -357,8 +364,9 @@ pub struct Snapshot {
     /// (websockets excluded: those are expected), and an unreadable health
     /// store.
     pub warnings: Vec<String>,
-    /// The files as they were just before they were read.
-    pub stamps: Stamps,
+    /// The files as they were just before they were read; the health
+    /// stamp moves on when capability tags are re-read.
+    stamps: Mutex<Stamps>,
 }
 
 impl std::fmt::Debug for Snapshot {
@@ -367,7 +375,7 @@ impl std::fmt::Debug for Snapshot {
             .field("chains", &self.chains)
             .field("labels", &self.labels)
             .field("warnings", &self.warnings)
-            .field("stamps", &self.stamps)
+            .field("stamps", &self.stamps())
             .finish_non_exhaustive()
     }
 }
@@ -473,7 +481,7 @@ impl Snapshot {
             labels: LabelIndex::new(config),
             config: config.clone(),
             warnings,
-            stamps,
+            stamps: Mutex::new(stamps),
         })
     }
 
@@ -484,8 +492,18 @@ impl Snapshot {
         self.chains.get(*self.index.get(name)?)
     }
 
-    /// Re-read capability tags from the health store.
+    /// The files this snapshot reflects, as they were just before they were
+    /// read.
+    pub fn stamps(&self) -> Stamps {
+        *self.stamps.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Re-read capability tags from the health store. The health stamp is
+    /// taken first, so a read that fails is not retried until the file
+    /// changes again.
     pub fn refresh_capabilities(&self, state_dir: &Path) -> std::io::Result<()> {
+        let stamp = FileStamp::of(&HealthStore::path(state_dir));
+        self.stamps.lock().unwrap_or_else(|e| e.into_inner()).health = stamp;
         let health = HealthStore::load(state_dir)?;
         for chain in &self.chains {
             for (name, endpoint) in &chain.endpoints {

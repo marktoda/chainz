@@ -5,6 +5,7 @@
 //! and `eth_sendRawTransaction` becomes the transaction hash.
 
 use chainz_core::Address;
+use chainz_core::fmt::short_address;
 use chainz_core::labels::LabelIndex;
 use chainz_rpc::{abi, hex};
 use serde_json::Value;
@@ -188,10 +189,7 @@ fn address(value: Option<&Value>, chain_id: u64, labels: &LabelIndex) -> String 
     match text.parse::<Address>() {
         Ok(address) => match labels.reverse(chain_id, &address) {
             Some(label) => format!("@{}", label.name),
-            None => {
-                let hex = address.to_checksum();
-                format!("{}…{}", &hex[..6], &hex[hex.len() - 4..])
-            }
+            None => short_address(&address),
         },
         Err(_) => "?".to_string(),
     }

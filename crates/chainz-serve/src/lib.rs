@@ -18,12 +18,14 @@
 mod auth;
 mod classify;
 mod control;
+mod events;
 mod gateway;
 mod http;
 mod inspector;
 mod limiter;
 mod metrics;
-pub mod pinned;
+mod percentile;
+mod pinned;
 mod router;
 mod state;
 mod summary;
@@ -38,25 +40,8 @@ use chainz_core::StorePaths;
 use chainz_core::runtime::Runtime;
 use tokio::signal::unix::{SignalKind, signal};
 
-pub use gateway::{DRAIN, Gateway, GatewayConfig, SHUTDOWN_BUDGET};
+pub use gateway::{AlreadyRunning, Gateway, GatewayConfig, SHUTDOWN_BUDGET};
 pub use pinned::PinnedProxy;
-
-/// The one wording of "a gateway already runs": the bin says it before
-/// detaching, and [`Gateway::start`] says it when it loses the lock race.
-#[derive(Debug)]
-pub struct AlreadyRunning(pub Option<chainz_core::runtime::ServeInfo>);
-
-impl std::fmt::Display for AlreadyRunning {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "chainz serve is already running")?;
-        if let Some(info) = &self.0 {
-            write!(f, " on port {} (pid {})", info.port, info.pid)?;
-        }
-        write!(f, "; stop it with `chainz serve stop`")
-    }
-}
-
-impl std::error::Error for AlreadyRunning {}
 
 /// Options for [`run`].
 #[derive(Debug, Clone)]

@@ -10,16 +10,16 @@
 
 #[path = "../tests/common/mod.rs"]
 mod common;
+/// The gateway's own percentile, so the figures read like `serve status`.
+#[path = "../src/percentile.rs"]
+mod percentile;
 
 use std::time::{Duration, Instant};
 
 use chainz_rpc::{RpcClient, Target};
 use common::{Mock, Rig, eth_config};
+use percentile::percentile;
 use serde_json::{Value, json};
-
-fn percentile(sorted: &[Duration], pct: usize) -> Duration {
-    sorted[(sorted.len() * pct / 100).min(sorted.len() - 1)]
-}
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() {
@@ -55,11 +55,12 @@ async fn main() {
         direct_times.push(call(&direct).await);
         gateway_times.push(call(&gateway).await);
     }
-    direct_times.sort_unstable();
-    gateway_times.sort_unstable();
     let us = |d: Duration| d.as_secs_f64() * 1e6;
     println!("{rounds} sequential eth_call round trips each, interleaved, loopback");
-    for (name, times) in [("direct", &direct_times), ("gateway", &gateway_times)] {
+    for (name, times) in [
+        ("direct", &mut direct_times),
+        ("gateway", &mut gateway_times),
+    ] {
         println!(
             "{name:>8}: p50 {:7.1} us   p95 {:7.1} us   p99 {:7.1} us",
             us(percentile(times, 50)),
@@ -67,10 +68,10 @@ async fn main() {
             us(percentile(times, 99)),
         );
     }
-    let added = us(percentile(&gateway_times, 50)) - us(percentile(&direct_times, 50));
+    let added = us(percentile(&mut gateway_times, 50)) - us(percentile(&mut direct_times, 50));
     println!(
         "   added: p50 {added:7.1} us   p95 {:7.1} us   (budget: p50 < 1000 us)",
-        us(percentile(&gateway_times, 95)) - us(percentile(&direct_times, 95)),
+        us(percentile(&mut gateway_times, 95)) - us(percentile(&mut direct_times, 95)),
     );
     if added >= 1000.0 {
         eprintln!("over budget");

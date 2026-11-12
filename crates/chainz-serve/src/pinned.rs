@@ -14,7 +14,6 @@
 use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
 
 use chainz_core::runtime::{GatewayAddr, LOOPBACK};
 use chainz_rpc::{HttpUpstream, RetryPolicy, Target};
@@ -25,10 +24,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 use crate::auth;
-use crate::http::{self, BoxBody, Reply, json};
-
-/// How long in-flight requests may take to finish on shutdown.
-const DRAIN: Duration = Duration::from_secs(5);
+use crate::http::{self, BoxBody, DRAIN, PINNED, Reply, json};
 
 /// A running pinned proxy. [`shutdown`](Self::shutdown) stops it cleanly;
 /// dropping it stops it at once.
@@ -92,13 +88,13 @@ impl PinnedProxy {
         self.addr.base_url()
     }
 
-    /// The loopback port.
-    pub fn port(&self) -> u16 {
-        self.addr.port
+    /// Port and token: the proxy's URL. The token is a secret.
+    pub fn addr(&self) -> &GatewayAddr {
+        &self.addr
     }
 
-    /// Stop accepting, let in-flight requests finish (up to 5 s), and wait
-    /// until every task has ended.
+    /// Stop accepting, let in-flight requests finish (for the gateway's
+    /// default drain time), and wait until every task has ended.
     pub async fn shutdown(mut self) {
         let _ = self.stop.send(true);
         if let Some(task) = self.task.take() {
@@ -141,8 +137,7 @@ async fn handle(state: &State, request: Request<Incoming>) -> Response<BoxBody> 
         // An HTTP error, so a client (anvil) treats it as a transport
         // failure and never as chain state.
         Err(error) => {
-            let message = format!("chainz proxy: upstream {error}");
-            Reply::failure(&error, &serde_json::Value::Null, message).into_response()
+            Reply::failure(&error, &serde_json::Value::Null, PINNED, "upstream").into_response()
         }
     }
 }

@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use chainz_rpc::RpcError;
-use chainz_rpc::error::LIMIT_EXCEEDED;
+use chainz_rpc::error::{LIMIT_EXCEEDED, SERVER_ERROR};
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::Incoming;
 use hyper::header::{ALLOW, CONTENT_TYPE, HOST, HeaderValue, RETRY_AFTER};
@@ -27,9 +27,12 @@ use serde_json::{Value, json};
 
 use crate::auth;
 
-/// The `Retry-After` sent with a 429 when the upstream named no wait: as
-/// long as the gateway itself waits out rate limits on one endpoint.
-pub(crate) const DEFAULT_RETRY_AFTER: Duration = crate::router::MAX_WAIT;
+/// The `Retry-After` sent with a 429 when the upstream named no wait.
+pub(crate) const DEFAULT_RETRY_AFTER: Duration = Duration::from_secs(2);
+
+/// How long open connections get to finish once a server stops: the pinned
+/// proxy's drain, and the gateway's by default.
+pub(crate) const DRAIN: Duration = Duration::from_secs(5);
 
 pub(crate) type BoxBody = http_body_util::combinators::UnsyncBoxBody<Bytes, Infallible>;
 
@@ -52,6 +55,11 @@ pub(crate) fn json(status: StatusCode, body: impl Into<Bytes>) -> Response<BoxBo
     response
 }
 
+/// Who made an error reply: the prefix of its message.
+pub(crate) const GATEWAY: &str = "chainz serve";
+/// The pinned proxy's prefix.
+pub(crate) const PINNED: &str = "chainz proxy";
+
 /// A JSON-RPC answer on its way to the client.
 #[derive(Debug, Clone)]
 pub struct Reply {
@@ -66,7 +74,7 @@ pub struct Reply {
 impl Reply {
     /// A JSON-RPC error made by the gateway itself.
     pub fn error(status: u16, id: &Value, code: i64, message: &str) -> Reply {
-        Reply::rpc_error(status, id, code, format!("chainz serve: {message}"))
+        Reply::rpc_error(status, id, code, format!("{GATEWAY}: {message}"))
     }
 
     /// A JSON-RPC error object with `message` as it is.
@@ -87,16 +95,17 @@ impl Reply {
     /// proxies: a 429 is `-32005` with a `Retry-After` (the upstream's, or
     /// [`DEFAULT_RETRY_AFTER`]); an upstream 4xx or 5xx status is passed
     /// on; a timeout is 504; anything else is 502. Always an HTTP error,
-    /// so a client never mistakes it for chain state. `message` is the
-    /// whole error message; [`RpcError`]'s text in it never includes a URL
-    /// or a header value.
-    pub fn failure(error: &RpcError, id: &Value, message: String) -> Reply {
+    /// so a client never mistakes it for chain state. The message is
+    /// `<who>: <upstream>: <error>`, with `who` [`GATEWAY`] or [`PINNED`];
+    /// [`RpcError`]'s text never includes a URL or a header value.
+    pub fn failure(error: &RpcError, id: &Value, who: &str, upstream: &str) -> Reply {
         let (status, code) = match error {
             RpcError::RateLimited { .. } => (429, LIMIT_EXCEEDED),
-            RpcError::Timeout => (504, -32000),
-            RpcError::Http(status) if (400..600).contains(status) => (*status, -32000),
-            _ => (502, -32000),
+            RpcError::Timeout => (504, SERVER_ERROR),
+            RpcError::Http(status) if (400..600).contains(status) => (*status, SERVER_ERROR),
+            _ => (502, SERVER_ERROR),
         };
+        let message = format!("{who}: {upstream}: {error}");
         let mut reply = Reply::rpc_error(status, id, code, message);
         if let RpcError::RateLimited { retry_after } = error {
             reply.retry_after = Some(retry_after.unwrap_or(DEFAULT_RETRY_AFTER));
@@ -258,7 +267,7 @@ mod tests {
     #[test]
     fn failures_map_the_same_for_both_proxies() {
         let id = json!(7);
-        let reply = |e: RpcError| Reply::failure(&e, &id, "x".into());
+        let reply = |e: RpcError| Reply::failure(&e, &id, PINNED, "upstream");
         let limited = reply(RpcError::RateLimited { retry_after: None });
         assert_eq!(limited.status, 429);
         assert_eq!(limited.retry_after, Some(DEFAULT_RETRY_AFTER));

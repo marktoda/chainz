@@ -28,15 +28,15 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use chainz_rpc::control::{MetricsSnapshot, MetricsTotals, RecordStatus, RequestRecord};
-use chainz_rpc::error::LIMIT_EXCEEDED;
+use chainz_rpc::control::{MetricsSnapshot, RecordStatus, RequestRecord};
+use chainz_rpc::error::{LIMIT_EXCEEDED, SERVER_ERROR};
 use chainz_rpc::upstream::rpc_error_code;
 use chainz_rpc::{ErrorClass, HttpUpstream, RetryPolicy, RpcError};
 use serde_json::Value;
 
 use crate::classify::{self, Kind, Needs, Parsed};
-use crate::control::EventRing;
-use crate::http::Reply;
+use crate::events::EventRing;
+use crate::http::{GATEWAY, Reply};
 use crate::inspector::Inspector;
 use crate::metrics::{Metrics, Sample};
 use crate::state::{ChainState, EndpointState, Snapshot};
@@ -44,8 +44,9 @@ use crate::summary;
 use chainz_os::{now_ms, now_secs};
 
 /// The longest a request waits out rate limits on one endpoint before a
-/// read shifts to the next.
-pub const MAX_WAIT: Duration = Duration::from_secs(2);
+/// read shifts to the next: as long as a client is told to wait when no
+/// upstream named a wait.
+pub const MAX_WAIT: Duration = crate::http::DEFAULT_RETRY_AFTER;
 /// The longest a request with nowhere else to go waits for a slot in the
 /// endpoint's bucket.
 pub const MAX_QUEUE: Duration = Duration::from_secs(10);
@@ -127,11 +128,6 @@ impl Router {
         self.metrics.snapshot(now)
     }
 
-    /// Totals over the short window at unix time `now`.
-    pub fn summary(&self, now: u64) -> MetricsTotals {
-        self.metrics.summary(now)
-    }
-
     /// The records behind `/_chainz/events`.
     pub fn events(&self) -> &EventRing {
         self.inspector.events()
@@ -175,7 +171,7 @@ impl Router {
                     },
                     response_bytes: 0,
                 });
-                return Reply::error(400, &id, -32000, &message);
+                return Reply::error(400, &id, SERVER_ERROR, &message);
             }
         };
 
@@ -216,8 +212,8 @@ impl Router {
                     class: error.class(),
                     code: None,
                 };
-                let message = format!("chainz serve: endpoint '{}': {error}", outcome.endpoint);
-                (Reply::failure(&error, &id, message), status)
+                let upstream = format!("endpoint '{}'", outcome.endpoint);
+                (Reply::failure(&error, &id, GATEWAY, &upstream), status)
             }
         };
         self.inspector.push(RequestRecord {

@@ -4,14 +4,15 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use chainz_core::StorePaths;
 use chainz_core::runtime::{
     DEFAULT_PORT, GatewayAddr, GatewayState, LOOPBACK, Published, Runtime, ServeInfo, ServeLock,
 };
-use chainz_rpc::control::{MetricsSnapshot, MetricsTotals, SocketPath, Status};
+use chainz_rpc::control::{MetricsSnapshot, MetricsTotals, SocketPath, Status, Window};
+use chainz_rpc::error::SERVER_ERROR;
 use chainz_rpc::{HttpUpstream, RpcClient};
 use hyper::body::Incoming;
 use hyper::{Request, Response};
@@ -21,8 +22,9 @@ use tokio::sync::{broadcast, watch};
 use tokio::task::{JoinHandle, JoinSet};
 
 use crate::auth;
-use crate::control::{self, ControlState, EventRing};
-use crate::http::{self, BoxBody, Reply};
+use crate::control::{self, ControlState};
+use crate::events::EventRing;
+use crate::http::{self, BoxBody, DRAIN, Reply};
 use crate::inspector::Inspector;
 use crate::router::Router;
 use crate::state::{Snapshot, Stamps};
@@ -33,8 +35,6 @@ use chainz_os::now_secs;
 const PROBE_IDLE_AFTER: u64 = 300;
 /// How much slower idle pools are probed (every minute at the default 5 s).
 const IDLE_PROBE_FACTOR: u32 = 12;
-/// How long in-flight requests get to finish on shutdown, by default.
-pub const DRAIN: Duration = Duration::from_secs(5);
 /// What shutdown allows past the drain before aborting the gateway's tasks.
 const DRAIN_SLACK: Duration = Duration::from_millis(250);
 /// How long shutdown waits for the `--log` writer to flush.
@@ -43,6 +43,23 @@ const LOG_WRITER_WAIT: Duration = Duration::from_secs(2);
 pub const SHUTDOWN_BUDGET: Duration = DRAIN
     .saturating_add(DRAIN_SLACK)
     .saturating_add(LOG_WRITER_WAIT);
+
+/// The one wording of "a gateway already runs": the bin says it before
+/// detaching, and [`Gateway::start`] says it when it loses the lock race.
+#[derive(Debug)]
+pub struct AlreadyRunning(pub Option<ServeInfo>);
+
+impl std::fmt::Display for AlreadyRunning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "chainz serve is already running")?;
+        if let Some(info) = &self.0 {
+            write!(f, " on port {} (pid {})", info.port, info.pid)?;
+        }
+        write!(f, "; stop it with `chainz serve stop`")
+    }
+}
+
+impl std::error::Error for AlreadyRunning {}
 
 /// How to start a [`Gateway`].
 pub struct GatewayConfig {
@@ -97,11 +114,9 @@ struct Shared {
     router: Router,
     paths: StorePaths,
     state_dir: Option<PathBuf>,
-    /// Port and token: the gateway's URLs.
-    addr: GatewayAddr,
-    /// What `serve.json` says; the control API's status is built from it.
+    /// What `serve.json` says: port and token (the gateway's URLs) and the
+    /// start; the control API's status is built from it.
     info: ServeInfo,
-    started: Instant,
     /// Human-readable notices (reloads, warnings) for the foreground UI.
     notices: broadcast::Sender<String>,
     /// Reloads (SIGHUP, the control API, the file watch) run one at a
@@ -114,8 +129,28 @@ impl Shared {
         let _ = self.notices.send(text);
     }
 
+    /// The config files and the health store as they are now.
+    fn stamps(&self) -> Stamps {
+        Stamps::take(&self.paths, self.state_dir.as_deref())
+    }
+
+    /// Re-read the config now.
     async fn reload(&self) -> Result<()> {
-        let _one_at_a_time = self.reloading.lock().await;
+        let one_at_a_time = self.reloading.lock().await;
+        self.reload_locked(one_at_a_time).await
+    }
+
+    /// Re-read the config unless the running snapshot already reflects the
+    /// files: a reload that ran while this one waited may have read them.
+    async fn reload_if_changed(&self) -> Result<()> {
+        let one_at_a_time = self.reloading.lock().await;
+        if self.stamps().same_config(&self.router.snapshot().stamps()) {
+            return Ok(());
+        }
+        self.reload_locked(one_at_a_time).await
+    }
+
+    async fn reload_locked(&self, _one_at_a_time: tokio::sync::MutexGuard<'_, ()>) -> Result<()> {
         let previous = self.router.snapshot();
         let (paths, state_dir, base) =
             (self.paths.clone(), self.state_dir.clone(), previous.clone());
@@ -153,7 +188,7 @@ impl Shared {
             version: self.info.version.clone(),
             pid: self.info.pid,
             port: self.info.port,
-            uptime_secs: self.started.elapsed().as_secs(),
+            uptime_secs: now_secs().saturating_sub(self.info.started_at),
             chains: snapshot.chains.iter().map(|chain| chain.status()).collect(),
         }
     }
@@ -194,7 +229,7 @@ pub struct Gateway {
 impl std::fmt::Debug for Gateway {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Gateway")
-            .field("port", &self.shared.addr.port)
+            .field("port", &self.shared.info.port)
             .finish_non_exhaustive()
     }
 }
@@ -214,11 +249,9 @@ impl Gateway {
                 Ok(GatewayState::Up(info)) => Some(info),
                 _ => None,
             };
-            bail!(crate::AlreadyRunning(running));
+            bail!(AlreadyRunning(running));
         };
         let snapshot = Snapshot::load(&config.paths, config.state_dir.as_deref(), None)?;
-        let stamps = snapshot.stamps;
-        let warnings = snapshot.warnings.clone();
 
         let address = SocketAddr::from((LOOPBACK, config.port));
         let tcp = TcpListener::bind(address)
@@ -261,8 +294,6 @@ impl Gateway {
             paths: config.paths,
             state_dir: config.state_dir,
             info: ServeInfo::new(&addr, now_secs()),
-            addr,
-            started: Instant::now(),
             notices,
             reloading: tokio::sync::Mutex::new(()),
         });
@@ -316,14 +347,9 @@ impl Gateway {
                 config.probe_interval,
                 stopped.clone(),
             )),
-            tokio::spawn(watch_loop(
-                shared.clone(),
-                config.watch_interval,
-                stamps,
-                stopped,
-            )),
+            tokio::spawn(watch_loop(shared.clone(), config.watch_interval, stopped)),
         ];
-        let gateway = Gateway {
+        Ok(Gateway {
             shared,
             runtime: config.runtime,
             stop,
@@ -332,21 +358,17 @@ impl Gateway {
             drain: config.drain,
             published: Some(published),
             _lock: lock,
-        };
-        for warning in warnings {
-            gateway.shared.notice(format!("warning: {warning}"));
-        }
-        Ok(gateway)
+        })
     }
 
     /// The loopback port.
     pub fn port(&self) -> u16 {
-        self.shared.addr.port
+        self.shared.info.port
     }
 
     /// Port and token: the gateway's URLs. The token is a secret.
-    pub fn addr(&self) -> &GatewayAddr {
-        &self.shared.addr
+    pub fn addr(&self) -> GatewayAddr {
+        self.shared.info.addr()
     }
 
     /// The current status, as the control API reports it.
@@ -354,17 +376,26 @@ impl Gateway {
         self.shared.status()
     }
 
-    /// Totals over the last minute.
+    /// Totals over the last minute: the short window's, as the control
+    /// API reports them.
     pub fn summary(&self) -> MetricsTotals {
-        self.shared.router.summary(now_secs())
+        self.shared
+            .router
+            .metrics(now_secs())
+            .window(Window::Short)
+            .and_then(|window| window.totals)
+            .unwrap_or_default()
     }
 
-    /// Notices (reloads, warnings) as they happen.
+    /// Notices as they happen: reloads, and warnings that come up while
+    /// running. The warnings of the config the gateway started with are
+    /// [`Gateway::warnings`].
     pub fn notices(&self) -> broadcast::Receiver<String> {
         self.shared.notices.subscribe()
     }
 
-    /// Unroutable endpoints found when the config was last loaded.
+    /// Unroutable endpoints and other problems found when the config was
+    /// last loaded.
     pub fn warnings(&self) -> Vec<String> {
         self.shared.router.snapshot().warnings.clone()
     }
@@ -427,16 +458,16 @@ async fn proxy(shared: &Shared, request: Request<Incoming>) -> Response<BoxBody>
         let (Some(chain_ref), pin) = (path.chain, path.endpoint) else {
             return Err(http::forbidden());
         };
-        if !auth::token_matches(path.token, &shared.addr.token) {
+        if !auth::token_matches(path.token, &shared.info.token) {
             return Err(http::forbidden());
         }
         let Some(chain) = shared.router.chain(chain_ref) else {
-            let reply = Reply::error(404, &Value::Null, -32000, "unknown chain");
+            let reply = Reply::error(404, &Value::Null, SERVER_ERROR, "unknown chain");
             return Err(Box::new(reply.into_response()));
         };
         Ok((chain, pin.map(str::to_string)))
     };
-    match http::guard(request, shared.addr.port, authorize).await {
+    match http::guard(request, shared.info.port, authorize).await {
         Ok(((chain, pin), body)) => shared
             .router
             .handle(chain, pin.as_deref(), body)
@@ -517,14 +548,10 @@ async fn probe_loop(
 }
 
 /// Reload when `config.toml` or `secrets.toml` changes, and refresh
-/// capability tags when the health store changes. `seen` is what the files
-/// looked like when the running config was loaded.
-async fn watch_loop(
-    shared: Arc<Shared>,
-    interval: Duration,
-    mut seen: Stamps,
-    mut stopped: watch::Receiver<bool>,
-) {
+/// capability tags when the health store changes. "Changes" is against the
+/// stamps the running snapshot holds, so a reload that already happened
+/// (SIGHUP, the control API) is not repeated here.
+async fn watch_loop(shared: Arc<Shared>, interval: Duration, mut stopped: watch::Receiver<bool>) {
     let mut ticker = tokio::time::interval(interval);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
@@ -532,13 +559,14 @@ async fn watch_loop(
             _ = ticker.tick() => {}
             _ = stopped.changed() => return,
         }
-        let now = Stamps::take(&shared.paths, shared.state_dir.as_deref());
-        if (now.config, now.secrets) != (seen.config, seen.secrets) {
-            let _ = shared.reload().await;
-        } else if now.health != seen.health
+        let now = shared.stamps();
+        let snapshot = shared.router.snapshot();
+        let loaded = snapshot.stamps();
+        if !now.same_config(&loaded) {
+            let _ = shared.reload_if_changed().await;
+        } else if now.health != loaded.health
             && let Some(dir) = shared.state_dir.clone()
         {
-            let snapshot = shared.router.snapshot();
             let refreshed =
                 tokio::task::spawn_blocking(move || snapshot.refresh_capabilities(&dir))
                     .await
@@ -549,6 +577,5 @@ async fn watch_loop(
                 ));
             }
         }
-        seen = now;
     }
 }

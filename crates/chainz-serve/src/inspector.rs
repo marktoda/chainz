@@ -16,11 +16,10 @@ use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 
-use crate::control::EventRing;
+use crate::events::EventRing;
 
-/// Records queued for the log writer before new ones are dropped (a few
-/// in tests, so they can fill it).
-const LOG_QUEUE: usize = if cfg!(test) { 4 } else { 8192 };
+/// Records queued for the log writer before new ones are dropped.
+const LOG_QUEUE: usize = 8192;
 /// How often buffered log lines are flushed (and drops reported).
 const LOG_FLUSH: Duration = Duration::from_secs(1);
 
@@ -47,13 +46,23 @@ impl Inspector {
         log: Option<&Path>,
         notices: broadcast::Sender<String>,
     ) -> std::io::Result<(Self, Option<JoinHandle<()>>)> {
+        Inspector::with_queue(log, notices, LOG_QUEUE).await
+    }
+
+    /// [`Inspector::new`] with room for `queue` records before the log
+    /// writer drops them.
+    async fn with_queue(
+        log: Option<&Path>,
+        notices: broadcast::Sender<String>,
+        queue: usize,
+    ) -> std::io::Result<(Self, Option<JoinHandle<()>>)> {
         let dropped = Arc::new(AtomicU64::new(0));
         let mut writer = None;
         let mut sender = None;
         if let Some(path) = log {
             let file = chainz_os::open_private_log(path, chainz_os::LogMode::Append)?;
             let file = tokio::fs::File::from_std(file);
-            let (tx, rx) = mpsc::channel(LOG_QUEUE);
+            let (tx, rx) = mpsc::channel(queue);
             sender = Some(tx);
             writer = Some(tokio::spawn(write_log(file, rx, dropped.clone(), notices)));
         }
@@ -145,7 +154,7 @@ async fn write_log(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::control::EVENTS_BUFFER;
+    use crate::events::EVENTS_BUFFER;
     use chainz_rpc::control::{Backlog, EventsOptions, RecordStatus};
 
     fn record(n: u64) -> RequestRecord {
@@ -217,7 +226,9 @@ mod tests {
         let path = dir.path().join("requests.jsonl");
         let notices = notices();
         let mut heard = notices.subscribe();
-        let (inspector, writer) = Inspector::new(Some(&path), notices).await.unwrap();
+        let (inspector, writer) = Inspector::with_queue(Some(&path), notices, 4)
+            .await
+            .unwrap();
         // The current-thread test runtime doesn't run the writer until we
         // yield: everything past the queue's 4 slots is dropped.
         for n in 0..10 {

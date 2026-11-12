@@ -860,7 +860,7 @@ async fn inspector_control_api_and_runtime_files() {
         assert_eq!(mode, 0o600, "{}", file.display());
     }
     // The exec seam hands out exactly the URLs the gateway serves.
-    assert_eq!(&info.addr(), rig.gateway().addr());
+    assert_eq!(info.addr(), rig.gateway().addr());
     // A second gateway is refused while this one runs.
     let second = chainz_serve::Gateway::start(Rig::config(rig.dir.path())).await;
     let error = format!("{:#}", second.unwrap_err());
@@ -1069,6 +1069,29 @@ async fn shutdown_drains_in_flight_requests() {
             .await
             .is_err()
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_change_already_reloaded_is_not_reloaded_again_by_the_watch() {
+    let a = Mock::named("a").await;
+    let watch = Duration::from_millis(500);
+    let rig = Rig::start_with(&eth_config("a", &[], &[("a", a.url())]), |config| {
+        config.watch_interval = watch;
+    })
+    .await;
+    let mut notices = rig.gateway().notices();
+    // Changed, then reloaded (as SIGHUP does) before the watch looks.
+    Rig::write_config(
+        rig.dir.path(),
+        &eth_config("a", &[], &[("a", a.url()), ("b", a.url())]),
+    );
+    rig.gateway().reload().await.unwrap();
+    tokio::time::sleep(watch * 3).await;
+    let mut reloads = 0;
+    while let Ok(notice) = notices.try_recv() {
+        reloads += usize::from(notice.contains("reloaded"));
+    }
+    assert_eq!(reloads, 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
