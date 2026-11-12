@@ -3,7 +3,9 @@
 ## 2.0.0 - Unreleased
 
 A ground-up rewrite as a local multichain workbench. The design is in
-`docs/v2/design.md`.
+`docs/v2/design.md` and the crate contracts in `docs/v2/interfaces.md`.
+Builds of `main` before the release had a few commands and flags that
+changed before 2.0.0; they are listed under Removed and Changed.
 
 ### Migrating from 0.x
 
@@ -17,26 +19,48 @@ A ground-up rewrite as a local multichain workbench. The design is in
   `${VARIABLES}`; anything else is listed by the migration and by `doctor`.
 - Keys become signers and keep their backend and cached address. Keyring
   entries need no re-entry.
-- Commands are regrouped by noun: `add`/`list`/`show`/`remove` become
-  `chain add/ls/show/rm`, `key …` becomes `signer …`, and RPC management
-  moves to `rpc …`. `ls` and `list` still work.
+- Commands are regrouped by noun: `add`/`show`/`remove` become
+  `chain add/show/rm`, `update` becomes `chain set` (`chainz update` still
+  works), `key …` becomes `signer …`, and RPC management moves to `rpc …`.
+  `chainz list` and `list`/`remove` under each noun still work (`chain
+  remove`, not `chainz remove`). `init` is still the guided setup.
 - `CHAIN_NAME`, `@chainname`, `@verification_url` and `@verifier_api_key` are
   deprecated aliases with a warning for one release. `@key` is removed; use
   `--expose-key`.
-- Windows is no longer supported.
 
 ### Added
 
 - `exec` replaces itself with the command (`execvp`) and costs about 3 ms.
   New tokens: address labels (`@usdc`, `@myrouter`), signer names (`@funder`),
   cross-chain labels (`@usdc:arb`), and `--explain`. `env` prints exports.
+- `chain set [CHAIN]`, also `chainz update`: every chain setting in one
+  atomic write. `--signer`/`--no-signer`, `--rpc NAME|URL` (a new URL is
+  added, checked, its secrets moved, and activated), `--header` and
+  `--clear-headers`, `--failover`/`--no-failover`, `--explorer`/`--no-explorer`
+  (`etherscan` is built in), `--api-key-stdin`, `--name`, `--alias` and
+  `--rm-alias`. With no flags on a terminal it opens v1's menu (RPC, Signer,
+  Explorer, Name, Aliases, Done) and applies the choices together; with no
+  chain it opens a chain picker first. Off a terminal it needs flags.
+- `init`: on a terminal, a guided setup built from the `chain add`,
+  `signer add` and `chain set` flows (chains, a signer, an Etherscan key, a
+  default chain). Off a terminal it prints the quick start, as `chainz`
+  and `chainz ls` do while no chain is configured.
+- `edit [CHAIN]`: `config.toml`, or one chain's table, in `$EDITOR`,
+  validated on save and refused if the file changed in the meantime.
+- Auto-attach: the first signer `signer add` creates is attached to every
+  chain without one (`--no-attach` skips it). `chain add` attaches the only
+  signer (`--signer S` picks another, `--no-signer` none) and the
+  `etherscan` explorer when it is configured.
 - `serve`: an opt-in local RPC gateway with approved-only failover,
   rate-limit smoothing, a request inspector (`serve log -f`), metrics, and a
   control socket. `exec` routes through it automatically while it runs.
 - `top`: a live dashboard of chain heads, endpoint health, signer balances
   and gateway traffic, with `--once --json` for scripts.
 - `fork`: anvil forks in one command, funded signer, usable as a chain name,
-  with replay guards and orphan-proof supervision.
+  with replay guards and orphan-proof supervision. Each fork reserves its
+  port (`ports/<port>.lock` in the runtime dir) before anvil starts, so
+  parallel forks never pick the same port; an automatically chosen port
+  that is taken moves on to the next one. `--port` is used exactly or fails.
 - Address book: `addr add/ls/rm/find`, built-in major-token labels on every
   configured chain, and `label` to annotate addresses in any output.
   `addr import` labels the contracts in Foundry broadcast output
@@ -52,56 +76,136 @@ A ground-up rewrite as a local multichain workbench. The design is in
 - Per-endpoint HTTP headers (`rpc add --header "name: value"`), applied by
   probes and the gateway, and exported as `ETH_RPC_HEADERS` on direct
   connections. (This was unreleased in 0.x; v1 configs that use it migrate.)
+- `--json` for `ls`, `chain show`, `rpc ls` (rows carry `websocket`),
+  `signer ls`, `var ls`, `addr ls`, `addr find` (exit 1 when nothing is
+  found), `addr import`, `fork ls` and `serve status`.
+- `config path --all` lists every chainz path, the gateway and fork logs
+  included.
 
 ### Changed
 
+- The config is hand-editable TOML that keeps your ordering and comments;
+  `edit` validates on save. Read-only commands no longer take the config
+  lock.
 - `completions <shell>` prints a loader that calls back into chainz instead
   of a static script; re-source it from your shell rc (see README).
-- The config is hand-editable TOML that keeps your ordering;
-  `config edit` and `chain edit` validate on save.
-- Read-only commands no longer take the config lock.
-- The workspace is split into `chainz-core`, `chainz-rpc`, `chainz-serve`,
-  `chainz-tui` and the `chainz` binary. The exec path cannot reach the
-  network, and CI checks that with `strace`.
+- Flags, one meaning each: `chain add --url URL` (was `--rpc`; repeatable,
+  the first becomes active), `rpc add --activate` (was `--use`), and
+  `signer rm --unassign` (was `--force`) removes the signer from the chains
+  that use it. `--yes` (`-y` on `signer rm`, `rpc bench --fix` and
+  `rpc discover`) always means "accept without asking", `--detach` always
+  means "run in the background", and `--reveal` is the only flag that shows
+  secrets.
+- `signer rm` asks before deleting key material; off a terminal it needs
+  `--yes`. `signer migrate --all` tries every signer and reports each
+  failure. Moving a keyring signer to another backend deletes its old
+  keyring entry.
+- `rpc bench --fix --yes` writes the proposed failover lists without asking;
+  `rpc discover --yes` adds every endpoint that answered. Off a terminal,
+  both report instead of prompting.
+- `chain add --url`, `chain set --rpc URL`, `rpc add` and `rpc discover`
+  move known URL keys and credential headers into `secrets.toml` as they
+  write, and print what they moved. `rpc add` refuses a URL the chain
+  already has (use `chain set --rpc`) and any scheme but http(s) and ws(s),
+  even with `--no-check`.
+- Secrets passed as arguments (`signer add --key`, `chain set --api-key`,
+  `var set NAME VALUE`) warn that they are visible in shell history and
+  `ps`. The two flags are hidden from help, which shows the stdin form.
+  Explorer API keys are trimmed however they are entered.
+- Redaction fails closed and masks only what may be a secret. URLs show
+  `${VAR}` templates, hosts and ordinary paths verbatim; user info, the
+  fragment, known Infura/Alchemy keys, credential-shaped host labels, and
+  any path segment or query value that is not a known-safe form (empty, a
+  template, a number, a version such as `v2`, or a short lowercase word)
+  print as `[REDACTED]`, and a URL that does not parse is masked whole.
+  Header values show only templates and an allow-list of auth schemes and
+  media types (`Bearer`, `Basic`, `Token`, `Digest`, `application/json`,
+  `text/plain`, `gzip`, `identity`). `exec --explain`, `ls`, `chain show`,
+  `rpc ls`, `rpc discover`, the chain picker, `top` and `Debug` output all
+  use this one policy; `--reveal` prints values as stored.
+- `signer ls` has a header row.
+- Chain resolution: an exact chain ID, name or alias wins over a fork of the
+  same name, then a live fork's exact name, then a prefix. A fork resolves
+  only while its supervisor runs.
+- `serve status` shows the gateway's own totals for the last 60 s, overall
+  and per chain, with the true median latency (it used to average the
+  per-method medians); `--json` adds `totals_60s` and `chain_totals_60s`.
+  Against a gateway that sends no totals both show `-` (`null` in JSON).
+- Both proxies (the gateway and a fork's pinned proxy) accept request bodies
+  up to 64 MiB (the gateway took 32 MiB) and answer an upstream failure the
+  same way: 429 with `Retry-After` and JSON-RPC code -32005 for a rate
+  limit, 504 for a timeout, the upstream's own 4xx/5xx, else 502. The fork
+  proxy used to answer -32000 and 502.
+- `top`: the RPC column, `y`, the Endpoints tab's marker and JSON
+  `chains[].rpc`/`endpoints[].active` all name the endpoint the gateway
+  actually serves from (the Endpoints tab adds `(config: X)` when it
+  differs from the configured one). The Balances `VIA` column reads
+  `multicall3` or `batch`, as in JSON. Feed errors read `class(code)`, as in
+  `serve log`. Gateway, request-feed and health-history failures show as
+  warnings (on stderr with `--once`), and notices from a config reload
+  (such as a permissions fix) appear in the footer. A gateway that sends
+  no traffic totals shows `-` (`null` in JSON). Native symbols come from
+  one table (gnosis is xDAI), and a chain task that crashes under `--once`
+  reports the class `internal`.
+- `doctor` (not `doctor --tokens`) notes labels that shadow a built-in token
+  and says why `secrets.toml` does not parse; `doctor --tokens --fix` is a
+  usage error.
+- The gateway inspector shows the node's transaction hash for
+  `eth_sendRawTransactionSync` as well, and only prints an `@label` that
+  expands back to the same address.
+- Exit codes: 0 on success, also when stdout is closed early (`chainz … |
+  head`); 1 for an error, or a result the command reports itself (`doctor`
+  problems, `addr find` with no match, `serve status` with no gateway); 2
+  for every usage error (including `chain set` and `chain add` without what
+  they need off a terminal, and removed commands); 126 and 127 from `exec`
+  when the command can't run or doesn't exist; 130 when a prompt is
+  cancelled; and for a foreground `fork`, 130 after Ctrl-C, 143 after
+  SIGTERM or `fork stop`, 129 after SIGHUP.
+- Uptimes read `42s`, `12m05s`, `2h03m`, `3d04h` everywhere.
+- v1 spellings are accepted: `list`/`remove` aliases on every `ls`/`rm`,
+  `chainz update`, `key …`, `--type private-key`/`one-password`, and
+  `var get --show`. A fork can't be named `list`.
+- The workspace is six crates: `chainz-os` (OS primitives: private files,
+  atomic writes, locks, file stamps, the clock), `chainz-core`, `chainz-rpc`
+  (which does not depend on core), `chainz-serve`, `chainz-tui` and the
+  `chainz` binary. The exec path cannot reach the network, and CI checks
+  that with `strace`. The internals were restructured before release so
+  each rule has one owner and no crate or module depends on itself.
+
+### Removed
+
+- Windows support.
+- `@key`; use `--expose-key`.
+- From pre-release builds of `main`: `chain rename` and `chain alias` (use
+  `chain set --name`, `--alias`, `--rm-alias`), `chain edit` and
+  `config edit` (use `edit [CHAIN]`), and `rpc use` (use
+  `chain set --rpc NAME`). Removed commands and flags have no hidden
+  aliases and exit 2.
 
 ### Fixed
 
 - `chain add NAME` and `rpc discover` paired probe results with the wrong
   URLs when chainlist listed an invalid one, so they could activate or add a
-  dead endpoint.
-- `exec`: a missing command exits 127 and an unexecutable one 126 (was 1);
-  `--expose-key --explain` no longer unlocks the key.
-- A foreground `fork` reports how it was stopped: 130 after Ctrl-C, 143
-  after SIGTERM or `fork stop`, 129 after SIGHUP (was 0). `fork stop` waits
-  up to 10 s for the supervisor, and `fork ls` asks every fork for its
-  height at once, with a 5 s timeout.
+  dead endpoint. `chain add` with no chain off a terminal is a usage error
+  before any chainlist download.
+- `exec`: `--expose-key --explain` no longer unlocks the key.
+- `exec` no longer resolves a fork whose supervisor is gone, and an
+  unreadable gateway or fork record is an error rather than "not running".
+- A foreground `fork` reports how it was stopped (it exited 0). `fork stop`
+  waits up to 10 s for the supervisor, and `fork ls` asks every fork for
+  its height at once, with a 5 s timeout.
+- Starting `serve` while another command checked for a gateway could fail
+  with "already running".
+- A corrupt `health.json` is moved aside to `health.json.corrupt` and
+  reported instead of being overwritten.
 - `addr rm --chain` accepts a chain alias as well as the exact name or ID.
 - `signer add`/`signer migrate` roll back a keyring entry they created if
   the config write fails, and report a rollback failure.
 - `serve stop` and `fork stop` never signal a PID that isn't a single
-  process; serve and fork logs are created `0600`.
-
-### Changed
-
-- `chain add --rpc` and `rpc add` move known URL keys and credential headers
-  into `secrets.toml` as they write, and print what they moved.
-- `signer rm` asks before deleting key material; off a terminal it needs
-  `--yes`. `signer migrate --all` tries every signer and reports each
-  failure.
-- `rpc bench --fix --yes` writes the proposed failover lists without asking;
-  `rpc discover --yes` adds every endpoint that answered. Off a terminal,
-  both report instead of prompting.
-- `doctor` (not `doctor --tokens`) notes labels that shadow a built-in token;
-  `doctor --tokens --fix` is rejected as a usage error.
-- Secrets passed as arguments (`signer add --key`, `var set NAME VALUE`)
-  warn that they are visible in shell history and `ps`.
-- `--json` for `addr ls`, `addr find` (exit 1 when nothing is found),
-  `fork ls` and `serve status`. `rpc ls` shows header values (redacted
-  unless `--reveal`).
-- Uptimes read `42s`, `12m05s`, `2h03m`, `3d04h` everywhere.
-- v1 spellings are accepted: `list`/`remove` aliases on every `ls`/`rm`,
-  `--type private-key`/`one-password`, `var get --show`. A fork can't be
-  named `list`.
+  process; serve and fork logs are created `0600`, and the chainlist cache
+  `0600` in a `0700` directory.
+- Renaming a chain whose label scope clashes is an error instead of
+  leaving the old key behind.
 
 ## 0.4.0 - 2026-07-16
 
