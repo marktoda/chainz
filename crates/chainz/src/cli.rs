@@ -216,6 +216,20 @@ pub enum Command {
     Completions(CompletionsArgs),
 }
 
+impl Command {
+    /// Whether this command keeps running (the foreground gateway, a fork
+    /// supervisor, the dashboard) and owns what only `Drop` releases:
+    /// serve.json, a fork's claim and port, anvil, the terminal mode.
+    pub fn runs_long(&self) -> bool {
+        match self {
+            Command::Serve { cmd, .. } => cmd.is_none(),
+            Command::Fork { cmd, .. } => cmd.is_none(),
+            Command::Top(args) => !args.once,
+            _ => false,
+        }
+    }
+}
+
 /// The context selectors shared by `exec` and `env`.
 #[derive(Debug, Clone, Default, Args)]
 pub struct ContextArgs {
@@ -829,7 +843,29 @@ pub struct VarRmArgs {
 #[cfg(test)]
 mod tests {
     use super::{HELP_GROUPS, Opt};
-    use clap::CommandFactory;
+    use clap::{CommandFactory, Parser};
+
+    /// Only the long-running commands go without the broken-pipe exit
+    /// hook (it skips `Drop`).
+    #[test]
+    fn long_running_commands_are_the_foreground_ones() {
+        let runs_long = |args: &[&str]| {
+            let opt = Opt::try_parse_from([&["chainz"], args].concat()).unwrap();
+            opt.cmd.as_ref().is_some_and(super::Command::runs_long)
+        };
+        for args in [&["serve"][..], &["fork", "eth"], &["top"]] {
+            assert!(runs_long(args), "{args:?}");
+        }
+        for args in [
+            &["serve", "status"][..],
+            &["fork", "ls"],
+            &["top", "--once"],
+            &["ls"],
+            &["exec", "eth", "--", "true"],
+        ] {
+            assert!(!runs_long(args), "{args:?}");
+        }
+    }
 
     /// The grouped top-level help lists every visible command exactly
     /// once, and nothing else.

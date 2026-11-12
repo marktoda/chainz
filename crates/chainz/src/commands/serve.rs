@@ -115,7 +115,7 @@ impl Foreground {
     fn say(&self, text: &str) {
         // Clear the summary line first when there is one.
         let clear = if self.live { "\r\x1b[K" } else { "" };
-        eprintln!("{clear}chainz serve: {text}");
+        ui::err_line(&format!("{clear}chainz serve: {text}"));
     }
 
     fn show(&mut self, event: Event<'_>) -> Result<()> {
@@ -144,7 +144,8 @@ impl Foreground {
             Event::Tick(gateway) => {
                 let s = gateway.summary();
                 let status = gateway.status();
-                eprint!(
+                let _ = write!(
+                    std::io::stderr(),
                     "\r\x1b[K:{} │ {} chains │ up {} │ last 60s: {} req, {} err, {} failover, {} rate-limited, p50 {} ms",
                     status.port,
                     status.chains.len(),

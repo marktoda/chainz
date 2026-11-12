@@ -321,6 +321,31 @@ fn foreground_gateway_reloads_on_sighup_and_drains_on_sigterm() {
 }
 
 #[test]
+fn foreground_gateway_cleans_up_when_its_stderr_is_closed() {
+    let sb = Sandbox::new();
+    let main = upstream("main");
+    let alt = upstream("alt");
+    sb.write_config(&config(&main, &alt));
+    sb.ok(&["var", "set", "SERVE_TEST_KEY", "k"]);
+    let mut child = sb
+        .process()
+        .args(["serve", "--port", "0"])
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    wait_until("serve.json", WAIT, || {
+        sb.runtime_file("serve.json").exists()
+    });
+    // The terminal goes away: every later notice hits a closed pipe, which
+    // must not end the gateway before it removes serve.json.
+    drop(child.stderr.take());
+    send_signal(child.id(), "TERM");
+    let status = child.wait().unwrap();
+    assert!(status.success(), "{status}");
+    assert!(!sb.runtime_file("serve.json").exists());
+}
+
+#[test]
 fn serve_refuses_an_empty_config_and_a_busy_port() {
     let sb = Sandbox::new();
     let out = sb.run(&["serve"]);

@@ -309,20 +309,17 @@ async fn supervise(supervisor: &mut Supervisor, job: &Job<'_>) -> Result<i32> {
     };
     loop {
         if let Some(code) = process::shutdown_requested() {
-            eprintln!("{}", ui::dim(&format!("stopped {}", job.name)));
+            ui::err_line(&ui::dim(&format!("stopped {}", job.name)));
             return Ok(code);
         }
         if let Some(anvil) = supervisor.anvil.as_mut()
             && let Some(status) = anvil.try_wait()?
         {
-            eprintln!(
-                "{}",
-                ui::fail(&format!(
-                    "anvil exited ({status}); {} is gone. Log: {}",
-                    job.name,
-                    running.log_path.display()
-                ))
-            );
+            ui::err_line(&ui::fail(&format!(
+                "anvil exited ({status}); {} is gone. Log: {}",
+                job.name,
+                running.log_path.display()
+            )));
             return Ok(1);
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -388,18 +385,18 @@ async fn start_fork(supervisor: &mut Supervisor, job: &Job<'_>) -> Result<Runnin
         .register(&record)
         .context("unable to register the fork")?;
 
-    println!("{}", summary_line(&record, block));
+    ui::out_line(&summary_line(&record, block));
     if let Some((plan, report)) = &report {
         if !report.funded.is_empty() {
-            println!(
+            ui::out_line(&format!(
                 "funded {} ({}): {}",
                 short_address(&plan.address),
                 plan.signer,
                 report.funded.join(", ")
-            );
+            ));
         }
         for (what, why) in &report.failed {
-            println!("{}", ui::warn(&format!("could not fund {what}: {why}")));
+            ui::out_line(&ui::warn(&format!("could not fund {what}: {why}")));
         }
     }
     let notice = format!(
@@ -410,11 +407,11 @@ async fn start_fork(supervisor: &mut Supervisor, job: &Job<'_>) -> Result<Runnin
     if job.detached {
         // Closing the stdout pipe releases the waiting `--detach` parent.
         sys::detached_ready().context("unable to redirect output to the log")?;
-        eprintln!("chainz fork: {name} up; {notice}");
+        ui::err_line(&format!("chainz fork: {name} up; {notice}"));
     } else {
         use std::io::Write;
         let _ = std::io::stdout().flush();
-        eprintln!("{}", ui::dim(&format!("{notice}; ctrl-c to stop")));
+        ui::err_line(&ui::dim(&format!("{notice}; ctrl-c to stop")));
     }
     Ok(Running {
         _proxy: proxy,

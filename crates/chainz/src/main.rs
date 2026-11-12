@@ -18,13 +18,16 @@ mod ui;
 mod view;
 
 fn main() {
-    ui::exit_quietly_on_broken_pipe();
     // Shell completion requests (`CHAINZ_COMPLETE=zsh chainz -- …`): one env
     // lookup on every other run.
     if complete::requested() {
+        ui::exit_quietly_on_broken_pipe();
         complete::run();
     }
     let opt = cli::parse();
+    if !opt.cmd.as_ref().is_some_and(cli::Command::runs_long) {
+        ui::exit_quietly_on_broken_pipe();
+    }
     let code = match commands::dispatch(opt) {
         Ok(code) => code,
         Err(error) => {

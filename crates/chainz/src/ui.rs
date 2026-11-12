@@ -84,19 +84,38 @@ pub fn is_broken_pipe(error: &anyhow::Error) -> bool {
     })
 }
 
-/// Make a closed stdout or stderr (`chainz ls eth | head`) end the process
-/// quietly with exit 0, as [`exit_code`] does for an error: `println!`
-/// panics on a broken pipe, and this hook turns that panic, wherever it
-/// happens, into a silent exit. Every other panic goes to the previous
-/// hook. `main` installs it first thing, so it covers every command.
+/// Make a closed stdout or stderr (`chainz ls eth | head`) end a short
+/// command quietly with exit 0, as [`exit_code`] does for an error:
+/// `println!` panics on a broken pipe, and this hook turns that panic on
+/// the main thread into a silent exit. Every other panic goes to the
+/// previous hook.
+///
+/// `process::exit` skips `Drop`, so `main` does not install it for the
+/// long-running commands (see [`crate::cli::Command::runs_long`]): they
+/// own files, ports and child processes that `Drop` releases, and write
+/// their notices with [`err_line`] / [`out_line`], which never panic.
 pub fn exit_quietly_on_broken_pipe() {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        if is_broken_pipe_panic(panic_message(info.payload())) {
+        let main = std::thread::current().name() == Some("main");
+        if main && is_broken_pipe_panic(panic_message(info.payload())) {
             std::process::exit(0);
         }
         previous(info);
     }));
+}
+
+/// `eprintln!` that ignores a closed stderr: for long-running commands,
+/// which must reach their cleanup whatever happens to the terminal.
+pub fn err_line(text: &str) {
+    use std::io::Write;
+    let _ = writeln!(std::io::stderr(), "{text}");
+}
+
+/// `println!` that ignores a closed stdout, like [`err_line`].
+pub fn out_line(text: &str) {
+    use std::io::Write;
+    let _ = writeln!(std::io::stdout(), "{text}");
 }
 
 fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
