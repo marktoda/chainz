@@ -389,7 +389,7 @@ impl Tx {
             .filter(|(name, _)| *name == chain)
         else {
             bail!(
-                "the edited text must define exactly one chain, '{chain}' (rename with `chainz update --name`)"
+                "the edited text must define exactly one chain, '{chain}' (rename with `chainz update {chain} --name NEW`)"
             );
         };
         let slot = self

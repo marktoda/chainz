@@ -432,9 +432,14 @@ fn chain_snippet_round_trips() {
     let edited = snippet.replace("id = 1", "id = 1\naliases = [\"ethereum\"]");
     tx.replace_chain_snippet("eth", &edited).unwrap();
     assert!(text(&tx).contains("aliases = [\"ethereum\"]"));
+    let renamed = tx
+        .replace_chain_snippet("eth", "[chains.other]\nid = 2\n")
+        .unwrap_err();
     assert!(
-        tx.replace_chain_snippet("eth", "[chains.other]\nid = 2\n")
-            .is_err()
+        renamed
+            .to_string()
+            .ends_with("(rename with `chainz update eth --name NEW`)"),
+        "{renamed}"
     );
     let err = tx
         .replace_chain_snippet("eth", "[chains.eth]\nx = \"super-secret\" trailing\n")
