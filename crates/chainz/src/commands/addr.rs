@@ -11,7 +11,9 @@ use crate::{ui, view};
 use anyhow::{Context, Result, anyhow, bail};
 use chainz_core::addrbook::{self, Labeler};
 use chainz_core::broadcast::{self, Action, Planned};
-use chainz_core::labels::{self, ALL_CHAINS, Label, LabelIndex, LabelScope, LabelSource};
+use chainz_core::labels::{
+    self, ALL_CHAINS, Label, LabelIndex, LabelScope, LabelSource, scope_phrase,
+};
 use chainz_core::model::Config;
 use chainz_core::resolve::{self, ChainRef, Policy, Source};
 use chainz_core::runtime::Runtime;
@@ -90,23 +92,9 @@ fn add(args: &AddrAddArgs) -> Result<i32> {
             }
         }
     };
-    let on = if scope == ALL_CHAINS {
-        "on every chain".to_string()
-    } else {
-        format!("on {scope}")
-    };
-    let existing = chainz
-        .config()
-        .addresses
-        .get(&name)
-        .and_then(|entries| entries.get(&scope));
-    if let Some(existing) = existing
-        && existing.parse::<Address>().ok() != Some(address)
-    {
-        bail!(
-            "@{name} is already {existing} {on}; to change it, first run `chainz addr rm {name} --chain '{scope}'`"
-        );
-    }
+    let on = scope_phrase(&scope);
+    // Overwrite::Refuse: core refuses a label that holds another address
+    // here, under the lock, and says how to change it.
     let outcome =
         chainz.transact(|tx| tx.set_address(&name, &scope, &address, Overwrite::Refuse))?;
     match outcome {
@@ -246,12 +234,7 @@ fn rm(args: &AddrRmArgs) -> Result<i32> {
     };
     let removed = chainz.transact(|tx| tx.remove_address(&name, scope.as_deref()))?;
     for (scope, address) in removed {
-        let on = if scope == ALL_CHAINS {
-            "on every chain".to_string()
-        } else {
-            format!("on {scope}")
-        };
-        println!("Removed @{name} {on} ({address})");
+        println!("Removed @{name} {} ({address})", scope_phrase(&scope));
     }
     Ok(0)
 }

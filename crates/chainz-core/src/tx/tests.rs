@@ -304,7 +304,8 @@ fn set_address_refuses_to_overwrite_unless_told_to() {
         .unwrap_err();
     let msg = err.to_string();
     assert!(
-        msg.contains("already has an address on 'eth'") && msg.contains(A1),
+        msg.contains(&format!("@router is already {A1} on eth"))
+            && msg.contains("chainz addr rm router --chain 'eth'"),
         "{msg}"
     );
     assert_eq!(text(&tx), before);
@@ -324,7 +325,7 @@ fn set_address_refuses_to_overwrite_unless_told_to() {
     let err = tx
         .set_address("router", ALL_CHAINS, &addr(A2), Overwrite::Refuse)
         .unwrap_err();
-    assert!(err.to_string().contains("for every chain"), "{err}");
+    assert!(err.to_string().contains("on every chain"), "{err}");
 }
 
 #[test]
@@ -373,7 +374,7 @@ fn remove_address_one_entry_or_the_whole_label() {
 
     assert!(tx.remove_address("ghost", None).is_err());
     let err = tx.remove_address("other", Some("eth")).unwrap_err();
-    assert!(err.to_string().contains("no address on 'eth'"), "{err}");
+    assert!(err.to_string().contains("no address on eth"), "{err}");
 
     assert_eq!(
         tx.remove_address("Router", Some("base")).unwrap(),

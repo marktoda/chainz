@@ -311,7 +311,7 @@ fn addr_add_rejects_bad_names_addresses_and_overwrites() {
     );
     fails(
         &["addr", "rm", "myrouter", "--chain", "eth"],
-        "no address on 'eth'",
+        "no address on eth",
     );
 }
 

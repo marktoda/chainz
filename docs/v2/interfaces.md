@@ -408,6 +408,7 @@ pub const TOKEN_ORDER: [&str; 6];            // weth, usdc, usdce, usdt, dai, wb
 pub const NATIVE_DECIMALS: u8 = 18;
 pub fn native_symbol(chain_id: u64) -> &'static str; // ETH, BNB, POL, xDAI…
 pub const ALL_CHAINS: &str = "*";
+pub fn scope_phrase(scope: &str) -> String;    // "on every chain" / "on eth": every message about a label scope
 
 pub enum LabelSource { User, Signer, Token }  // Display: user, signer, built-in
 pub enum LabelScope { Chain(u64), AllChains }

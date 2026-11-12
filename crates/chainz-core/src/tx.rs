@@ -497,7 +497,9 @@ impl Tx {
             Some(old) if overwrite == Overwrite::Refuse => {
                 let on = scope_phrase(scope);
                 let held = old.map_or_else(|| "an invalid value".to_string(), |a| a.to_checksum());
-                bail!("label '{name}' already has an address {on} ({held}); remove it first");
+                bail!(
+                    "@{name} is already {held} {on}; to change it, first run `chainz addr rm {name} --chain '{scope}'`"
+                );
             }
             Some(old) => old.map_or(SetAddress::Added, SetAddress::Replaced),
         };

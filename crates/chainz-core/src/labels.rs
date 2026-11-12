@@ -23,12 +23,12 @@ use std::sync::OnceLock;
 /// The `[addresses.NAME]` scope key meaning "every chain".
 pub const ALL_CHAINS: &str = "*";
 
-/// How a label scope reads in a sentence: "for every chain" or "on 'eth'".
-pub(crate) fn scope_phrase(scope: &str) -> String {
+/// How a label scope reads in a sentence: "on every chain" or "on eth".
+pub fn scope_phrase(scope: &str) -> String {
     if scope == ALL_CHAINS {
-        "for every chain".to_string()
+        "on every chain".to_string()
     } else {
-        format!("on '{scope}'")
+        format!("on {scope}")
     }
 }
 
