@@ -1,4 +1,5 @@
-//! Which endpoint a fork pins, and through what: the endpoint itself or a
+//! Which endpoint a fork pins ([`pin_active`], or [`find_archive`] for
+//! `--block`), and through what ([`upstream`]): the endpoint itself or a
 //! running gateway pinned to it.
 
 use crate::{net, ui};
@@ -9,38 +10,43 @@ use chainz_core::route::RouteOpts;
 use chainz_core::runtime::Runtime;
 use chainz_rpc::{Capabilities, RpcClient, Target, probe_capabilities};
 
-/// The one endpoint this fork uses for its whole life.
-///
-/// Without `block`: the chain's active endpoint. With `block`: an
-/// archive-capable one (cached capability tags first, then a fresh probe),
-/// preferring the active endpoint, then the failover list, then the rest.
-/// The fork refuses to start when none qualifies.
-pub async fn choose(
+/// The endpoint a fork pins without `--block`: the chain's active one,
+/// which must be HTTP and serve the chain's ID.
+pub async fn pin_active(
     chainz: &Chainz,
     parent: &str,
     chain: &Chain,
-    block: Option<u64>,
     client: &RpcClient,
-) -> Result<(String, Target)> {
-    let Some(block) = block else {
-        let name = &chain.rpc;
-        let endpoint = chain
-            .rpcs
-            .get(name)
-            .ok_or_else(|| anyhow!("chain '{parent}' has no endpoint '{name}'"))?;
-        if endpoint.is_websocket() {
-            bail!(
-                "chain '{parent}' is on websocket endpoint '{name}', which a fork can't use; activate an HTTP endpoint with `chainz rpc use {parent} NAME`"
-            );
-        }
-        let target = net::target(chainz, parent, chain.id, name, endpoint)?;
-        client
-            .check_chain_id(&target, chain.id)
-            .await
-            .map_err(|e| anyhow!("can't fork '{parent}' from endpoint '{name}': {e}"))?;
-        return Ok((name.clone(), target));
-    };
+) -> Result<String> {
+    let name = &chain.rpc;
+    let endpoint = chain
+        .rpcs
+        .get(name)
+        .ok_or_else(|| anyhow!("chain '{parent}' has no endpoint '{name}'"))?;
+    if endpoint.is_websocket() {
+        bail!(
+            "chain '{parent}' is on websocket endpoint '{name}', which a fork can't use; activate an HTTP endpoint with `chainz rpc use {parent} NAME`"
+        );
+    }
+    let target = net::target(chainz, parent, chain.id, name, endpoint)?;
+    client
+        .check_chain_id(&target, chain.id)
+        .await
+        .map_err(|e| anyhow!("can't fork '{parent}' from endpoint '{name}': {e}"))?;
+    Ok(name.clone())
+}
 
+/// The endpoint a fork pins with `--block`: the first archive-capable HTTP
+/// endpoint in [`Chain::endpoints_by_preference`] order (cached capability
+/// tags first, then a fresh probe). The fork refuses to start when none
+/// qualifies.
+pub async fn find_archive(
+    chainz: &Chainz,
+    parent: &str,
+    chain: &Chain,
+    block: u64,
+    client: &RpcClient,
+) -> Result<String> {
     let mut candidates: Vec<(String, Target)> = Vec::new();
     for (name, endpoint) in chain.endpoints_by_preference(true) {
         match net::target(chainz, parent, chain.id, name, endpoint) {
@@ -54,7 +60,7 @@ pub async fn choose(
             .capabilities(chain.id, name)
             .is_some_and(|c| c.archive == Some(true));
         if cached && client.check_chain_id(target, chain.id).await.is_ok() {
-            return Ok((name.clone(), target.clone()));
+            return Ok(name.clone());
         }
     }
 
@@ -83,12 +89,12 @@ pub async fn choose(
         }
     }
     let mut chosen = None;
-    for ((name, target), capabilities) in candidates.iter().zip(probed) {
+    for ((name, _), capabilities) in candidates.iter().zip(probed) {
         let Some(capabilities) = capabilities else {
             continue;
         };
         if chosen.is_none() && capabilities.archive == Some(true) {
-            chosen = Some((name.clone(), target.clone()));
+            chosen = Some(name.clone());
         }
         store.set_capabilities(chain.id, name, capabilities);
     }

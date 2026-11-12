@@ -98,26 +98,12 @@ fn proc_info(pid: u32) -> Option<ProcInfo> {
 }
 
 /// Whether `pid` is a live anvil on `port`. Only a process that provably
-/// looks like our anvil is ever signalled.
+/// looks like our anvil ([`AnvilSpec::started`]) is ever signalled.
 pub fn anvil_alive(pid: u32, port: Option<u16>) -> bool {
     if !pid_exists(pid) {
         return false;
     }
-    let Some(info) = proc_info(pid) else {
-        return false;
-    };
-    let is_anvil = info
-        .args
-        .first()
-        .is_some_and(|a| a.rsplit('/').next() == Some("anvil"));
-    let on_port = match port {
-        Some(port) => info
-            .args
-            .windows(2)
-            .any(|w| w[0] == "--port" && w[1] == port.to_string()),
-        None => true,
-    };
-    !info.zombie && is_anvil && on_port
+    proc_info(pid).is_some_and(|info| !info.zombie && AnvilSpec::started(&info.args, port))
 }
 
 /// Poll `done` every 25 ms for up to `timeout`.
@@ -210,7 +196,14 @@ pub fn log_path(name: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
-/// The last `lines` lines of the log, indented, for error messages.
+/// Log lines shown when anvil fails to start.
+pub const ERROR_TAIL_LINES: usize = 12;
+/// Log lines shown when a detached fork fails to start: the supervisor's
+/// own error comes after anvil's.
+pub const DETACHED_TAIL_LINES: usize = 15;
+
+/// The last `lines` lines of the log from byte `from` on (where this
+/// attempt's output starts), indented, for error messages.
 pub fn log_tail(path: &std::path::Path, from: u64, lines: usize) -> String {
     use std::io::{Read, Seek, SeekFrom};
     let mut text = String::new();
@@ -240,6 +233,11 @@ pub struct AnvilSpec<'a> {
     pub chain_id: Option<u64>,
 }
 
+/// The program a fork runs.
+const ANVIL: &str = "anvil";
+/// Anvil's port flag: in [`AnvilSpec::args`] and [`AnvilSpec::started`].
+const PORT_FLAG: &str = "--port";
+
 impl AnvilSpec<'_> {
     /// Anvil's arguments.
     pub fn args(&self) -> Vec<String> {
@@ -247,7 +245,7 @@ impl AnvilSpec<'_> {
             "--fork-url".to_string(),
             self.fork_url.to_string(),
             "--auto-impersonate".to_string(),
-            "--port".to_string(),
+            PORT_FLAG.to_string(),
             self.port.to_string(),
         ];
         if let Some(block) = self.block {
@@ -260,6 +258,19 @@ impl AnvilSpec<'_> {
         }
         args
     }
+
+    /// Whether a process's full argv is an anvil started from a spec
+    /// (on `port`, when given).
+    pub fn started(argv: &[String], port: Option<u16>) -> bool {
+        let program = argv
+            .first()
+            .is_some_and(|a| a.rsplit('/').next() == Some(ANVIL));
+        let on_port = port.is_none_or(|port| {
+            argv.windows(2)
+                .any(|w| w[0] == PORT_FLAG && w[1] == port.to_string())
+        });
+        program && on_port
+    }
 }
 
 /// Spawn anvil in its own process group, output to `log`. On Linux it gets
@@ -269,7 +280,7 @@ impl AnvilSpec<'_> {
 /// fires when the *thread* that forked exits.
 pub fn spawn_anvil(spec: &AnvilSpec<'_>, log: &File) -> Result<Child> {
     use std::os::unix::process::CommandExt;
-    let mut command = Command::new("anvil");
+    let mut command = Command::new(ANVIL);
     command
         .args(spec.args())
         .stdin(Stdio::null())
@@ -363,6 +374,16 @@ mod tests {
                 .join(" ")
                 .ends_with("--port 8601 --fork-block-number 123 --chain-id 99")
         );
+        // What we spawn is what we recognise, and nothing else.
+        let argv: Vec<String> = std::iter::once("/nix/store/x/bin/anvil".to_string())
+            .chain(spec.args())
+            .collect();
+        assert!(AnvilSpec::started(&argv, Some(8601)));
+        assert!(AnvilSpec::started(&argv, None));
+        assert!(!AnvilSpec::started(&argv, Some(8602)));
+        let mut other = argv.clone();
+        other[0] = "/bin/sleep".into();
+        assert!(!AnvilSpec::started(&other, Some(8601)));
     }
 
     #[test]

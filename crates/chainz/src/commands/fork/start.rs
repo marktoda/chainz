@@ -24,6 +24,9 @@ use std::time::{Duration, Instant};
 const FIRST_PORT: u16 = 8601;
 /// How long anvil may take to come up (it fetches the fork block first).
 const READY_TIMEOUT: Duration = Duration::from_secs(120);
+/// How many auto-allocated ports a fork tries when another process wins
+/// the race for one.
+const PORT_ATTEMPTS: u32 = 5;
 
 /// The first port from `start` upward that is not busy.
 fn first_free_port(start: u16, mut busy: impl FnMut(u16) -> bool) -> Option<u16> {
@@ -35,15 +38,54 @@ fn port_busy(port: u16) -> bool {
     TcpListener::bind((LOOPBACK, port)).is_err()
 }
 
+/// `--fund SPEC` and `--no-fund`.
+#[derive(Debug, Clone, Copy, Default)]
+struct FundOptions<'a> {
+    /// `--fund`: token grants on top of the native balance.
+    spec: Option<&'a str>,
+    /// `--no-fund`.
+    skip: bool,
+}
+
+impl<'a> From<&'a ForkArgs> for FundOptions<'a> {
+    fn from(args: &'a ForkArgs) -> Self {
+        FundOptions {
+            spec: args.fund.as_deref(),
+            skip: args.no_fund,
+        }
+    }
+}
+
+/// What the supervisor starts, from `--block`, `--port` and `--chain-id`.
+#[derive(Debug, Clone, Copy)]
+struct StartOptions {
+    /// `--block`: the block to fork at.
+    block: Option<u64>,
+    /// `--port`: anvil's port, else the first free one.
+    port: Option<u16>,
+    /// `--chain-id`, if given (anvil is told only then).
+    chain_id: Option<u64>,
+}
+
+impl From<&ForkArgs> for StartOptions {
+    fn from(args: &ForkArgs) -> Self {
+        StartOptions {
+            block: args.block,
+            port: args.port,
+            chain_id: args.chain_id,
+        }
+    }
+}
+
 /// Who and what to fund. `--no-fund` and a chain without a signer address
 /// fund nothing; the latter is an error only when `--fund` was asked for.
 fn plan_funding(
     config: &Config,
     chain_name: &str,
     chain: &Chain,
-    args: &ForkArgs,
+    options: FundOptions<'_>,
 ) -> Result<Option<FundPlan>> {
-    if args.no_fund {
+    if options.skip {
         return Ok(None);
     }
     let signer = chain.signer.as_ref().and_then(|name| {
@@ -51,7 +93,7 @@ fn plan_funding(
         Some((name.clone(), address))
     });
     let Some((signer, address)) = signer else {
-        if args.fund.is_some() {
+        if options.spec.is_some() {
             bail!(
                 "--fund: chain '{chain_name}' has no signer with a cached address to fund (pass --no-fund to fork without funding)"
             );
@@ -68,12 +110,7 @@ fn plan_funding(
         signer,
         address,
         native_symbol: fund::native_symbol(chain.id),
-        tokens: fund::plan_tokens(
-            config,
-            chain_name,
-            chain.id,
-            args.fund.as_deref().unwrap_or(""),
-        )?,
+        tokens: fund::plan_tokens(config, chain_name, chain.id, options.spec.unwrap_or(""))?,
     }))
 }
 
@@ -114,7 +151,7 @@ pub fn start(args: ForkArgs) -> Result<i32> {
     if runtime.fork_live(&name).unwrap_or(false) {
         return Err(already_running(&name));
     }
-    let funding = plan_funding(config, &parent, chain, &args)?;
+    let funding = plan_funding(config, &parent, chain, FundOptions::from(&args))?;
     match args.port {
         Some(0) => bail!("--port 0 is not a usable port"),
         Some(port) if port_busy(port) => bail!("port {port} is already in use"),
@@ -138,7 +175,8 @@ pub fn start(args: ForkArgs) -> Result<i32> {
         parent: &parent,
         chain,
         name: &name,
-        args: &args,
+        options: StartOptions::from(&args),
+        chain_id: args.chain_id.unwrap_or(chain.id),
         funding: funding.as_ref(),
         detached,
     };
@@ -183,7 +221,7 @@ fn detach(runtime: &Runtime, name: &str) -> Result<i32> {
     let status = child.wait()?;
     bail!(
         "the fork did not start ({status}):\n{}",
-        process::log_tail(&log_path, 0, 15)
+        process::log_tail(&log_path, 0, process::DETACHED_TAIL_LINES)
     )
 }
 
@@ -194,7 +232,9 @@ struct Job<'a> {
     parent: &'a str,
     chain: &'a Chain,
     name: &'a str,
-    args: &'a ForkArgs,
+    options: StartOptions,
+    /// The chain ID the fork reports: `--chain-id`, else the parent's.
+    chain_id: u64,
     funding: Option<&'a FundPlan>,
     detached: bool,
 }
@@ -258,11 +298,15 @@ async fn start_fork(supervisor: &mut Supervisor, job: &Job<'_>) -> Result<Runnin
         parent,
         chain,
         name,
-        args,
+        options,
+        chain_id,
         ..
     } = *job;
     let client = RpcClient::new();
-    let (endpoint, _) = endpoint::choose(chainz, parent, chain, args.block, &client).await?;
+    let endpoint = match options.block {
+        None => endpoint::pin_active(chainz, parent, chain, &client).await?,
+        Some(block) => endpoint::find_archive(chainz, parent, chain, block, &client).await?,
+    };
 
     // One upstream for the fork's whole life, always behind our own
     // proxy: the real endpoint, or a running gateway pinned to it. Anvil's
@@ -283,7 +327,6 @@ async fn start_fork(supervisor: &mut Supervisor, job: &Job<'_>) -> Result<Runnin
         sys::LogMode::Truncate
     };
     let log = sys::open_log(&log_path, mode)?;
-    let chain_id = args.chain_id.unwrap_or(chain.id);
     let mut record = spawn_on_free_port(supervisor, job, &proxy.url(), &log, &log_path).await?;
     let port = record.port;
 
@@ -353,17 +396,16 @@ async fn spawn_on_free_port(
     let Job {
         runtime,
         parent,
-        chain,
         name,
-        args,
+        options,
+        chain_id,
         ..
     } = *job;
-    let chain_id = args.chain_id.unwrap_or(chain.id);
     let mut from = FIRST_PORT;
     let mut attempt = 0;
     loop {
         attempt += 1;
-        let port = match args.port {
+        let port = match options.port {
             Some(port) => port,
             None => {
                 let taken: Vec<u16> = runtime
@@ -381,8 +423,8 @@ async fn spawn_on_free_port(
         let spec = process::AnvilSpec {
             fork_url,
             port,
-            block: args.block,
-            chain_id: args.chain_id,
+            block: options.block,
+            chain_id: options.chain_id,
         };
         let anvil = process::spawn_anvil(&spec, log)?;
         let record = ForkRecord {
@@ -393,7 +435,7 @@ async fn spawn_on_free_port(
             port,
             parent: parent.to_string(),
             chain_id,
-            fork_block: args.block,
+            fork_block: options.block,
             started_at: chainz_sys::now_secs(),
             ready: false,
         };
@@ -411,13 +453,13 @@ async fn spawn_on_free_port(
                 // already have let go of it again): take the next.
                 let lost_port =
                     port_busy(port) || log_contains(log_path, log_start, "Address already in use");
-                if args.port.is_none() && attempt < 5 && lost_port {
+                if options.port.is_none() && attempt < PORT_ATTEMPTS && lost_port {
                     from = port.saturating_add(1);
                     continue;
                 }
                 bail!(
                     "anvil exited before the fork was ready ({status}):\n{}",
-                    process::log_tail(log_path, log_start, 12)
+                    process::log_tail(log_path, log_start, process::ERROR_TAIL_LINES)
                 );
             }
         }
@@ -462,7 +504,7 @@ async fn wait_ready(
             bail!(
                 "anvil did not come up within {}s:\n{}",
                 READY_TIMEOUT.as_secs(),
-                process::log_tail(log_path, log_start, 12)
+                process::log_tail(log_path, log_start, process::ERROR_TAIL_LINES)
             );
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -516,17 +558,8 @@ rpcs.a = "https://a"
         .unwrap()
     }
 
-    fn fork_args(fund: Option<&str>, no_fund: bool) -> ForkArgs {
-        ForkArgs {
-            chain: Some("base".into()),
-            block: None,
-            port: None,
-            name: None,
-            chain_id: None,
-            fund: fund.map(String::from),
-            no_fund,
-            detach: false,
-        }
+    fn fund_options(spec: Option<&str>, skip: bool) -> FundOptions<'_> {
+        FundOptions { spec, skip }
     }
 
     #[test]
@@ -553,7 +586,7 @@ rpcs.a = "https://a"
     #[test]
     fn funding_defaults_to_the_chain_signer_native_only() {
         let c = config();
-        let plan = plan_funding(&c, "base", &c.chains["base"], &fork_args(None, false))
+        let plan = plan_funding(&c, "base", &c.chains["base"], fund_options(None, false))
             .unwrap()
             .unwrap();
         assert_eq!(plan.signer, "default");
@@ -563,7 +596,7 @@ rpcs.a = "https://a"
             &c,
             "base",
             &c.chains["base"],
-            &fork_args(Some("usdc=10000,weth=5"), false),
+            fund_options(Some("usdc=10000,weth=5"), false),
         )
         .unwrap()
         .unwrap();
@@ -571,7 +604,7 @@ rpcs.a = "https://a"
         assert_eq!(symbols, ["USDC", "WETH"]);
         // --no-fund.
         assert!(
-            plan_funding(&c, "base", &c.chains["base"], &fork_args(None, true))
+            plan_funding(&c, "base", &c.chains["base"], fund_options(None, true))
                 .unwrap()
                 .is_none()
         );
@@ -579,11 +612,11 @@ rpcs.a = "https://a"
         // default, an error when funding was asked for.
         for chain in ["eth", "zksync"] {
             assert!(
-                plan_funding(&c, chain, &c.chains[chain], &fork_args(None, false))
+                plan_funding(&c, chain, &c.chains[chain], fund_options(None, false))
                     .unwrap()
                     .is_none()
             );
-            let err = plan_funding(&c, chain, &c.chains[chain], &fork_args(Some(""), false))
+            let err = plan_funding(&c, chain, &c.chains[chain], fund_options(Some(""), false))
                 .unwrap_err()
                 .to_string();
             assert!(err.contains("no signer with a cached address"), "{err}");
