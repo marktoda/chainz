@@ -22,7 +22,7 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
-use chainz_core::runtime::{Runtime, ServeInfo};
+use chainz_core::runtime::{GatewayState, Runtime, ServeInfo};
 use chainz_rpc::{ErrorClass, HealthSample, HealthStore, RpcClient, Target, probe_all};
 use tokio::runtime::Handle;
 use tokio::sync::{Notify, watch};
@@ -175,10 +175,11 @@ impl Shared {
     /// Look for a gateway (one non-blocking `flock` and a small file read)
     /// and report whether anything changed.
     fn detect_gateway(&self) -> bool {
-        let found = if self.runtime.serve_running() {
-            self.runtime.read_serve_info().ok().flatten()
-        } else {
-            None
+        // Unreadable counts as no gateway here; the dashboard adopts the
+        // warning with the rest of B2 (stream S4).
+        let found = match self.runtime.gateway() {
+            Ok(GatewayState::Up(info)) => Some(info),
+            _ => None,
         };
         let mut current = self.gateway.write().unwrap_or_else(|e| e.into_inner());
         let changed = *current != found;

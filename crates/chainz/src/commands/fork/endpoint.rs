@@ -5,7 +5,7 @@ use crate::{net, ui};
 use anyhow::{Result, anyhow, bail};
 use chainz_core::Chainz;
 use chainz_core::model::Chain;
-use chainz_core::runtime::{Runtime, ServeInfo};
+use chainz_core::runtime::{GatewayState, Runtime, ServeInfo};
 use chainz_rpc::{Capabilities, RpcClient, Target, probe_capabilities};
 
 /// The one endpoint this fork uses for its whole life.
@@ -137,12 +137,20 @@ pub fn route(
     }
 }
 
-/// The gateway's discovery record, when one is running.
+/// The gateway's discovery record, when one is up. A record that can't
+/// be read is said, and the fork goes direct.
 fn gateway(runtime: &Runtime) -> Option<ServeInfo> {
-    if !runtime.serve_running() {
-        return None;
+    match runtime.gateway() {
+        Ok(GatewayState::Up(info)) => Some(info),
+        Ok(GatewayState::Down | GatewayState::Starting) => None,
+        Err(e) => {
+            eprintln!(
+                "{}",
+                ui::warn(&format!("not using the running gateway: {e}"))
+            );
+            None
+        }
     }
-    runtime.read_serve_info().ok().flatten()
 }
 
 #[cfg(test)]

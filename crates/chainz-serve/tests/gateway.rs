@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+use chainz_core::runtime::GatewayState;
 use chainz_rpc::control::{EventsOptions, RecordStatus};
 use chainz_rpc::{Capabilities, ErrorClass, HealthStore};
 use common::{Mock, R, Rig, eth_config, eventually, http, probed_twice_since};
@@ -813,8 +814,9 @@ async fn inspector_control_api_and_runtime_files() {
     let runtime = rig.runtime();
 
     // Runtime files: lock held, serve.json and serve.sock private.
-    assert!(runtime.serve_running());
-    let info = runtime.read_serve_info().unwrap().unwrap();
+    let GatewayState::Up(info) = runtime.gateway().unwrap() else {
+        panic!("the gateway is not up");
+    };
     assert_eq!((info.port, info.pid), (port, std::process::id()));
     assert_eq!(info.token.len(), 64);
     for file in [runtime.serve_json_path(), runtime.serve_sock_path()] {
@@ -823,11 +825,11 @@ async fn inspector_control_api_and_runtime_files() {
     }
     // The exec seam hands out exactly the URLs the gateway serves.
     assert_eq!(
-        runtime.gateway_url("eth", None),
+        runtime.gateway_url("eth", None).unwrap(),
         Some(rig.gateway().addr().url("eth", None))
     );
     assert_eq!(
-        runtime.gateway_url("eth", Some("a")),
+        runtime.gateway_url("eth", Some("a")).unwrap(),
         Some(rig.gateway().addr().url("eth", Some("a")))
     );
     // A second gateway is refused while this one runs.
@@ -835,7 +837,7 @@ async fn inspector_control_api_and_runtime_files() {
     let error = format!("{:#}", second.unwrap_err());
     assert!(error.contains("already running"), "{error}");
     assert!(
-        runtime.read_serve_info().unwrap().is_some(),
+        matches!(runtime.gateway().unwrap(), GatewayState::Up(_)),
         "the loser must not clean up"
     );
 
@@ -973,10 +975,9 @@ async fn inspector_control_api_and_runtime_files() {
 
     // Shutdown: files withdrawn, lock released, log flushed.
     rig.shutdown().await;
-    assert!(!runtime.serve_running());
-    assert!(runtime.read_serve_info().unwrap().is_none());
+    assert_eq!(runtime.gateway().unwrap(), GatewayState::Down);
+    assert!(!runtime.serve_json_path().exists());
     assert!(!runtime.serve_sock_path().exists());
-    assert_eq!(runtime.gateway_url("eth", None), None);
     let text = std::fs::read_to_string(&log).unwrap();
     assert_eq!(text.lines().count(), 7);
     let first: Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
@@ -1229,5 +1230,5 @@ async fn a_failed_serve_json_write_leaves_nothing_running() {
     // Nothing kept the port, the socket or the lock.
     std::net::TcpListener::bind(("127.0.0.1", port)).expect("the port is still held");
     assert!(!runtime.serve_sock_path().exists());
-    assert!(!runtime.serve_running());
+    assert_eq!(runtime.gateway().unwrap(), GatewayState::Down);
 }

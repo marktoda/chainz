@@ -12,7 +12,11 @@
 //!
 //! Liveness of the gateway is the lock, never a PID check: `exec` makes one
 //! non-blocking `flock` attempt; if it gets the lock, no gateway runs.
+//! [`Runtime::gateway`] is the one answer to "is a gateway running".
 //! Everything here is synchronous and opens no sockets.
+//!
+//! Each record carries a `format` version; a reader refuses a format it
+//! does not know rather than misreading it.
 
 use crate::paths;
 use serde::{Deserialize, Serialize};
@@ -125,6 +129,8 @@ pub struct Runtime {
 /// The gateway's discovery record, `serve.json` (mode 0600).
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServeInfo {
+    /// Record format, [`ServeInfo::FORMAT`].
+    pub format: u32,
     /// Gateway process ID (informational only; liveness is the lock).
     pub pid: u32,
     /// Loopback TCP port.
@@ -140,6 +146,7 @@ pub struct ServeInfo {
 impl fmt::Debug for ServeInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ServeInfo")
+            .field("format", &self.format)
             .field("pid", &self.pid)
             .field("port", &self.port)
             .field("token", &"[REDACTED]")
@@ -150,6 +157,21 @@ impl fmt::Debug for ServeInfo {
 }
 
 impl ServeInfo {
+    /// The `serve.json` format this chainz reads and writes.
+    pub const FORMAT: u32 = 1;
+
+    /// The record for this process, a gateway listening on `addr`.
+    pub fn new(addr: &GatewayAddr, started_at: u64) -> Self {
+        ServeInfo {
+            format: Self::FORMAT,
+            pid: std::process::id(),
+            port: addr.port,
+            token: addr.token.clone(),
+            started_at,
+            version: env!("CARGO_PKG_VERSION").to_string(),
+        }
+    }
+
     /// The gateway's address: its URLs.
     pub fn addr(&self) -> GatewayAddr {
         GatewayAddr {
@@ -186,10 +208,47 @@ impl ForkRecord {
     }
 }
 
+/// Whether a gateway runs, from [`Runtime::gateway`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GatewayState {
+    /// Nothing holds `serve.lock`.
+    Down,
+    /// A gateway holds the lock but has not published `serve.json` yet
+    /// (or has already withdrawn it while stopping).
+    Starting,
+    /// A gateway serves, as `serve.json` describes.
+    Up(ServeInfo),
+}
+
 /// The gateway's lifetime lock. Dropping it releases the lock.
 #[derive(Debug)]
 pub struct ServeLock {
     _file: std::fs::File,
+    serve_json: PathBuf,
+}
+
+impl ServeLock {
+    /// Publish `serve.json` (atomic, mode 0600). It is withdrawn when the
+    /// returned guard drops, so it never outlives the gateway.
+    pub fn publish(&self, info: &ServeInfo) -> io::Result<Published> {
+        write_json(&self.serve_json, info)?;
+        Ok(Published {
+            path: self.serve_json.clone(),
+        })
+    }
+}
+
+/// A published `serve.json`; dropping it removes the file.
+#[derive(Debug)]
+pub struct Published {
+    path: PathBuf,
+}
+
+impl Drop for Published {
+    fn drop(&mut self) {
+        // Best effort: the lock, not this file, says whether we run.
+        let _ = remove_if_exists(&self.path);
+    }
 }
 
 impl Runtime {
@@ -242,7 +301,7 @@ impl Runtime {
 
     /// Whether a gateway holds `serve.lock`: one non-blocking `flock`
     /// attempt. A missing lock file means no gateway; nothing is created.
-    pub fn serve_running(&self) -> bool {
+    fn serve_locked(&self) -> bool {
         let Ok(file) = std::fs::File::open(self.serve_lock_path()) else {
             return false;
         };
@@ -255,39 +314,55 @@ impl Runtime {
         }
     }
 
-    /// For the gateway: take `serve.lock` for the process lifetime.
-    /// `Ok(None)` when another gateway already holds it.
-    pub fn acquire_serve_lock(&self) -> io::Result<Option<ServeLock>> {
-        self.ensure_dir()?;
-        let file = chainz_sys::open_private(&self.serve_lock_path())?;
-        Ok(chainz_sys::try_lock(&file)?.then_some(ServeLock { _file: file }))
-    }
-
-    /// Read `serve.json`; `Ok(None)` if absent.
-    pub fn read_serve_info(&self) -> io::Result<Option<ServeInfo>> {
-        read_json(&self.serve_json_path())
-    }
-
-    /// Write `serve.json` atomically, mode 0600.
-    pub fn write_serve_info(&self, info: &ServeInfo) -> io::Result<()> {
-        self.ensure_dir()?;
-        write_json(&self.serve_json_path(), info)
-    }
-
-    /// Remove `serve.json` (missing is fine).
-    pub fn remove_serve_info(&self) -> io::Result<()> {
-        remove_if_exists(&self.serve_json_path())
+    /// **The** answer to "is a gateway running": one non-blocking `flock`
+    /// attempt, then (only while the lock is held) a read of `serve.json`.
+    /// Creates nothing. An unreadable or unknown `serve.json` under a held
+    /// lock is an error, never [`GatewayState::Down`].
+    pub fn gateway(&self) -> io::Result<GatewayState> {
+        if !self.serve_locked() {
+            return Ok(GatewayState::Down);
+        }
+        let path = self.serve_json_path();
+        let info: Option<ServeInfo> = read_json(&path)?;
+        Ok(match info {
+            None => GatewayState::Starting,
+            Some(info) if info.format != ServeInfo::FORMAT => {
+                return Err(unknown_format(&path, info.format));
+            }
+            Some(info) => GatewayState::Up(info),
+        })
     }
 
     /// **Exec seam for the gateway.** The loopback URL `exec` should use for
-    /// `chain` (pinned to `endpoint` when given), or `None` when no gateway
-    /// is running (nothing holds `serve.lock`, or `serve.json` is missing).
-    pub fn gateway_url(&self, chain: &str, endpoint: Option<&str>) -> Option<String> {
-        if !self.serve_running() {
-            return None;
+    /// `chain` (pinned to `endpoint` when given) while a gateway is up.
+    pub fn gateway_url(&self, chain: &str, endpoint: Option<&str>) -> io::Result<Option<String>> {
+        Ok(match self.gateway()? {
+            GatewayState::Up(info) => Some(info.addr().url(chain, endpoint)),
+            GatewayState::Down | GatewayState::Starting => None,
+        })
+    }
+
+    /// For the gateway: take `serve.lock` for the process lifetime, and
+    /// remove the `serve.json` a dead gateway left (failing if it can't be
+    /// removed, so nobody reads a dead gateway's record while we run).
+    /// `Ok(None)` when another gateway already holds the lock.
+    pub fn acquire_serve_lock(&self) -> io::Result<Option<ServeLock>> {
+        self.ensure_dir()?;
+        let file = chainz_sys::open_private(&self.serve_lock_path())?;
+        if !chainz_sys::try_lock(&file)? {
+            return Ok(None);
         }
-        let info = self.read_serve_info().ok().flatten()?;
-        Some(info.addr().url(chain, endpoint))
+        let serve_json = self.serve_json_path();
+        remove_if_exists(&serve_json).map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!("can't remove the stale {}: {e}", serve_json.display()),
+            )
+        })?;
+        Ok(Some(ServeLock {
+            _file: file,
+            serve_json,
+        }))
     }
 
     /// Every fork record (unparseable files are skipped).
@@ -330,11 +405,25 @@ impl Runtime {
     }
 }
 
+fn unknown_format(path: &Path, format: u32) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!(
+            "{} has format {format}, which this chainz ({}) does not read",
+            path.display(),
+            env!("CARGO_PKG_VERSION")
+        ),
+    )
+}
+
 fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> io::Result<Option<T>> {
     match std::fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .map(Some)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e)),
+        Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{} is unreadable: {e}", path.display()),
+            )
+        }),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e),
     }
@@ -356,12 +445,21 @@ fn remove_if_exists(path: &Path) -> io::Result<()> {
 mod tests {
     use super::*;
 
+    fn info() -> ServeInfo {
+        ServeInfo::new(
+            &GatewayAddr {
+                port: 18545,
+                token: "tok".into(),
+            },
+            0,
+        )
+    }
+
     #[test]
-    fn gateway_url_needs_the_lock_and_serve_json() {
+    fn gateway_state_needs_the_lock_and_serve_json() {
         let dir = tempfile::tempdir().unwrap();
         let rt = Runtime::at(dir.path().join("chainz"));
-        assert!(!rt.serve_running());
-        assert_eq!(rt.gateway_url("base", None), None);
+        assert_eq!(rt.gateway().unwrap(), GatewayState::Down);
         assert!(!rt.dir().exists(), "probing must not create files");
 
         let lock = rt.acquire_serve_lock().unwrap().expect("free");
@@ -369,28 +467,45 @@ mod tests {
             rt.acquire_serve_lock().unwrap().is_none(),
             "second gateway refused"
         );
-        assert!(rt.serve_running());
-        assert_eq!(rt.gateway_url("base", None), None, "no serve.json yet");
-        let info = ServeInfo {
-            pid: 1,
-            port: 18545,
-            token: "tok".into(),
-            started_at: 0,
-            version: "2".into(),
-        };
-        rt.write_serve_info(&info).unwrap();
-        assert_eq!(
-            rt.gateway_url("base", None).as_deref(),
-            Some("http://127.0.0.1:18545/tok/base")
-        );
-        assert_eq!(
-            rt.gateway_url("base", Some("llama")).as_deref(),
-            Some("http://127.0.0.1:18545/tok/base/llama")
-        );
+        assert_eq!(rt.gateway().unwrap(), GatewayState::Starting);
+        let info = info();
+        let published = lock.publish(&info).unwrap();
+        assert_eq!(rt.gateway().unwrap(), GatewayState::Up(info.clone()));
         assert!(!format!("{info:?}").contains("tok\""));
+        drop(published);
+        assert_eq!(rt.gateway().unwrap(), GatewayState::Starting);
+        assert!(!rt.serve_json_path().exists(), "withdrawn on drop");
         drop(lock);
-        assert!(!rt.serve_running());
-        assert_eq!(rt.gateway_url("base", None), None);
+        assert_eq!(rt.gateway().unwrap(), GatewayState::Down);
+    }
+
+    #[test]
+    fn a_broken_serve_json_is_an_error_not_down() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = Runtime::at(dir.path());
+        // A dead gateway's record is ignored, then removed by the next.
+        write_json(&rt.serve_json_path(), &info()).unwrap();
+        assert_eq!(rt.gateway().unwrap(), GatewayState::Down);
+        let lock = rt.acquire_serve_lock().unwrap().unwrap();
+        assert!(!rt.serve_json_path().exists(), "stale record removed");
+
+        std::fs::write(rt.serve_json_path(), "{").unwrap();
+        let err = rt.gateway().unwrap_err().to_string();
+        assert!(err.contains("serve.json is unreadable"), "{err}");
+        let newer = ServeInfo {
+            format: ServeInfo::FORMAT + 1,
+            ..info()
+        };
+        write_json(&rt.serve_json_path(), &newer).unwrap();
+        let err = rt.gateway().unwrap_err().to_string();
+        assert!(err.contains("does not read"), "{err}");
+        drop(lock);
+
+        // A record that can't be removed fails the next gateway's start.
+        std::fs::remove_file(rt.serve_json_path()).unwrap();
+        std::fs::create_dir_all(rt.serve_json_path().join("x")).unwrap();
+        let err = rt.acquire_serve_lock().unwrap_err().to_string();
+        assert!(err.contains("stale"), "{err}");
     }
 
     #[test]

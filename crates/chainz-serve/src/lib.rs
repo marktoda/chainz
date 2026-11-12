@@ -38,6 +38,23 @@ pub use gateway::{Gateway, GatewayConfig};
 pub use metrics::Summary;
 pub use pinned::PinnedProxy;
 
+/// The one wording of "a gateway already runs": the bin says it before
+/// detaching, and [`Gateway::start`] says it when it loses the lock race.
+#[derive(Debug)]
+pub struct AlreadyRunning(pub Option<chainz_core::runtime::ServeInfo>);
+
+impl std::fmt::Display for AlreadyRunning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "chainz serve is already running")?;
+        if let Some(info) = &self.0 {
+            write!(f, " on port {} (pid {})", info.port, info.pid)?;
+        }
+        write!(f, "; stop it with `chainz serve stop`")
+    }
+}
+
+impl std::error::Error for AlreadyRunning {}
+
 /// Options for [`run`].
 #[derive(Debug, Clone)]
 pub struct Options {

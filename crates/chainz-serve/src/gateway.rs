@@ -13,7 +13,9 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use bytes::Bytes;
 use chainz_core::StorePaths;
-use chainz_core::runtime::{DEFAULT_PORT, GatewayAddr, LOOPBACK, Runtime, ServeInfo, ServeLock};
+use chainz_core::runtime::{
+    DEFAULT_PORT, GatewayAddr, GatewayState, LOOPBACK, Published, Runtime, ServeInfo, ServeLock,
+};
 use chainz_rpc::control::{
     ChainStatus, EVENTS_PATH, EventsOptions, METRICS_PATH, RELOAD_PATH, RequestRecord, STATUS_PATH,
     SocketPath, Status,
@@ -111,6 +113,8 @@ struct Shared {
     state_dir: Option<PathBuf>,
     /// Port and token: the gateway's URLs.
     addr: GatewayAddr,
+    /// What `serve.json` says; the control API's status is built from it.
+    info: ServeInfo,
     started: Instant,
     /// Human-readable notices (reloads, warnings) for the foreground UI.
     notices: broadcast::Sender<String>,
@@ -160,9 +164,9 @@ impl Shared {
     fn status(&self) -> Status {
         let snapshot = self.router.snapshot();
         Status {
-            version: env!("CARGO_PKG_VERSION").to_string(),
-            pid: std::process::id(),
-            port: self.addr.port,
+            version: self.info.version.clone(),
+            pid: self.info.pid,
+            port: self.info.port,
             uptime_secs: self.started.elapsed().as_secs(),
             chains: snapshot
                 .chains
@@ -188,6 +192,8 @@ pub struct Gateway {
     tasks: Vec<JoinHandle<()>>,
     log_writer: Option<JoinHandle<()>>,
     drain: Duration,
+    /// `serve.json`, withdrawn first on shutdown (before the lock goes).
+    published: Option<Published>,
     _lock: ServeLock,
 }
 
@@ -203,19 +209,19 @@ impl Gateway {
     /// Take `serve.lock`, load the config, bind the loopback port and the
     /// control socket, publish `serve.json`, and start serving.
     pub async fn start(config: GatewayConfig) -> Result<Gateway> {
-        let Some(lock) = config.runtime.acquire_serve_lock()? else {
-            let port = config
-                .runtime
-                .read_serve_info()
-                .ok()
-                .flatten()
-                .map(|info| format!(" on port {}", info.port))
-                .unwrap_or_default();
-            bail!("chainz serve is already running{port} (stop it with `chainz serve stop`)");
+        // Taking the lock also removes what a gateway that died left, so
+        // `serve stop` never reads a dead gateway's PID while we run.
+        let Some(lock) = config
+            .runtime
+            .acquire_serve_lock()
+            .context("can't take serve.lock")?
+        else {
+            let running = match config.runtime.gateway() {
+                Ok(GatewayState::Up(info)) => Some(info),
+                _ => None,
+            };
+            bail!(crate::AlreadyRunning(running));
         };
-        // Anything left by a gateway that died is stale now, and `serve stop`
-        // must never read a dead gateway's PID while we hold the lock.
-        let _ = config.runtime.remove_serve_info();
         // Stamped before the load, so the watcher sees a change made while
         // it runs.
         let stamps = Stamps::take(&config.paths, config.state_dir.as_deref());
@@ -251,14 +257,16 @@ impl Gateway {
                     return Err(error).context("can't open the --log file");
                 }
             };
+        let addr = GatewayAddr {
+            port,
+            token: auth::new_token(),
+        };
         let shared = Arc::new(Shared {
             router: Router::new(snapshot, config.upstream, inspector, config.timeout),
             paths: config.paths,
             state_dir: config.state_dir,
-            addr: GatewayAddr {
-                port,
-                token: auth::new_token(),
-            },
+            info: ServeInfo::new(&addr, now_secs()),
+            addr,
             started: Instant::now(),
             notices,
             reloading: tokio::sync::Mutex::new(()),
@@ -267,21 +275,17 @@ impl Gateway {
         // Published before anything is spawned. Both listeners are bound,
         // so a client that reads it early waits in the accept backlog; and
         // a failed write leaves nothing running that holds them.
-        let info = ServeInfo {
-            pid: std::process::id(),
-            port,
-            token: shared.addr.token.clone(),
-            started_at: now_secs(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
-        };
-        if let Err(error) = config.runtime.write_serve_info(&info) {
-            let _ = std::fs::remove_file(&sock);
-            shared.router.inspector.close_log();
-            if let Some(writer) = log_writer {
-                let _ = writer.await;
+        let published = match lock.publish(&shared.info) {
+            Ok(published) => published,
+            Err(error) => {
+                let _ = std::fs::remove_file(&sock);
+                shared.router.inspector.close_log();
+                if let Some(writer) = log_writer {
+                    let _ = writer.await;
+                }
+                return Err(error).context("can't write serve.json");
             }
-            return Err(error).context("can't write serve.json");
-        }
+        };
 
         let (stop, stopped) = watch::channel(false);
         let tasks = vec![
@@ -323,6 +327,7 @@ impl Gateway {
             tasks,
             log_writer,
             drain: config.drain,
+            published: Some(published),
             _lock: lock,
         };
         for warning in warnings {
@@ -371,7 +376,7 @@ impl Gateway {
     /// the lock. Every task the gateway started has ended when this
     /// returns.
     pub async fn shutdown(mut self) {
-        let _ = self.runtime.remove_serve_info();
+        drop(self.published.take());
         let _ = self.stop.send(true);
         // Each task stops on the signal (the servers after draining);
         // whatever is still running at the deadline is aborted.

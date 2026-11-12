@@ -9,7 +9,7 @@ use crate::cli::{ServeArgs, ServeCommand};
 use crate::{net, sys, ui, view};
 use anyhow::{Context, Result, bail};
 use chainz_core::paths;
-use chainz_core::runtime::{LOOPBACK, Runtime, ServeInfo};
+use chainz_core::runtime::{GatewayState, LOOPBACK, Runtime, ServeInfo};
 use chainz_rpc::control::{
     ControlClient, EVENTS_BUFFER, EventsOptions, MetricsRow, RecordStatus, RequestRecord, Status,
 };
@@ -38,24 +38,26 @@ pub fn run(cmd: Option<ServeCommand>, args: ServeArgs) -> Result<i32> {
     }
 }
 
+/// The gateway's state, read once.
+fn gateway(runtime: &Runtime) -> Result<GatewayState> {
+    runtime
+        .gateway()
+        .context("unable to read the running gateway's record")
+}
+
 /// The running gateway's record, or `None` when no gateway holds the lock.
 fn running(runtime: &Runtime) -> Result<Option<ServeInfo>> {
-    if !runtime.serve_running() {
-        return Ok(None);
-    }
     // The lock is taken a moment before `serve.json` is written.
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
-        if let Some(info) = runtime.read_serve_info()? {
-            return Ok(Some(info));
+        match gateway(runtime)? {
+            GatewayState::Down => return Ok(None),
+            GatewayState::Up(info) => return Ok(Some(info)),
+            GatewayState::Starting if Instant::now() > deadline => {
+                bail!("a gateway holds serve.lock but has not published serve.json")
+            }
+            GatewayState::Starting => std::thread::sleep(Duration::from_millis(20)),
         }
-        if !runtime.serve_running() {
-            return Ok(None);
-        }
-        if Instant::now() > deadline {
-            bail!("a gateway holds serve.lock but has not published serve.json");
-        }
-        std::thread::sleep(Duration::from_millis(20));
     }
 }
 
@@ -68,11 +70,7 @@ fn start(args: ServeArgs) -> Result<i32> {
     }
     drop(chainz);
     if let Some(info) = running(&runtime()?)? {
-        bail!(
-            "chainz serve is already running on port {} (pid {}); stop it with `chainz serve stop`",
-            info.port,
-            info.pid
-        );
+        bail!(chainz_serve::AlreadyRunning(Some(info)));
     }
     if args.detach {
         return detach(&args);
@@ -120,8 +118,7 @@ fn detach(args: &ServeArgs) -> Result<i32> {
                 log_path.display()
             );
         }
-        if runtime.serve_running()
-            && let Some(info) = runtime.read_serve_info()?
+        if let GatewayState::Up(info) = gateway(&runtime)?
             && info.pid == child.id()
         {
             println!(
@@ -154,7 +151,7 @@ fn stop() -> Result<i32> {
     };
     terminate(info.pid)?;
     let deadline = Instant::now() + STOP_TIMEOUT;
-    while runtime.serve_running() {
+    while gateway(&runtime)? != GatewayState::Down {
         if Instant::now() > deadline {
             bail!(
                 "the gateway (pid {}) did not stop within {} s",

@@ -709,7 +709,7 @@ fn a_running_gateway_is_used_pinned_to_the_endpoint() {
     }
     fs::write(
         runtime.join("serve.json"),
-        json!({"pid": std::process::id(), "port": gateway_port, "token": "gwtoken",
+        json!({"format": 1, "pid": std::process::id(), "port": gateway_port, "token": "gwtoken",
                "started_at": 0, "version": "test"})
         .to_string(),
     )

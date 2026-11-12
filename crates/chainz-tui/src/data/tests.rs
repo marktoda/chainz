@@ -706,13 +706,11 @@ async fn endpoints_are_probed_only_while_focused_and_lag_is_classified() {
 }
 
 fn serve_info(port: u16) -> ServeInfo {
-    ServeInfo {
-        pid: std::process::id(),
+    let addr = chainz_core::runtime::GatewayAddr {
         port,
         token: "s3cr3t-token".into(),
-        started_at: NOW,
-        version: "2.0.0-test".into(),
-    }
+    };
+    ServeInfo::new(&addr, NOW)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -737,7 +735,7 @@ async fn reads_go_through_the_gateway_while_one_runs() {
     // A gateway appears: it holds the lock and has written serve.json.
     let runtime = chainz_core::runtime::Runtime::at(dir.path().join("runtime"));
     let lock = runtime.acquire_serve_lock().unwrap().unwrap();
-    runtime.write_serve_info(&serve_info(port)).unwrap();
+    let _published = lock.publish(&serve_info(port)).unwrap();
     let info = wait_for(&updates, |u| match u {
         Update::Gateway(Some(info)) => Some(info),
         _ => None,
@@ -778,7 +776,7 @@ async fn traffic_follows_the_gateway_control_socket() {
 
     let runtime = chainz_core::runtime::Runtime::at(dir.path().join("runtime"));
     let lock = runtime.acquire_serve_lock().unwrap().unwrap();
-    runtime.write_serve_info(&serve_info(18545)).unwrap();
+    let _published = lock.publish(&serve_info(18545)).unwrap();
     let server =
         gw::MockControlServer::start(&runtime.serve_sock_path(), gw::status(), gw::metrics())
             .await
@@ -1000,8 +998,8 @@ async fn once_does_not_hang_on_a_wedged_gateway() {
     let dir = short_tempdir();
     // A gateway holds the lock and its socket accepts, but never answers.
     let runtime = chainz_core::runtime::Runtime::at(dir.path().join("runtime"));
-    let _lock = runtime.acquire_serve_lock().unwrap().unwrap();
-    runtime.write_serve_info(&serve_info(18545)).unwrap();
+    let lock = runtime.acquire_serve_lock().unwrap().unwrap();
+    let _published = lock.publish(&serve_info(18545)).unwrap();
     let _socket = std::os::unix::net::UnixListener::bind(runtime.serve_sock_path()).unwrap();
     let mut tuning = fast();
     tuning.request_timeout = Duration::from_millis(300);
