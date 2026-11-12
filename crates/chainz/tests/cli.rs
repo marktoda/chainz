@@ -261,24 +261,36 @@ fn migrated_config_never_prints_secrets() {
 // ---------------------------------------------------------------- vars
 
 #[test]
-fn var_set_get_ls_rm_roundtrip() {
+fn var_set_ls_rm_roundtrip() {
     let sb = Sandbox::new();
     sb.cmd()
         .args(["var", "set", "API_KEY", "supersecret123"])
         .assert()
         .success();
     sb.cmd()
-        .args(["var", "get", "API_KEY"])
+        .args(["var", "set", "OTHER", "othervalue"])
+        .assert()
+        .success();
+    // Named: only those rows.
+    sb.cmd()
+        .args(["var", "ls", "API_KEY"])
         .assert()
         .success()
         .stdout(
-            predicate::str::contains("REDACTED").and(predicate::str::contains("supersecret").not()),
+            predicate::str::contains("REDACTED")
+                .and(predicate::str::contains("supersecret").not())
+                .and(predicate::str::contains("OTHER").not()),
         );
     sb.cmd()
-        .args(["var", "get", "API_KEY", "--reveal"])
+        .args(["var", "ls", "API_KEY", "--reveal"])
         .assert()
         .success()
-        .stdout("supersecret123\n");
+        .stdout(predicate::str::contains("supersecret123"));
+    sb.cmd()
+        .args(["var", "ls", "API_KEY", "NOPE"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("variable 'NOPE' is not set"));
     sb.cmd().args(["var", "ls"]).assert().success().stdout(
         predicate::str::contains("API_KEY").and(predicate::str::contains("supersecret").not()),
     );
@@ -297,7 +309,8 @@ fn var_set_get_ls_rm_roundtrip() {
         .args(["var", "rm", "API_KEY", "-y"])
         .assert()
         .success();
-    sb.cmd().args(["var", "get", "API_KEY"]).assert().failure();
+    sb.cmd().args(["var", "ls", "API_KEY"]).assert().failure();
+    sb.cmd().args(["var", "get", "OTHER"]).assert().code(2);
 }
 
 #[test]
@@ -308,11 +321,9 @@ fn var_stdin_preserves_intentional_whitespace() {
         .write_stdin("  value \n")
         .assert()
         .success();
-    sb.cmd()
-        .args(["var", "get", "SPACED", "--reveal"])
-        .assert()
-        .success()
-        .stdout("  value \n");
+    let out = sb.ok(&["var", "ls", "SPACED", "--reveal", "--json"]);
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v[0]["value"], "  value ");
 }
 
 #[test]

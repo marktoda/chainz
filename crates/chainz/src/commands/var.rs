@@ -1,6 +1,6 @@
 //! `var …`: variables referenced as `${NAME}`; values live in secrets.toml.
 
-use crate::cli::{VarCommand, VarGetArgs, VarLsArgs, VarRmArgs, VarSetArgs, usage_error};
+use crate::cli::{VarCommand, VarLsArgs, VarRmArgs, VarSetArgs, usage_error};
 use crate::load::open;
 use crate::prompt::{self, StdinTrim, read_stdin_secret};
 use crate::{ui, view};
@@ -14,7 +14,6 @@ use zeroize::Zeroizing;
 pub fn run(cmd: VarCommand) -> Result<i32> {
     match cmd {
         VarCommand::Set(args) => set(&args),
-        VarCommand::Get(args) => get(&args),
         VarCommand::Ls(args) => ls(&args),
         VarCommand::Rm(args) => rm(&args),
     }
@@ -110,16 +109,6 @@ fn set(args: &VarSetArgs) -> Result<i32> {
     Ok(0)
 }
 
-fn get(args: &VarGetArgs) -> Result<i32> {
-    let (name, reveal) = (args.name.as_str(), args.reveal);
-    let chainz = open()?;
-    let Some(value) = chainz.secrets()?.vars.get(name) else {
-        bail!("variable '{name}' is not set");
-    };
-    println!("{}", if reveal { value.clone() } else { masked(value) });
-    Ok(0)
-}
-
 #[derive(Serialize)]
 struct VarRow {
     name: String,
@@ -133,12 +122,21 @@ fn ls(args: &VarLsArgs) -> Result<i32> {
     let config = chainz.config();
     let secrets = chainz.secrets()?;
     let value = |v: &str| if reveal { v.to_string() } else { masked(v) };
+    for name in &args.names {
+        if !secrets.vars.contains_key(name) {
+            bail!("variable '{name}' is not set");
+        }
+    }
+    let vars: Vec<(&String, &String)> = secrets
+        .vars
+        .iter()
+        .filter(|(n, _)| args.names.is_empty() || args.names.contains(n))
+        .collect();
     if json {
-        let rows: Vec<VarRow> = secrets
-            .vars
+        let rows: Vec<VarRow> = vars
             .iter()
             .map(|(n, v)| VarRow {
-                name: n.clone(),
+                name: n.to_string(),
                 value: value(v),
                 used_by: references(config, n),
             })
@@ -146,18 +144,17 @@ fn ls(args: &VarLsArgs) -> Result<i32> {
         println!("{}", serde_json::to_string_pretty(&rows)?);
         return Ok(0);
     }
-    if secrets.vars.is_empty() {
+    if vars.is_empty() {
         println!("No variables. Set one with `chainz var set NAME --stdin`.");
         return Ok(0);
     }
-    let rows: Vec<[String; 3]> = secrets
-        .vars
+    let rows: Vec<[String; 3]> = vars
         .iter()
-        .map(|(n, v)| [n.clone(), value(v), summary(&config.var_uses(n))])
+        .map(|(n, v)| [n.to_string(), value(v), summary(&config.var_uses(n))])
         .collect();
     let lines = view::table_lines(&["NAME", "VALUE", "USED BY"], &rows);
     println!("{}", lines[0]);
-    for (name, line) in secrets.vars.keys().zip(&lines[1..]) {
+    for ((name, _), line) in vars.iter().zip(&lines[1..]) {
         println!("{line}");
         if args.verbose {
             for record in config.var_uses(name) {

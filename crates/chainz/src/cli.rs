@@ -757,9 +757,8 @@ impl From<&AddrImportArgs> for chainz_core::broadcast::Options {
 pub enum VarCommand {
     /// Set a variable (prefer --stdin over an argument)
     Set(VarSetArgs),
-    /// Show a variable (redacted unless --reveal)
-    Get(VarGetArgs),
-    /// List variables
+    /// List variables, or only the ones named (values redacted unless
+    /// --reveal)
     Ls(VarLsArgs),
     /// Remove a variable and its value; asks first unless --yes
     Rm(VarRmArgs),
@@ -778,17 +777,10 @@ pub struct VarSetArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct VarGetArgs {
-    /// Variable name
-    #[arg(add = ArgValueCompleter::new(complete::vars))]
-    pub name: String,
-    /// Print the value
-    #[arg(long)]
-    pub reveal: bool,
-}
-
-#[derive(Debug, Args)]
 pub struct VarLsArgs {
+    /// Only these variables
+    #[arg(value_name = "NAME", add = ArgValueCompleter::new(complete::vars))]
+    pub names: Vec<String>,
     /// Print the values
     #[arg(long)]
     pub reveal: bool,

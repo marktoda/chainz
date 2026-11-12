@@ -244,7 +244,7 @@ fn signers_labels_and_vars_complete() {
     assert_set(fish(&sb, &["signer", "rm", "l"]), &["ledger"]);
     assert_set(fish(&sb, &["signer", "rm", "d"]), &["default"]);
     assert_set(fish(&sb, &["addr", "rm", ""]), &["router"]);
-    assert_set(fish(&sb, &["var", "get", ""]), &["ALCHEMY_KEY", "OTHER"]);
+    assert_set(fish(&sb, &["var", "ls", ""]), &["ALCHEMY_KEY", "OTHER"]);
     assert_set(fish(&sb, &["var", "rm", "A"]), &["ALCHEMY_KEY"]);
 }
 
@@ -254,7 +254,7 @@ fn completion_output_never_contains_secret_values() {
     let out = sb
         .process()
         .env("CHAINZ_COMPLETE", "fish")
-        .args(["--", "chainz", "var", "get", ""])
+        .args(["--", "chainz", "var", "ls", ""])
         .output()
         .unwrap();
     assert!(!String::from_utf8_lossy(&out.stdout).contains("supersecret"));
@@ -370,7 +370,7 @@ fn no_config_completes_nothing_and_never_migrates() {
         &["exec", "base", "--", "@us"],
         &["exec", "base", "--", "@usdc:"],
         &["signer", "rm", ""],
-        &["var", "get", ""],
+        &["var", "ls", ""],
         &["addr", "rm", ""],
     ] {
         assert!(fish(&sb, words).is_empty(), "{words:?}");
