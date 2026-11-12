@@ -124,16 +124,17 @@ impl EndpointHealth {
 }
 
 /// An endpoint's health in one cell, the same for a recorded sample (`ls
-/// CHAIN`) and a fresh probe (`doctor`, `add`): its latency (`42ms`), with
+/// CHAIN`) and a fresh probe (`doctor`, `add`): its latency (`42ms`,
+/// `1.2s`), with
 /// `lag N` when it is that many blocks behind its peers, or what failed
 /// (`✗ timed out`); `-` when never checked.
 pub fn health_cell(health: Option<Health>, latency: Option<Duration>) -> String {
     match (health, latency) {
         (Some(Health::Failing(class)), _) => ui::fail(class.phrase()),
         (Some(Health::Lagging { behind }), Some(latency)) => {
-            format!("{}ms lag {behind}", latency.as_millis())
+            format!("{} lag {behind}", latency_text(latency))
         }
-        (_, Some(latency)) => format!("{}ms", latency.as_millis()),
+        (_, Some(latency)) => latency_text(latency),
         (_, None) => "-".to_string(),
     }
 }
@@ -363,6 +364,11 @@ pub fn show(view: &ChainView, extra: &[(String, String)], now_ms: u64) -> String
         let _ = writeln!(out, "\n{}", ui::dim(LEGEND));
     }
     out
+}
+
+/// A latency as `ls`, `doctor` and the dashboard show it.
+pub fn latency_text(latency: Duration) -> String {
+    fmt::latency(u32::try_from(latency.as_millis()).unwrap_or(u32::MAX))
 }
 
 /// The endpoint table of [`show`]: role marker, name, latest health and

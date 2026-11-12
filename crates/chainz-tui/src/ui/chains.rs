@@ -77,7 +77,7 @@ fn row(r: &ChainRow, t: Theme) -> Vec<Cell> {
             } else {
                 t.text()
             };
-            Cell::new(fmt::latency(ms), style)
+            Cell::new(core_fmt::latency(ms), style)
         }),
         spark_cell(&samples, t),
         status_cell(r.status, t),

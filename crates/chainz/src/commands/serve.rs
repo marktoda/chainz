@@ -301,7 +301,7 @@ fn status(json: bool) -> Result<i32> {
 fn totals_cells(t: MetricsTotals) -> [String; 4] {
     let p50 = match t.requests {
         0 => "-".to_string(),
-        _ => format!("{}ms", t.p50_ms),
+        _ => chainz_core::fmt::latency(t.p50_ms),
     };
     [
         t.requests.to_string(),

@@ -14,6 +14,17 @@ pub fn group(n: u64) -> String {
     out
 }
 
+/// A latency in milliseconds: `48ms`, `1.2s`, `120s`.
+pub fn latency(ms: u32) -> String {
+    if ms < 1_000 {
+        format!("{ms}ms")
+    } else if ms < 100_000 {
+        format!("{:.1}s", f64::from(ms) / 1_000.0)
+    } else {
+        format!("{}s", ms / 1_000)
+    }
+}
+
 /// An uptime: `42s`, `12m05s`, `2h03m`, `3d04h`.
 pub fn uptime(secs: u64) -> String {
     match secs {
@@ -72,6 +83,13 @@ mod tests {
         assert_eq!(names_or_count(&["eth", "base"], "chain"), "eth, base");
         let many: Vec<String> = (0..4).map(|i| format!("c{i}")).collect();
         assert_eq!(names_or_count(&many, "chain"), "4 chains");
+    }
+
+    #[test]
+    fn latencies() {
+        assert_eq!(latency(48), "48ms");
+        assert_eq!(latency(1_240), "1.2s");
+        assert_eq!(latency(120_000), "120s");
     }
 
     #[test]

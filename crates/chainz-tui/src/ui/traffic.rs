@@ -90,8 +90,8 @@ fn methods_grid(ctx: Ctx, rows: &[TrafficRow]) -> Grid {
             Cell::new(r.name.clone(), t.text()),
             count(r.requests, t, false),
             count(r.errors, t, true),
-            Cell::new(fmt::latency(r.p50_ms), t.text()),
-            Cell::new(fmt::latency(r.p95_ms), t.dim()),
+            Cell::new(core_fmt::latency(r.p50_ms), t.text()),
+            Cell::new(core_fmt::latency(r.p95_ms), t.dim()),
         ]);
     }
     grid
@@ -117,7 +117,7 @@ fn endpoints_grid(ctx: Ctx, rows: &[TrafficRow]) -> Grid {
                 n => Cell::new(core_fmt::group(n), t.warn()),
             },
             count(r.failovers, t, false),
-            Cell::new(fmt::latency(r.p50_ms), t.text()),
+            Cell::new(core_fmt::latency(r.p50_ms), t.text()),
         ]);
     }
     grid

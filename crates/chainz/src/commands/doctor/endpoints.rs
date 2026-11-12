@@ -6,6 +6,7 @@ use crate::net;
 use crate::probe::{self, Depth, Repair, health_problem};
 use crate::prompt::{self, Consent, Tty};
 use crate::ui;
+use crate::view;
 use anyhow::Result;
 use chainz_core::Chainz;
 
@@ -43,10 +44,10 @@ pub(super) fn rpc_health(chainz: &mut Chainz, fix: bool, report: &mut Report) ->
         let ranking = p.ranking(&store);
         let Some(problem) = health_problem(&ranking.health[active]) else {
             report.ok(&format!(
-                "{}: {} {}ms",
+                "{}: {} {}",
                 p.chain,
                 c.rpc,
-                p.probes[active].result.latency.as_millis()
+                view::latency_text(p.probes[active].result.latency)
             ));
             continue;
         };

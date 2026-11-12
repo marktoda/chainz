@@ -23,17 +23,6 @@ pub fn window(secs: u64) -> String {
     }
 }
 
-/// A latency: `48ms`, `1.2s`.
-pub fn latency(ms: u32) -> String {
-    if ms < 1_000 {
-        format!("{ms}ms")
-    } else if ms < 100_000 {
-        format!("{:.1}s", f64::from(ms) / 1_000.0)
-    } else {
-        format!("{}s", ms / 1_000)
-    }
-}
-
 /// A base fee in gwei with magnitude-adaptive precision: `31`, `4.2`,
 /// `0.41`, `0.002`, `<0.001`.
 pub fn gwei(g: f64) -> String {
@@ -135,13 +124,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn block_times_and_latencies() {
+    fn block_times() {
         assert_eq!(block_time(12.04), "12.0s");
         assert_eq!(block_time(0.25), "0.25s");
         assert_eq!(block_time(0.999), "1.0s");
         assert_eq!(block_time(f64::NAN), "–");
-        assert_eq!(latency(48), "48ms");
-        assert_eq!(latency(1_240), "1.2s");
     }
 
     #[test]

@@ -6,7 +6,6 @@ use ratatui::text::{Line, Span};
 use super::grid::{Cell, Col, Grid};
 use super::{Body, Content, Ctx};
 use crate::app::ScrollSlot;
-use crate::fmt;
 use crate::model::EndpointStatus;
 use crate::view;
 
@@ -105,9 +104,9 @@ pub(super) fn body(ctx: Ctx) -> Body {
                 ),
             },
             r.latency_ms
-                .map_or_else(blank, |ms| Cell::new(fmt::latency(ms), fresh)),
+                .map_or_else(blank, |ms| Cell::new(core_fmt::latency(ms), fresh)),
             r.p50_ms
-                .map_or_else(blank, |ms| Cell::new(fmt::latency(ms), t.dim())),
+                .map_or_else(blank, |ms| Cell::new(core_fmt::latency(ms), t.dim())),
             r.latest
                 .and_then(|s| s.head)
                 .map_or_else(blank, |head| Cell::new(core_fmt::group(head), fresh)),
