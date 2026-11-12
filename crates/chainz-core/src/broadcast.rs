@@ -54,7 +54,7 @@ pub struct Run {
 /// at an uppercase letter that follows a lowercase letter or a digit, or
 /// that ends an acronym (`HTTPServer` → `http-server`). Anything outside
 /// `[A-Za-z0-9]` becomes one `-`; a `path:Name` artifact id keeps `Name`.
-pub fn kebab(contract: &str) -> String {
+pub(crate) fn kebab(contract: &str) -> String {
     let name = contract.rsplit(':').next().unwrap_or(contract);
     let chars: Vec<char> = name.chars().collect();
     let mut out = String::new();
@@ -267,14 +267,20 @@ fn deployed(entry: &Value, address_keys: &[&str], problem: Option<String>) -> De
     }
 }
 
-/// A JSON number or a decimal / `0x` hex string.
+/// A JSON number or a decimal / `0x` hex string (digits only: no sign).
 fn number(v: &Value) -> Option<u64> {
     match v {
         Value::Number(n) => n.as_u64(),
-        Value::String(s) => match s.strip_prefix("0x") {
-            Some(hex) => u64::from_str_radix(hex, 16).ok(),
-            None => s.parse().ok(),
-        },
+        Value::String(s) => {
+            let (digits, radix) = match s.strip_prefix("0x") {
+                Some(hex) => (hex, 16),
+                None => (s.as_str(), 10),
+            };
+            let valid = !digits.is_empty() && digits.chars().all(|c| c.is_digit(radix));
+            valid
+                .then(|| u64::from_str_radix(digits, radix).ok())
+                .flatten()
+        }
         _ => None,
     }
 }
@@ -475,6 +481,16 @@ mod tests {
 
     fn addr(s: &str) -> Address {
         s.parse().unwrap()
+    }
+
+    #[test]
+    fn numbers_are_digits_only() {
+        assert_eq!(number(&json!("0x1")), Some(1));
+        assert_eq!(number(&json!("12")), Some(12));
+        assert_eq!(number(&json!(7)), Some(7));
+        for bad in ["+1", "0x+1", "0x", "", "-1", " 1"] {
+            assert_eq!(number(&json!(bad)), None, "{bad:?}");
+        }
     }
 
     #[test]

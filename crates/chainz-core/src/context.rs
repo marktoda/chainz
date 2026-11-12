@@ -685,7 +685,8 @@ impl<'a> Expander<'a> {
 
     /// Expand one argument.
     fn expand_arg(&self, arg: &str) -> Result<ExpandedArg> {
-        if !grammar::may_contain_tokens(arg) {
+        // Fast path: no `@`, nothing to tokenize.
+        if !arg.contains('@') {
             return Ok(ExpandedArg {
                 value: arg.to_string(),
                 display: arg.to_string(),

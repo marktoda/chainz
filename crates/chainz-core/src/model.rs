@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize, Serializer};
 use std::fmt;
 
 /// The only config version this build reads and writes.
-pub const CONFIG_VERSION: u32 = 2;
+pub(crate) const CONFIG_VERSION: u32 = 2;
 
 /// The whole config file.
 #[derive(Clone, Default, Deserialize)]
@@ -63,7 +63,7 @@ pub struct Chain {
 }
 
 /// Whether `name` is a legal HTTP header name (RFC 9110 token characters).
-pub fn is_header_name(name: &str) -> bool {
+pub(crate) fn is_header_name(name: &str) -> bool {
     !name.is_empty()
         && name
             .bytes()
@@ -74,7 +74,7 @@ pub fn is_header_name(name: &str) -> bool {
 /// comma-separated `name: value` pairs). The gateway sends a comma fine;
 /// a line break is never a valid header value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HeaderValueProblem {
+pub(crate) enum HeaderValueProblem {
     /// `\r` or `\n`.
     LineBreak,
     /// `,`.
@@ -91,7 +91,7 @@ impl fmt::Display for HeaderValueProblem {
 }
 
 /// Why `value` cannot be exported via `ETH_RPC_HEADERS`, if it cannot.
-pub fn header_value_problem(value: &str) -> Option<HeaderValueProblem> {
+pub(crate) fn header_value_problem(value: &str) -> Option<HeaderValueProblem> {
     if value.contains(['\r', '\n']) {
         Some(HeaderValueProblem::LineBreak)
     } else if value.contains(',') {
@@ -216,7 +216,7 @@ pub struct Explorer {
 impl Explorer {
     /// Etherscan-family explorers are left to forge's built-in Etherscan v2
     /// handling: exec exports only `ETHERSCAN_API_KEY` for them.
-    pub fn is_etherscan(&self) -> bool {
+    pub(crate) fn is_etherscan(&self) -> bool {
         crate::urls::host_has_label(&crate::template::blanked(&self.api), "etherscan")
     }
 
@@ -273,25 +273,13 @@ impl Backend {
             Backend::Plaintext => "plaintext",
         }
     }
-
-    /// Parse the config spelling.
-    pub fn parse(s: &str) -> Option<Self> {
-        Some(match s {
-            "keyring" => Backend::Keyring,
-            "encrypted" => Backend::Encrypted,
-            "keystore" => Backend::Keystore,
-            "1password" => Backend::OnePassword,
-            "plaintext" => Backend::Plaintext,
-            _ => return None,
-        })
-    }
 }
 
 impl Backend {
     /// The optional [`Signer`] fields this backend takes (`backend` and
     /// `address` apply to all), and whether each is required. Every other
     /// optional field must be absent.
-    pub fn fields(self) -> &'static [(&'static str, Need)] {
+    pub(crate) fn fields(self) -> &'static [(&'static str, Need)] {
         match self {
             Backend::Keyring => &[("service", Need::Optional), ("username", Need::Optional)],
             Backend::Keystore => &[("path", Need::Required)],
@@ -308,7 +296,7 @@ impl fmt::Display for Backend {
 }
 
 /// Keyring service used for new keyring signers (and by v1).
-pub const KEYRING_SERVICE: &str = "chainz";
+pub(crate) const KEYRING_SERVICE: &str = "chainz";
 
 /// A key reference plus its cached public address. Holds no key material.
 ///
@@ -343,7 +331,7 @@ pub struct Signer {
 
 /// Whether a backend needs an optional [`Signer`] field.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Need {
+pub(crate) enum Need {
     /// The backend works without it.
     Optional,
     /// The backend needs a non-empty value.
@@ -412,13 +400,8 @@ impl Signer {
         }
     }
 
-    /// Whether removing this signer deletes key material.
-    pub fn holds_key_material(&self) -> bool {
-        self.key_material().is_some()
-    }
-
     /// Every optional field by its config name, set or not.
-    pub fn optional_fields(&self) -> [(&'static str, Option<&str>); 5] {
+    pub(crate) fn optional_fields(&self) -> [(&'static str, Option<&str>); 5] {
         [
             ("service", self.service.as_deref()),
             ("username", self.username.as_deref()),
@@ -429,7 +412,7 @@ impl Signer {
     }
 
     /// Keyring service and username for a keyring signer named `name`.
-    pub fn keyring_entry<'a>(&'a self, name: &'a str) -> (&'a str, &'a str) {
+    pub(crate) fn keyring_entry<'a>(&'a self, name: &'a str) -> (&'a str, &'a str) {
         (
             self.service.as_deref().unwrap_or(KEYRING_SERVICE),
             self.username.as_deref().unwrap_or(name),
@@ -445,7 +428,7 @@ impl Config {
     }
 
     /// An empty v2 config.
-    pub fn empty() -> Self {
+    pub(crate) fn empty() -> Self {
         Self {
             version: CONFIG_VERSION,
             ..Self::default()
@@ -635,11 +618,14 @@ address = "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf"
     #[test]
     fn only_backends_holding_key_material_delete_it() {
         for backend in [Backend::Keyring, Backend::Encrypted, Backend::Plaintext] {
-            assert!(Signer::new(backend, None).holds_key_material(), "{backend}");
+            assert!(
+                Signer::new(backend, None).key_material().is_some(),
+                "{backend}"
+            );
         }
         for backend in [Backend::Keystore, Backend::OnePassword] {
             assert!(
-                !Signer::new(backend, None).holds_key_material(),
+                Signer::new(backend, None).key_material().is_none(),
                 "{backend}"
             );
         }

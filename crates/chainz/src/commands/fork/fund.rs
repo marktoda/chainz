@@ -3,8 +3,9 @@
 //! address; no key is ever unlocked.
 
 use anyhow::{Result, anyhow, bail};
+use chainz_core::Address;
 use chainz_core::labels::{LabelIndex, builtin_tokens};
-use chainz_core::{Address, Config};
+use chainz_core::model::Config;
 use chainz_rpc::erc20;
 use chainz_rpc::{BlockId, RpcClient, Target};
 use serde_json::{Value, json};

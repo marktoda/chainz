@@ -12,7 +12,7 @@ pub mod contract;
 mod envelope;
 pub mod extract;
 pub mod fmt;
-pub mod grammar;
+mod grammar;
 pub mod labels;
 pub mod migrate;
 pub mod model;
@@ -30,6 +30,5 @@ mod urls;
 pub mod validate;
 
 pub use address::Address;
-pub use model::{Backend, Chain, Config, Endpoint, Explorer, Signer};
 pub use store::{Chainz, LoadMode, StorePaths};
 pub use tx::Tx;

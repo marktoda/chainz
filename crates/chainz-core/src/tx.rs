@@ -341,7 +341,7 @@ impl Tx {
     // ----------------------------------------------------------- signers
 
     /// Write `[signers.NAME]`, merging into an existing record.
-    pub fn set_signer(&mut self, name: &str, signer: &Signer) -> Result<()> {
+    pub(crate) fn set_signer(&mut self, name: &str, signer: &Signer) -> Result<()> {
         let config = self.config()?;
         let old = config.signers.get(name);
         let signers = implicit_table(&mut self.config, "signers")?;
@@ -381,7 +381,11 @@ impl Tx {
 
     /// Write (or, with `None`, remove) `[signers.NAME]` key material in
     /// `secrets.toml`.
-    pub fn set_signer_secret(&mut self, name: &str, secret: Option<&SignerSecret>) -> Result<()> {
+    pub(crate) fn set_signer_secret(
+        &mut self,
+        name: &str,
+        secret: Option<&SignerSecret>,
+    ) -> Result<()> {
         let Some(secret) = secret else {
             if let Some(signers) = self
                 .secrets

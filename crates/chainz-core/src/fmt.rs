@@ -1,6 +1,5 @@
-//! Small display helpers shared by every chainz surface (CLI, gateway,
-//! dashboard), so a number, an uptime or an address reads the same
-//! everywhere.
+//! Small display helpers shared by the CLI, `serve` and the dashboard, so
+//! a number, an uptime or an address reads the same everywhere.
 
 /// `23481220` → `23,481,220`.
 pub fn group(n: u64) -> String {
@@ -25,14 +24,10 @@ pub fn uptime(secs: u64) -> String {
     }
 }
 
-/// `0x7E5F4552…` → `0x7E5F…5Bdf`. Anything that is not a 42-character
-/// address comes back unchanged.
-pub fn short_address(address: &str) -> String {
-    if address.len() == 42 && address.is_ascii() {
-        format!("{}…{}", &address[..6], &address[38..])
-    } else {
-        address.to_string()
-    }
+/// `0x7E5F4552…` → `0x7E5F…5Bdf` (checksummed).
+pub fn short_address(address: &crate::Address) -> String {
+    let address = address.to_checksum();
+    format!("{}…{}", &address[..6], &address[38..])
 }
 
 #[cfg(test)]
@@ -60,8 +55,9 @@ mod tests {
 
     #[test]
     fn short_addresses() {
-        let address = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
-        assert_eq!(short_address(address), "0xf39F…2266");
-        assert_eq!(short_address("0x1234"), "0x1234");
+        let address = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+            .parse()
+            .unwrap();
+        assert_eq!(short_address(&address), "0xf39F…2266");
     }
 }

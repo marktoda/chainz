@@ -6,10 +6,11 @@ use crate::cli::ForkArgs;
 use crate::commands::{chain_arg, open, runtime};
 use crate::{net, sys, ui};
 use anyhow::{Context as _, Result, anyhow, bail};
+use chainz_core::Chainz;
 use chainz_core::fmt::{group, short_address};
+use chainz_core::model::{Chain, Config};
 use chainz_core::names::{self, RESERVED_FORK_NAMES};
 use chainz_core::runtime::{ForkRecord, Runtime};
-use chainz_core::{Chain, Chainz, Config};
 use chainz_rpc::{HttpUpstream, RetryPolicy, RpcClient, Target};
 use chainz_serve::PinnedProxy;
 use std::fs::File;
@@ -375,7 +376,7 @@ async fn start_fork(supervisor: &mut Supervisor<'_>, job: &Job<'_>) -> Result<Ru
         if !report.funded.is_empty() {
             println!(
                 "funded {} ({}): {}",
-                short_address(&plan.address.to_checksum()),
+                short_address(&plan.address),
                 plan.signer,
                 report.funded.join(", ")
             );

@@ -373,7 +373,9 @@ and the gateway all use it.
   `summarize` stay as the stricter `Debug` and compact views.
 - Shared helpers, so crates don't keep private copies:
   `chainz_core::fmt::{group, uptime, short_address}` (thousands separators,
-  `42s`/`12m05s`/`2h03m`/`3d04h`, `0x1234…abcd`);
+  `42s`/`12m05s`/`2h03m`/`3d04h`, `short_address(&Address)` → `0x1234…abcd`);
+  `Address::from_bytes` / `as_bytes` (the field is private). Model types are
+  imported from `chainz_core::model` only (no root re-exports).
   `chainz_rpc::hex::{encode, decode, parse_quantity, parse_quantity_saturating}`;
   `chainz_rpc::erc20::{SYMBOL, DECIMALS, decode_string, decode_u8}`;
   `HealthStore::empty()` and `HealthStore::load_or_empty(Option<&Path>)` for

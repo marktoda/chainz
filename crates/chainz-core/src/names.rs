@@ -3,7 +3,7 @@
 
 /// What a name in the token grammar's own vocabulary means.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Token {
+pub(crate) enum Token {
     /// A context token (`@rpc`, `@wallet`…).
     Context,
     /// A v1 token kept for one release as an alias of this context token.
@@ -15,7 +15,7 @@ pub enum Token {
 /// The token grammar's own names: context tokens, deprecated v1 tokens and
 /// removed ones. Labels and signers may not use any of them. The one table
 /// expansion, naming rules and completion read.
-pub const TOKENS: [(&str, Token); 10] = [
+pub(crate) const TOKENS: [(&str, Token); 10] = [
     ("rpc", Token::Context),
     ("chainid", Token::Context),
     ("chain", Token::Context),
@@ -32,7 +32,7 @@ pub const TOKENS: [(&str, Token); 10] = [
 ];
 
 /// What `name` means in the token grammar, if it is one of its names.
-pub fn token(name: &str) -> Option<Token> {
+pub(crate) fn token(name: &str) -> Option<Token> {
     TOKENS.iter().find(|(n, _)| *n == name).map(|(_, t)| *t)
 }
 
@@ -263,7 +263,7 @@ pub fn provider_of(url: &str) -> Option<String> {
 
 /// `base`, or `base{sep}2`, `base{sep}3`… — the first name `taken`
 /// rejects. Names use `-`, variables `_`.
-pub fn unique_with(base: &str, sep: char, taken: impl Fn(&str) -> bool) -> String {
+pub(crate) fn unique_with(base: &str, sep: char, taken: impl Fn(&str) -> bool) -> String {
     if !taken(base) {
         return base.to_string();
     }

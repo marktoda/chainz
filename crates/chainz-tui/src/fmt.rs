@@ -228,7 +228,11 @@ mod tests {
         assert_eq!(truncate("publicnode-2", 8), "publicn…");
         assert_eq!(truncate("abc", 0), "");
         assert_eq!(
-            short_address("0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf"),
+            short_address(
+                &"0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf"
+                    .parse()
+                    .unwrap()
+            ),
             "0x7E5F…5Bdf"
         );
     }

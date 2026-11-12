@@ -26,7 +26,7 @@ pub enum TemplateError {
 }
 
 /// Whether `name` is a valid variable name: `[A-Za-z_][A-Za-z0-9_]*`.
-pub fn is_valid_name(name: &str) -> bool {
+pub(crate) fn is_valid_name(name: &str) -> bool {
     let mut chars = name.chars();
     matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
@@ -35,7 +35,7 @@ pub fn is_valid_name(name: &str) -> bool {
 /// A valid variable name made from `text`: every character outside
 /// `[A-Za-z0-9_]` becomes `_`, and a leading `_` is added when it would be
 /// empty or start with a digit.
-pub fn clean_name(text: &str) -> String {
+pub(crate) fn clean_name(text: &str) -> String {
     let mut out: String = text
         .chars()
         .map(|c| {
@@ -64,7 +64,7 @@ pub(crate) fn blanked(input: &str) -> String {
 }
 
 /// Whether `input` contains any `${` template.
-pub fn has_templates(input: &str) -> bool {
+pub(crate) fn has_templates(input: &str) -> bool {
     input.contains("${")
 }
 
@@ -124,7 +124,7 @@ pub fn references(input: &str) -> Result<Vec<&str>, TemplateError> {
 /// Expand every `${NAME}` in `input` through `lookup`, in one pass.
 /// `lookup` returns `Ok(None)` for an unknown name, which becomes
 /// [`TemplateError::Unresolved`].
-pub fn expand<'a, 'v, E>(
+pub(crate) fn expand<'a, 'v, E>(
     input: &'a str,
     mut lookup: impl FnMut(&str) -> Result<Option<Cow<'v, str>>, E>,
 ) -> Result<Cow<'a, str>, E>

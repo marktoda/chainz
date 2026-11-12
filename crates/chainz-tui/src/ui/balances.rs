@@ -36,7 +36,7 @@ pub(super) fn render(area: Rect, buf: &mut Buffer, ctx: Ctx) {
     let mut chips = vec![Span::styled("signer ", t.dim())];
     for (i, s) in state.signers.iter().enumerate() {
         let address = match &s.address {
-            Some(a) => fmt::short_address(&a.to_checksum()),
+            Some(a) => fmt::short_address(a),
             None => "no address".to_string(),
         };
         if i == shown {

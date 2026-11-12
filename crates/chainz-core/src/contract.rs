@@ -63,7 +63,7 @@ impl Env {
     }
 
     /// The chain `CHAINZ_CHAIN` names, if set and non-empty.
-    pub fn chainz_chain(&self) -> Option<String> {
+    pub(crate) fn chainz_chain(&self) -> Option<String> {
         self.var(CHAINZ_CHAIN).filter(|v| !v.is_empty())
     }
 }

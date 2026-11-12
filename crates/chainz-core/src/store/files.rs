@@ -54,7 +54,8 @@ impl StorePaths {
     }
 
     /// The same paths, with `legacy` as the pre-0.3 v1 file.
-    pub fn with_legacy(mut self, legacy: PathBuf) -> Self {
+    #[cfg(test)]
+    pub(crate) fn with_legacy(mut self, legacy: PathBuf) -> Self {
         self.v1_legacy = Some(legacy);
         self
     }
@@ -75,7 +76,8 @@ impl StorePaths {
     }
 
     /// v1 `config.json`.
-    pub fn v1_config(&self) -> &Path {
+    #[cfg(test)]
+    pub(crate) fn v1_config(&self) -> &Path {
         &self.v1_config
     }
 
@@ -123,7 +125,7 @@ impl Drop for WriteLock {
 }
 
 /// Parse config text into the typed view.
-pub fn parse_config(text: &str, path: &Path) -> Result<Config> {
+pub(crate) fn parse_config(text: &str, path: &Path) -> Result<Config> {
     Config::parse(text).map_err(|e| {
         anyhow!(
             "failed to parse {}: {} (fix it with `chainz config edit`)",

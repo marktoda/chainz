@@ -24,7 +24,7 @@ use std::sync::OnceLock;
 pub const ALL_CHAINS: &str = "*";
 
 /// How a label scope reads in a sentence: "for every chain" or "on 'eth'".
-pub fn scope_phrase(scope: &str) -> String {
+pub(crate) fn scope_phrase(scope: &str) -> String {
     if scope == ALL_CHAINS {
         "for every chain".to_string()
     } else {
@@ -358,7 +358,7 @@ impl LabelIndex {
     }
 
     /// Every label for `(chain_id, address)`, preferred first.
-    pub fn reverse_all(&self, chain_id: u64, address: &Address) -> Vec<&Label> {
+    pub(crate) fn reverse_all(&self, chain_id: u64, address: &Address) -> Vec<&Label> {
         let reverse = self.reverse_maps();
         let mut out: Vec<&Label> = reverse
             .by_chain

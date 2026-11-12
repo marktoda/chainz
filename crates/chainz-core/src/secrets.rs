@@ -125,11 +125,11 @@ pub(crate) struct Builtins<'a> {
 }
 
 /// `${CHAIN_ID}`: the chain's ID.
-pub const CHAIN_ID_VAR: &str = "CHAIN_ID";
+pub(crate) const CHAIN_ID_VAR: &str = "CHAIN_ID";
 /// `${CHAIN}`: the chain's short name.
-pub const CHAIN_VAR: &str = "CHAIN";
+pub(crate) const CHAIN_VAR: &str = "CHAIN";
 /// Names that always resolve from the chain context.
-pub const BUILTIN_VARS: [&str; 2] = [CHAIN_ID_VAR, CHAIN_VAR];
+pub(crate) const BUILTIN_VARS: [&str; 2] = [CHAIN_ID_VAR, CHAIN_VAR];
 
 /// Why `name` cannot be a variable in `secrets.toml`, if it cannot: it must
 /// be a valid template name and not a built-in.

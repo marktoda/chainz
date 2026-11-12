@@ -13,7 +13,7 @@
 
 pub(crate) mod files;
 
-pub use files::{StorePaths, WriteLock, parse_config};
+pub use files::{StorePaths, WriteLock};
 
 use crate::contract::Env;
 use crate::migrate::{self, Summary};
@@ -23,7 +23,7 @@ use crate::tx::Tx;
 use crate::validate;
 use anyhow::{Context, Result, anyhow, bail};
 use chainz_sys::PermissionWarning;
-use files::{Access, new_config};
+use files::{Access, new_config, parse_config};
 use std::cell::{OnceCell, RefCell};
 use std::fmt;
 use std::path::{Path, PathBuf};

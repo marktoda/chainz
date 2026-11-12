@@ -33,7 +33,7 @@ fn xdg(var: &str, fallback: &str) -> io::Result<PathBuf> {
 }
 
 /// `$XDG_CONFIG_HOME/chainz`.
-pub fn config_dir() -> io::Result<PathBuf> {
+pub(crate) fn config_dir() -> io::Result<PathBuf> {
     Ok(xdg("XDG_CONFIG_HOME", ".config")?.join("chainz"))
 }
 
@@ -49,7 +49,7 @@ pub fn cache_dir() -> io::Result<PathBuf> {
 
 /// `$XDG_RUNTIME_DIR/chainz`, falling back to the state dir when the
 /// runtime dir is unset (macOS).
-pub fn runtime_dir() -> io::Result<PathBuf> {
+pub(crate) fn runtime_dir() -> io::Result<PathBuf> {
     match xdg_var("XDG_RUNTIME_DIR") {
         Some(dir) => Ok(dir.join("chainz")),
         None => state_dir(),

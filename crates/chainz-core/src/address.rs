@@ -8,7 +8,7 @@ use std::str::FromStr;
 
 /// An EVM address. `Display` is EIP-55 checksummed.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct Address(pub [u8; 20]);
+pub struct Address([u8; 20]);
 
 /// Why a string is not a valid address.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -26,7 +26,18 @@ pub struct PrivateKeyError;
 
 impl Address {
     /// The zero address.
-    pub const ZERO: Address = Address([0; 20]);
+    #[cfg(test)]
+    pub(crate) const ZERO: Address = Address([0; 20]);
+
+    /// The address with these 20 bytes.
+    pub fn from_bytes(bytes: [u8; 20]) -> Self {
+        Address(bytes)
+    }
+
+    /// The 20 bytes (ABI encoding).
+    pub fn as_bytes(&self) -> &[u8; 20] {
+        &self.0
+    }
 
     /// Lowercase `0x…` hex, without checksum.
     pub fn to_lower_hex(&self) -> String {
@@ -74,11 +85,6 @@ pub(crate) fn check_cached_address(
 ) -> Result<(Address, bool), PrivateKeyError> {
     let derived = Address::from_private_key(private_key)?;
     Ok((derived, cached.is_some_and(|cached| cached != derived)))
-}
-
-/// Validate a hex private key without deriving anything else.
-pub fn validate_private_key(private_key: &str) -> Result<(), PrivateKeyError> {
-    Address::from_private_key(private_key).map(|_| ())
 }
 
 fn parse_private_key(input: &str) -> Result<zeroize::Zeroizing<[u8; 32]>, PrivateKeyError> {

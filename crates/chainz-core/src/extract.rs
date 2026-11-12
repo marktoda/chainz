@@ -32,21 +32,16 @@ use zeroize::Zeroize;
 /// Variable names and values: the existing ones plus those created for
 /// extracted secrets. `Debug` shows names only.
 #[derive(Default)]
-pub struct VarTable {
+pub(crate) struct VarTable {
     by_value: HashMap<String, String>,
     vars: IndexMap<String, String>,
     created: Vec<String>,
 }
 
 impl VarTable {
-    /// An empty table.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// A table over existing variables (`secrets.toml`'s `[vars]`).
-    pub fn with_vars<'a>(vars: impl IntoIterator<Item = (&'a String, &'a String)>) -> Self {
-        let mut table = Self::new();
+    pub(crate) fn with_vars<'a>(vars: impl IntoIterator<Item = (&'a String, &'a String)>) -> Self {
+        let mut table = Self::default();
         for (name, value) in vars {
             table.insert(name, value);
         }
@@ -55,7 +50,7 @@ impl VarTable {
 
     /// Record an existing variable. The first variable holding a value is
     /// the one [`intern`](Self::intern) reuses for it.
-    pub fn insert(&mut self, name: &str, value: &str) {
+    pub(crate) fn insert(&mut self, name: &str, value: &str) {
         self.by_value
             .entry(value.to_string())
             .or_insert_with(|| name.to_string());
@@ -64,7 +59,7 @@ impl VarTable {
 
     /// The variable holding `secret`: an existing one, else a new one named
     /// `base` (or `base_2`, `base_3`… if taken).
-    pub fn intern(&mut self, base: &str, secret: &str) -> String {
+    pub(crate) fn intern(&mut self, base: &str, secret: &str) -> String {
         if let Some(name) = self.by_value.get(secret) {
             return name.clone();
         }
@@ -74,23 +69,18 @@ impl VarTable {
         name
     }
 
-    /// Whether a variable named `name` exists.
-    pub fn contains(&self, name: &str) -> bool {
-        self.vars.contains_key(name)
-    }
-
     /// Every variable, existing and created, in insertion order.
-    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
         self.vars.iter().map(|(n, v)| (n.as_str(), v.as_str()))
     }
 
     /// Names of the variables [`intern`](Self::intern) created.
-    pub fn created(&self) -> &[String] {
+    pub(crate) fn created(&self) -> &[String] {
         &self.created
     }
 
     /// The variables [`intern`](Self::intern) created, with their values.
-    pub fn created_vars(&self) -> impl Iterator<Item = (&str, &str)> {
+    pub(crate) fn created_vars(&self) -> impl Iterator<Item = (&str, &str)> {
         self.created
             .iter()
             .map(|n| (n.as_str(), self.vars[n].as_str()))
@@ -140,7 +130,7 @@ pub(crate) fn explorer_key_var(name: &str, explorer: &Explorer) -> String {
 
 /// Whether `value` holds no variable reference (a malformed `${` counts as
 /// literal text).
-pub fn is_literal(value: &str) -> bool {
+pub(crate) fn is_literal(value: &str) -> bool {
     template::references(value).map_or(true, |names| names.is_empty())
 }
 
@@ -174,7 +164,7 @@ pub fn manual_credential(url: &str) -> Option<&'static str> {
 /// Whether a header value should move into a variable: it is literal and
 /// either long enough to be a credential (16+ characters) or holds a comma
 /// or line break, which `config.toml` may not hold literally.
-pub fn header_needs_extraction(value: &str) -> bool {
+pub(crate) fn header_needs_extraction(value: &str) -> bool {
     !value.is_empty()
         && is_literal(value)
         && (value.len() >= 16 || crate::model::header_value_problem(value).is_some())
@@ -238,7 +228,7 @@ impl fmt::Display for Moved {
 /// Move the literal secrets of one endpoint (a known URL key, credential
 /// header values) into variables, rewriting `endpoint` in place to
 /// reference them. Returns what moved.
-pub fn extract_endpoint(
+pub(crate) fn extract_endpoint(
     chain: &str,
     endpoint_name: &str,
     endpoint: &mut Endpoint,
@@ -300,9 +290,9 @@ pub(crate) fn extract_explorer_key(
 /// makes the edits.
 pub struct SecretPlan {
     /// Endpoints to rewrite: chain, endpoint name, the new endpoint.
-    pub endpoints: Vec<(String, String, Endpoint)>,
+    pub(crate) endpoints: Vec<(String, String, Endpoint)>,
     /// Explorer keys to rewrite: explorer name, the new `${VAR}` key.
-    pub explorer_keys: Vec<(String, String)>,
+    pub(crate) explorer_keys: Vec<(String, String)>,
     /// What moved where, in config order.
     pub moved: Vec<Moved>,
     vars: VarTable,
@@ -324,7 +314,8 @@ impl SecretPlan {
     }
 
     /// The new variables, with their values.
-    pub fn new_vars(&self) -> impl Iterator<Item = (&str, &str)> {
+    #[cfg(test)]
+    fn new_vars(&self) -> impl Iterator<Item = (&str, &str)> {
         self.vars.created_vars()
     }
 

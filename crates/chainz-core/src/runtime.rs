@@ -105,7 +105,8 @@ impl Runtime {
         Ok(Self::at(paths::runtime_dir()?))
     }
 
-    /// A runtime rooted at `dir` (tests).
+    /// A runtime rooted at `dir` instead of `$XDG_RUNTIME_DIR/chainz`
+    /// (tests and sandboxes).
     pub fn at(dir: impl Into<PathBuf>) -> Self {
         Self { dir: dir.into() }
     }

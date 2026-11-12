@@ -22,7 +22,7 @@ fn is_token_byte(b: u8) -> bool {
 
 /// One `@name[:chain]` occurrence.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TokenRef<'a> {
+pub(crate) struct TokenRef<'a> {
     /// The exact source text, e.g. `@USDC:base`.
     pub raw: &'a str,
     /// The name, lowercased.
@@ -33,7 +33,7 @@ pub struct TokenRef<'a> {
 
 /// A piece of a tokenized argument.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Piece<'a> {
+pub(crate) enum Piece<'a> {
     /// Literal text (escapes already applied).
     Text(String),
     /// A token.
@@ -108,11 +108,6 @@ pub(crate) fn sole_token<'p, 'a>(pieces: &'p [Piece<'a>], arg: &str) -> Option<&
         [Piece::Token(t)] if t.raw.len() == arg.len() => Some(t),
         _ => None,
     }
-}
-
-/// Whether `arg` contains an `@` at all (fast path: no tokenizing needed).
-pub(crate) fn may_contain_tokens(arg: &str) -> bool {
-    arg.contains('@')
 }
 
 #[cfg(test)]

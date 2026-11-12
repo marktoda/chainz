@@ -20,7 +20,7 @@ fn with_address(selector: [u8; 4], holder: &Address) -> Vec<u8> {
     let mut data = Vec::with_capacity(36);
     data.extend_from_slice(&selector);
     data.extend_from_slice(&[0; 12]);
-    data.extend_from_slice(&holder.0);
+    data.extend_from_slice(holder.as_bytes());
     data
 }
 
@@ -53,7 +53,7 @@ pub fn encode_aggregate3(calls: &[(Address, Vec<u8>)]) -> Vec<u8> {
     }
     for (target, data) in calls {
         out.extend_from_slice(&[0; 12]);
-        out.extend_from_slice(&target.0);
+        out.extend_from_slice(target.as_bytes());
         out.extend_from_slice(&word(1));
         out.extend_from_slice(&word(96));
         out.extend_from_slice(&word(data.len()));

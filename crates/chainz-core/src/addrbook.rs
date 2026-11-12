@@ -136,7 +136,8 @@ impl Labeler {
     }
 
     /// Rewrite one line (or any chunk of text) into `out`.
-    pub fn rewrite(&self, text: &[u8], out: &mut Vec<u8>) {
+    #[cfg(test)]
+    fn rewrite(&self, text: &[u8], out: &mut Vec<u8>) {
         self.rewrite_after(&[], text, out);
     }
 
@@ -164,7 +165,7 @@ impl Labeler {
                 continue;
             }
             at = end;
-            let address = Address(bytes);
+            let address = Address::from_bytes(bytes);
             let Some(name) = self.name(&address) else {
                 continue;
             };

@@ -3,8 +3,9 @@
 
 use crate::{net, ui};
 use anyhow::{Result, anyhow, bail};
+use chainz_core::Chainz;
+use chainz_core::model::Chain;
 use chainz_core::runtime::{Runtime, ServeInfo};
-use chainz_core::{Chain, Chainz};
 use chainz_rpc::{Capabilities, RpcClient, Target, probe_capabilities};
 
 /// The one endpoint this fork uses for its whole life.
@@ -150,7 +151,7 @@ mod tests {
 
     #[test]
     fn archive_candidates_prefer_active_then_failover() {
-        let chain: Chain = chainz_core::Config::parse(
+        let chain: Chain = chainz_core::model::Config::parse(
             r#"
 [chains.base]
 id = 8453
