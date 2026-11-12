@@ -114,8 +114,8 @@ pub(crate) fn is_valid_chain_name(name: &str) -> bool {
 /// The pattern chain, fork, endpoint, explorer and signer names match.
 const NAME_PATTERN: &str = "[a-z0-9][a-z0-9_-]*";
 
-/// Why `name` cannot be a chain name, if it cannot (see
-/// [`is_valid_chain_name`]).
+/// Why `name` cannot be a chain name, if it cannot: it must match
+/// `[a-z0-9][a-z0-9_-]*` and not be all digits (numbers mean chain IDs).
 pub fn check_chain_name(name: &str) -> anyhow::Result<()> {
     check_chain_like("chain", name)
 }
@@ -251,7 +251,8 @@ impl UrlName {
     }
 }
 
-/// Endpoint name derived from a URL: its [host name](UrlName), `local` for
+/// Endpoint name derived from a URL: its host's registrable label,
+/// slugified (`mainnet.infura.io` → `infura`), `local` for
 /// localhost and IPs, `rpc` without a usable host, plus `-ws` for
 /// websocket URLs.
 pub fn endpoint_name_for_url(url: &str) -> String {

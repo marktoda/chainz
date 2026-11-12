@@ -169,7 +169,7 @@ impl Chainz {
     }
 
     /// The environment templates and chain selection read (the process
-    /// environment unless [`with_env`](Self::with_env) replaced it).
+    /// environment, except in tests).
     pub fn env(&self) -> Env {
         self.env
     }

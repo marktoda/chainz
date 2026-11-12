@@ -50,7 +50,7 @@ pub trait Prompter {
 
 /// The real OS keyring and `op` CLI.
 ///
-/// [`DISABLE_KEYRING_VAR`] (any value) makes the keyring unavailable; the
+/// `CHAINZ_DISABLE_KEYRING` (any value) makes the keyring unavailable; the
 /// test harness always sets it.
 pub struct SystemKeyBackend;
 
