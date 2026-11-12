@@ -277,76 +277,68 @@ impl Explorer {
     }
 }
 
-/// Chain IDs Etherscan's v2 multichain API serves, sorted. Source: the
-/// v2 supported-chains list (<https://docs.etherscan.io/supported-chains>,
-/// also served as <https://api.etherscan.io/v2/chainlist>). Local and
-/// custom chains (anvil's 31337) and chains whose explorer is another
-/// family (Blockscout: Ink, Mode, Soneium, Zora) are not on it. Update it
-/// the way `SHORT_NAMES` and `tokens.toml` are updated: by hand, from that
-/// list.
+/// Chain IDs Etherscan's v2 multichain API serves, sorted. Copied from
+/// <https://api.etherscan.io/v2/chainlist> on 2026-11-12 (55 chains).
+/// Local and custom chains (anvil's 31337) and chains whose explorer is
+/// another family (Blockscout: Ink, Mode, Soneium, Zora) are not on it.
+/// Update it the way `SHORT_NAMES` and `tokens.toml` are updated: by hand,
+/// from that list.
 pub const ETHERSCAN_CHAIN_IDS: &[u64] = &[
-    1,         // Ethereum
-    10,        // OP Mainnet
-    25,        // Cronos
-    50,        // XDC
-    51,        // XDC Apothem
-    56,        // BNB Smart Chain
-    97,        // BNB Smart Chain testnet
-    100,       // Gnosis
-    130,       // Unichain
-    137,       // Polygon
-    146,       // Sonic
-    199,       // BitTorrent Chain
-    204,       // opBNB
-    252,       // Fraxtal
-    300,       // zkSync Sepolia
-    324,       // zkSync
-    480,       // World Chain
-    1101,      // Polygon zkEVM
-    1284,      // Moonbeam
-    1285,      // Moonriver
-    1287,      // Moonbase Alpha
-    1301,      // Unichain Sepolia
-    1328,      // Sei testnet
-    1329,      // Sei
-    1923,      // Swellchain
-    1924,      // Swellchain testnet
-    2442,      // Polygon zkEVM Cardona
-    2522,      // Fraxtal testnet
-    2741,      // Abstract
-    4801,      // World Chain Sepolia
-    5000,      // Mantle
-    5003,      // Mantle Sepolia
-    5611,      // opBNB testnet
-    8453,      // Base
-    10143,     // Monad testnet
-    11124,     // Abstract Sepolia
-    17000,     // Holesky
-    33111,     // ApeChain Curtis
-    33139,     // ApeChain
-    42161,     // Arbitrum One
-    42170,     // Arbitrum Nova
-    42220,     // Celo
-    43113,     // Avalanche Fuji
-    43114,     // Avalanche C-Chain
-    44787,     // Celo Alfajores
-    57054,     // Sonic Blaze
-    59141,     // Linea Sepolia
-    59144,     // Linea
-    80002,     // Polygon Amoy
-    80069,     // Berachain Bepolia
-    80094,     // Berachain
-    81457,     // Blast
-    84532,     // Base Sepolia
-    167000,    // Taiko
-    167009,    // Taiko Hekla
-    421614,    // Arbitrum Sepolia
-    534351,    // Scroll Sepolia
-    534352,    // Scroll
-    560048,    // Hoodi
-    11155111,  // Sepolia
-    11155420,  // OP Sepolia
-    168587773, // Blast Sepolia
+    1,        // Ethereum Mainnet
+    10,       // OP Mainnet
+    50,       // XDC Mainnet
+    51,       // XDC Apothem Testnet
+    56,       // BNB Smart Chain Mainnet
+    97,       // BNB Smart Chain Testnet
+    100,      // Gnosis
+    130,      // Unichain Mainnet
+    137,      // Polygon Mainnet
+    143,      // Monad Mainnet
+    146,      // Sonic Mainnet
+    199,      // BitTorrent Chain Mainnet
+    252,      // Fraxtal Mainnet
+    480,      // World Mainnet
+    988,      // Stable Mainnet
+    999,      // HyperEVM Mainnet
+    1029,     // BitTorrent Chain Testnet
+    1301,     // Unichain Sepolia Testnet
+    1328,     // Sei Testnet
+    1329,     // Sei Mainnet
+    2201,     // Stable Testnet
+    2523,     // Fraxtal Hoodi Testnet
+    2741,     // Abstract Mainnet
+    4326,     // MegaETH Mainnet
+    4352,     // Memecore Mainnet
+    4663,     // Robinhood Chain
+    4801,     // World Sepolia Testnet
+    5000,     // Mantle Mainnet
+    5003,     // Mantle Sepolia Testnet
+    5042,     // Arc Mainnet
+    6343,     // MegaETH Testnet
+    8453,     // Base Mainnet
+    9745,     // Plasma Mainnet
+    9746,     // Plasma Testnet
+    10143,    // Monad Testnet
+    14601,    // Sonic Testnet
+    42161,    // Arbitrum One Mainnet
+    42220,    // Celo Mainnet
+    43114,    // Avalanche C-Chain
+    43522,    // Memecore Insectarium Testnet
+    59141,    // Linea Sepolia Testnet
+    59144,    // Linea Mainnet
+    80002,    // Polygon Amoy Testnet
+    80069,    // Berachain Bepolia Testnet
+    80094,    // Berachain Mainnet
+    84532,    // Base Sepolia Testnet
+    167000,   // Taiko Mainnet
+    167013,   // Taiko Hoodi
+    421614,   // Arbitrum Sepolia Testnet
+    560048,   // Hoodi Testnet
+    737373,   // Katana Bokuto
+    747474,   // Katana Mainnet
+    11142220, // Celo Sepolia Testnet
+    11155111, // Sepolia Testnet
+    11155420, // OP Sepolia Testnet
 ];
 
 impl Explorer {
