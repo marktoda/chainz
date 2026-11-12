@@ -181,13 +181,12 @@ fn rm(args: &VarRmArgs) -> Result<i32> {
     prompt::confirm_removal(
         &mut prompt::Tty,
         args.yes,
-        &format!("var rm {name}"),
-        &format!("variable '{name}' (its value is kept nowhere else)"),
+        &prompt::Removal::of(
+            &format!("var rm {name}"),
+            &format!("variable '{name}' (its value is kept nowhere else)"),
+        ),
     )?;
-    let removed = chainz.transact(|tx| Ok(tx.remove_var(name)))?;
-    if !removed {
-        bail!("variable '{name}' is not set");
-    }
+    chainz.transact(|tx| Ok(tx.remove_var(name)))?;
     println!("Removed variable '{name}'");
     Ok(0)
 }

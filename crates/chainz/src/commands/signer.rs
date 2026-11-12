@@ -251,23 +251,6 @@ fn removal_consent(
         Some(material) => format!("deletes {material}, which can't be undone"),
         None => format!("removes signer '{name}' ({} kept)", record.backend),
     });
-    let mut missing = Vec::new();
-    if !users.is_empty() && !args.unassign {
-        missing.push("--unassign");
-    }
-    if !args.yes {
-        missing.push("--yes");
-    }
-    if missing.is_empty() {
-        return Ok(!users.is_empty());
-    }
-    if !ask.is_interactive() || args.yes {
-        bail!(
-            "`chainz signer rm {name}` {}; pass {}",
-            does.join(" and "),
-            missing.join(" ")
-        );
-    }
     let question = match (users.is_empty(), record.key_material()) {
         (true, Some(material)) => {
             format!("Remove signer '{name}' and delete {material}? This can't be undone")
@@ -278,9 +261,14 @@ fn removal_consent(
         ),
         (false, None) => format!("'{name}' is used by {users}. Unassign and remove it?"),
     };
-    if !ask.confirm(&question, false)? {
-        return Err(ui::cancelled());
-    }
+    let unassign = [("--unassign", args.unassign)];
+    let removal = prompt::Removal {
+        command: format!("signer rm {name}"),
+        does: does.join(" and "),
+        question,
+        flags: if users.is_empty() { &[] } else { &unassign },
+    };
+    prompt::confirm_removal(ask, args.yes, &removal)?;
     Ok(!users.is_empty())
 }
 
@@ -411,14 +399,17 @@ mod tests {
                 .to_string()
         };
         let both = err(&args(false, false), "base, op");
-        assert!(both.ends_with("; pass --unassign --yes"), "{both}");
+        assert!(
+            both.ends_with("; pass --unassign --yes to confirm"),
+            "{both}"
+        );
         assert!(
             both.contains("unassigns it from base, op and deletes its key in secrets.toml"),
             "{both}"
         );
-        assert!(err(&args(true, false), "base").ends_with("; pass --yes"));
-        assert!(err(&args(false, true), "base").ends_with("; pass --unassign"));
-        assert!(err(&args(false, false), "").ends_with("; pass --yes"));
+        assert!(err(&args(true, false), "base").ends_with("; pass --yes to confirm"));
+        assert!(err(&args(false, true), "base").ends_with("; pass --unassign to confirm"));
+        assert!(err(&args(false, false), "").ends_with("; pass --yes to confirm"));
         let ok = |args: &SignerRmArgs, users: &str| {
             removal_consent(&mut Script::off_tty(), "deployer", &key, users, args).unwrap()
         };

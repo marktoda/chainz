@@ -68,17 +68,59 @@ pub fn confirm_or_yes(
     }
 }
 
-/// The one confirmation every `rm` goes through (`rm`,
-/// `label rm`, `var rm`, `signer rm`): `--yes` removes without asking; on a
-/// terminal, ask "Remove {what}?" (default no; declining cancels); off
-/// one, fail naming `--yes`. `command` is the command as typed after
-/// `chainz`, for that error.
-pub fn confirm_removal(ask: &mut dyn Ask, yes: bool, command: &str, what: &str) -> Result<()> {
-    let hint = format!("`chainz {command}` removes {what}; pass --yes to confirm");
+/// A removal [`confirm_removal`] asks about.
+pub struct Removal<'a> {
+    /// The command as typed after `chainz`, for the error off a terminal.
+    pub command: String,
+    /// What going ahead does: `removes variable 'X'`.
+    pub does: String,
+    /// The question on a terminal: `Remove variable 'X'?`.
+    pub question: String,
+    /// Flags it needs besides `--yes` (`--unassign`), and whether each
+    /// was given. The question covers them all.
+    pub flags: &'a [(&'a str, bool)],
+}
+
+impl Removal<'_> {
+    /// Removing `what` (`variable 'X'`) with `chainz {command}`.
+    pub fn of(command: &str, what: &str) -> Self {
+        Removal {
+            command: command.to_string(),
+            does: format!("removes {what}"),
+            question: format!("Remove {what}?"),
+            flags: &[],
+        }
+    }
+}
+
+/// The one confirmation every `rm` goes through (`rm`, `label rm`, `var
+/// rm`, `signer rm`): `--yes` (with every flag in `removal.flags`) removes
+/// without asking; otherwise, on a terminal, ask the question (default
+/// no; declining cancels); off one, or with `--yes` but a flag missing,
+/// fail naming every missing flag.
+pub fn confirm_removal(ask: &mut dyn Ask, yes: bool, removal: &Removal<'_>) -> Result<()> {
+    let mut missing: Vec<&str> = removal
+        .flags
+        .iter()
+        .filter(|(_, given)| !given)
+        .map(|(flag, _)| *flag)
+        .collect();
+    if !yes {
+        missing.push("--yes");
+    }
+    let hint = format!(
+        "`chainz {}` {}; pass {} to confirm",
+        removal.command,
+        removal.does,
+        missing.join(" ")
+    );
+    if yes && !missing.is_empty() {
+        bail!("{hint}");
+    }
     confirm_or_yes(
         ask,
         yes,
-        &format!("Remove {what}?"),
+        &removal.question,
         Consent::Destructive { hint: &hint },
     )
     .map(drop)
@@ -296,16 +338,16 @@ mod tests {
     #[test]
     fn removals_ask_or_need_yes() {
         use script::{Answer::Yes, Script};
-        confirm_removal(&mut Script::off_tty(), true, "var rm X", "variable 'X'").unwrap();
-        let err =
-            confirm_removal(&mut Script::off_tty(), false, "var rm X", "variable 'X'").unwrap_err();
+        let x = Removal::of("var rm X", "variable 'X'");
+        confirm_removal(&mut Script::off_tty(), true, &x).unwrap();
+        let err = confirm_removal(&mut Script::off_tty(), false, &x).unwrap_err();
         assert_eq!(
             err.to_string(),
             "`chainz var rm X` removes variable 'X'; pass --yes to confirm"
         );
         let mut script = Script::new([Yes(true), Yes(false)]);
-        confirm_removal(&mut script, false, "var rm X", "variable 'X'").unwrap();
-        let err = confirm_removal(&mut script, false, "var rm X", "variable 'X'").unwrap_err();
+        confirm_removal(&mut script, false, &x).unwrap();
+        let err = confirm_removal(&mut script, false, &x).unwrap_err();
         assert!(ui::is_cancelled(&err));
         assert_eq!(
             script.asked,

@@ -7,7 +7,7 @@ pub use update::update;
 use crate::cli::{AddArgs, ListArgs, RmArgs, UseArgs};
 use crate::load::open;
 use crate::probe::{check, probe_urls, ranked_urls};
-use crate::prompt::{Ask, Tty};
+use crate::prompt::{Ask, Removal, Tty};
 use crate::{net, ui, view};
 use anyhow::{Context, Result, anyhow, bail};
 use chainz_core::Chainz;
@@ -400,8 +400,10 @@ pub fn rm(args: &RmArgs) -> Result<i32> {
     crate::prompt::confirm_removal(
         &mut Tty,
         args.yes,
-        &format!("rm {}", args.chain),
-        &format!("chain '{name}' ({})", with.join("; ")),
+        &Removal::of(
+            &format!("rm {}", args.chain),
+            &format!("chain '{name}' ({})", with.join("; ")),
+        ),
     )?;
     let removed = chainz.transact(|tx| tx.remove_chain(&name))?;
     println!("Removed chain '{name}'");

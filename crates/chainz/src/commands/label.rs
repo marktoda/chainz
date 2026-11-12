@@ -259,8 +259,7 @@ fn rm(args: &LabelRmArgs) -> Result<i32> {
     crate::prompt::confirm_removal(
         &mut crate::prompt::Tty,
         args.yes,
-        &command,
-        &format!("@{name} {}", entries.join(", ")),
+        &crate::prompt::Removal::of(&command, &format!("@{name} {}", entries.join(", "))),
     )?;
     let removed = chainz.transact(|tx| tx.remove_address(&name, scope.as_deref()))?;
     for (scope, address) in removed {
