@@ -144,7 +144,7 @@ pub fn kill_anvil(pid: u32, port: Option<u16>) {
 /// How long a supervisor may take to stop on SIGTERM: it gives anvil up to
 /// 3 s before killing it, then removes the fork's files. Generous, since a
 /// loaded machine is slow at all of it.
-const SUPERVISOR_GRACE: Duration = Duration::from_secs(10);
+pub const SUPERVISOR_GRACE: Duration = Duration::from_secs(10);
 
 /// Whether a supervisor still holds `name`'s lock. An unreadable lock
 /// counts as held: nothing is removed under a fork that may be alive.

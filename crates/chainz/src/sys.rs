@@ -82,7 +82,8 @@ pub enum Started {
     Up(String),
     /// It exited without registering (it was waited for).
     Failed(ExitStatus),
-    /// Not ready in time (it was killed).
+    /// Not ready in time (it was stopped: SIGTERM, then SIGKILL after the
+    /// grace period).
     TimedOut,
 }
 
@@ -95,16 +96,19 @@ impl Detached {
     /// Wait up to `timeout` for the child to be ready, then ask
     /// `registered` whether it registered itself under its PID (in
     /// `serve.json`, a fork record): a child that got ready without
-    /// registering has failed, and is waited for. An error from
-    /// `registered` leaves the child running.
+    /// registering has failed, and is waited for. A child not ready in time
+    /// is stopped: SIGTERM, so it cleans up after itself, and SIGKILL if it
+    /// is still there after `grace`. An error from `registered` leaves the
+    /// child running.
     pub fn wait_started(
         &mut self,
         timeout: Duration,
+        grace: Duration,
         registered: impl FnOnce(u32) -> Result<bool>,
     ) -> Result<Started> {
         let said = match self.wait_ready(Some(timeout)) {
             Err(e) if e.kind() == io::ErrorKind::TimedOut => {
-                let _ = self.kill();
+                let _ = self.stop(grace);
                 return Ok(Started::TimedOut);
             }
             said => said.context("lost the background process")?,
@@ -165,8 +169,17 @@ impl Detached {
         }
     }
 
-    /// Kill the child (SIGKILL) and reap it.
-    fn kill(&mut self) -> io::Result<()> {
+    /// Stop the child: SIGTERM, SIGKILL if it outlives `grace`, then reap
+    /// it.
+    fn stop(&mut self, grace: Duration) -> io::Result<()> {
+        signal_process(self.pid(), libc::SIGTERM)?;
+        let deadline = Instant::now() + grace;
+        while Instant::now() < deadline {
+            if self.child.try_wait()?.is_some() {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
         self.child.kill()?;
         self.child.wait().map(drop)
     }
@@ -234,7 +247,7 @@ mod tests {
         assert_eq!(said, "up\n");
         assert!(started.elapsed() < Duration::from_secs(4));
         assert!(up.child.try_wait().unwrap().is_none(), "still running");
-        up.kill().unwrap();
+        up.stop(Duration::ZERO).unwrap();
 
         // Exiting counts too; the caller tells the two apart.
         let mut failed = background("printf 'no'; exit 3");
@@ -247,7 +260,48 @@ mod tests {
             .wait_ready(Some(Duration::from_millis(100)))
             .unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::TimedOut);
-        stuck.kill().unwrap();
+        stuck.stop(Duration::ZERO).unwrap();
+    }
+
+    /// A child not ready in time gets SIGTERM first, so it can clean up,
+    /// and SIGKILL only once the grace period is over.
+    #[test]
+    fn a_late_child_is_terminated_before_it_is_killed() {
+        let dir = tempfile::tempdir().unwrap();
+        let cleaned = dir.path().join("cleaned");
+        let mut polite = background(&format!(
+            "trap 'touch {}; exit 0' TERM; while :; do sleep 0.05; done",
+            cleaned.display()
+        ));
+        // Let sh install its trap first.
+        std::thread::sleep(Duration::from_millis(200));
+        let started = polite
+            .wait_started(Duration::from_millis(100), Duration::from_secs(10), |_| {
+                Ok(true)
+            })
+            .unwrap();
+        assert!(matches!(started, Started::TimedOut));
+        assert!(cleaned.exists(), "the child ran its SIGTERM cleanup");
+
+        let mut stubborn = background("trap '' TERM; while :; do sleep 0.05; done");
+        std::thread::sleep(Duration::from_millis(200));
+        let begun = Instant::now();
+        let started = stubborn
+            .wait_started(
+                Duration::from_millis(100),
+                Duration::from_millis(300),
+                |_| Ok(true),
+            )
+            .unwrap();
+        assert!(matches!(started, Started::TimedOut));
+        assert!(
+            begun.elapsed() >= Duration::from_millis(400),
+            "it waited the grace"
+        );
+        assert!(
+            stubborn.child.try_wait().unwrap().is_some(),
+            "killed and reaped"
+        );
     }
 
     #[test]

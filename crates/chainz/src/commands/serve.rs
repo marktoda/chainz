@@ -176,7 +176,7 @@ fn detach() -> Result<i32> {
     let mut child =
         sys::launch_detached(&log_path, LogMode::Append).context("failed to start the gateway")?;
     let mut port = 0;
-    let started = child.wait_started(START_TIMEOUT, |pid| {
+    let started = child.wait_started(START_TIMEOUT, STOP_TIMEOUT, |pid| {
         Ok(match gateway(&runtime)? {
             GatewayState::Up(info) if info.pid == pid => {
                 port = info.port;

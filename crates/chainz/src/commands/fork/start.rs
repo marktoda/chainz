@@ -191,7 +191,7 @@ fn detach(runtime: &Runtime, name: &str) -> Result<i32> {
     let log_path = process::log_path(name)?;
     let mut child = sys::launch_detached(&log_path, LogMode::Truncate)
         .context("unable to start the background supervisor")?;
-    let started = child.wait_started(DETACH_TIMEOUT, |pid| {
+    let started = child.wait_started(DETACH_TIMEOUT, process::SUPERVISOR_GRACE, |pid| {
         Ok(runtime
             .fork(name)
             .ok()
