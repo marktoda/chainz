@@ -214,15 +214,19 @@ fn gateway_seam_routes_through_serve_unless_direct() {
 #[test]
 fn forks_use_anvil_and_never_export_keystore() {
     let f = fixture();
-    f.runtime
-        .write_fork(&ForkRecord {
+    let claim = f.runtime.claim_fork("celo-fork").unwrap().unwrap();
+    claim
+        .register(&ForkRecord {
+            format: ForkRecord::FORMAT,
             name: "celo-fork".into(),
             pid: 1,
+            anvil_pid: 2,
             port: 8601,
             parent: "celo".into(),
             chain_id: 42220,
             fork_block: None,
             started_at: 0,
+            ready: true,
         })
         .unwrap();
     let c = ctx(&f, "celo-fork", &ExecOptions::default()).unwrap();
