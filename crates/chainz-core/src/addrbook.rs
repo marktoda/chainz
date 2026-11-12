@@ -342,53 +342,6 @@ base = "{USDC_BASE}"
     }
 
     #[test]
-    fn registry_is_well_formed() {
-        use crate::labels::{builtin_token, builtin_tokens};
-        const NAMES: [&str; 6] = ["weth", "usdc", "usdce", "usdt", "dai", "wbtc"];
-        let tokens = builtin_tokens();
-        let mut seen = std::collections::HashSet::new();
-        for t in tokens {
-            let at = format!("{}.{}", t.chain_id, t.name);
-            assert!(NAMES.contains(&t.name.as_str()), "{at}: unexpected name");
-            assert!(
-                crate::names::short_name(t.chain_id).is_some(),
-                "{at}: unknown chain"
-            );
-            assert!(t.source.starts_with("https://"), "{at}: source");
-            assert!(!t.symbol.is_empty() && t.address != Address::ZERO, "{at}");
-            // One address, one name per chain: reverse labels are unambiguous.
-            assert!(
-                seen.insert((t.chain_id, t.address)),
-                "{at}: duplicate address"
-            );
-            // The file holds checksummed addresses.
-            let line = format!("address = \"{}\"", t.address.to_checksum());
-            assert!(
-                crate::labels::TOKENS_TOML.contains(&line),
-                "{at}: not checksummed"
-            );
-        }
-        // What the chains really say, where it differs from the usual.
-        for (chain, name, symbol, decimals) in [
-            (1, "usdt", "USDT", 6),
-            (1, "dai", "DAI", 18),
-            (1, "wbtc", "WBTC", 8),
-            (56, "usdc", "USDC", 18),
-            (56, "usdt", "USDT", 18),
-            (8453, "usdce", "USDbC", 6),
-            (42161, "usdt", "USD₮0", 6),
-            (43114, "usdce", "USDC.e", 6),
-        ] {
-            let t = builtin_token(chain, name).unwrap_or_else(|| panic!("{chain}.{name}"));
-            assert_eq!(
-                (t.symbol.as_str(), t.decimals),
-                (symbol, decimals),
-                "{chain}.{name}"
-            );
-        }
-    }
-
-    #[test]
     fn find_lists_every_label_across_chains_with_its_source() {
         let config = config();
         let found = find(&config, &addr(ONE));

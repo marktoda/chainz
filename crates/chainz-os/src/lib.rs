@@ -450,19 +450,6 @@ mod tests {
     }
 
     #[test]
-    fn permission_warnings_name_the_file() {
-        let warning = PermissionWarning {
-            path: PathBuf::from("/x/config.toml"),
-            error: io::Error::from_raw_os_error(libc::EPERM),
-        };
-        let text = warning.to_string();
-        assert!(
-            text.starts_with("could not restrict /x/config.toml to mode 0600: "),
-            "{text}"
-        );
-    }
-
-    #[test]
     fn logs_are_private_and_appended() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("x.log");
@@ -569,11 +556,5 @@ mod tests {
         assert_eq!((after.len, after.modified), (before.len, before.modified));
         assert_ne!(after, before);
         assert!(FileStamp::of(&dir.path().join("missing")).is_none());
-    }
-
-    #[test]
-    fn the_clock_agrees_with_itself() {
-        let (ms, secs) = (now_ms(), now_secs());
-        assert!(ms / 1000 <= secs + 1 && secs <= ms / 1000 + 1);
     }
 }

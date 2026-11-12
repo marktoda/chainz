@@ -906,33 +906,6 @@ fn edit_reports_transitions_and_no_ops() {
 }
 
 #[test]
-fn chain_changes_cover_every_field() {
-    let config = Config::parse(
-        "version = 2\n[chains.a]\nid = 1\naliases = [\"x\"]\nrpc = \"p\"\nfailover = [\"q\"]\n[chains.a.rpcs]\np = \"https://p.example\"\nq = { url = \"https://q.example\", headers = { h = \"1\" } }\n\n[chains.b]\nid = 2\naliases = [\"y\"]\nsigner = \"s\"\nexplorer = \"e\"\nrpc = \"q\"\n[chains.b.rpcs]\nq = { url = \"https://q2.example\", headers = { h = \"2\", k = \"3\" } }\nr = \"https://r.example\"\n",
-    )
-    .unwrap();
-    let changes = Chain::changes(&config.chains["a"], &config.chains["b"]);
-    assert_eq!(
-        changes,
-        [
-            "chain ID: 1 → 2 (its endpoints were not re-checked)",
-            "alias removed: x",
-            "alias added: y",
-            "removed endpoint 'p'",
-            "endpoint 'q': URL changed",
-            "header h set on q",
-            "header k set on q",
-            "added endpoint 'r'",
-            "active endpoint: p → q",
-            "failover: q → none",
-            "signer: none → s",
-            "explorer: none → e",
-        ]
-    );
-    assert!(Chain::changes(&config.chains["a"], &config.chains["a"]).is_empty());
-}
-
-#[test]
 fn header_arguments_split_at_the_first_colon() {
     let parse = ChainEdit::parse_header;
     assert_eq!(

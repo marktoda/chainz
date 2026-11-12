@@ -406,18 +406,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let rt = Runtime::at(dir.path().join("chainz"));
         drop(rt.acquire_serve_lock().unwrap().unwrap());
-
-        // A probe (exec, top) holding the lock right as the gateway starts.
-        let probe = std::fs::File::open(rt.serve_lock_path()).unwrap();
-        probe.try_lock_shared().unwrap();
-        let release = std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(20));
-            drop(probe);
-        });
-        assert!(rt.acquire_serve_lock().unwrap().is_some());
-        release.join().unwrap();
-
-        // And under a stream of probes.
+        // A stream of probes (exec, top) while the gateway starts; a single
+        // probe outwaited is chainz-os's `a_patient_lock_outwaits_a_probe`.
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let prober = {
             let (rt, stop) = (rt.clone(), stop.clone());

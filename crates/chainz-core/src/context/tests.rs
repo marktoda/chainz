@@ -544,9 +544,7 @@ fn every_exported_name_is_a_contract_var() {
     // Between them these set every variable the contract has.
     let mut seen = std::collections::BTreeSet::new();
     for (chain, opts) in [("eth", &expose), ("eth", &headers), ("celo", &expose)] {
-        let Ok(c) = ctx(&f, chain, opts) else {
-            continue;
-        };
+        let c = ctx(&f, chain, opts).unwrap();
         for var in c.exports().unwrap().set {
             assert!(
                 CONTRACT_VARS.contains(&var.name()),
@@ -556,5 +554,6 @@ fn every_exported_name_is_a_contract_var() {
             seen.insert(var.name());
         }
     }
-    assert!(seen.len() >= 10, "{seen:?}");
+    let all: std::collections::BTreeSet<&str> = CONTRACT_VARS.iter().copied().collect();
+    assert_eq!(seen, all);
 }

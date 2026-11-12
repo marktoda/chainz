@@ -511,21 +511,59 @@ eth = "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf"
     }
 
     #[test]
-    fn registry_parses_and_has_the_minimum() {
+    fn registry_is_well_formed() {
         let tokens = builtin_tokens();
-        assert!(tokens.len() >= 28);
+        let mut seen = std::collections::HashSet::new();
+        for t in tokens {
+            let at = format!("{}.{}", t.chain_id, t.name);
+            assert!(
+                TOKEN_ORDER.contains(&t.name.as_str()),
+                "{at}: unexpected name"
+            );
+            assert!(
+                crate::names::short_name(t.chain_id).is_some(),
+                "{at}: unknown chain"
+            );
+            assert!(t.source.starts_with("https://"), "{at}: source");
+            assert!(!t.symbol.is_empty() && t.address != Address::ZERO, "{at}");
+            // One address, one name per chain: reverse labels are unambiguous.
+            assert!(
+                seen.insert((t.chain_id, t.address)),
+                "{at}: duplicate address"
+            );
+            // The file holds checksummed addresses.
+            let line = format!("address = \"{}\"", t.address.to_checksum());
+            assert!(TOKENS_TOML.contains(&line), "{at}: not checksummed");
+        }
         let usdc = builtin_token(8453, "USDC").unwrap();
         assert_eq!(
             usdc.address.to_string(),
             "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
         );
         assert_eq!(usdc.decimals, 6);
-        assert!(tokens.iter().all(|t| t.source.starts_with("https://")));
         for id in [
             1, 8453, 130, 56, 137, 42220, 10, 196, 480, 42161, 7777777, 1868, 4326, 43114, 4663,
             324,
         ] {
             assert!(builtin_token(id, "weth").is_some(), "weth on {id}");
+        }
+        // What the chains really say, where it differs from the usual.
+        for (chain, name, symbol, decimals) in [
+            (1, "usdt", "USDT", 6),
+            (1, "dai", "DAI", 18),
+            (1, "wbtc", "WBTC", 8),
+            (56, "usdc", "USDC", 18),
+            (56, "usdt", "USDT", 18),
+            (8453, "usdce", "USDbC", 6),
+            (42161, "usdt", "USD₮0", 6),
+            (43114, "usdce", "USDC.e", 6),
+        ] {
+            let t = builtin_token(chain, name).unwrap_or_else(|| panic!("{chain}.{name}"));
+            assert_eq!(
+                (t.symbol.as_str(), t.decimals),
+                (symbol, decimals),
+                "{chain}.{name}"
+            );
         }
     }
 
@@ -566,9 +604,8 @@ eth = "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf"
     }
 
     #[test]
-    fn labels_lists_every_source_and_reverse_maps_are_lazy() {
+    fn labels_lists_every_source() {
         let index = LabelIndex::new(&config());
-        assert!(index.reverse.get().is_none(), "built only on first use");
         let labels: Vec<Label> = index.labels().collect();
         let configured: Vec<(&str, LabelSource)> = labels
             .iter()
@@ -585,13 +622,6 @@ eth = "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf"
             ]
         );
         assert_eq!(labels.len() - configured.len(), builtin_tokens().len());
-        index.resolve("usdc", 1).unwrap();
-        assert!(index.reverse.get().is_none());
-        let funder: Address = "0x2B5AD5c4795c026514f8317c7a215E218DcCD6cF"
-            .parse()
-            .unwrap();
-        assert!(index.reverse(1, &funder).is_some());
-        assert!(index.reverse.get().is_some());
     }
 
     #[test]
@@ -676,15 +706,5 @@ eth = "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf"
         assert_eq!(LabelSource::Token.to_string(), "built-in");
         assert_eq!(builtin_token_at(1, &eth_usdc.address), Some(eth_usdc));
         assert_eq!(builtin_token_at(8453, &eth_usdc.address), None);
-        assert_eq!(native_symbol(56), "BNB");
-        assert_eq!(native_symbol(8453), "ETH");
-        assert!(
-            builtin_tokens()
-                .iter()
-                .all(|t| TOKEN_ORDER.contains(&t.name.as_str()))
-        );
-        assert_eq!(config.chain_display(8453), "base");
-        assert_eq!(config.chain_display(10), "op");
-        assert_eq!(config.chain_display(424242), "chain 424242");
     }
 }

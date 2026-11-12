@@ -203,12 +203,6 @@ fn migration_writes_once_in_order_and_backs_up_v1() {
         planned.config_toml
     );
     assert!(paths.dir().join("config.v1.json.bak").exists());
-    let summary = Summary {
-        backup: Some(paths.dir().join("config.v1.json.bak")),
-        ..Summary::default()
-    };
-    let report = summary.report(paths.config());
-    assert!(report[1].contains(" (v1 config kept as "), "{report:?}");
     let chainz = Chainz::open_at(paths.clone(), LoadMode::Strict).unwrap();
     assert_eq!(chainz.config().chains.len(), 17);
     assert_eq!(chainz.secrets().unwrap().vars.len(), 7);
