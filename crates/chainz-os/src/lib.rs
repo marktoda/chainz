@@ -5,11 +5,9 @@
 //! mode 0700, files 0600.
 //!
 //! - [`create_private_dir`], [`write_private`] (atomic and durable),
-//!   [`read_private`] (tightens loose permissions), [`open_private`],
-//!   [`open_private_log`];
+//!   [`read_private`] (tightens loose permissions), [`open_private_log`];
 //! - file locks whose holder is alive while it holds them: [`probe_lock`]
-//!   asks, [`try_lock_file`] and [`lock_file`] take one, and [`try_lock`]
-//!   is one non-blocking attempt on an open file;
+//!   asks, [`try_lock_file`] and [`lock_file`] take one;
 //! - [`FileStamp`], enough metadata to see that a file changed;
 //! - [`now_ms`] and [`now_secs`], the wall clock as unix time.
 //!
@@ -188,7 +186,7 @@ fn current_uid() -> u32 {
 
 /// Open `path` for reading and writing, creating it mode 0600 if missing
 /// and never truncating it: a lock file, say.
-pub fn open_private(path: &Path) -> io::Result<File> {
+fn open_private(path: &Path) -> io::Result<File> {
     fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -223,7 +221,7 @@ pub fn open_private_log(path: &Path, mode: LogMode) -> io::Result<File> {
 /// One non-blocking attempt at an exclusive `flock` on `file`: `Ok(true)`
 /// when it is now held (until `file` is closed or unlocked), `Ok(false)`
 /// when another open file description holds it.
-pub fn try_lock(file: &File) -> io::Result<bool> {
+fn try_lock(file: &File) -> io::Result<bool> {
     match file.try_lock() {
         Ok(()) => Ok(true),
         Err(fs::TryLockError::WouldBlock) => Ok(false),

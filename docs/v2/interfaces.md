@@ -168,14 +168,12 @@ pub fn is_private_mode(mode: u32) -> bool;                  // no group/other bi
 pub fn create_private_dir(dir: &Path) -> io::Result<()>;
 pub fn write_private(path: &Path, contents: &[u8]) -> io::Result<()>; // atomic, fsynced, 0600
 pub fn read_private(path: &Path) -> io::Result<Option<PrivateText { text, warning }>>; // tightens to 0600
-pub fn open_private(path: &Path) -> io::Result<File>;
 pub fn open_private_log(path: &Path, mode: LogMode) -> io::Result<File>; // LogMode::{Append, Truncate}
 // locks: liveness is "holds the lock"
 pub fn probe_lock(path: &Path) -> io::Result<bool>;          // one shared, non-blocking attempt, released at once
 pub fn try_lock_file(path: &Path, contention: Contention) -> io::Result<Option<File>>; // exclusive; None = held
 pub enum Contention { GiveUp, OutwaitProbes }               // retry for PROBE_GRACE (100 ms) past probes
 pub fn lock_file(path: &Path) -> io::Result<File>;           // exclusive, blocking
-pub fn try_lock(file: &File) -> io::Result<bool>;
 pub struct FileStamp; impl FileStamp { pub fn of(path: &Path) -> Option<FileStamp> } // compare with ==
 pub fn now_ms() -> u64; pub fn now_secs() -> u64;
 ```
