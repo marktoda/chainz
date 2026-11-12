@@ -8,9 +8,10 @@ uploads them in dependency order:
 
 1. `chainz-os` (no workspace dependencies)
 2. `chainz-core` (os)
-3. `chainz-rpc` (os)
+3. `chainz-rpc` (os; not core)
 4. `chainz-serve` (os, core, rpc)
-5. `chainz-tui` (os, core, rpc)
+5. `chainz-tui` (os, core, rpc; serve with its `testing` feature as a
+   dev-dependency, so serve goes first)
 6. `chainz` (all of the above)
 
 ## One-time repository setup
