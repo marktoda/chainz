@@ -37,7 +37,7 @@ pub fn pace(block_time: Option<f64>, tuning: &Tuning) -> Duration {
 /// What the wait before a chain's next head poll depends on.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct Pacing {
-    /// No key pressed for `idle_after`.
+    /// Nobody is watching.
     pub(super) idle: bool,
     /// Consecutive failed polls.
     pub(super) failures: u32,
@@ -174,16 +174,40 @@ impl BlockClock {
     }
 }
 
+/// What a chain's head poller learned, kept across engine restarts so a
+/// new poller does not cost another look-back request.
+#[derive(Debug, Clone)]
+pub(super) struct Learned {
+    clock: BlockClock,
+    /// Tries left to fetch the look-back block.
+    anchor_tries: u8,
+}
+
+impl Learned {
+    /// Tries at the look-back block before the block time is left to the
+    /// head polls alone.
+    const ANCHOR_TRIES: u8 = 3;
+}
+
+impl Default for Learned {
+    fn default() -> Self {
+        Learned {
+            clock: BlockClock::default(),
+            anchor_tries: Self::ANCHOR_TRIES,
+        }
+    }
+}
+
 /// The poller for one chain.
 pub(super) struct Poller {
     shared: Arc<Shared>,
     chain: ChainPlan,
-    clock: BlockClock,
-    /// Tries left to fetch the look-back block.
-    anchor_tries: u8,
-    /// Successful polls to let pass before fetching it: the live poller
-    /// keeps its first tick to one request.
+    learned: Learned,
+    /// Successful polls to let pass before fetching the look-back block.
     anchor_after: u8,
+    /// The wait before the first poll, and again after a refresh: the
+    /// chain's place among those on the same provider.
+    offset: Duration,
     /// Consecutive failed polls.
     failures: u32,
     /// The `Retry-After` of the last failure, if it had one.
@@ -191,46 +215,52 @@ pub(super) struct Poller {
 }
 
 impl Poller {
-    /// A poller that learns the block time on its first poll (`--once`).
+    /// A poller for `chain`, which is the `slot`th on its provider. It
+    /// fetches the look-back block after `anchor_after` successful polls:
+    /// `--once` measures the block time on its first, the live dashboard
+    /// keeps its first tick to one request.
     ///
-    /// What an earlier poller learned about the chain (its block clock, and
-    /// whether the look-back block was read) carries over: an engine
-    /// restart does not cost another look-back request.
-    pub(super) fn new(shared: Arc<Shared>, chain: ChainPlan) -> Self {
-        let learned = shared.lock_learned().get(&chain.info.id).cloned();
-        let (clock, anchor_tries) = learned.unwrap_or((BlockClock::default(), 3));
+    /// What an earlier poller learned about the chain carries over.
+    pub(super) fn new(shared: Arc<Shared>, chain: ChainPlan, slot: u32, anchor_after: u8) -> Self {
+        let learned = super::lock(&shared.clocks)
+            .get(&chain.info.id)
+            .cloned()
+            .unwrap_or_default();
+        let offset = shared.tuning.stagger * slot;
         Poller {
             shared,
             chain,
-            clock,
-            anchor_tries,
-            anchor_after: 0,
+            learned,
+            anchor_after,
+            offset,
             failures: 0,
             retry_after: None,
         }
     }
 
-    /// A poller that learns the block time on its second poll.
-    pub(super) fn patient(shared: Arc<Shared>, chain: ChainPlan) -> Self {
-        Poller {
-            anchor_after: 1,
-            ..Poller::new(shared, chain)
-        }
+    /// The wait before the first poll.
+    pub(super) fn offset(&self) -> Duration {
+        self.offset
     }
 
-    /// Poll forever: first after `offset` (the provider stagger), then
-    /// every [`next_delay`], and early on a refresh. A refresh wakes every
-    /// poller at once, so each waits its `offset` again before polling:
-    /// chains on one provider stay a beat apart.
-    pub(super) async fn run(mut self, offset: Duration, signals: Arc<Signals>) {
-        tokio::time::sleep(offset).await;
+    /// Poll forever: first after the offset, then every [`next_delay`],
+    /// and early on a refresh. A refresh wakes every poller at once, so
+    /// each waits its offset again: chains on one provider stay a beat
+    /// apart. `started` is let go once the first request is under way.
+    pub(super) async fn run(
+        mut self,
+        signals: Arc<Signals>,
+        started: Option<tokio::sync::mpsc::Sender<()>>,
+    ) {
+        tokio::time::sleep(self.offset).await;
+        drop(started);
         loop {
             let update = self.step().await;
             self.shared.send(update);
             let delay = next_delay(self.pacing(), &self.shared.tuning);
             tokio::select! {
                 () = tokio::time::sleep(delay) => {}
-                () = signals.chains.notified() => tokio::time::sleep(offset).await,
+                () = signals.chains.notified() => tokio::time::sleep(self.offset).await,
             }
         }
     }
@@ -241,8 +271,8 @@ impl Poller {
             idle: self.shared.idle(),
             failures: self.failures,
             retry_after: self.retry_after,
-            block_time: self.clock.block_time(),
-            measuring: self.clock.block_time().is_none() && self.anchor_tries > 0,
+            block_time: self.learned.clock.block_time(),
+            measuring: self.learned.clock.block_time().is_none() && self.learned.anchor_tries > 0,
         }
     }
 
@@ -260,7 +290,7 @@ impl Poller {
                 if let Ok(head) = &polled
                     && let Some(timestamp) = head.timestamp
                 {
-                    self.clock.observe(head.number, timestamp);
+                    self.learned.clock.observe(head.number, timestamp);
                     self.anchor(&client, &target, head.number, deadline).await;
                 }
                 polled.map_err(|e| Fault::from(&e))
@@ -271,37 +301,35 @@ impl Poller {
             Err(_) => self.failures.saturating_add(1),
         };
         self.retry_after = result.as_ref().err().and_then(|f| f.retry_after);
-        self.shared
-            .lock_learned()
-            .insert(self.chain.info.id, (self.clock.clone(), self.anchor_tries));
+        super::lock(&self.shared.clocks).insert(self.chain.info.id, self.learned.clone());
         Update::Head {
             chain: self.chain.info.name.clone(),
             source: self.chain.source,
             at_ms: now_ms(),
             via_gateway,
             result,
-            block_time: self.clock.block_time(),
+            block_time: self.learned.clock.block_time(),
         }
     }
 
     /// Once per chain: read a block `block_span` back, so the block time is
     /// known from the first poll instead of after several.
     async fn anchor(&mut self, client: &RpcClient, target: &Target, head: u64, deadline: Duration) {
-        if self.anchor_tries == 0 || head == 0 {
+        if self.learned.anchor_tries == 0 || head == 0 {
             return;
         }
         if self.anchor_after > 0 {
             self.anchor_after -= 1;
             return;
         }
-        self.anchor_tries -= 1;
+        self.learned.anchor_tries -= 1;
         let number = head.saturating_sub(self.shared.tuning.block_span);
         let block = client.get_block(target, BlockId::Number(number));
         if let Ok(Ok(Some(block))) = tokio::time::timeout(deadline, block).await
             && let Some(timestamp) = block.timestamp
         {
-            self.clock.anchor(number, timestamp);
-            self.anchor_tries = 0;
+            self.learned.clock.anchor(number, timestamp);
+            self.learned.anchor_tries = 0;
         }
     }
 }

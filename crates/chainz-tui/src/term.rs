@@ -23,8 +23,8 @@ use ratatui::crossterm::terminal::{
 use ratatui::crossterm::{execute, queue};
 
 use crate::app::{Action, App};
-use crate::data::{Engine, Shared, Tuning};
-use crate::model::{State, Update};
+use crate::data::{self, ConfigFiles, ConfigStamp, Engine, Shared, Tuning};
+use crate::model::State;
 use crate::plan::Plan;
 use crate::ui::theme::Theme;
 use crate::ui::{self, Ctx};
@@ -35,6 +35,10 @@ use chainz_sys::now_ms;
 const POLL: Duration = Duration::from_millis(50);
 /// Redraw at least this often, so ages keep counting.
 const TICK: Duration = Duration::from_secs(1);
+/// With no key pressed for this long, heads are polled at the slowest pace
+/// and endpoints are not probed until the next key: a dashboard left open
+/// should cost little.
+const IDLE_AFTER: Duration = Duration::from_secs(300);
 
 /// The alternate screen in raw mode; restored on drop and on a panic of
 /// the UI thread.
@@ -122,32 +126,25 @@ struct Dashboard {
     chainz: Chainz,
     options: Options,
     shared: Arc<Shared>,
-    updates: Receiver<Update>,
+    events: Receiver<data::Event>,
     rt: tokio::runtime::Runtime,
     plan: Arc<Plan>,
     state: State,
     app: App,
     engine: Option<Engine>,
-    /// The focus last handed to the engine; `None` when it does not know.
-    focus_sent: Option<Option<String>>,
-    /// The idle flag last handed to the workers.
-    idle: bool,
+    /// The config files, and their stamp when `chainz` was read from them.
+    files: ConfigFiles,
+    loaded: ConfigStamp,
 }
 
 impl Dashboard {
     /// The dashboard for `chainz`; its workers start with [`Self::run_engine`].
     fn new(chainz: Chainz, runtime: Runtime, options: Options, store: HealthStore) -> Result<Self> {
+        let files = ConfigFiles::new(chainz.paths());
         let plan = Arc::new(Plan::build(&chainz, options.reveal));
-        let mut state = State::new(&plan, &store);
-        let (sender, updates) = std::sync::mpsc::channel();
-        let shared = Shared::new(
-            store,
-            runtime,
-            chainz.paths().config().to_path_buf(),
-            Tuning::default(),
-            sender,
-        );
-        state.gateway = shared.gateway();
+        let state = State::new(&plan, &store);
+        let (sender, events) = std::sync::mpsc::channel();
+        let shared = Shared::new(store, runtime, Tuning::default(), sender);
         let mut app = App::default();
         app.chain.clone_from(&chainz.config().default);
         let rt = tokio::runtime::Builder::new_multi_thread()
@@ -156,50 +153,61 @@ impl Dashboard {
             .enable_all()
             .build()
             .context("failed to start the async runtime")?;
-        Ok(Dashboard {
+        // The stamp may be a little newer than what `chainz` read; a change
+        // in between is then picked up at the next reload, not now.
+        let loaded = files.stamp();
+        let mut dash = Dashboard {
             engine: None,
             chainz,
             options,
             shared,
-            updates,
+            events,
             rt,
             plan,
             state,
             app,
-            focus_sent: None,
-            idle: false,
-        })
+            files,
+            loaded,
+        };
+        // Know about a running gateway before the first frame.
+        dash.shared.watch_gateway();
+        dash.drain();
+        Ok(dash)
+    }
+
+    /// Fold in everything the workers sent. Returns whether anything came,
+    /// and whether the config files changed from what is loaded.
+    fn drain(&mut self) -> (bool, bool) {
+        let (mut any, mut changed) = (false, false);
+        while let Ok(event) = self.events.try_recv() {
+            any = true;
+            match event {
+                data::Event::Update(update) => self.state.apply(update),
+                data::Event::ConfigChanged => changed = true,
+                data::Event::Warning(text) => self.app.notify(text, true, now_ms()),
+            }
+        }
+        // A change this dashboard made itself (`s`) is already loaded.
+        (any, changed && self.files.stamp() != self.loaded)
     }
 
     /// Start the workers on the current plan.
     fn run_engine(&mut self) {
-        self.engine = Some(Engine::start(self.rt.handle(), &self.shared, &self.plan));
+        let mut engine = Engine::start(self.rt.handle(), &self.shared, &self.plan);
+        engine.watch_config(self.files.clone(), self.loaded);
+        self.engine = Some(engine);
     }
 
-    /// Tell the workers whether anyone is watching, when that changed.
-    fn set_idle(&mut self, idle: bool) {
-        if idle != self.idle {
-            self.idle = idle;
-            self.shared.set_idle(idle);
-        }
-    }
-
-    /// Hand the engine the chain to probe, when that changed.
-    fn sync_focus(&mut self) {
-        let Some(engine) = &self.engine else {
-            return;
-        };
-        let focus = self.app.focus(&self.state);
-        if self.focus_sent.as_ref() != Some(&focus) {
-            engine.focus(focus.clone());
-            self.focus_sent = Some(focus);
+    /// Hand the engine the chain to probe; it ignores a repeat.
+    fn sync_focus(&self) {
+        if let Some(engine) = &self.engine {
+            engine.focus(self.app.focus(&self.state));
         }
     }
 
     /// Stop the workers.
     fn stop(&mut self) {
         self.engine = None;
-        self.focus_sent = None;
     }
 
     /// Move the workers to the config as it is now: a running engine
@@ -219,6 +227,7 @@ impl Dashboard {
 
     /// Re-read the config from disk and restart the workers on it.
     fn reload(&mut self) {
+        self.loaded = self.files.stamp();
         match Chainz::open_at(self.chainz.paths().clone(), LoadMode::Strict) {
             Ok(chainz) => {
                 self.chainz = chainz;
@@ -241,13 +250,11 @@ impl Dashboard {
         let edited = self.chainz.transact(|tx| tx.set_active(chain, endpoint));
         match edited {
             Ok(()) => {
+                self.loaded = self.files.stamp();
                 self.start();
                 // The gateway watches the config too; this only makes the
                 // switch immediate.
-                if self.shared.gateway().is_some() {
-                    let link = self.shared.link();
-                    self.rt.spawn(async move { link.reload().await });
-                }
+                self.shared.reload_gateway(self.rt.handle());
                 let text = format!("'{chain}' now uses '{endpoint}'");
                 self.app.notify(text, false, now_ms());
             }
@@ -280,7 +287,7 @@ impl Dashboard {
         };
         self.options.shell = Some(shell);
         screen.resume()?;
-        // The shell may have changed the config (`chainz rpc use …`).
+        // The shell may have changed the config (`chainz chain set <chain> --rpc …`).
         self.reload();
         match outcome {
             Ok(()) => self
@@ -356,24 +363,14 @@ pub(crate) fn run(chainz: Chainz, runtime: Runtime, options: Options) -> Result<
                 }
             }
         }
-        let idle_after = dash.shared.tuning().idle_after;
-        dash.set_idle(last_key.elapsed() >= idle_after);
-        let mut reload = false;
-        while let Ok(update) = dash.updates.try_recv() {
-            match update {
-                Update::ConfigChanged => reload = true,
-                update => dash.state.apply(update),
-            }
-            dirty = true;
-        }
+        dash.shared.set_idle(last_key.elapsed() >= IDLE_AFTER);
+        let (any, reload) = dash.drain();
+        dirty |= any;
         if reload {
             dash.reload();
         }
-        // The focus follows the tab, the selection and the chain list:
-        // keys and updates, both of which mark the frame dirty.
-        if dirty || dash.focus_sent.is_none() {
-            dash.sync_focus();
-        }
+        // The focus follows the tab, the selection and the chain list.
+        dash.sync_focus();
         dirty |= dash.app.expire(now_ms());
         if dirty || drawn.elapsed() >= TICK {
             screen.draw(Ctx::now(&dash.app, &dash.state, theme))?;

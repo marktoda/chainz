@@ -10,7 +10,7 @@ use chainz_core::Address;
 use chainz_rpc::abi;
 use chainz_rpc::{BlockId, RpcError, Target};
 use serde_json::{Value, json};
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use tokio::task::JoinSet;
 use tokio::time::Instant;
 
@@ -21,19 +21,20 @@ use chainz_sys::now_ms;
 
 /// Read every chain's balances every `balance_every`, and on a refresh.
 ///
-/// Chains that share a provider are staggered. The first round also waits
-/// for the head pollers' own staggered start to pass. When the plan
+/// Chains that share a provider are staggered. The first round waits for
+/// the head pollers to have sent their first requests (`pollers_started`
+/// closes), and a beat more. When the plan
 /// changes, only the chains it changed are read at once (all of them when
 /// the signers changed); the others keep their schedule.
 pub(super) async fn run(
     shared: Arc<Shared>,
     mut plan: watch::Receiver<Arc<Plan>>,
+    mut pollers_started: mpsc::Receiver<()>,
     signals: Arc<Signals>,
 ) {
-    let stagger = shared.tuning.stagger;
+    while pollers_started.recv().await.is_some() {}
+    tokio::time::sleep(shared.tuning.stagger).await;
     let mut current = plan.borrow_and_update().clone();
-    let slots = provider_slots(&current);
-    tokio::time::sleep(stagger * (slots.iter().max().copied().unwrap_or(0) + 1)).await;
     // `None`: every chain, and the interval restarts.
     let mut only: Option<HashSet<String>> = None;
     let mut next_round = Instant::now();
@@ -127,19 +128,12 @@ async fn read(
     target: &Target,
     holders: &[(String, Address)],
 ) -> Result<Sheet, RpcError> {
-    let known_absent = || {
-        let known = shared.multicall.lock().unwrap_or_else(|e| e.into_inner());
-        known.get(&chain.info.id) == Some(&false)
-    };
-    if !known_absent() {
+    if !shared.multicall.absent(chain.info.id, target) {
         match multicall(shared, chain, target, holders).await {
             Ok(Some(values)) => return Ok(sheet(Via::Multicall3, chain, holders, values)),
             // An empty return means no code at the Multicall3 address:
             // remember it, so later rounds go straight to the batch.
-            Ok(None) => {
-                let mut known = shared.multicall.lock().unwrap_or_else(|e| e.into_inner());
-                known.insert(chain.info.id, false);
-            }
+            Ok(None) => shared.multicall.mark_absent(chain.info.id, target),
             // An endpoint that is unreachable or rate limiting will not
             // answer the batch either; do not hit it twice.
             Err(e @ (RpcError::Timeout | RpcError::Connect | RpcError::RateLimited { .. })) => {

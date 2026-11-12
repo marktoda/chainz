@@ -148,6 +148,7 @@ fn chain_status_is_pending_ok_lag_slow_or_down() {
     assert_eq!(status(&state, 0), Status::Ok);
 
     // The gateway's head high-water mark counts as a peer.
+    state.apply(Update::Gateway(Some(GatewayInfo { port: 18545 })));
     state.apply(Update::Traffic(Ok(TrafficSnapshot {
         chains: vec![GatewayChain {
             chain: "base".into(),
@@ -343,8 +344,19 @@ fn a_reloaded_plan_keeps_what_is_still_true() {
 }
 
 #[test]
+fn traffic_after_the_gateway_stopped_is_dropped() {
+    let mut state = state();
+    state.apply(Update::Traffic(Err("connection refused".into())));
+    assert_eq!(state.traffic_error, None);
+    state.apply(Update::Gateway(Some(GatewayInfo { port: 18545 })));
+    state.apply(Update::Traffic(Err("connection refused".into())));
+    assert_eq!(state.traffic_error.as_deref(), Some("connection refused"));
+}
+
+#[test]
 fn feed_is_capped_and_its_rate_counts_the_recent_window() {
     let mut state = state();
+    state.apply(Update::Gateway(Some(GatewayInfo { port: 18545 })));
     for i in 0..(FEED_CAP as u64 + 50) {
         state.apply(Update::Feed(FeedItem {
             id: i,

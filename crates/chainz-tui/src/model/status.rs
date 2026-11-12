@@ -12,9 +12,11 @@ pub const SLOW_FLOOR_MS: u32 = 200;
 /// An endpoint is slow when its median is this many times the median of
 /// all chains (and above [`SLOW_FLOOR_MS`]).
 pub const SLOW_FACTOR: u32 = 3;
+/// How often the chain on screen has its endpoints probed.
+pub const PROBE_EVERY_MS: u64 = 15_000;
 /// Endpoint probes this much older than the newest one are not compared
-/// with it: about two probe intervals (15 s each).
-pub const PROBE_WINDOW_MS: u64 = 30_000;
+/// with it: two probe intervals.
+pub const PROBE_WINDOW_MS: u64 = 2 * PROBE_EVERY_MS;
 
 /// The health of a chain's active endpoint, as shown in the Chains tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -14,7 +14,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 
-use super::{Shared, Tuning};
+use super::{Event, Shared, Tuning};
 use crate::model::Update;
 use crate::plan::{ChainInfo, ChainPlan, EndpointPlan, Plan, SignerPlan, Source, TokenPlan};
 
@@ -322,23 +322,28 @@ pub(crate) fn fast() -> Tuning {
         traffic_every: Duration::from_millis(100),
         watch_every: Duration::from_millis(100),
         stagger: Duration::ZERO,
-        retry_wait: Duration::from_millis(50),
-        idle_after: Duration::from_secs(300),
     }
 }
 
-/// Worker state rooted in `dir` (runtime dir, state dir and config file),
-/// and the receiving end of its updates.
-pub(crate) fn shared(dir: &Path, tuning: Tuning) -> (Arc<Shared>, Receiver<Update>) {
+/// Worker state rooted in `dir` (runtime dir and state dir), and the
+/// receiving end of its events.
+pub(crate) fn shared(dir: &Path, tuning: Tuning) -> (Arc<Shared>, Receiver<Event>) {
     let (sender, receiver) = channel();
     let shared = Shared::new(
         HealthStore::load(dir).unwrap(),
         Runtime::at(dir.join("runtime")),
-        dir.join("config.toml"),
         tuning,
         sender,
     );
     (shared, receiver)
+}
+
+/// The updates among what is waiting in `events`.
+pub(crate) fn updates(events: &Receiver<Event>) -> impl Iterator<Item = Update> + '_ {
+    events.try_iter().filter_map(|event| match event {
+        Event::Update(update) => Some(update),
+        _ => None,
+    })
 }
 
 /// A temp dir directly under `/tmp`. A unix socket path must fit in
@@ -367,13 +372,25 @@ pub(crate) async fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
 
 /// Wait (up to five seconds) for an update that `pick` accepts.
 pub(crate) async fn wait_for<T>(
-    updates: &Receiver<Update>,
+    events: &Receiver<Event>,
     mut pick: impl FnMut(Update) -> Option<T>,
+) -> T {
+    wait_for_event(events, |event| match event {
+        Event::Update(update) => pick(update),
+        _ => None,
+    })
+    .await
+}
+
+/// Wait (up to five seconds) for an event that `pick` accepts.
+pub(crate) async fn wait_for_event<T>(
+    events: &Receiver<Event>,
+    mut pick: impl FnMut(Event) -> Option<T>,
 ) -> T {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        while let Ok(update) = updates.try_recv() {
-            if let Some(found) = pick(update) {
+        while let Ok(event) = events.try_recv() {
+            if let Some(found) = pick(event) {
                 return found;
             }
         }

@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use chainz_core::runtime::ServeInfo;
+use chainz_core::store::StorePaths;
 use chainz_rpc::{ErrorClass, RpcError};
 use serde_json::{Value, json};
 use tokio::runtime::Handle;
@@ -105,7 +106,7 @@ async fn a_hostile_endpoint_does_not_stop_the_poller() {
     // Still polling, no panic.
     wait_until("three polls", || latest_polls(&rpc) >= 3).await;
     let mut state = State::new(&plan, &shared.store());
-    while let Ok(update) = updates.try_recv() {
+    for update in testing::updates(&updates) {
         state.apply(update);
     }
     let chain = &state.chains[0];
@@ -201,7 +202,7 @@ async fn a_poller_paces_by_the_idle_flag_and_the_last_retry_after() {
     let dir = short_tempdir();
     let rpc = MockRpc::start(|_| Reply::RateLimited(7)).await;
     let (shared, _updates) = shared(dir.path(), fast());
-    let mut poller = Poller::new(shared.clone(), chain("eth", 1, &[("a", &rpc.url)]));
+    let mut poller = Poller::new(shared.clone(), chain("eth", 1, &[("a", &rpc.url)]), 0, 0);
     assert!(!poller.pacing().idle);
     shared.set_idle(true);
     assert!(poller.pacing().idle);
@@ -345,7 +346,7 @@ async fn pollers_pace_each_chain_by_its_block_time() {
     }
 
     let mut state = State::new(&plan, &shared.store());
-    while let Ok(update) = updates.try_recv() {
+    for update in testing::updates(&updates) {
         state.apply(update);
     }
     let block_times: Vec<Option<f64>> = state.chains.iter().map(|c| c.block_time).collect();
@@ -850,12 +851,14 @@ async fn a_config_change_on_disk_is_announced() {
     let config = dir.path().join("config.toml");
     std::fs::write(&config, "version = 2\n").unwrap();
     let (shared, updates) = shared(dir.path(), fast());
-    let _engine = Engine::start(&Handle::current(), &shared, &plan(vec![]));
+    let files = ConfigFiles::new(&StorePaths::in_dir(dir.path().to_path_buf()));
+    let mut engine = Engine::start(&Handle::current(), &shared, &plan(vec![]));
+    engine.watch_config(files.clone(), files.stamp());
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(
         !updates
             .try_iter()
-            .any(|u| matches!(u, Update::ConfigChanged))
+            .any(|u| matches!(u, Event::ConfigChanged))
     );
     // A new mtime, even on filesystems with coarse timestamps.
     let later = std::time::SystemTime::now() + Duration::from_secs(5);
@@ -865,8 +868,20 @@ async fn a_config_change_on_disk_is_announced() {
         .unwrap()
         .set_modified(later)
         .unwrap();
-    wait_for(&updates, |u| {
-        matches!(u, Update::ConfigChanged).then_some(())
+    wait_for_event(&updates, |u| {
+        matches!(u, Event::ConfigChanged).then_some(())
+    })
+    .await;
+    // `secrets.toml` counts too (`var set`), and a rewrite is seen whatever
+    // its modification time says.
+    std::fs::write(dir.path().join("secrets.tmp"), "[vars]\n").unwrap();
+    std::fs::rename(
+        dir.path().join("secrets.tmp"),
+        dir.path().join("secrets.toml"),
+    )
+    .unwrap();
+    wait_for_event(&updates, |u| {
+        matches!(u, Event::ConfigChanged).then_some(())
     })
     .await;
 }
@@ -896,7 +911,7 @@ async fn once_collects_every_chain_and_retries_a_rate_limit() {
     ]);
     let (shared, _updates) = shared(dir.path(), fast());
     let mut state = State::new(&plan, &shared.store());
-    for update in collect_once(&shared, &plan).await {
+    for update in collect_once(&shared, &plan, Duration::from_millis(50)).await {
         state.apply(update);
     }
     // `healthy` serves no blocks: its head is an error, its balances fine.
@@ -1010,11 +1025,12 @@ async fn once_does_not_hang_on_a_wedged_gateway() {
     let mut tuning = fast();
     tuning.request_timeout = Duration::from_millis(300);
     let (shared, _updates) = shared(dir.path(), tuning);
+    shared.watch_gateway();
     assert!(shared.gateway().is_some());
 
     let updates = tokio::time::timeout(
         Duration::from_secs(10),
-        collect_once(&shared, &plan(vec![])),
+        collect_once(&shared, &plan(vec![]), Duration::from_millis(50)),
     )
     .await
     .expect("collect_once returns");
@@ -1096,7 +1112,7 @@ async fn an_idle_dashboard_does_not_probe() {
     assert!(
         !updates
             .try_iter()
-            .any(|u| matches!(u, Update::Probes { .. }))
+            .any(|u| matches!(u, Event::Update(Update::Probes { .. })))
     );
     // A key: probing resumes.
     shared.set_idle(false);

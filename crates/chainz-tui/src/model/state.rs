@@ -353,6 +353,8 @@ impl State {
                 }
                 self.gateway = info;
             }
+            // A poll that was under way when the gateway stopped.
+            Update::Traffic(_) | Update::Feed(_) if self.gateway.is_none() => {}
             Update::Traffic(Ok(snapshot)) => {
                 self.traffic = Some(snapshot);
                 self.traffic_error = None;
@@ -370,8 +372,6 @@ impl State {
                     push_capped(&mut self.feed, item, FEED_CAP);
                 }
             }
-            // Handled by the event loop, which owns the config.
-            Update::ConfigChanged => {}
         }
     }
 }

@@ -161,8 +161,6 @@ pub enum Update {
     Traffic(Result<TrafficSnapshot, String>),
     /// The gateway proxied a request.
     Feed(FeedItem),
-    /// `config.toml` changed on disk.
-    ConfigChanged,
 }
 
 /// Which worker a refresh is for.

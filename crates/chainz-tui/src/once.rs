@@ -12,12 +12,15 @@ use ratatui::text::Line;
 use unicode_width::UnicodeWidthChar;
 
 use crate::app::{App, Tab};
-use crate::data::{self, Shared, Tuning};
+use crate::data::{self, Event, Shared, Tuning};
 use crate::model::State;
 use crate::plan::Plan;
 use crate::ui::theme::Theme;
 use crate::ui::{self, Body, Content, Ctx};
 use crate::{Options, load_store, snapshot};
+
+/// The wait before retrying a rate-limited request (then twice that).
+const RETRY_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// The width the text tables are laid out for.
 const WIDTH: u16 = 120;
@@ -27,19 +30,21 @@ pub(crate) fn run(chainz: &Chainz, runtime: Runtime, options: &Options) -> Resul
     let plan = Arc::new(Plan::build(chainz, options.reveal));
     let store = load_store();
     let mut state = State::new(&plan, &store);
-    let (updates, _unused) = channel();
-    let shared = Shared::new(
-        store,
-        runtime,
-        chainz.paths().config().to_path_buf(),
-        Tuning::default(),
-        updates,
-    );
+    let (events, received) = channel();
+    let shared = Shared::new(store, runtime, Tuning::default(), events);
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .context("failed to start the async runtime")?;
-    for update in rt.block_on(data::collect_once(&shared, &plan)) {
+    let collected = rt.block_on(data::collect_once(&shared, &plan, RETRY_WAIT));
+    for event in received.try_iter() {
+        match event {
+            Event::Update(update) => state.apply(update),
+            Event::Warning(text) => eprintln!("warning: {text}"),
+            Event::ConfigChanged => {}
+        }
+    }
+    for update in collected {
         state.apply(update);
     }
     let now = now_ms();

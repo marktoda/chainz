@@ -63,9 +63,6 @@ pub struct Options {
 
 /// Entry point for `chainz top`. Returns the process exit code.
 pub fn run(chainz: Chainz, runtime: Runtime, options: Options) -> Result<i32> {
-    if options.json && !options.once {
-        bail!("`--json` needs `--once`: chainz top --once --json");
-    }
     if options.once {
         return once::run(&chainz, runtime, &options);
     }

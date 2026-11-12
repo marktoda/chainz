@@ -14,7 +14,7 @@ mod update;
 use std::collections::VecDeque;
 
 pub use state::{ChainState, EndpointState, State};
-pub use status::{EndpointStatus, Status};
+pub use status::{EndpointStatus, PROBE_EVERY_MS, Status};
 pub use traffic::{FEED_CAP, FeedItem, GatewayChain, TrafficRow, TrafficSnapshot, TrafficWindow};
 pub use update::{Fault, GatewayInfo, Head, Holding, Probe, Refresh, Sheet, Update, Via};
 
