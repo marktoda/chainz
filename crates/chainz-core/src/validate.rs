@@ -3,7 +3,7 @@
 //! but never echo a URL, header value or secret.
 
 use crate::address::Address;
-use crate::model::{self, Backend, CONFIG_VERSION, Config, Need};
+use crate::model::{self, Backend, CONFIG_VERSION, Config, Explorer, Need};
 use crate::names;
 use crate::secrets::Secrets;
 use crate::template;
@@ -25,13 +25,13 @@ pub fn issues(config: &Config, secrets: Option<&Secrets>) -> Vec<String> {
         if let Err(e) = names::check_name("explorer", name) {
             err(e.to_string());
         }
-        if explorer.api.trim().is_empty() {
-            err(format!("explorer '{name}' has an empty api URL"));
+        if let Err(e) = Explorer::check_api_text(&explorer.api) {
+            err(format!("explorer '{name}': {e}"));
         }
-        for value in std::iter::once(&explorer.api).chain(explorer.key.iter()) {
-            if let Err(e) = template::references(value) {
-                err(format!("explorer '{name}': {e}"));
-            }
+        if let Some(key) = &explorer.key
+            && let Err(e) = template::references(key)
+        {
+            err(format!("explorer '{name}': {e}"));
         }
     }
 
@@ -264,6 +264,17 @@ rpcs = { a = "https://a.example", b = "https://b.example", c = "wss://c.example"
         assert!(all.contains("websocket"), "{all}");
         assert!(all.contains("active endpoint 'a' as failover"), "{all}");
         assert!(all.contains("'zz' is not in its rpcs"), "{all}");
+    }
+
+    #[test]
+    fn explorer_api_urls_follow_the_endpoint_url_rule() {
+        for api in ["", "https://x .example/api", "https://x/${BAD-NAME}"] {
+            let bad = parse(&format!("{OK}\n[explorers.x]\napi = \"{api}\"\n"));
+            let all = issues(&bad, None).join("\n");
+            assert!(all.contains("explorer 'x':"), "{api}: {all}");
+            assert!(Explorer::check_api_text(api).is_err(), "{api}");
+        }
+        assert!(Explorer::check_api_text("https://x/api?chainid=${CHAIN_ID}").is_ok());
     }
 
     #[test]

@@ -246,6 +246,19 @@ impl Explorer {
     }
 }
 
+impl Explorer {
+    /// The rule every stored explorer `api` URL must pass (validation
+    /// applies it to the config, v1 migration to what it imports):
+    /// non-empty, no whitespace, well-formed `${NAME}` templates.
+    pub fn check_api_text(api: &str) -> anyhow::Result<()> {
+        if api.trim().is_empty() || api.chars().any(char::is_whitespace) {
+            anyhow::bail!("the api URL is empty or malformed");
+        }
+        crate::template::references(api)?;
+        Ok(())
+    }
+}
+
 impl fmt::Debug for Explorer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Explorer")

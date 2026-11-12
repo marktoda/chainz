@@ -704,10 +704,7 @@ fn migrate_endpoints(
     for (url, headers) in raw {
         let selected = url == chain.selected_rpc;
         let new_url = rename(url);
-        if new_url.trim().is_empty()
-            || new_url.chars().any(char::is_whitespace)
-            || template::references(&new_url).is_err()
-        {
+        if Endpoint::check_url_text(&new_url).is_err() {
             summary.attention.push(format!(
                 "chain '{name}' has an empty or malformed endpoint URL; it was skipped and stays in the v1 backup"
             ));
@@ -809,7 +806,7 @@ fn migrate_explorer(
         .map(|u| normalize_explorer_api(&rename(u), chain.chain_id));
     if api
         .as_deref()
-        .is_some_and(|a| a.chars().any(char::is_whitespace) || template::references(a).is_err())
+        .is_some_and(|a| Explorer::check_api_text(a).is_err())
     {
         summary.attention.push(format!(
             "chain '{name}' has a malformed verifier URL; no explorer was attached (it stays in the v1 backup)"
