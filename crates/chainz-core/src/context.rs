@@ -311,17 +311,7 @@ fn rpc_context(
         if opts.rpc.is_some() {
             bail!("--rpc does not apply to a fork; it always uses its local anvil");
         }
-        let url = fork.rpc_url();
-        return Ok(Route {
-            chain_id: fork.chain_id,
-            chain: fork.name.clone(),
-            endpoint: String::new(),
-            display: url.clone(),
-            url,
-            headers: vec![],
-            via_gateway: false,
-            websocket: false,
-        });
+        return Ok(Route::fork(fork));
     }
     chainz.route(
         chain_name,

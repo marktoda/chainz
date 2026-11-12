@@ -15,7 +15,7 @@
 
 use crate::model::{Chain, Endpoint, RpcChoice};
 use crate::redact;
-use crate::runtime::{GatewayState, Runtime, ServeInfo};
+use crate::runtime::{ForkRecord, GatewayState, Runtime, ServeInfo};
 use crate::store::Chainz;
 use anyhow::{Context as _, Result, anyhow};
 use std::fmt;
@@ -38,7 +38,8 @@ pub struct Route {
     pub chain_id: u64,
     /// The chain's short name.
     pub chain: String,
-    /// The endpoint the requests are for.
+    /// The endpoint the requests are for; empty for a fork, whose anvil
+    /// is no configured endpoint ([`Route::fork`]).
     pub endpoint: String,
     /// The URL to send to (secrets expanded, or the gateway's token).
     pub url: String,
@@ -77,6 +78,22 @@ pub fn uses_gateway(websocket: bool, direct: bool) -> bool {
 }
 
 impl Route {
+    /// To a fork's local anvil. It names no endpoint: `endpoint` is empty,
+    /// and nothing that reports an endpoint should print it.
+    pub fn fork(fork: &ForkRecord) -> Route {
+        let url = fork.rpc_url();
+        Route {
+            chain_id: fork.chain_id,
+            chain: fork.name.clone(),
+            endpoint: String::new(),
+            display: url.clone(),
+            url,
+            headers: vec![],
+            via_gateway: false,
+            websocket: false,
+        }
+    }
+
     /// Through the gateway `info` describes, to chain `chain` (`chain_id`),
     /// for its endpoint `endpoint`; the URL pins the gateway to it when
     /// `pin` is set.
