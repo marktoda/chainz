@@ -1,5 +1,5 @@
 //! Naming rules: chain short names, endpoint names, label names, and the
-//! built-in short-name table used by `chain add` and v1 migration.
+//! built-in short-name table used by `add` and v1 migration.
 
 /// What a name in the token grammar's own vocabulary means.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,7 +115,7 @@ pub fn short_name(chain_id: u64) -> Option<&'static str> {
 }
 
 /// The chain ID of a built-in short or [long](LONG_NAMES) name
-/// (case-insensitive): what `chain add NAME --url …` resolves offline.
+/// (case-insensitive): what `add NAME --url …` resolves offline.
 pub fn builtin_chain_id(name: &str) -> Option<u64> {
     SHORT_NAMES
         .iter()

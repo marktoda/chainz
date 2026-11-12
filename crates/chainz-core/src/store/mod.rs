@@ -249,7 +249,7 @@ impl Chainz {
     /// on chain `chain_name` (ID `chain_id`): the built-ins `${CHAIN}` and
     /// `${CHAIN_ID}`, then variables as `VarResolver` looks them up
     /// (`secrets.toml` is read only if needed). The chain need not be
-    /// configured yet (`chain add` checks an endpoint before writing it).
+    /// configured yet (`add` checks an endpoint before writing it).
     /// Errors name the chain, endpoint, header and variable, never a value.
     pub(crate) fn expand_endpoint(
         &self,

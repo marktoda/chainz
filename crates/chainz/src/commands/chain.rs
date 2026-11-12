@@ -1,10 +1,10 @@
-//! `chain …`, `ls`, `use` and `update` (`chain set`).
+//! The chain verbs: `ls`, `use`, `add`, `update` and `rm`.
 
-mod set;
+mod update;
 
-pub use set::set;
+pub use update::update;
 
-use crate::cli::{ChainAddArgs, ChainCommand, ChainRmArgs, ChainShowArgs, ListArgs, UseArgs};
+use crate::cli::{AddArgs, ListArgs, RmArgs, UseArgs};
 use crate::load::open;
 use crate::probe::{check, probe_urls, ranked_urls};
 use crate::prompt::{Ask, Tty};
@@ -19,26 +19,22 @@ use chainz_core::tx::{Attach, EndpointRole};
 use chainz_rpc::ProbeResult;
 use chainz_rpc::chainlist::{self, ChainlistEntry};
 
-pub fn run(cmd: ChainCommand) -> Result<i32> {
-    match cmd {
-        ChainCommand::Ls(args) => ls(&args),
-        ChainCommand::Add(args) => {
-            let mut chainz = open()?;
-            add(&mut chainz, &args, &mut crate::prompt::Tty)
-        }
-        ChainCommand::Show(args) => show(&args),
-        ChainCommand::Set(args) => set(&args, &["chain", "set"]),
-        ChainCommand::Rm(args) => rm(&args),
-    }
-}
-
-/// `ls` / `chain ls`: config only (hot path, no network).
+/// `ls [CHAIN]`: config only (hot path, no network). The table reads no
+/// more than the config; one chain in full and `--json` add the recorded
+/// endpoint health.
 pub fn ls(args: &ListArgs) -> Result<i32> {
     let chainz = open()?;
+    if let Some(query) = &args.chain {
+        return show(&chainz, query, args);
+    }
     if args.json {
         println!(
             "{}",
-            serde_json::to_string_pretty(&view::chains(chainz.config(), args.reveal))?
+            serde_json::to_string_pretty(&view::chains(
+                chainz.config(),
+                args.reveal,
+                &net::health_store()
+            ))?
         );
     } else {
         print!("{}", view::compact(chainz.config(), args.reveal));
@@ -79,11 +75,11 @@ pub fn use_default(args: &UseArgs) -> Result<i32> {
     Ok(0)
 }
 
-fn show(args: &ChainShowArgs) -> Result<i32> {
-    let chainz = open()?;
+/// `ls CHAIN`: one chain in full.
+fn show(chainz: &Chainz, query: &str, args: &ListArgs) -> Result<i32> {
     let config = chainz.config();
-    let (name, chain) = resolve::configured(config, &args.chain, Policy::Prefix)?;
-    let v = view::ChainView::new(config, name, chain, args.reveal);
+    let (name, chain) = resolve::configured(config, query, Policy::Prefix)?;
+    let v = view::ChainView::new(config, name, chain, args.reveal, &net::health_store());
     if args.json {
         println!("{}", serde_json::to_string_pretty(&v)?);
         return Ok(0);
@@ -104,7 +100,7 @@ fn show(args: &ChainShowArgs) -> Result<i32> {
     if !labels.is_empty() {
         extra.push(("labels".to_string(), labels.join(" ")));
     }
-    print!("{}", view::show(&v, &extra));
+    print!("{}", view::show(&v, &extra, chainz_os::now_ms()));
     Ok(0)
 }
 
@@ -145,19 +141,19 @@ fn find_in_chainlist<'a>(entries: &'a [ChainlistEntry], query: &str) -> Result<&
     }
 }
 
-/// Where `chain add` gets the chain from, decided from the arguments
+/// Where `add` gets the chain from, decided from the arguments
 /// alone (before any network access).
 enum ChainSource {
     /// `--url`s with a chain ID or a built-in short name (`arb`): no
     /// chainlist needed (its cached entry, if any, only names the chain).
-    /// With `--url`, `chain add` never goes online for the chain.
+    /// With `--url`, `add` never goes online for the chain.
     Offline { id: u64 },
     /// Look the chain up on chainlist (a picker when no chain is given).
     Chainlist,
 }
 
 impl ChainSource {
-    fn of(args: &ChainAddArgs, ask: &dyn Ask) -> Result<Self> {
+    fn of(args: &AddArgs, ask: &dyn Ask) -> Result<Self> {
         match &args.chain {
             Some(query) if !args.urls.is_empty() => query
                 .parse()
@@ -166,7 +162,7 @@ impl ChainSource {
                 .map(|id| ChainSource::Offline { id })
                 .ok_or_else(|| {
                     crate::cli::usage_error(
-                        &["chain", "add"],
+                        &["add"],
                         &format!(
                             "'{query}' is not a chain ID or a built-in chain name; with --url, pass the chain ID (and --name {query} to name it)"
                         ),
@@ -175,14 +171,14 @@ impl ChainSource {
             Some(_) => Ok(ChainSource::Chainlist),
             None if ask.is_interactive() => Ok(ChainSource::Chainlist),
             None => Err(crate::cli::usage_error(
-                &["chain", "add"],
+                &["add"],
                 "off a terminal, name the chain to add (its ID or name)",
             )),
         }
     }
 }
 
-/// `chain add` needed chainlist and could not get it (an error's context:
+/// `add` needed chainlist and could not get it (an error's context:
 /// `init` then offers the offline path, a chain ID and an RPC URL).
 #[derive(Debug)]
 pub struct ChainlistUnavailable;
@@ -193,7 +189,7 @@ impl std::fmt::Display for ChainlistUnavailable {
     }
 }
 
-/// The chain `chain add` found.
+/// The chain `add` found.
 enum Found {
     /// By ID, with its chainlist entry when the cache has one.
     Offline {
@@ -221,7 +217,7 @@ impl Found {
 }
 
 /// Look the chain up as `source` says.
-fn find_chain(args: &ChainAddArgs, source: ChainSource, ask: &mut dyn Ask) -> Result<Found> {
+fn find_chain(args: &AddArgs, source: ChainSource, ask: &mut dyn Ask) -> Result<Found> {
     let cache = chainz_core::paths::cache_dir()?;
     if let ChainSource::Offline { id } = source {
         let cached = chainlist::read_cache(&cache)
@@ -243,9 +239,9 @@ fn find_chain(args: &ChainAddArgs, source: ChainSource, ask: &mut dyn Ask) -> Re
     Ok(Found::Listed(entry))
 }
 
-/// `chain add`: find the chain, pick its endpoints, and insert it with the
+/// `add`: find the chain, pick its endpoints, and insert it with the
 /// default signer and explorer attached (unless `--no-signer`).
-pub fn add(chainz: &mut Chainz, args: &ChainAddArgs, ask: &mut dyn Ask) -> Result<i32> {
+pub fn add(chainz: &mut Chainz, args: &AddArgs, ask: &mut dyn Ask) -> Result<i32> {
     let found = find_chain(args, ChainSource::of(args, ask)?, ask)?;
     let id = found.id();
     let short = args
@@ -396,7 +392,7 @@ fn choose_active<'a>(
     Ok(&probed[ranking.order[ask.select("Active RPC", &items, 0)?]].0)
 }
 
-fn rm(args: &ChainRmArgs) -> Result<i32> {
+pub fn rm(args: &RmArgs) -> Result<i32> {
     let mut chainz = open()?;
     let name = resolve::configured(chainz.config(), &args.chain, Policy::Exact)?
         .0
@@ -412,7 +408,7 @@ fn rm(args: &ChainRmArgs) -> Result<i32> {
     crate::prompt::confirm_removal(
         &mut Tty,
         args.yes,
-        &format!("chain rm {}", args.chain),
+        &format!("rm {}", args.chain),
         &format!("chain '{name}' ({})", with.join("; ")),
     )?;
     let removed = chainz.transact(|tx| tx.remove_chain(&name))?;

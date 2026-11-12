@@ -85,7 +85,7 @@ pub enum Policy {
     /// An ID, an exact name or alias (any case), then an unambiguous prefix
     /// of a name or alias: management commands.
     Prefix,
-    /// An ID or the exact name: destructive commands (`chain rm`).
+    /// An ID or the exact name: destructive commands (`rm`).
     Exact,
     /// An ID, the exact name, or an alias (any case, implicit ones too),
     /// never a prefix: `addr rm --chain`.

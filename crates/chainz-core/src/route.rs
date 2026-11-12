@@ -174,7 +174,7 @@ impl Chainz {
 
     /// Straight to `endpoint` of chain `chain_name` (ID `chain_id`), its
     /// `${VAR}`s expanded; never the gateway. The chain need not be
-    /// configured yet (`chain add` probes candidates this way).
+    /// configured yet (`add` probes candidates this way).
     pub fn direct_route(
         &self,
         chain_name: &str,

@@ -145,7 +145,7 @@ fn rpc_override_exports_headers_and_explain_redacts() {
     assert_eq!(headers.display(), "x-secret: [REDACTED]");
     let rpc = env.iter().find(|e| e.name == "ETH_RPC_URL").unwrap();
     assert!(!rpc.display().contains("inf-key"));
-    // `--explain` shows a URL the way `chain show` does.
+    // `--explain` shows a URL the way `ls CHAIN` does.
     assert_eq!(rpc.display(), "https://gw.example/rpc/1");
     assert!(
         ctx(
@@ -527,7 +527,7 @@ fn expose_key_needs_a_signer_and_no_fork_and_an_unlocked_key() {
     };
     let err = ctx(&f, "nosigner", &expose).unwrap_err().to_string();
     assert!(
-        err.contains("`chainz chain set nosigner --signer NAME`"),
+        err.contains("`chainz update nosigner --signer NAME`"),
         "{err}"
     );
     let claim = f.runtime.claim_fork("eth-fork").unwrap().unwrap();

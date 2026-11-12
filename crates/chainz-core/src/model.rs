@@ -263,7 +263,7 @@ impl Explorer {
 
     /// Whether Etherscan's v2 API covers `chain_id` ([`ETHERSCAN_CHAIN_IDS`]).
     /// The one rule for attaching the built-in explorer by default: `chain
-    /// add` and `init` attach it only where it is covered, and `chain set
+    /// add` and `init` attach it only where it is covered, and `update
     /// --explorer etherscan` elsewhere warns ([`Explorer::etherscan_gap`]).
     pub fn etherscan_covers(chain_id: u64) -> bool {
         ETHERSCAN_CHAIN_IDS.binary_search(&chain_id).is_ok()
@@ -816,7 +816,7 @@ impl Chain {
         Endpoint::check_url(url)?;
         if let Some(existing) = self.endpoint_at(url, vars) {
             anyhow::bail!(
-                "chain '{chain}' already has this URL as endpoint '{existing}'; activate it with `chainz chain set {chain} --rpc {existing}`"
+                "chain '{chain}' already has this URL as endpoint '{existing}'; activate it with `chainz update {chain} --rpc {existing}`"
             );
         }
         match name {
@@ -835,7 +835,7 @@ impl Chain {
     /// endpoint it has, by name or by URL (compared with `vars`, [`Endpoint::same_url`]), or a
     /// URL that is new to it. An
     /// error when it is neither an endpoint nor a URL [`Endpoint::check_url`]
-    /// accepts. The one owner of that rule: `chain set --rpc` (which adds
+    /// accepts. The one owner of that rule: `update --rpc` (which adds
     /// a new URL) and `exec --rpc` and `fork --rpc` (which use it for one
     /// run) all go by it.
     pub fn rpc_choice(

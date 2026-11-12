@@ -1,5 +1,5 @@
 //! Probing endpoints for the commands that judge them: `rpc bench`,
-//! `rpc discover`, `doctor` and `chain add`. What "healthy" means and how
+//! `rpc discover`, `doctor` and `add`. What "healthy" means and how
 //! endpoints rank is `chainz_rpc::health`; this module turns config into
 //! probes, records them, renders ranked lists and proposes repairs.
 

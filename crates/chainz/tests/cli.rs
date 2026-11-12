@@ -64,7 +64,7 @@ fn completions_generate_for_zsh_and_bash() {
     }
 }
 
-/// `chainz rpc ls | head` and friends: a reader that went away ends the
+/// `chainz ls eth | head` and friends: a reader that went away ends the
 /// command quietly with exit 0, never a panic.
 #[test]
 fn a_closed_stdout_exits_quietly() {
@@ -72,7 +72,7 @@ fn a_closed_stdout_exits_quietly() {
     sb.seed(&[("eth", 1), ("base", 8453), ("op", 10)]);
     sb.write_secrets("[vars]\nTOKEN = \"t\"\n");
     for args in [
-        &["rpc", "ls"][..],
+        &["ls", "eth"][..],
         &["var", "ls"],
         &["addr", "ls"],
         &["addr", "ls", "--builtin"],
@@ -137,7 +137,7 @@ fn errors_use_the_same_prefix_as_clap() {
     let sb = Sandbox::new();
     sb.seed(&[("eth", 1)]);
     // An error from a handler (anyhow) and a usage error (clap).
-    let handler = sb.run(&["chain", "show", "nope"]);
+    let handler = sb.run(&["ls", "nope"]);
     assert_eq!(handler.status.code(), Some(1));
     assert!(
         stderr(&handler).starts_with("error: "),
@@ -193,7 +193,7 @@ fn edits_preserve_comments_and_order() {
         "# my chains\nversion = 2\n\n# mainnet first\n[chains.eth]\nid = 1\nrpc = \"a\" # keep me\n\n[chains.eth.rpcs]\na = \"http://a.invalid\"\nb = \"http://b.invalid\"\n",
     );
     sb.cmd()
-        .args(["chain", "set", "eth", "--rpc", "b"])
+        .args(["update", "eth", "--rpc", "b"])
         .assert()
         .success();
     let text = sb.config();
@@ -497,7 +497,7 @@ fn chain_add_by_hand_checks_chain_id() {
     let sb = Sandbox::new();
     let url = chain_id_rpc(8453);
     sb.cmd()
-        .args(["chain", "add", "8453", "--url", &url])
+        .args(["add", "8453", "--url", &url])
         .assert()
         .success()
         .stdout(predicate::str::contains("Added chain 'base'"));
@@ -505,13 +505,13 @@ fn chain_add_by_hand_checks_chain_id() {
     // Wrong ID is refused.
     let url = chain_id_rpc(1);
     sb.cmd()
-        .args(["chain", "add", "10", "--url", &url])
+        .args(["add", "10", "--url", &url])
         .assert()
         .failure()
         .stderr(predicate::str::contains("RPC check failed"));
 }
 
-/// `chain add` attaches only an only signer; with several it says the
+/// `add` attaches only an only signer; with several it says the
 /// chain has none and how to attach one.
 #[test]
 fn chain_add_with_several_signers_names_the_fix() {
@@ -523,7 +523,6 @@ fn chain_add_with_several_signers_names_the_fix() {
         .assert()
         .success();
     let out = sb.run(&[
-        "chain",
         "add",
         "base",
         "--url",
@@ -533,11 +532,10 @@ fn chain_add_with_several_signers_names_the_fix() {
     assert!(out.status.success());
     let err = stderr(&out);
     assert!(
-        err.contains("base has no signer (2 signers to choose from: default, two); attach one with `chainz chain set base --signer <name>`"),
+        err.contains("base has no signer (2 signers to choose from: default, two); attach one with `chainz update base --signer <name>`"),
         "{err}"
     );
     let out = sb.run(&[
-        "chain",
         "add",
         "op",
         "--url",
@@ -554,7 +552,6 @@ fn chain_add_with_several_signers_names_the_fix() {
 fn chain_add_with_url_stays_offline() {
     let sb = Sandbox::new();
     let out = sb.ok(&[
-        "chain",
         "add",
         "arb",
         "--url",
@@ -563,7 +560,6 @@ fn chain_add_with_url_stays_offline() {
     ]);
     assert!(out.contains("Added chain 'arb' (42161)"), "{out}");
     let out = sb.ok(&[
-        "chain",
         "add",
         "optimism",
         "--url",
@@ -572,7 +568,6 @@ fn chain_add_with_url_stays_offline() {
     ]);
     assert!(out.contains("Added chain 'op' (10)"), "{out}");
     let out = sb.run(&[
-        "chain",
         "add",
         "mychain",
         "--url",
@@ -594,13 +589,12 @@ fn etherscan_attaches_by_default_only_to_chains_it_covers() {
     let sb = Sandbox::new();
     sb.seed(&[("base", 8453)]);
     sb.cmd()
-        .args(["chain", "set", "base", "--explorer", "etherscan"])
+        .args(["update", "base", "--explorer", "etherscan"])
         .assert()
         .success()
         .stderr("");
     sb.cmd()
         .args([
-            "chain",
             "add",
             "10",
             "--url",
@@ -611,7 +605,7 @@ fn etherscan_attaches_by_default_only_to_chains_it_covers() {
         .success()
         .stdout(predicate::str::contains("  explorer: etherscan\n"));
     sb.cmd()
-        .args(["chain", "add", "31337", "--name", "local"])
+        .args(["add", "31337", "--name", "local"])
         .args(["--url", "http://127.0.0.1:1", "--no-check"])
         .assert()
         .success()
@@ -622,7 +616,7 @@ fn etherscan_attaches_by_default_only_to_chains_it_covers() {
     assert_eq!(sb.config().matches("explorer = \"etherscan\"").count(), 2);
     // Asked for by name, it attaches anyway, with a warning.
     sb.cmd()
-        .args(["chain", "set", "local", "--explorer", "etherscan"])
+        .args(["update", "local", "--explorer", "etherscan"])
         .assert()
         .success()
         .stdout(predicate::str::contains("explorer: none → etherscan"))
@@ -636,7 +630,6 @@ fn rpc_failure_never_leaks_the_url() {
     let sb = Sandbox::new();
     sb.cmd()
         .args([
-            "chain",
             "add",
             "8453",
             "--url",
@@ -654,12 +647,12 @@ fn re_adding_a_url_whose_key_moved_adds_nothing() {
     let sb = Sandbox::new();
     sb.seed(&[("base", 8453)]);
     let url = "https://base-mainnet.g.alchemy.com/v2/abcdef0123456789abcdef0123455678";
-    let out = sb.ok(&["chain", "set", "base", "--rpc", url, "--no-check"]);
+    let out = sb.ok(&["update", "base", "--rpc", url, "--no-check"]);
     assert!(out.contains("added endpoint 'alchemy'"), "{out}");
-    let out = sb.ok(&["chain", "set", "base", "--rpc", "local"]);
+    let out = sb.ok(&["update", "base", "--rpc", "local"]);
     assert!(out.contains("active endpoint"), "{out}");
-    // `chain set --rpc` with the URL again activates `alchemy`.
-    let out = sb.ok(&["chain", "set", "base", "--rpc", url, "--no-check"]);
+    // `update --rpc` with the URL again activates `alchemy`.
+    let out = sb.ok(&["update", "base", "--rpc", url, "--no-check"]);
     assert!(!out.contains("added endpoint"), "{out}");
     assert!(sb.config().contains("rpc = \"alchemy\""));
     // `rpc add` refuses it by name.
@@ -676,19 +669,19 @@ fn chain_rm_by_name_and_id_requires_exact_match() {
     let sb = Sandbox::new();
     sb.seed(&[("eth", 1), ("base", 8453), ("arb", 42161)]);
     sb.cmd()
-        .args(["chain", "rm", "ba", "-y"])
+        .args(["rm", "ba", "-y"])
         .assert()
         .failure();
     sb.cmd()
-        .args(["chain", "rm", "base", "-y"])
+        .args(["rm", "base", "-y"])
         .assert()
         .success();
     sb.cmd()
-        .args(["chain", "rm", "42161", "--yes"])
+        .args(["rm", "42161", "--yes"])
         .assert()
         .success();
     sb.cmd()
-        .args(["chain", "rm", "nope", "-y"])
+        .args(["rm", "nope", "-y"])
         .assert()
         .failure();
     let text = sb.config();
@@ -696,7 +689,7 @@ fn chain_rm_by_name_and_id_requires_exact_match() {
     assert!(!text.contains("[chains.base]") && !text.contains("[chains.arb]"));
 }
 
-/// `chain rm` asks (off a terminal: needs --yes) and names what goes
+/// `rm` asks (off a terminal: needs --yes) and names what goes
 /// with the chain: its labels and the default.
 #[test]
 fn chain_rm_names_its_labels_and_the_default() {
@@ -705,7 +698,7 @@ fn chain_rm_names_its_labels_and_the_default() {
     sb.ok(&["use", "arb"]);
     sb.ok(&["addr", "add", "myrouter", TEST_ADDRESS_2, "--chain", "arb"]);
     sb.ok(&["addr", "add", "pool", TEST_ADDRESS, "--chain", "arb"]);
-    let out = sb.run(&["chain", "rm", "arb"]);
+    let out = sb.run(&["rm", "arb"]);
     assert_eq!(out.status.code(), Some(1));
     let err = stderr(&out);
     assert!(
@@ -713,7 +706,7 @@ fn chain_rm_names_its_labels_and_the_default() {
         "{err}"
     );
     assert!(sb.config().contains("[chains.arb]"));
-    let out = sb.ok(&["chain", "rm", "arb", "--yes"]);
+    let out = sb.ok(&["rm", "arb", "--yes"]);
     assert!(out.contains("Removed chain 'arb'"), "{out}");
     assert!(out.contains("dropped labels: @myrouter, @pool"), "{out}");
     assert!(out.contains("default cleared"), "{out}");
@@ -729,12 +722,12 @@ fn chain_set_and_rpc_rm_report_what_changed() {
     );
     let before = sb.config();
     assert_eq!(
-        sb.ok(&["chain", "set", "eth", "--rpc", "a"]),
+        sb.ok(&["update", "eth", "--rpc", "a"]),
         "No changes ('eth' already has these settings)\n"
     );
     assert_eq!(sb.config(), before);
     assert_eq!(
-        sb.ok(&["chain", "set", "eth", "--rpc", "b"]),
+        sb.ok(&["update", "eth", "--rpc", "b"]),
         "Updated chain 'eth'\n  active endpoint: a → b\n  failover: b, c → c\n"
     );
     let out = sb.ok(&["rpc", "rm", "eth", "c", "--yes"]);
@@ -752,7 +745,7 @@ fn chain_set_renames_and_aliases() {
     sb.seed(&[("eth", 1)]);
     sb.cmd().args(["use", "eth"]).assert().success();
     sb.cmd()
-        .args(["chain", "set", "eth", "--name", "mainnet"])
+        .args(["update", "eth", "--name", "mainnet"])
         .assert()
         .success();
     sb.cmd()
@@ -818,9 +811,8 @@ fn output_redacts_credentials_unless_revealed() {
     for args in [
         vec!["ls"],
         vec!["ls", "--json"],
-        vec!["chain", "show", "eth"],
-        vec!["chain", "show", "eth", "--json"],
-        vec!["rpc", "ls"],
+        vec!["ls", "eth"],
+        vec!["ls", "eth", "--json"],
     ] {
         let out = sb.cmd().args(&args).assert().success().get_output().clone();
         let s = stdout(&out);
@@ -831,7 +823,7 @@ fn output_redacts_credentials_unless_revealed() {
         assert!(!s.contains("headersecret999"), "{args:?} leaked a header");
     }
     sb.cmd()
-        .args(["chain", "show", "eth", "--reveal"])
+        .args(["ls", "eth", "--reveal"])
         .assert()
         .success()
         .stdout(
@@ -878,7 +870,7 @@ fn rpc_add_with_header_activate_and_rm() {
         .failure()
         .stderr(predicate::str::contains("active"));
     sb.cmd()
-        .args(["chain", "set", "eth", "--rpc", "local"])
+        .args(["update", "eth", "--rpc", "local"])
         .assert()
         .success();
     sb.cmd()
@@ -1427,7 +1419,7 @@ fn edit_chain_replaces_one_chain() {
 
 // ------------------------------------------------- regressions and v1 names
 
-/// An infura-style URL whose key `chain add`/`rpc add` move to secrets.toml.
+/// An infura-style URL whose key `add`/`rpc add` move to secrets.toml.
 const INFURA_URL: &str = "https://mainnet.infura.invalid/v3/0123456789abcdef0123456789abcdef";
 const INFURA_KEY: &str = "0123456789abcdef0123456789abcdef";
 
@@ -1458,7 +1450,7 @@ fn seed_chainlist(sb: &Sandbox, name: &str, chain_id: u64, rpcs: &[&str]) {
 /// `(active, [(name, url)])` of a chain, URLs revealed.
 fn endpoints(sb: &Sandbox, chain: &str) -> (String, Vec<(String, String)>) {
     let shown: serde_json::Value =
-        serde_json::from_str(&sb.ok(&["chain", "show", chain, "--json", "--reveal"])).unwrap();
+        serde_json::from_str(&sb.ok(&["ls", chain, "--json", "--reveal"])).unwrap();
     let list = shown["endpoints"]
         .as_array()
         .unwrap()
@@ -1490,7 +1482,7 @@ fn chain_add_from_chainlist_skips_invalid_urls_and_picks_a_live_one() {
             "https://x.invalid/${API_KEY}",
         ],
     );
-    let out = sb.run(&["chain", "add", "base"]);
+    let out = sb.run(&["add", "base"]);
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(
         stdout(&out),
@@ -1512,7 +1504,7 @@ fn chain_add_from_chainlist_skips_invalid_urls_and_picks_a_live_one() {
 fn chain_add_and_rpc_add_move_url_keys_into_secrets() {
     let sb = Sandbox::new();
     sb.cmd()
-        .args(["chain", "add", "1", "--url", INFURA_URL, "--no-check"])
+        .args(["add", "1", "--url", INFURA_URL, "--no-check"])
         .assert()
         .success()
         .stdout(
@@ -1847,7 +1839,7 @@ fn signer_rm_needs_yes_off_a_tty_and_names_every_flag_at_once() {
     assert!(out.status.success());
     assert!(
         stderr(&out).contains(
-            "eth, base have no signer ('default' was removed); attach one with `chainz chain set <chain> --signer <name>`"
+            "eth, base have no signer ('default' was removed); attach one with `chainz update <chain> --signer <name>`"
         ),
         "{}",
         stderr(&out)
@@ -1907,6 +1899,12 @@ fn removed_spellings_are_unknown() {
         &["signer", "add", "x", "--type", "keystore"],
         &["signer", "add", "x", "--backend", "one-password"],
         &["signer", "add", "x", "--backend", "private-key", "--stdin"],
+        &["chain", "ls"],
+        &["chain", "show", "eth"],
+        &["chain", "set", "eth", "--no-signer"],
+        &["chain", "add", "1"],
+        &["chain", "rm", "eth", "-y"],
+        &["rpc", "ls", "eth"],
     ] {
         let out = sb.run(argv);
         assert_eq!(out.status.code(), Some(2), "{argv:?}: {}", stderr(&out));
@@ -1980,7 +1978,7 @@ fn expose_key_explain_never_unlocks() {
         .failure();
 }
 
-// ------------------------------------------------------- first run and `chain set`
+// ---------------------------------------------------------- first run and `update`
 
 #[test]
 fn first_run_attaches_the_signer_and_the_explorer() {
@@ -1989,7 +1987,7 @@ fn first_run_attaches_the_signer_and_the_explorer() {
     let text = sb.ok(&[]);
     assert!(text.contains("Quick start:"), "{text}");
     let signer = text.find("signer add").unwrap();
-    assert!(signer < text.find("chain add").unwrap(), "{text}");
+    assert!(signer < text.find("chainz add").unwrap(), "{text}");
     assert_eq!(
         sb.ok(&["init"]),
         text.replacen("chainz: no chains configured yet.\n", "", 1)
@@ -1997,7 +1995,7 @@ fn first_run_attaches_the_signer_and_the_explorer() {
 
     // A chain with no signer, then a first signer: it attaches.
     let url = chain_id_rpc(8453);
-    sb.ok(&["chain", "add", "8453", "--url", &url]);
+    sb.ok(&["add", "8453", "--url", &url]);
     assert!(!sb.config().contains("signer ="), "{}", sb.config());
     let out = sb
         .cmd()
@@ -2018,18 +2016,18 @@ fn first_run_attaches_the_signer_and_the_explorer() {
 
     // The next chain takes the only signer, and etherscan once it exists.
     sb.cmd()
-        .args(["chain", "set", "base", "--explorer", "etherscan"])
+        .args(["update", "base", "--explorer", "etherscan"])
         .assert()
         .success()
         .stdout(predicate::str::contains("created [explorers.etherscan]"));
     let url = chain_id_rpc(10);
-    let text = sb.ok(&["chain", "add", "10", "--url", &url]);
+    let text = sb.ok(&["add", "10", "--url", &url]);
     assert!(text.contains("signer: deployer"), "{text}");
     assert!(text.contains("explorer: etherscan"), "{text}");
     let url = chain_id_rpc(42161);
-    let text = sb.ok(&["chain", "add", "42161", "--url", &url, "--no-signer"]);
+    let text = sb.ok(&["add", "42161", "--url", &url, "--no-signer"]);
     assert!(!text.contains("signer:"), "{text}");
-    let show = sb.ok(&["chain", "show", "arb", "--json"]);
+    let show = sb.ok(&["ls", "arb", "--json"]);
     assert!(show.contains("\"signer\": null"), "{show}");
 
     // A second signer attaches nowhere.
@@ -2049,10 +2047,10 @@ fn first_run_attaches_the_signer_and_the_explorer() {
 fn chain_add_without_a_chain_off_a_tty_is_a_usage_error_before_any_fetch() {
     let sb = Sandbox::new();
     sb.cmd()
-        .args(["chain", "add"])
+        .args(["add"])
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("Usage: chainz chain add"))
+        .stderr(predicate::str::contains("Usage: chainz add"))
         .stderr(predicate::str::contains("chainlist").not());
     assert!(!sb.cache_file("chains.json").exists());
 }
@@ -2120,11 +2118,11 @@ fn other_missing_arguments_are_usage_errors() {
 }
 
 #[test]
-fn chain_set_off_a_tty_needs_a_chain_and_flags() {
+fn update_off_a_tty_needs_a_chain_and_flags() {
     let sb = Sandbox::new();
     sb.seed(&[("eth", 1)]);
     for (args, usage) in [
-        (&["chain", "set", "eth"][..], "Usage: chainz chain set"),
+        (&["update", "eth"][..], "Usage: chainz update"),
         (&["update"], "Usage: chainz update"),
         (&["update", "--no-signer"], "Usage: chainz update"),
     ] {
@@ -2139,11 +2137,11 @@ fn chain_set_off_a_tty_needs_a_chain_and_flags() {
     // (an empty stdin would fail as "API key from stdin was empty").
     for (args, error) in [
         (
-            &["chain", "set", "--api-key-stdin"][..],
-            "Usage: chainz chain set",
+            &["update", "--api-key-stdin"][..],
+            "Usage: chainz update",
         ),
         (
-            &["chain", "set", "nope", "--api-key-stdin"],
+            &["update", "nope", "--api-key-stdin"],
             "chain 'nope' not found",
         ),
     ] {
@@ -2165,8 +2163,7 @@ fn chain_set_applies_every_flag_in_one_write() {
     let text = sb
         .cmd()
         .args([
-            "chain",
-            "set",
+            "update",
             "eth",
             "--rpc",
             &url,
@@ -2187,7 +2184,7 @@ fn chain_set_applies_every_flag_in_one_write() {
     let text = String::from_utf8_lossy(&text);
     assert!(text.contains("Updated chain 'eth'"), "{text}");
     assert!(text.contains("signer: default → none"), "{text}");
-    let show = sb.ok(&["chain", "show", "eth", "--json"]);
+    let show = sb.ok(&["ls", "eth", "--json"]);
     let show: serde_json::Value = serde_json::from_str(&show).unwrap();
     assert_eq!(show["failover"], serde_json::json!(["local"]));
     assert_eq!(show["aliases"], serde_json::json!(["l1"]));
@@ -2197,22 +2194,21 @@ fn chain_set_applies_every_flag_in_one_write() {
     let before = sb.config();
     let wrong = chain_id_rpc(10);
     sb.cmd()
-        .args(["chain", "set", "eth", "--rpc", &wrong, "--name", "x"])
+        .args(["update", "eth", "--rpc", &wrong, "--name", "x"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("RPC check failed"));
     assert_eq!(sb.config(), before);
     // An API key needs an explorer.
     sb.cmd()
-        .args(["chain", "set", "eth", "--api-key-stdin"])
+        .args(["update", "eth", "--api-key-stdin"])
         .write_stdin("KEY")
         .assert()
         .failure()
         .stderr(predicate::str::contains("no explorer"));
     sb.cmd()
         .args([
-            "chain",
-            "set",
+            "update",
             "eth",
             "--explorer",
             "etherscan",
@@ -2241,7 +2237,7 @@ fn removed_commands_are_gone() {
         &["chain", "edit", "eth"],
         &["rpc", "use", "eth", "local"],
         &["config", "edit"],
-        &["chain", "add", "1", "--rpc", "http://x.invalid"],
+        &["add", "1", "--rpc", "http://x.invalid"],
         &["rpc", "add", "eth", "http://x.invalid", "--use"],
         &["signer", "rm", "default", "--force"],
     ] {

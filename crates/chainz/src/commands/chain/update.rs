@@ -1,9 +1,9 @@
-//! `chain set [CHAIN]` (also `update`): one patch to one chain, from flags
-//! or, with none on a TTY, from the v1-style menu. Either way it is one
+//! `update [CHAIN]`: one patch to one chain, from flags or, with none on a
+//! TTY, from the v1-style menu. Either way it is one
 //! `ChainEdit` applied in one transaction.
 
 use crate::args::parse_headers;
-use crate::cli::{ChainSetArgs, usage_error};
+use crate::cli::{UpdateArgs, usage_error};
 use crate::load::open;
 use crate::probe::check;
 use crate::prompt::{self, Ask, Esc, StdinTrim, Tty, read_stdin_secret};
@@ -16,9 +16,9 @@ use chainz_core::secrets::Vars;
 use chainz_core::tx::{ChainEdit, EditReport};
 use zeroize::Zeroizing;
 
-/// `chain set`, or `update` (`command` is how it was invoked:
-/// `["chain", "set"]` or `["update"]`).
-pub fn set(args: &ChainSetArgs, command: &[&str]) -> Result<i32> {
+/// `update`.
+pub fn update(args: &UpdateArgs) -> Result<i32> {
+    let command: &[&str] = &["update"];
     let mut chainz = open()?;
     // Usage and the chain first: stdin is read only for a valid command.
     let mut flags = build_edit(args, parse_headers(&args.headers)?, None);
@@ -62,7 +62,7 @@ pub fn set(args: &ChainSetArgs, command: &[&str]) -> Result<i32> {
 }
 
 /// The API key the flags give: read from stdin for `--api-key-stdin`.
-fn api_key(args: &ChainSetArgs) -> Result<Option<Zeroizing<String>>> {
+fn api_key(args: &UpdateArgs) -> Result<Option<Zeroizing<String>>> {
     Ok(if args.api_key_stdin {
         Some(read_stdin_secret("API key", StdinTrim::Whitespace)?)
     } else if let Some(key) = &args.api_key {
@@ -76,7 +76,7 @@ fn api_key(args: &ChainSetArgs) -> Result<Option<Zeroizing<String>>> {
 /// The patch the flags ask for (empty when there are none), once the
 /// header and key values are read.
 fn build_edit(
-    args: &ChainSetArgs,
+    args: &UpdateArgs,
     headers: Vec<(String, String)>,
     api_key: Option<Zeroizing<String>>,
 ) -> ChainEdit {
@@ -592,7 +592,7 @@ path = "/o"
 
     #[test]
     fn flags_build_the_same_patch() {
-        let args = ChainSetArgs {
+        let args = UpdateArgs {
             chain: Some("eth".into()),
             signer: Some("ops".into()),
             rpc: Some("infura".into()),
@@ -602,7 +602,7 @@ path = "/o"
             aliases: vec!["l1".into()],
             rm_aliases: vec!["mainnet".into()],
             clear_headers: true,
-            ..ChainSetArgs::default()
+            ..UpdateArgs::default()
         };
         let headers = vec![("x-team".to_string(), "${TEAM}".to_string())];
         let edit = build_edit(&args, headers.clone(), None);
@@ -616,12 +616,12 @@ path = "/o"
         assert_eq!(edit.add_aliases, ["l1"]);
         assert_eq!(edit.remove_aliases, ["mainnet"]);
 
-        let none = build_edit(&ChainSetArgs::default(), Vec::new(), None);
+        let none = build_edit(&UpdateArgs::default(), Vec::new(), None);
         assert!(none.is_empty());
-        let clear = ChainSetArgs {
+        let clear = UpdateArgs {
             no_signer: true,
             no_failover: true,
-            ..ChainSetArgs::default()
+            ..UpdateArgs::default()
         };
         let edit = build_edit(&clear, Vec::new(), None);
         assert_eq!(edit.signer, Some(None));

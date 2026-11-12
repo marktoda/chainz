@@ -756,7 +756,7 @@ fn doctor_tokens_and_fix_conflict() {
 #[test]
 fn addr_ls_and_find_json_and_rm_by_chain_alias() {
     let sb = eth_and_base();
-    sb.ok(&["chain", "set", "base", "--alias", "basechain"]);
+    sb.ok(&["update", "base", "--alias", "basechain"]);
     sb.ok(&["addr", "add", "router", ROUTER, "--chain", "base"]);
     sb.ok(&["addr", "add", "usdc", ROUTER, "--chain", "base"]);
 

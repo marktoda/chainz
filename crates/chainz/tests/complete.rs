@@ -134,12 +134,12 @@ fn chain_arguments_complete_names_and_aliases() {
     assert_set(fish(&sb, &["exec", ""]), &["eth", "base", "mainnet"]);
     assert_set(fish(&sb, &["x", "ma"]), &["mainnet"]);
     assert_set(fish(&sb, &["env", "b"]), &["base"]);
-    assert_set(fish(&sb, &["rpc", "ls", "e"]), &["eth"]);
-    assert_set(fish(&sb, &["chain", "rm", ""]), &["eth", "base", "mainnet"]);
+    assert_set(fish(&sb, &["ls", "e"]), &["eth"]);
+    assert_set(fish(&sb, &["rm", ""]), &["eth", "base", "mainnet"]);
     assert_set(fish(&sb, &["addr", "ls", "--chain", "b"]), &["base"]);
     assert_set(fish(&sb, &["label", "--chain=b"]), &["--chain=base"]);
-    // `chain add` takes a chainlist ID or name, not a configured chain.
-    assert!(fish(&sb, &["chain", "add", "b"]).is_empty());
+    // `add` takes a chainlist ID or name, not a configured chain.
+    assert!(fish(&sb, &["add", "b"]).is_empty());
 }
 
 #[test]
@@ -162,7 +162,7 @@ fn chain_arguments_include_live_forks_only() {
     lock.try_lock().unwrap();
     assert_set(fish(&sb, &["exec", "b"]), &["base", "base-fork"]);
     // Configured-only arguments never offer forks; `fork stop` offers all.
-    assert_set(fish(&sb, &["rpc", "ls", "b"]), &["base"]);
+    assert_set(fish(&sb, &["ls", "b"]), &["base"]);
     assert_set(
         fish(&sb, &["fork", "stop", ""]),
         &["base-fork", "dead-fork"],
@@ -185,9 +185,9 @@ fn rpc_completes_the_typed_chain_endpoints() {
     assert_set(fish(&sb, &["env", "base", "--rpc", "q"]), &["quicknode"]);
     // No chain typed: the default chain's.
     assert_set(fish(&sb, &["exec", "--rpc", ""]), &["alchemy", "llama"]);
-    // `chain set` and `rpc rm` take the chain positionally.
+    // `update` and `rpc rm` take the chain positionally.
     assert_set(
-        fish(&sb, &["chain", "set", "base", "--rpc", ""]),
+        fish(&sb, &["update", "base", "--rpc", ""]),
         &["public", "quicknode"],
     );
     assert_set(
@@ -206,11 +206,11 @@ fn completers_follow_the_arguments() {
     assert!(has(&fish(&sb, &["label", "--chain", "ba"]), "base"));
     assert!(has(&fish(&sb, &["addr", "rm", "x", "--chain", ""]), "*"));
     assert!(has(
-        &fish(&sb, &["chain", "set", "base", "--explorer", ""]),
+        &fish(&sb, &["update", "base", "--explorer", ""]),
         "etherscan"
     ));
     assert!(has(
-        &fish(&sb, &["chain", "add", "--signer", ""]),
+        &fish(&sb, &["add", "--signer", ""]),
         "default"
     ));
 }

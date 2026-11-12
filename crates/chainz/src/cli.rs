@@ -23,7 +23,7 @@ pub struct Opt {
     pub cmd: Option<Command>,
 }
 
-/// A usage error for the subcommand at `path` (`["chain", "set"]`), worded
+/// A usage error for the subcommand at `path` (`["signer", "add"]`), worded
 /// like clap's own: the message, the subcommand's usage line, and a
 /// pointer to `--help`. It exits 2, as clap's do (see `ui::exit_code`).
 pub fn usage_error(path: &[&str], message: &str) -> anyhow::Error {
@@ -64,7 +64,7 @@ pub enum Command {
     /// Set the default chain, or show it (exec notes on stderr whenever it applies)
     Use(UseArgs),
 
-    /// List chains (alias of `chain ls`)
+    /// List chains, or show one in full with its endpoints' health
     Ls(ListArgs),
 
     /// Live dashboard of chains, endpoints, balances and gateway traffic
@@ -91,17 +91,19 @@ pub enum Command {
     /// Guided first-run setup: chains, a signer, an Etherscan key, a default
     Init,
 
-    /// Change a chain's settings (same as `chain set`)
-    Update(ChainSetArgs),
+    /// Add a chain from chainlist (by ID or name) or by hand
+    Add(AddArgs),
+
+    /// Change a chain: endpoints, signer, explorer, name, aliases (a menu
+    /// with no flags)
+    Update(UpdateArgs),
+
+    /// Remove a chain (exact name or ID) and its labels; asks first unless
+    /// --yes
+    Rm(RmArgs),
 
     /// Edit config.toml, or one chain's table, in $EDITOR (validated on save)
     Edit(EditArgs),
-
-    /// Manage chains
-    Chain {
-        #[command(subcommand)]
-        cmd: ChainCommand,
-    },
 
     /// Manage a chain's RPC endpoints
     Rpc {
@@ -220,6 +222,10 @@ pub struct UseArgs {
 
 #[derive(Debug, Args)]
 pub struct ListArgs {
+    /// Show this chain in full (name, alias, prefix or ID), with its
+    /// endpoints' latest health
+    #[arg(add = ArgValueCompleter::new(complete::configured_chains))]
+    pub chain: Option<String>,
     /// JSON output
     #[arg(long)]
     pub json: bool,
@@ -374,22 +380,8 @@ pub struct ForkStopArgs {
     pub all: bool,
 }
 
-#[derive(Debug, Subcommand)]
-pub enum ChainCommand {
-    /// List chains
-    Ls(ListArgs),
-    /// Add a chain from chainlist (by ID or name) or by hand
-    Add(ChainAddArgs),
-    /// Show one chain in full
-    Show(ChainShowArgs),
-    /// Change a chain's settings (also `chainz update`); a menu with no flags
-    Set(ChainSetArgs),
-    /// Remove a chain (exact name or ID) and its labels; asks first unless --yes
-    Rm(ChainRmArgs),
-}
-
 #[derive(Debug, Default, Args)]
-pub struct ChainAddArgs {
+pub struct AddArgs {
     /// Chain ID or chainlist name (picker if omitted on a TTY); with
     /// --url, a chain ID or built-in short name (no chainlist lookup)
     pub chain: Option<String>,
@@ -414,20 +406,7 @@ pub struct ChainAddArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct ChainShowArgs {
-    /// Chain name, alias, prefix or ID
-    #[arg(add = ArgValueCompleter::new(complete::configured_chains))]
-    pub chain: String,
-    /// JSON output
-    #[arg(long)]
-    pub json: bool,
-    /// Show credential-bearing URLs and header values
-    #[arg(long)]
-    pub reveal: bool,
-}
-
-#[derive(Debug, Args)]
-pub struct ChainRmArgs {
+pub struct RmArgs {
     /// Exact chain name or ID
     #[arg(add = ArgValueCompleter::new(complete::configured_chains))]
     pub chain: String,
@@ -436,9 +415,9 @@ pub struct ChainRmArgs {
     pub yes: bool,
 }
 
-/// `chain set` / `update`: one patch to one chain, applied at once.
+/// `update`: one patch to one chain, applied at once.
 #[derive(Debug, Default, Args)]
-pub struct ChainSetArgs {
+pub struct UpdateArgs {
     /// Chain name, alias, prefix or ID (picker if omitted on a TTY)
     #[arg(add = ArgValueCompleter::new(complete::configured_chains))]
     pub chain: Option<String>,
@@ -497,8 +476,6 @@ pub struct ChainSetArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum RpcCommand {
-    /// List endpoints with their latest health
-    Ls(RpcLsArgs),
     /// Add an endpoint
     Add(RpcAddArgs),
     /// Remove an endpoint; asks first unless --yes
@@ -507,20 +484,6 @@ pub enum RpcCommand {
     Bench(BenchArgs),
     /// Find public endpoints on chainlist, probe them, offer to add
     Discover(DiscoverArgs),
-}
-
-#[derive(Debug, Args)]
-pub struct RpcLsArgs {
-    /// Only this chain (name, alias, prefix or ID)
-    #[arg(add = ArgValueCompleter::new(complete::configured_chains))]
-    pub chain: Option<String>,
-    /// JSON output
-    #[arg(long)]
-    pub json: bool,
-    /// Show credential-bearing URLs and header values (as configured,
-    /// `${VAR}`s unexpanded)
-    #[arg(long)]
-    pub reveal: bool,
 }
 
 #[derive(Debug, Args)]

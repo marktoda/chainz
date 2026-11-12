@@ -319,7 +319,7 @@ impl Dashboard {
         };
         self.shell = Some(shell);
         screen.resume()?;
-        // The shell may have changed the config (`chainz chain set <chain> --rpc …`).
+        // The shell may have changed the config (`chainz update <chain> --rpc …`).
         self.reload();
         match outcome {
             Ok(()) => self

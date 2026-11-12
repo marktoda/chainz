@@ -64,7 +64,7 @@ fn insert_rename_remove_chain() {
         out.contains("gw = { url = \"https://gw.example\", headers = { x-secret = \"${GW}\" } }"),
         "{out}"
     );
-    // The checks `chain add` relies on.
+    // The checks `add` relies on.
     let err = tx.insert_chain("base", &base, Attach::Nothing).unwrap_err();
     assert!(err.to_string().contains("already exists"), "{err}");
     let err = tx
@@ -675,7 +675,7 @@ fn endpoints_from_urls_are_checked_named_and_matched_one_way() {
     assert!(err("https://b.example/", None).contains("as endpoint 'b'"));
     assert!(err("ftp://x.example", None).contains("http(s)://"));
     assert!(err("https://c.example", Some("a")).contains("named 'a'"));
-    // `chain set --rpc` sees the same match: it activates `b`.
+    // `update --rpc` sees the same match: it activates `b`.
     let no_vars = IndexMap::new();
     assert_eq!(chain.endpoint_at("https://b.example/", &no_vars), Some("b"));
     let edit = ChainEdit {
@@ -710,7 +710,7 @@ fn endpoints_from_urls_are_checked_named_and_matched_one_way() {
 
 /// Re-adding a URL whose key an earlier write moved into a variable is the
 /// same endpoint (it used to add `alchemy-2`, `alchemy-3`…), for `rpc add`
-/// and `chain set --rpc` alike.
+/// and `update --rpc` alike.
 #[test]
 fn a_url_whose_key_moved_is_still_the_same_endpoint() {
     let url = "https://base-mainnet.g.alchemy.com/v2/abcdef0123456789abcdef0123455678";
@@ -731,7 +731,7 @@ fn a_url_whose_key_moved_is_still_the_same_endpoint() {
             .unwrap_err();
         assert!(err.to_string().contains("as endpoint 'alchemy'"), "{err}");
     }
-    // `chain set --rpc URL` activates it instead of adding one.
+    // `update --rpc URL` activates it instead of adding one.
     let edit = ChainEdit {
         rpc: Some(url.into()),
         ..Default::default()

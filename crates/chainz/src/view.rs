@@ -1,16 +1,17 @@
-//! Credential-safe presentation of chains for `ls`, `chain show` and JSON,
-//! and the one plain-text [`table`] layout.
+//! Credential-safe presentation of chains for `ls` (the table, one chain in
+//! full, and JSON), and the one plain-text [`table`] layout.
 //!
 //! Redaction happens when a view is built, so renderers cannot leak raw
 //! secrets: `chainz_core::redact` masks only credential-shaped parts
 //! (`${VAR}` templates, hosts and ordinary paths print as they are).
 //! `--reveal` here shows raw config values (templates unexpanded). Resolved secret values are printed only where the user
-//! asks for them: `var get --reveal`, `var ls --reveal`, `exec`'s
+//! asks for them: `var ls --reveal`, `exec`'s
 //! environment (`env`, `shell`, `exec --expose-key`), and `top --reveal`.
 
 use crate::ui;
 use chainz_core::model::{Chain, Config, Endpoint};
-use chainz_core::{names, redact};
+use chainz_core::{fmt, names, redact};
+use chainz_rpc::HealthStore;
 use console::{Alignment, pad_str, style};
 use serde::Serialize;
 use std::fmt::Write;
@@ -20,7 +21,7 @@ use std::fmt::Write;
 pub const QUICK_START: &str = "\
 Quick start:
   chainz signer add deployer               # store a key (OS keyring by default)
-  chainz chain add base                    # add a chain from chainlist; the signer attaches
+  chainz add base                          # add a chain from chainlist; the signer attaches
   chainz exec base -- cast block-number    # run a tool with the chain's context
 On a terminal, `chainz init` walks through the same steps.
 ";
@@ -73,6 +74,36 @@ pub struct EndpointView {
     pub active: bool,
     pub failover: bool,
     pub websocket: bool,
+    #[serde(flatten)]
+    pub health: EndpointHealth,
+}
+
+/// An endpoint's latest recorded health (`doctor` and `top` record it),
+/// and its capability tags.
+#[derive(Serialize, Default)]
+pub struct EndpointHealth {
+    pub latency_ms: Option<u32>,
+    pub head: Option<u64>,
+    /// When the latest health sample was taken (unix ms).
+    pub probed_at_ms: Option<u64>,
+    pub error: Option<String>,
+    pub tags: Vec<String>,
+}
+
+impl EndpointHealth {
+    pub fn of(store: &HealthStore, chain_id: u64, endpoint: &str) -> Self {
+        let latest = store.latest(chain_id, endpoint);
+        Self {
+            latency_ms: latest.filter(|s| s.error.is_none()).map(|s| s.latency_ms),
+            head: latest.and_then(|s| s.head),
+            probed_at_ms: latest.map(|s| s.at_ms),
+            error: latest.and_then(|s| s.error).map(|c| c.to_string()),
+            tags: store
+                .capabilities(chain_id, endpoint)
+                .map(|c| c.tags())
+                .unwrap_or_default(),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -90,7 +121,13 @@ pub struct ChainView {
 }
 
 impl EndpointView {
-    pub fn new(name: &str, endpoint: &Endpoint, chain: &Chain, reveal: bool) -> Self {
+    pub fn new(
+        name: &str,
+        endpoint: &Endpoint,
+        chain: &Chain,
+        reveal: bool,
+        store: &HealthStore,
+    ) -> Self {
         Self {
             name: name.to_string(),
             url: redact::url(&endpoint.url, reveal),
@@ -102,6 +139,7 @@ impl EndpointView {
             active: chain.rpc == name,
             failover: chain.failover.iter().any(|f| f == name),
             websocket: endpoint.is_websocket(),
+            health: EndpointHealth::of(store, chain.id, name),
         }
     }
 
@@ -112,7 +150,13 @@ impl EndpointView {
 }
 
 impl ChainView {
-    pub fn new(config: &Config, name: &str, chain: &Chain, reveal: bool) -> Self {
+    pub fn new(
+        config: &Config,
+        name: &str,
+        chain: &Chain,
+        reveal: bool,
+        store: &HealthStore,
+    ) -> Self {
         Self {
             name: name.to_string(),
             id: chain.id,
@@ -129,18 +173,18 @@ impl ChainView {
             endpoints: chain
                 .rpcs
                 .iter()
-                .map(|(n, e)| EndpointView::new(n, e, chain, reveal))
+                .map(|(n, e)| EndpointView::new(n, e, chain, reveal, store))
                 .collect(),
         }
     }
 }
 
 /// All chains as views.
-pub fn chains(config: &Config, reveal: bool) -> Vec<ChainView> {
+pub fn chains(config: &Config, reveal: bool, store: &HealthStore) -> Vec<ChainView> {
     config
         .chains
         .iter()
-        .map(|(name, chain)| ChainView::new(config, name, chain, reveal))
+        .map(|(name, chain)| ChainView::new(config, name, chain, reveal, store))
         .collect()
 }
 
@@ -161,7 +205,7 @@ pub fn compact(config: &Config, reveal: bool) -> String {
                 " "
             };
             // The host is a terse label (stricter than `redact::url`);
-            // `chain show` and `rpc ls` show the URL.
+            // `ls CHAIN` shows the URL.
             let host = match chain.active() {
                 Some(e) if reveal => format!(" {}", ui::dim(&e.url)),
                 Some(e) if !names::named_after_url(&chain.rpc, &e.url) => {
@@ -226,8 +270,10 @@ pub fn table_lines<R: AsRef<[String]>>(headers: &[&str], rows: &[R]) -> Vec<Stri
     out
 }
 
-/// The detailed `chain show` view.
-pub fn show(view: &ChainView, extra: &[(String, String)]) -> String {
+/// One chain in full (`ls CHAIN`): its settings, `extra` rows (wallet,
+/// labels), then its endpoints with their latest health (as of `now_ms`)
+/// and headers, and the legend of the role markers.
+pub fn show(view: &ChainView, extra: &[(String, String)], now_ms: u64) -> String {
     let mut out = String::new();
     let aliases = if view.aliases.is_empty() {
         String::new()
@@ -265,22 +311,46 @@ pub fn show(view: &ChainView, extra: &[(String, String)]) -> String {
     for (k, v) in extra {
         let _ = writeln!(out, "  {k:<9} {v}");
     }
-    let _ = writeln!(out, "  {}", style("endpoints").bold());
-    let rows: Vec<[String; 3]> = view
-        .endpoints
+    let _ = writeln!(out);
+    out.push_str(&endpoint_table(&view.endpoints, now_ms));
+    if !view.endpoints.is_empty() {
+        let _ = writeln!(out, "\n{}", ui::dim(LEGEND));
+    }
+    out
+}
+
+/// The endpoint table of [`show`]: role marker, name, latest health and
+/// its age, the URL with capability tags, and each endpoint's headers
+/// under it.
+fn endpoint_table(endpoints: &[EndpointView], now_ms: u64) -> String {
+    let cells: Vec<[String; 5]> = endpoints
         .iter()
         .map(|e| {
+            let h = &e.health;
+            let health = match (&h.latency_ms, &h.error) {
+                (Some(ms), _) => format!("{ms}ms"),
+                (None, Some(error)) => error.clone(),
+                _ => "-".into(),
+            };
+            let checked = h.probed_at_ms.map_or_else(
+                || "-".to_string(),
+                |at| format!("{} ago", fmt::age(now_ms.saturating_sub(at) / 1_000)),
+            );
+            let url = match h.tags.is_empty() {
+                true => e.url.clone(),
+                false => format!("{} {}", e.url, ui::dim(&h.tags.join(" "))),
+            };
             let marker = match (e.active, e.failover) {
                 (true, _) => style(e.marker()).green().to_string(),
                 (false, true) => style(e.marker()).yellow().to_string(),
                 _ => e.marker().to_string(),
             };
-            [marker, e.name.clone(), e.url.clone()]
+            [marker, e.name.clone(), health, checked, url]
         })
         .collect();
-    // No header row: the `endpoints` title names the list.
-    let lines = table_lines(&["", "", ""], &rows);
-    for (e, line) in view.endpoints.iter().zip(&lines[1..]) {
+    let lines = table_lines(&["", "NAME", "HEALTH", "CHECKED", "URL"], &cells);
+    let mut out = format!("  {}\n", lines[0]);
+    for (e, line) in endpoints.iter().zip(&lines[1..]) {
         let _ = writeln!(out, "  {line}");
         for (k, v) in &e.headers {
             let _ = writeln!(out, "      {}", ui::dim(&format!("{k}: {v}")));
@@ -292,6 +362,43 @@ pub fn show(view: &ChainView, extra: &[(String, String)]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn long_names_keep_the_endpoint_columns_aligned() {
+        console::set_colors_enabled(false);
+        let mut rpcs = indexmap::IndexMap::new();
+        for name in ["a", "gw-uniswap-internal-prod"] {
+            rpcs.insert(
+                name.to_string(),
+                Endpoint::new(format!("https://{name}.example")),
+            );
+        }
+        let chain = Chain {
+            id: 1,
+            aliases: vec![],
+            signer: None,
+            explorer: None,
+            rpc: "a".into(),
+            failover: vec![],
+            rpcs,
+        };
+        let now = 1_000_000_000;
+        let store = HealthStore::empty();
+        let mut endpoints: Vec<EndpointView> = chain
+            .rpcs
+            .iter()
+            .map(|(n, e)| EndpointView::new(n, e, &chain, false, &store))
+            .collect();
+        endpoints[0].health.latency_ms = Some(42);
+        endpoints[0].health.probed_at_ms = Some(now - 120_000);
+        assert_eq!(
+            endpoint_table(&endpoints, now),
+            "     NAME                      HEALTH  CHECKED  URL
+  ●  a                         42ms    2m ago   https://a.example/
+     gw-uniswap-internal-prod  -       -        https://gw-uniswap-internal-prod.example/
+"
+        );
+    }
 
     #[test]
     fn tables_align_on_display_width() {

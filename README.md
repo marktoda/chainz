@@ -65,7 +65,7 @@ name or ID.
 ```
 Quick start:
   chainz signer add deployer               # store a key (OS keyring by default)
-  chainz chain add base                    # add a chain from chainlist; the signer attaches
+  chainz add base                          # add a chain from chainlist; the signer attaches
   chainz exec base -- cast block-number    # run a tool with the chain's context
 On a terminal, `chainz init` walks through the same steps.
 ```

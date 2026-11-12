@@ -1,5 +1,12 @@
+Chain eth (ethereum, mainnet)
+  id        1
+  default   yes
+  signer    deployer
+  explorer  etherscan
+  failover  llama, gw
+  wallet    0x70997970C51812dc3A010C7d01b50e0d17dc79C8
+  labels    @dai @my-safe @myrouter @usdc @usdt @wbtc @weth
 
-eth
      NAME      HEALTH   CHECKED  URL
   ●  infura    42ms     3m ago   https://mainnet.infura.io/v3/[REDACTED] archive trace logs:10000
      alchemy   -        -        https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}

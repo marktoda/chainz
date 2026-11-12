@@ -2,4 +2,4 @@
 
                                                 No chains configured yet.
 
-                                           Add one with  chainz chain add base
+                                              Add one with  chainz add base

@@ -119,7 +119,7 @@ base = "0x2222222222222222222222222222222222222222"
 "*" = "0x5afe000000000000000000000000000000005afe"
 "#;
 
-/// Health history for `rpc ls`: a healthy, tagged active endpoint and a
+/// Health history for `ls CHAIN`: a healthy, tagged active endpoint and a
 /// timed-out one, both checked [`PROBED_AGO_MS`] ago (`AT_MS` becomes
 /// that time).
 const LISTING_HEALTH: &str = r#"{"version":1,"endpoints":[
@@ -128,7 +128,7 @@ const LISTING_HEALTH: &str = r#"{"version":1,"endpoints":[
  {"chain_id":1,"endpoint":"gw","samples":[{"at_ms":AT_MS,"latency_ms":5000,"head":null,"error":"timeout"}]}
 ]}"#;
 
-/// How long before the run the health samples were taken: `rpc ls` prints
+/// How long before the run the health samples were taken: `ls CHAIN` prints
 /// `3m ago`.
 const PROBED_AGO_MS: u64 = 200_000;
 
@@ -162,10 +162,8 @@ fn listings() {
     for (file, args) in [
         ("ls.txt", &["ls"][..]),
         ("ls.json", &["ls", "--json"]),
-        ("chain-show.txt", &["chain", "show", "eth"]),
-        ("chain-show.json", &["chain", "show", "eth", "--json"]),
-        ("rpc-ls.txt", &["rpc", "ls", "eth"]),
-        ("rpc-ls.json", &["rpc", "ls", "eth", "--json"]),
+        ("ls-chain.txt", &["ls", "eth"]),
+        ("ls-chain.json", &["ls", "eth", "--json"]),
         ("signer-ls.txt", &["signer", "ls"]),
         ("signer-ls.json", &["signer", "ls", "--json"]),
         ("var-ls.txt", &["var", "ls"]),

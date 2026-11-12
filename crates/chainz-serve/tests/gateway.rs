@@ -505,7 +505,7 @@ async fn filters_are_sticky_to_the_endpoint_that_created_them() {
         .await;
     assert_eq!(batch.json()[1]["result"], "0xf2");
 
-    // `chainz chain set eth --rpc b`: the file watch picks the change up.
+    // `chainz update eth --rpc b`: the file watch picks the change up.
     Rig::write_config(
         rig.dir.path(),
         &eth_config("b", &["a"], &[("a", a.url()), ("b", b.url())]),
@@ -1166,7 +1166,7 @@ async fn a_same_size_config_change_with_the_same_mtime_is_seen() {
     let rig = Rig::start(&eth_config("a", &[], &endpoints)).await;
     let config = Rig::paths(rig.dir.path()).config().to_path_buf();
     let before = std::fs::metadata(&config).unwrap();
-    // `chainz chain set eth --rpc b`: the same length, and here the same mtime too
+    // `chainz update eth --rpc b`: the same length, and here the same mtime too
     // (as two writes within one timestamp tick would have).
     let next = eth_config("b", &[], &endpoints);
     assert_eq!(next.len() as u64, before.len());

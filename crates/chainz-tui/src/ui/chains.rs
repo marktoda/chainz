@@ -94,7 +94,7 @@ pub(crate) fn body(ctx: Ctx) -> Body {
                 Line::raw(""),
                 Line::from(vec![
                     Span::styled("Add one with  ", t.dim()),
-                    Span::styled("chainz chain add base", t.accent()),
+                    Span::styled("chainz add base", t.accent()),
                 ]),
             ]),
         };

@@ -322,7 +322,7 @@ pub fn build(
 /// The error for a chain without a signer, saying how to attach one.
 fn no_signer(chain: &str) -> String {
     format!(
-        "chain '{chain}' has no signer: pass --signer NAME, or attach one with `chainz chain set {chain} --signer NAME`"
+        "chain '{chain}' has no signer: pass --signer NAME, or attach one with `chainz update {chain} --signer NAME`"
     )
 }
 

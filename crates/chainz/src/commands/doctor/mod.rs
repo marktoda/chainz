@@ -187,7 +187,7 @@ fn files(chainz: &Chainz, fix: bool, report: &mut Report) {
     if chainz.exists() {
         report.ok(&format!("config {}", p.config().display()));
     } else {
-        report.note("no config.toml yet (add a chain with `chainz chain add`)");
+        report.note("no config.toml yet (add a chain with `chainz add`)");
     }
     for (what, path) in locations(chainz) {
         println!("  {}", ui::dim(&format!("{what:<8} {}", path.display())));

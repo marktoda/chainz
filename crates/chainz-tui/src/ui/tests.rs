@@ -360,7 +360,7 @@ fn chains_tab_empty_filtered_and_scrolled() {
     let nothing = State::new(&plan(vec![]), &empty_store());
     let text = frame(&app(Tab::Chains), &nothing, 80, 12);
     assert!(text.contains("No chains configured yet."), "{text}");
-    assert!(text.contains("chainz chain add base"), "{text}");
+    assert!(text.contains("chainz add base"), "{text}");
 
     // A filter narrows the list and says so; it matches names, aliases, IDs.
     let state = fixture();

@@ -35,9 +35,13 @@ pub fn dispatch(opt: Opt) -> Result<i32> {
         Command::Serve { cmd, args } => serve::run(cmd, args),
         Command::Fork { cmd, args } => fork::run(cmd, args),
         Command::Init => init::run(),
-        Command::Update(args) => chain::set(&args, &["update"]),
+        Command::Add(args) => {
+            let mut chainz = crate::load::open()?;
+            chain::add(&mut chainz, &args, &mut crate::prompt::Tty)
+        }
+        Command::Update(args) => chain::update(&args),
+        Command::Rm(args) => chain::rm(&args),
         Command::Edit(args) => edit::run(&args),
-        Command::Chain { cmd } => chain::run(cmd),
         Command::Rpc { cmd } => rpc::run(cmd),
         Command::Signer { cmd } => signer::run(cmd),
         Command::Addr { cmd } => addr::run(cmd),

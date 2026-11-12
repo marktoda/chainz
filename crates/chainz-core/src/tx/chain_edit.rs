@@ -1,4 +1,4 @@
-//! One patch to one chain: what `chain set` flags (or its menu) fill in,
+//! One patch to one chain: what `update` flags (or its menu) fill in,
 //! applied by [`Tx::edit_chain`] inside one transaction; and the defaults a
 //! new chain or a first signer attach.
 
@@ -61,7 +61,7 @@ impl ChainEdit {
     /// What `--rpc` means for `chain` (named `name`): `None` when unset,
     /// else [`Chain::rpc_choice`] (URLs compared with `vars`,
     /// `secrets.toml`'s `[vars]`), a new endpoint carrying the edit's
-    /// headers. The edit, the caller's chain-ID probe and the `chain set`
+    /// headers. The edit, the caller's chain-ID probe and the `update`
     /// menu all go by it.
     pub fn rpc_choice(
         &self,

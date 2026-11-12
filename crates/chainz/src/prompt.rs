@@ -1,7 +1,7 @@
 //! Terminal prompts and stdin secrets. Interrupting a prompt (Ctrl-C, Esc)
 //! is [`ui::cancelled`], which exits 130.
 //!
-//! Interactive flows (pickers, the `chain set` menu, `init`, `chain add`)
+//! Interactive flows (pickers, the `update` menu, `init`, `add`)
 //! ask through [`Ask`], so tests drive them with scripted answers; [`Tty`]
 //! is the terminal. Core's hidden prompts (keys, passwords) take a
 //! `Prompter`: [`Terminal`] on the terminal, or [`AskPrompter`] to route
@@ -68,7 +68,7 @@ pub fn confirm_or_yes(
     }
 }
 
-/// The one confirmation every `rm` goes through (`chain rm`, `rpc rm`,
+/// The one confirmation every `rm` goes through (`rm`, `rpc rm`,
 /// `addr rm`, `var rm`, `signer rm`): `--yes` removes without asking; on a
 /// terminal, ask "Remove {what}?" (default no; declining cancels); off
 /// one, fail naming `--yes`. `command` is the command as typed after
@@ -89,7 +89,7 @@ pub fn confirm_removal(ask: &mut dyn Ask, yes: bool, command: &str, what: &str) 
 pub enum Esc {
     /// Leave the flow (the picker's hint says "ESC to exit").
     Exit,
-    /// Go back one step, as in a `chain set` menu's sub-picker ("ESC:
+    /// Go back one step, as in a `update` menu's sub-picker ("ESC:
     /// back").
     Back,
 }

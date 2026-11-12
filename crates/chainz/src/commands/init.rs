@@ -1,13 +1,13 @@
 //! `init` and `chainz` with no command: first-run setup.
 //!
 //! `init` on a terminal composes the other commands' flows: chains (the
-//! `chain add` flow), a signer (the `signer add` flow, which attaches it to
-//! those chains), an Etherscan key (`chain set --explorer etherscan
+//! `add` flow), a signer (the `signer add` flow, which attaches it to
+//! those chains), an Etherscan key (`update --explorer etherscan
 //! --api-key`), and a default chain. Off a terminal it prints the quick
 //! start.
 
 use super::{chain, signer};
-use crate::cli::{ChainAddArgs, Opt, SignerAddArgs};
+use crate::cli::{AddArgs, Opt, SignerAddArgs};
 use crate::load::open;
 use crate::prompt::{Ask, AskPrompter, Tty};
 use crate::{ui, view};
@@ -66,7 +66,7 @@ pub fn run() -> Result<i32> {
 fn closing(config: &Config) -> String {
     match (config.chains.keys().next(), &config.default) {
         (None, _) => ui::warn(
-            "No chains yet: add one with `chainz chain add <chain>` (an ID, or a name on chainlist), or run `chainz init` again.",
+            "No chains yet: add one with `chainz add <chain>` (an ID, or a name on chainlist), or run `chainz init` again.",
         ),
         (Some(_), Some(_)) => {
             ui::success("Done. Try `chainz ls`, or `chainz exec -- cast block-number`.")
@@ -78,7 +78,7 @@ fn closing(config: &Config) -> String {
 }
 
 /// How `init` adds one chain: `chain::add` (tests pass their own).
-type AddChain<'a> = dyn FnMut(&mut Chainz, &ChainAddArgs, &mut dyn Ask) -> Result<i32> + 'a;
+type AddChain<'a> = dyn FnMut(&mut Chainz, &AddArgs, &mut dyn Ask) -> Result<i32> + 'a;
 
 /// Add chains from chainlist until the user is done. A chain that fails
 /// to add is reported and the loop goes on; when chainlist is
@@ -90,7 +90,7 @@ fn add_chains(chainz: &mut Chainz, ask: &mut dyn Ask, add: &mut AddChain<'_>) ->
     }
     let mut more = ask.confirm("Add a chain from chainlist?", have == 0)?;
     while more {
-        let mut result = add(chainz, &ChainAddArgs::default(), ask);
+        let mut result = add(chainz, &AddArgs::default(), ask);
         if let Err(e) = &result
             && e.downcast_ref::<chain::ChainlistUnavailable>().is_some()
         {
@@ -111,14 +111,14 @@ fn add_chains(chainz: &mut Chainz, ask: &mut dyn Ask, add: &mut AddChain<'_>) ->
     Ok(())
 }
 
-/// `chain add ID --url URL`, asked for.
+/// `add ID --url URL`, asked for.
 fn add_offline(chainz: &mut Chainz, ask: &mut dyn Ask, add: &mut AddChain<'_>) -> Result<i32> {
     let id = ask.text("Chain ID", None)?;
     let url = ask.text("RPC URL", None)?;
-    let args = ChainAddArgs {
+    let args = AddArgs {
         chain: Some(id.trim().to_string()),
         urls: vec![url.trim().to_string()],
-        ..ChainAddArgs::default()
+        ..AddArgs::default()
     };
     add(chainz, &args, ask)
 }
@@ -424,7 +424,7 @@ api = "https://blockscout.example/api"
         let paths = chainz_core::StorePaths::in_dir(dir.path().join("chainz"));
         let mut chainz = Chainz::open_at(paths, chainz_core::LoadMode::Strict).unwrap();
         let mut seen: Vec<(Option<String>, Vec<String>)> = Vec::new();
-        let mut add = |_: &mut Chainz, args: &ChainAddArgs, _: &mut dyn Ask| -> Result<i32> {
+        let mut add = |_: &mut Chainz, args: &AddArgs, _: &mut dyn Ask| -> Result<i32> {
             seen.push((args.chain.clone(), args.urls.clone()));
             match args.chain {
                 None => Err(anyhow::anyhow!("offline").context(chain::ChainlistUnavailable)),
@@ -454,7 +454,7 @@ api = "https://blockscout.example/api"
         let none = Config::parse("version = 2\n").unwrap();
         let line = closing(&none);
         assert!(
-            !line.contains("Done") && line.contains("chainz chain add"),
+            !line.contains("Done") && line.contains("chainz add"),
             "{line}"
         );
         let line = closing(&config(""));

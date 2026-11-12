@@ -71,7 +71,7 @@ pub async fn pin(
             bail!("--rpc {label} is a websocket endpoint, which a fork can't use");
         }
         bail!(
-            "chain '{parent}' is on websocket endpoint '{name}', which a fork can't use; pass --rpc NAME|URL, or activate an HTTP endpoint with `chainz chain set {parent} --rpc NAME`"
+            "chain '{parent}' is on websocket endpoint '{name}', which a fork can't use; pass --rpc NAME|URL, or activate an HTTP endpoint with `chainz update {parent} --rpc NAME`"
         );
     }
     let target = net::target(chainz, parent, chain.id, &name, &endpoint)?;
