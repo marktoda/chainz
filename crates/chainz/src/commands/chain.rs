@@ -7,7 +7,7 @@ pub use set::set;
 use crate::cli::{ChainAddArgs, ChainCommand, ChainRmArgs, ChainShowArgs, ListArgs, UseArgs};
 use crate::load::open;
 use crate::probe::{check, probe_urls, ranked_urls};
-use crate::prompt::{Ask, is_tty};
+use crate::prompt::{Ask, Tty};
 use crate::select::pick_chain;
 use crate::{net, ui, view};
 use anyhow::{Context, Result, anyhow, bail};
@@ -64,6 +64,7 @@ pub fn use_default(args: &UseArgs) -> Result<i32> {
             .to_string(),
         None => pick_chain(
             &chainz,
+            &mut Tty,
             "Default chain",
             "pass the chain to make the default",
         )?,
@@ -156,14 +157,14 @@ enum ChainSource {
 }
 
 impl ChainSource {
-    fn of(args: &ChainAddArgs) -> Result<Self> {
+    fn of(args: &ChainAddArgs, ask: &dyn Ask) -> Result<Self> {
         match &args.chain {
             Some(query) if !args.urls.is_empty() => match query.parse() {
                 Ok(id) => Ok(ChainSource::Offline { id }),
                 Err(_) => Ok(ChainSource::Chainlist),
             },
             Some(_) => Ok(ChainSource::Chainlist),
-            None if is_tty() => Ok(ChainSource::Chainlist),
+            None if ask.is_interactive() => Ok(ChainSource::Chainlist),
             None => Err(crate::cli::usage_error(
                 &["chain", "add"],
                 "off a terminal, name the chain to add (its ID or name)",
@@ -229,7 +230,7 @@ fn find_chain(args: &ChainAddArgs, source: ChainSource, ask: &mut dyn Ask) -> Re
 /// `chain add`: find the chain, pick its endpoints, and insert it with the
 /// default signer and explorer attached (unless `--no-signer`).
 pub fn add(chainz: &mut Chainz, args: &ChainAddArgs, ask: &mut dyn Ask) -> Result<i32> {
-    let found = find_chain(args, ChainSource::of(args)?, ask)?;
+    let found = find_chain(args, ChainSource::of(args, ask)?, ask)?;
     let id = found.id();
     let short = args
         .name
@@ -304,7 +305,9 @@ pub fn add(chainz: &mut Chainz, args: &ChainAddArgs, ask: &mut dyn Ask) -> Resul
         .map(|e| e.name.clone())
         .filter(|n| !n.eq_ignore_ascii_case(&short))
         .into_iter()
-        .filter(|alias| resolve::configured(chainz.config(), alias, Policy::Prefix).is_err())
+        // Only a name no configured chain has (as its name or an alias,
+        // in any case): the collision validation would refuse.
+        .filter(|alias| matches!(resolve::exact(chainz.config(), alias), Ok(None)))
         .collect();
     let attach = if args.no_signer {
         Attach::ExplorerOnly
@@ -359,7 +362,7 @@ fn choose_active<'a>(
     let Some(best) = ranking.best().filter(|&i| probed[i].1.is_ok()) else {
         bail!("no public RPC for {chain} answered; pass --url URL");
     };
-    if !is_tty() {
+    if !ask.is_interactive() {
         return Ok(&probed[best].0);
     }
     Ok(&probed[ranking.order[ask.select("Active RPC", &items, 0)?]].0)

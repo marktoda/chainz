@@ -3,7 +3,7 @@
 
 use crate::cli::EditArgs;
 use crate::load::open_lenient;
-use crate::prompt::{self, is_tty};
+use crate::prompt::{Ask, Tty};
 use crate::ui;
 use anyhow::{Context, Result, bail};
 use chainz_core::resolve::{self, Policy};
@@ -73,9 +73,9 @@ fn edit_until_saved(text: &str, mut save: impl FnMut(&str) -> Result<()>) -> Res
         }
         match save(&edited) {
             Ok(()) => return Ok(true),
-            Err(e) if is_tty() => {
+            Err(e) if Tty.is_interactive() => {
                 eprintln!("{}", ui::fail(&format!("{e:#}")));
-                if !prompt::confirm("Edit again?", true)? {
+                if !Tty.confirm("Edit again?", true)? {
                     return Err(ui::cancelled());
                 }
                 current = edited;

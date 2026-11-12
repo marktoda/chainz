@@ -17,7 +17,7 @@ use zeroize::Zeroizing;
 pub fn run(cmd: SignerCommand) -> Result<i32> {
     let backend = SystemKeyBackend;
     match cmd {
-        SignerCommand::Add(args) => add(&mut open()?, &backend, &args),
+        SignerCommand::Add(args) => add(&mut open()?, &backend, &Terminal, &args),
         SignerCommand::Ls(args) => ls(args.json),
         SignerCommand::Rm(args) => rm(&backend, &args),
         SignerCommand::Migrate(args) => migrate(&backend, &args),
@@ -52,8 +52,14 @@ fn read_key(
 }
 
 /// `signer add`: store the key (or reference), then attach a first
-/// signer to every chain that has none (unless `--no-attach`).
-pub fn add(chainz: &mut Chainz, backend: &dyn KeyBackend, args: &SignerAddArgs) -> Result<i32> {
+/// signer to every chain that has none (unless `--no-attach`). A key or
+/// password not given on the command line is asked through `prompter`.
+pub fn add(
+    chainz: &mut Chainz,
+    backend: &dyn KeyBackend,
+    prompter: &dyn Prompter,
+    args: &SignerAddArgs,
+) -> Result<i32> {
     let name = args.name.as_str();
     check_name(chainz, name)?;
     let first = chainz.config().signers.is_empty();
@@ -115,9 +121,9 @@ pub fn add(chainz: &mut Chainz, backend: &dyn KeyBackend, args: &SignerAddArgs) 
             Provision::reference(Signer::one_password(vault, item, Some(address)))
         }
         Backend::Keyring | Backend::Encrypted | Backend::Plaintext => {
-            let key = read_key(&Terminal, name, args.stdin, args.key.clone())?;
+            let key = read_key(prompter, name, args.stdin, args.key.clone())?;
             Address::from_private_key(&key)?;
-            let provision = signer::provision(backend, &Terminal, name, &key, kind)?;
+            let provision = signer::provision(backend, prompter, name, &key, kind)?;
             if let Some(given) = address
                 && Some(given) != provision.signer.address
             {

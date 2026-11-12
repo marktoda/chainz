@@ -6,7 +6,7 @@ use crate::args::parse_headers;
 use crate::cli::{ChainSetArgs, usage_error};
 use crate::load::open;
 use crate::probe::check;
-use crate::prompt::{self, Ask, StdinTrim, Tty, is_tty, read_stdin_secret};
+use crate::prompt::{self, Ask, StdinTrim, Tty, read_stdin_secret};
 use crate::select::pick_chain;
 use crate::view;
 use anyhow::Result;
@@ -22,7 +22,7 @@ pub fn set(args: &ChainSetArgs, command: &[&str]) -> Result<i32> {
     // Usage and the chain first: stdin is read only for a valid command.
     let mut flags = build_edit(args, parse_headers(&args.headers)?, None);
     let menu_wanted = flags.is_empty() && !args.api_key_stdin && args.api_key.is_none();
-    if !is_tty() && (args.chain.is_none() || menu_wanted) {
+    if !Tty.is_interactive() && (args.chain.is_none() || menu_wanted) {
         return Err(usage_error(
             command,
             "off a terminal, name a chain and at least one change (on a terminal, no flags open a menu)",
@@ -32,7 +32,12 @@ pub fn set(args: &ChainSetArgs, command: &[&str]) -> Result<i32> {
         Some(query) => resolve::configured(chainz.config(), query, Policy::Prefix)?
             .0
             .to_string(),
-        None => pick_chain(&chainz, "Chain to change", "pass the chain to change")?,
+        None => pick_chain(
+            &chainz,
+            &mut Tty,
+            "Chain to change",
+            "pass the chain to change",
+        )?,
     };
     flags.api_key = api_key(args)?;
     let edit = if menu_wanted {
@@ -331,6 +336,12 @@ mod tests {
     }
 
     impl Ask for Script {
+        fn is_interactive(&self) -> bool {
+            true
+        }
+        fn multi_select(&mut self, message: &str, _: &[String], _: &[bool]) -> Result<Vec<usize>> {
+            panic!("'{message}' is not scripted")
+        }
         fn select(&mut self, message: &str, items: &[String], _: usize) -> Result<usize> {
             match self.next(message) {
                 Answer::Pick(i) => {

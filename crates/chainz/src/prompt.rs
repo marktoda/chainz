@@ -1,8 +1,11 @@
 //! Terminal prompts and stdin secrets. Interrupting a prompt (Ctrl-C, Esc)
 //! is [`ui::cancelled`], which exits 130.
 //!
-//! Interactive flows (the `chain set` menu, `init`) ask through [`Ask`],
-//! so tests drive them with scripted answers; [`Tty`] is the terminal.
+//! Interactive flows (pickers, the `chain set` menu, `init`, `chain add`)
+//! ask through [`Ask`], so tests drive them with scripted answers; [`Tty`]
+//! is the terminal. Core's hidden prompts (keys, passwords) take a
+//! `Prompter`: [`Terminal`] on the terminal, or [`AskPrompter`] to route
+//! them through an [`Ask`].
 
 use crate::ui;
 use anyhow::{Context, Result, bail};
@@ -17,7 +20,7 @@ pub fn is_tty() -> bool {
 }
 
 /// Yes or no.
-pub fn confirm(message: &str, default: bool) -> Result<bool> {
+fn confirm(message: &str, default: bool) -> Result<bool> {
     terminal_prompt(
         Confirm::new()
             .with_prompt(message)
@@ -62,8 +65,19 @@ pub fn confirm_or_yes(yes: bool, message: &str, consent: Consent<'_>) -> Result<
 /// The questions an interactive flow asks. Every method is a cancellation
 /// point: Ctrl-C or Esc is [`ui::cancelled`].
 pub trait Ask {
+    /// Whether questions can be asked at all (on the terminal: stdin and
+    /// stderr are both terminals). Off a terminal a flow takes its
+    /// non-interactive path instead of asking.
+    fn is_interactive(&self) -> bool;
     /// Pick one of `items`.
     fn select(&mut self, message: &str, items: &[String], default: usize) -> Result<usize>;
+    /// Pick any of `items` (`defaults` says which start picked).
+    fn multi_select(
+        &mut self,
+        message: &str,
+        items: &[String],
+        defaults: &[bool],
+    ) -> Result<Vec<usize>>;
     /// A line of text (`default` when the user just presses enter).
     fn text(&mut self, message: &str, default: Option<&str>) -> Result<String>;
     /// A hidden line (a key).
@@ -76,8 +90,28 @@ pub trait Ask {
 pub struct Tty;
 
 impl Ask for Tty {
+    fn is_interactive(&self) -> bool {
+        is_tty()
+    }
+
     fn select(&mut self, message: &str, items: &[String], default: usize) -> Result<usize> {
         select(message, items, default)
+    }
+
+    fn multi_select(
+        &mut self,
+        message: &str,
+        items: &[String],
+        defaults: &[bool],
+    ) -> Result<Vec<usize>> {
+        terminal_prompt(
+            MultiSelect::new()
+                .with_prompt(message)
+                .items(items)
+                .defaults(defaults)
+                .interact_opt(),
+        )?
+        .ok_or_else(ui::cancelled)
     }
 
     fn text(&mut self, message: &str, default: Option<&str>) -> Result<String> {
@@ -100,24 +134,12 @@ impl Ask for Tty {
 }
 
 /// Pick one of `items`.
-pub fn select(message: &str, items: &[String], default: usize) -> Result<usize> {
+fn select(message: &str, items: &[String], default: usize) -> Result<usize> {
     terminal_prompt(
         FuzzySelect::new()
             .with_prompt(format!("{message} (ESC to exit)"))
             .items(items)
             .default(default)
-            .interact_opt(),
-    )?
-    .ok_or_else(ui::cancelled)
-}
-
-/// Pick any of `items`.
-pub fn multi_select(message: &str, items: &[String], defaults: &[bool]) -> Result<Vec<usize>> {
-    terminal_prompt(
-        MultiSelect::new()
-            .with_prompt(message)
-            .items(items)
-            .defaults(defaults)
             .interact_opt(),
     )?
     .ok_or_else(ui::cancelled)
@@ -178,6 +200,28 @@ impl chainz_core::signer::Prompter for Terminal {
         Ok(Zeroizing::new(
             rpassword::prompt_password(prompt).context("failed to read the password")?,
         ))
+    }
+}
+
+/// Core's hidden prompts through an [`Ask`] (a flow that asks everything
+/// else there, `init` say). The prompt's trailing `": "` is dropped:
+/// [`Ask::secret`] adds its own.
+pub struct AskPrompter<'a>(std::cell::RefCell<&'a mut dyn Ask>);
+
+impl<'a> AskPrompter<'a> {
+    pub fn new(ask: &'a mut dyn Ask) -> Self {
+        Self(std::cell::RefCell::new(ask))
+    }
+}
+
+impl chainz_core::signer::Prompter for AskPrompter<'_> {
+    fn is_interactive(&self) -> bool {
+        self.0.borrow().is_interactive()
+    }
+
+    fn secret(&self, prompt: &str) -> Result<Zeroizing<String>> {
+        let message = prompt.trim_end().trim_end_matches(':');
+        self.0.borrow_mut().secret(message)
     }
 }
 

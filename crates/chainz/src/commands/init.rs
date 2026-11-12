@@ -9,12 +9,12 @@
 use super::{chain, signer};
 use crate::cli::{ChainAddArgs, Opt, SignerAddArgs};
 use crate::load::open;
-use crate::prompt::{Ask, Tty, is_tty};
+use crate::prompt::{Ask, AskPrompter, Tty};
 use crate::{ui, view};
 use anyhow::Result;
 use chainz_core::Chainz;
-use chainz_core::model::{Config, Explorer};
-use chainz_core::signer::SystemKeyBackend;
+use chainz_core::model::{Backend, Config, Explorer};
+use chainz_core::signer::{KeyBackend, SystemKeyBackend};
 use chainz_core::tx::ChainEdit;
 use clap::CommandFactory;
 use zeroize::Zeroizing;
@@ -33,16 +33,16 @@ pub fn no_command() -> Result<i32> {
 
 /// `chainz init`.
 pub fn run() -> Result<i32> {
-    if !is_tty() {
+    let ask = &mut Tty;
+    if !ask.is_interactive() {
         print!("{}", view::QUICK_START);
         return Ok(0);
     }
     let mut chainz = open()?;
-    let ask = &mut Tty;
     println!("{}", ui::section("Chains"));
     add_chains(&mut chainz, ask)?;
     println!("{}", ui::section("Signer"));
-    add_signer(&mut chainz, ask)?;
+    add_signer(&mut chainz, &SystemKeyBackend, ask)?;
     println!("{}", ui::section("Explorer"));
     if let Some(key) = etherscan_key(chainz.config(), ask)? {
         set_etherscan(&mut chainz, key)?;
@@ -85,13 +85,17 @@ fn add_chains(chainz: &mut Chainz, ask: &mut dyn Ask) -> Result<()> {
 
 /// Add a first signer (attached to every chain without one), unless one
 /// exists or the user skips it.
-fn add_signer(chainz: &mut Chainz, ask: &mut dyn Ask) -> Result<()> {
+fn add_signer(chainz: &mut Chainz, backend: &dyn KeyBackend, ask: &mut dyn Ask) -> Result<()> {
     if !chainz.config().signers.is_empty() {
         let names: Vec<&str> = chainz.config().signers.keys().map(String::as_str).collect();
         println!("Signers: {}", names.join(", "));
         return Ok(());
     }
-    if !ask.confirm("Add a signer (a private key in the OS keyring)?", true)? {
+    let storage = match chainz_core::signer::safe_default(backend) {
+        Backend::Keyring => "in the OS keyring",
+        _ => "encrypted in secrets.toml",
+    };
+    if !ask.confirm(&format!("Add a signer (a private key, {storage})?"), true)? {
         println!(
             "{}",
             ui::dim("skipped; later: `chainz signer add <name>` (keystore and 1Password work too)")
@@ -103,7 +107,7 @@ fn add_signer(chainz: &mut Chainz, ask: &mut dyn Ask) -> Result<()> {
         name: name.trim().to_string(),
         ..SignerAddArgs::default()
     };
-    signer::add(chainz, &SystemKeyBackend, &args).map(drop)
+    signer::add(chainz, backend, &AskPrompter::new(ask), &args).map(drop)
 }
 
 /// The Etherscan API key to store, if the user gives one. Asked only when
@@ -194,8 +198,14 @@ mod tests {
     }
 
     impl Ask for Script {
+        fn is_interactive(&self) -> bool {
+            true
+        }
         fn select(&mut self, _: &str, _: &[String], _: usize) -> Result<usize> {
             Ok(self.next().parse()?)
+        }
+        fn multi_select(&mut self, _: &str, _: &[String], _: &[bool]) -> Result<Vec<usize>> {
+            self.next().split(',').map(|i| Ok(i.parse()?)).collect()
         }
         fn text(&mut self, _: &str, _: Option<&str>) -> Result<String> {
             Ok(self.next().to_string())
@@ -279,6 +289,46 @@ api = "https://blockscout.example/api"
             pick_default(&config("default = \"base\""), &mut Script(vec![])).unwrap(),
             None
         );
+    }
+
+    /// No keyring: the safe default is an encrypted key.
+    struct NoKeyring;
+
+    impl KeyBackend for NoKeyring {
+        fn keyring_available(&self) -> bool {
+            false
+        }
+        fn keyring_get(&self, _: &str, _: &str) -> Result<Zeroizing<String>> {
+            bail!("no keyring")
+        }
+        fn keyring_set(&self, _: &str, _: &str, _: &str) -> Result<bool> {
+            bail!("no keyring")
+        }
+        fn keyring_delete(&self, _: &str, _: &str) -> Result<()> {
+            bail!("no keyring")
+        }
+        fn one_password_get(&self, _: &str, _: &str) -> Result<Zeroizing<String>> {
+            bail!("no op")
+        }
+    }
+
+    #[test]
+    fn the_signer_step_asks_everything_through_ask() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = chainz_core::StorePaths::in_dir(dir.path().join("chainz"));
+        let mut chainz = Chainz::open_at(paths, chainz_core::LoadMode::Strict).unwrap();
+        // Name, key, then the encryption password twice: no terminal.
+        let key = "0x4c0883a69102937d6231471b5dbb6204fe512961708279f22a82e1d1b1c2f8f2";
+        let mut script = Script(vec!["y", " ops ", key, "pw", "pw"]);
+        add_signer(&mut chainz, &NoKeyring, &mut script).unwrap();
+        assert!(script.0.is_empty(), "unasked: {:?}", script.0);
+        assert_eq!(chainz.config().signers["ops"].backend, Backend::Encrypted);
+        // Declined: nothing is asked after.
+        let dir = tempfile::tempdir().unwrap();
+        let paths = chainz_core::StorePaths::in_dir(dir.path().join("chainz"));
+        let mut chainz = Chainz::open_at(paths, chainz_core::LoadMode::Strict).unwrap();
+        add_signer(&mut chainz, &NoKeyring, &mut Script(vec!["n"])).unwrap();
+        assert!(chainz.config().signers.is_empty());
     }
 
     /// The README's quick start is this one.

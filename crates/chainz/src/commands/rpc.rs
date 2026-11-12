@@ -4,7 +4,7 @@ use crate::args::parse_headers;
 use crate::cli::{BenchArgs, DiscoverArgs, RpcAddArgs, RpcCommand, RpcLsArgs, RpcRmArgs};
 use crate::load::open;
 use crate::probe::{self, Depth, Repair, check, probe_urls};
-use crate::prompt::{self, Consent, is_tty};
+use crate::prompt::{self, Ask, Consent, Tty};
 use crate::view::EndpointView;
 use crate::{net, ui};
 use anyhow::{Result, bail};
@@ -242,9 +242,9 @@ fn discover(args: &DiscoverArgs) -> Result<i32> {
         .collect();
     let picked = if args.yes {
         answered
-    } else if is_tty() {
+    } else if Tty.is_interactive() {
         let defaults: Vec<bool> = (0..order.len()).map(|p| answered.contains(&p)).collect();
-        prompt::multi_select("Endpoints to add", &items, &defaults)?
+        Tty.multi_select("Endpoints to add", &items, &defaults)?
     } else {
         for item in &items {
             println!("{item}");

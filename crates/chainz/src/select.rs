@@ -2,7 +2,7 @@
 //! `$CHAINZ_CHAIN` / default / picker steps of the resolution order
 //! (`chainz_core::resolve` has the matching rules).
 
-use crate::prompt::{self, is_tty};
+use crate::prompt::{Ask, Tty};
 use anyhow::{Result, bail};
 use chainz_core::Chainz;
 use chainz_core::resolve::{self, ChainRef, Source};
@@ -11,19 +11,24 @@ use chainz_core::runtime::Runtime;
 /// Interactive picker over configured chains. Off a TTY it fails with
 /// "no chain given: {off_tty}", where `off_tty` says how to name one for
 /// this command.
-pub fn pick_chain(chainz: &Chainz, message: &str, off_tty: &str) -> Result<String> {
+pub fn pick_chain(
+    chainz: &Chainz,
+    ask: &mut dyn Ask,
+    message: &str,
+    off_tty: &str,
+) -> Result<String> {
     let chains = &chainz.config().chains;
     if chains.is_empty() {
         bail!("{}", resolve::NO_CHAINS);
     }
-    if !is_tty() {
+    if !ask.is_interactive() {
         bail!("no chain given: {off_tty}");
     }
     let items: Vec<String> = chains
         .iter()
         .map(|(n, c)| format!("{n} ({})", c.id))
         .collect();
-    let index = prompt::select(message, &items, 0)?;
+    let index = ask.select(message, &items, 0)?;
     Ok(chains
         .get_index(index)
         .expect("picked from the list")
@@ -46,6 +51,7 @@ pub fn select_target(
         Some((target, _)) => Ok(target),
         None => pick_chain(
             chainz,
+            &mut Tty,
             "Select a chain",
             "pass one, set $CHAINZ_CHAIN, or set a default with `chainz use <chain>`",
         )
