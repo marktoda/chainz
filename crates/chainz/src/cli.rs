@@ -279,6 +279,9 @@ pub struct DoctorArgs {
     /// Verify the built-in token registry on chain (checks only)
     #[arg(long, conflicts_with = "fix")]
     pub tokens: bool,
+    /// List each finding of a group (one cause on many chains)
+    #[arg(short, long)]
+    pub verbose: bool,
 }
 
 #[derive(Debug, Args)]

@@ -189,6 +189,12 @@ changed before 2.0.0; they are listed under Removed and Changed.
 - `var ls` has a header row and summarises what uses each variable
   (`24 endpoints on 17 chains`, `explorer etherscan`); `-v` lists every
   config path under it, and `--json` keeps the full `used_by` list.
+- `doctor` prints one line for one cause on many chains (`'quicknode' on
+  19 chains: literal credential in the URL …`, `active endpoint 'alchemy'
+  is failing (connection failed) on 17 chains`); `-v` lists each finding
+  under it. Without `--fix`, the closing line says what `--fix` would do
+  (`would move 3 credentials, switch 2 active endpoints`) or that it can't
+  repair these.
 
 - Writes say what changed: `chain set` and `update` print each change as
   a transition (`active endpoint: alchemy → infura`) with its side effects

@@ -13,14 +13,65 @@ use chainz_core::extract::{self, Location};
 use chainz_core::labels::LabelIndex;
 use chainz_core::model::{Backend, Config};
 use chainz_core::{Chainz, paths, validate};
+use indexmap::IndexMap;
 
 #[derive(Default)]
 struct Report {
     problems: usize,
     fixed: usize,
+    /// `-v`: list each finding of a group.
+    verbose: bool,
+    /// What `--fix` would repair, when not fixing: file modes, literal
+    /// credentials, active endpoints.
+    would_chmod: usize,
+    would_move: usize,
+    would_switch: usize,
+}
+
+/// One finding on one record: the chain (or explorer) it is about, and
+/// the line it prints alone.
+struct Finding {
+    on: String,
+    alone: String,
+}
+
+/// Findings keyed by cause (what, and what is wrong with it), in
+/// first-seen order: one cause across many chains prints as one line.
+type Groups<T = Finding> = IndexMap<(String, String), Vec<T>>;
+
+/// Where a group's findings are: the names when there are a few, else a
+/// count (`eth, base`, `17 chains`).
+fn places(findings: &[Finding], noun: &str) -> String {
+    if findings.len() <= 3 {
+        findings
+            .iter()
+            .map(|f| f.on.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    } else {
+        ui::count(findings.len(), noun)
+    }
 }
 
 impl Report {
+    /// Report a group of problems with one cause: a single finding as its
+    /// own line, more as `line(places)` (each finding under it with `-v`).
+    fn problems(&mut self, findings: &[Finding], line: impl FnOnce(&str) -> String) {
+        match findings {
+            [] => {}
+            [one] => self.problem(&one.alone),
+            _ => {
+                self.problems += findings.len();
+                println!("{}", ui::fail(&line(&places(findings, "chain"))));
+                if self.verbose {
+                    for f in findings {
+                        println!("    {}", ui::dim(&f.alone));
+                    }
+                }
+            }
+        }
+    }
+
     fn ok(&self, msg: &str) {
         println!("{}", ui::success(msg));
     }
@@ -43,7 +94,10 @@ pub fn run(args: &DoctorArgs) -> Result<i32> {
         return tokens::run();
     }
     let mut chainz = open_lenient()?;
-    let mut report = Report::default();
+    let mut report = Report {
+        verbose: args.verbose,
+        ..Report::default()
+    };
 
     println!("{}", ui::section("files"));
     files(&chainz, fix, &mut report);
@@ -86,19 +140,38 @@ pub fn run(args: &DoctorArgs) -> Result<i32> {
     rpc_health(&mut chainz, fix, &mut report)?;
 
     println!();
-    if report.problems == 0 {
-        println!("{}", ui::success("no problems found"));
-        Ok(0)
-    } else {
-        let hint = if fix { "" } else { " (try --fix)" };
-        println!(
-            "{}",
+    println!("{}", report.summary(fix));
+    Ok(if report.problems > report.fixed { 1 } else { 0 })
+}
+
+impl Report {
+    /// The closing line: no problems, how many were fixed, or what
+    /// `--fix` would do.
+    fn summary(&self, fix: bool) -> String {
+        if self.problems == 0 {
+            return ui::success("no problems found");
+        }
+        let problems = ui::count(self.problems, "problem");
+        if fix {
+            return ui::fail(&format!("{problems}, {} fixed", self.fixed));
+        }
+        let would: Vec<String> = [
+            (self.would_chmod, "fix", "file mode"),
+            (self.would_move, "move", "credential"),
+            (self.would_switch, "switch", "active endpoint"),
+        ]
+        .into_iter()
+        .filter(|(n, ..)| *n > 0)
+        .map(|(n, verb, noun)| format!("{verb} {}", ui::count(n, noun)))
+        .collect();
+        if would.is_empty() {
+            ui::fail(&format!("{problems}; `--fix` can't repair these"))
+        } else {
             ui::fail(&format!(
-                "{} problem(s), {} fixed{hint}",
-                report.problems, report.fixed
+                "{problems}; `chainz doctor --fix` would {}",
+                would.join(", ")
             ))
-        );
-        Ok(if report.problems > report.fixed { 1 } else { 0 })
+        }
     }
 }
 
@@ -125,7 +198,9 @@ fn files(chainz: &Chainz, fix: bool, report: &mut Report) {
         if !chainz_os::is_private_mode(m) {
             let msg = format!("{} is mode {m:o}, expected {want:o}", path.display());
             report.problem(&msg);
-            if fix {
+            if !fix {
+                report.would_chmod += 1;
+            } else {
                 use std::os::unix::fs::PermissionsExt;
                 match std::fs::set_permissions(path, std::fs::Permissions::from_mode(want)) {
                     Ok(()) => report.fixed(&msg),
@@ -170,24 +245,68 @@ fn credentials(chainz: &mut Chainz, fix: bool, report: &mut Report) -> Result<()
     let plan = extract::plan_secret_extraction(&config, &vars);
     let mut found = 0;
     // Credentials in a URL that only a person can move (user info, a key
-    // in the query or an unknown provider's path).
+    // in the query or an unknown provider's path), one line per endpoint
+    // name and kind.
+    let mut manual = Groups::new();
     for (chain, c) in &config.chains {
         for (ep, e) in &c.rpcs {
             if let Some(kind) = extract::manual_credential(&e.url) {
-                found += 1;
-                report.problem(&format!(
-                    "chains.{chain}.rpcs.{ep}: literal credential in the URL ({kind}); move it into a variable by hand"
-                ));
+                let problem = format!(
+                    "literal credential in the URL ({kind}); move it into a variable by hand"
+                );
+                manual
+                    .entry((format!("'{ep}'"), problem.clone()))
+                    .or_default()
+                    .push(Finding {
+                        on: chain.clone(),
+                        alone: format!("chains.{chain}.rpcs.{ep}: {problem}"),
+                    });
             }
         }
     }
+    // Credentials `--fix` moves, one line per record name and kind.
+    let mut movable = Groups::new();
     for moved in &plan.moved {
-        found += 1;
-        report.problem(&match &moved.location {
-            Location::Url { .. } => format!("{}: literal API key in the URL", moved.location),
-            Location::Header { .. } => format!("{} holds a literal value", moved.location),
-            Location::ExplorerKey { .. } => format!("{}: literal API key", moved.location),
+        let (on, subject, problem) = match &moved.location {
+            Location::Url { chain, endpoint } => (
+                chain,
+                format!("'{endpoint}'"),
+                "literal API key in the URL".to_string(),
+            ),
+            Location::Header {
+                chain,
+                endpoint,
+                header,
+            } => (
+                chain,
+                format!("'{endpoint}'"),
+                format!("header '{header}' holds a literal value"),
+            ),
+            Location::ExplorerKey { explorer } => (
+                explorer,
+                format!("explorers.{explorer}.key"),
+                "literal API key".to_string(),
+            ),
+        };
+        movable
+            .entry((subject, problem.clone()))
+            .or_default()
+            .push(Finding {
+                on: on.clone(),
+                alone: match &moved.location {
+                    Location::Header { .. } => format!("{} holds a literal value", moved.location),
+                    _ => format!("{}: {problem}", moved.location),
+                },
+            });
+    }
+    for ((subject, problem), findings) in manual.iter().chain(&movable) {
+        found += findings.len();
+        report.problems(findings, |places| {
+            format!("{subject} on {places}: {problem}")
         });
+    }
+    if !fix {
+        report.would_move += plan.moved.len();
     }
     if found == 0 {
         report.ok("no literal credentials in config.toml");
@@ -248,6 +367,9 @@ fn rpc_health(chainz: &mut Chainz, fix: bool, report: &mut Report) -> Result<()>
         &mut store,
     ))?;
     let mut repairs: Vec<(String, Repair)> = Vec::new();
+    // Failing active endpoints, one line per endpoint name and problem;
+    // whether a healthy endpoint could replace each.
+    let mut failing: Groups<(Finding, Option<Repair>)> = Groups::new();
     for p in &probed {
         let c = &chainz.config().chains[&p.chain];
         let Some(active) = p.index_of(&c.rpc) else {
@@ -267,16 +389,39 @@ fn rpc_health(chainz: &mut Chainz, fix: bool, report: &mut Report) -> Result<()>
             ));
             continue;
         };
-        report.problem(&format!(
-            "{}: active endpoint '{}' {problem}",
-            p.chain, c.rpc
-        ));
-        if let Some(repair) = Repair::propose(&p.chain, c, p, &ranking) {
-            if fix {
-                repairs.push((c.rpc.clone(), repair));
-            } else {
+        let finding = Finding {
+            on: p.chain.clone(),
+            alone: format!("{}: active endpoint '{}' {problem}", p.chain, c.rpc),
+        };
+        let repair = Repair::propose(&p.chain, c, p, &ranking);
+        failing
+            .entry((c.rpc.clone(), problem))
+            .or_default()
+            .push((finding, repair));
+    }
+    for ((ep, problem), group) in failing {
+        let (findings, proposed): (Vec<Finding>, Vec<Option<Repair>>) = group.into_iter().unzip();
+        report.problems(&findings, |places| {
+            format!("active endpoint '{ep}' {problem} on {places}")
+        });
+        let proposed: Vec<Repair> = proposed.into_iter().flatten().collect();
+        if fix {
+            repairs.extend(proposed.into_iter().map(|r| (ep.clone(), r)));
+            continue;
+        }
+        report.would_switch += proposed.len();
+        match (findings.len(), proposed.as_slice()) {
+            (_, []) => {}
+            (1, [repair]) => {
                 println!("  {}", ui::dim(&format!("'{}' is healthy", repair.active)));
             }
+            (n, _) => println!(
+                "  {}",
+                ui::dim(&format!(
+                    "a healthy endpoint can replace it on {} of {n}",
+                    proposed.len()
+                ))
+            ),
         }
     }
     if !repairs.is_empty() {

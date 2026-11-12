@@ -1178,6 +1178,62 @@ fn doctor_reports_dead_rpc_and_plaintext_signer() {
 }
 
 #[test]
+fn doctor_groups_one_cause_across_chains() {
+    let sb = Sandbox::new();
+    let chains = [("eth", 1), ("base", 8453), ("op", 10), ("arb", 42161)];
+    let mut toml = String::from("version = 2\n");
+    for (name, id) in chains {
+        toml.push_str(&format!(
+            "\n[chains.{name}]\nid = {id}\nrpc = \"local\"\n[chains.{name}.rpcs]\nlocal = \"http://127.0.0.1:1\"\nqn = \"http://127.0.0.1:1/abcDEF0123456789abcdef0123456789xyz/\"\n"
+        ));
+    }
+    sb.write_config(&toml);
+    set_mode(&sb.dir(), 0o700);
+    let out = sb.run(&["doctor"]);
+    assert_eq!(out.status.code(), Some(1));
+    let text = stdout(&out);
+    assert!(
+        text.contains("'qn' on 4 chains: literal credential in the URL (path segment)"),
+        "{text}"
+    );
+    assert!(
+        text.contains("active endpoint 'local' is failing (connection failed) on 4 chains"),
+        "{text}"
+    );
+    assert!(!text.contains("eth: active endpoint"), "{text}");
+    // Every instance counts; nothing here is for --fix.
+    assert!(
+        text.contains("8 problems; `--fix` can't repair these"),
+        "{text}"
+    );
+    // -v lists each finding under its group.
+    let verbose = stdout(&sb.run(&["doctor", "-v"]));
+    assert!(
+        verbose.contains("chains.arb.rpcs.qn: literal credential"),
+        "{verbose}"
+    );
+    assert!(
+        verbose.contains("op: active endpoint 'local' is failing"),
+        "{verbose}"
+    );
+}
+
+#[test]
+fn doctor_says_what_fix_would_do() {
+    let sb = Sandbox::new();
+    sb.write_config("version = 2\n[chains.eth]\nid = 1\nrpc = \"local\"\n[chains.eth.rpcs]\nlocal = \"http://127.0.0.1:1\"\ninfura = \"https://mainnet.infura.invalid/v3/0123456789abcdef0123456789abcdef\"\n");
+    sb.write_secrets("");
+    set_mode(&sb.dir(), 0o700);
+    set_mode(&sb.secrets_path(), 0o600);
+    set_mode(&sb.config_path(), 0o600);
+    let text = stdout(&sb.run(&["doctor"]));
+    assert!(
+        text.contains("`chainz doctor --fix` would move 1 credential"),
+        "{text}"
+    );
+}
+
+#[test]
 fn doctor_fix_moves_literal_credentials_into_variables() {
     let sb = Sandbox::new();
     let url = chain_id_rpc(1);
