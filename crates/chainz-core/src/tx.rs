@@ -23,6 +23,9 @@ use serde::Serialize;
 use std::path::Path;
 use toml_edit::{DocumentMut, InlineTable, Item, Key, Table, TableLike, Value, value};
 
+mod chain_edit;
+pub use chain_edit::{Attach, Attached, ChainEdit, EditReport};
+
 /// The documents being edited inside [`Chainz::transact`](crate::store::Chainz::transact).
 pub struct Tx {
     config: DocumentMut,
@@ -120,13 +123,6 @@ impl Tx {
                 self.config.remove("default");
             }
         }
-    }
-
-    /// Insert a new `[chains.NAME]` table (with `[chains.NAME.rpcs]`).
-    pub fn insert_chain(&mut self, name: &str, chain: &Chain) -> Result<()> {
-        self.config()?
-            .check_new_chain(name, chain.id, chain.signer.as_deref())?;
-        self.put_chain(name, chain)
     }
 
     /// [`insert_chain`](Self::insert_chain) without the checks, for a

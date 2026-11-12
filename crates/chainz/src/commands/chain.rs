@@ -9,6 +9,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use chainz_core::labels::LabelIndex;
 use chainz_core::model::{Chain, Endpoint};
 use chainz_core::resolve::Policy;
+use chainz_core::tx::Attach;
 use chainz_core::{names, resolve};
 use chainz_rpc::chainlist::{self, ChainlistEntry};
 use chainz_rpc::{ProbeResult, rank};
@@ -262,7 +263,7 @@ fn add(
             failover: vec![],
             rpcs: rpcs.into_iter().collect(),
         };
-        tx.insert_chain(&short, &new)?;
+        tx.insert_chain(&short, &new, Attach::Nothing)?;
         Ok(moved)
     })?;
     println!("Added chain '{short}' ({id}) with {count} endpoint(s); active: {active}");

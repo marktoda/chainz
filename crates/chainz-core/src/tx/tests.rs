@@ -51,7 +51,7 @@ fn insert_rename_remove_chain() {
         failover: vec![],
         rpcs,
     };
-    tx.insert_chain("base", &base).unwrap();
+    tx.insert_chain("base", &base, Attach::Nothing).unwrap();
     let out = text(&tx);
     assert!(
         out.contains(
@@ -64,9 +64,11 @@ fn insert_rename_remove_chain() {
         "{out}"
     );
     // The checks `chain add` relies on.
-    let err = tx.insert_chain("base", &base).unwrap_err();
+    let err = tx.insert_chain("base", &base, Attach::Nothing).unwrap_err();
     assert!(err.to_string().contains("already exists"), "{err}");
-    let err = tx.insert_chain("base2", &base).unwrap_err();
+    let err = tx
+        .insert_chain("base2", &base, Attach::Nothing)
+        .unwrap_err();
     assert!(
         err.to_string().contains("already configured as 'base'"),
         "{err}"
@@ -74,7 +76,9 @@ fn insert_rename_remove_chain() {
     let mut ghost = base.clone();
     ghost.id = 99;
     ghost.signer = Some("ghost".into());
-    let err = tx.insert_chain("other", &ghost).unwrap_err();
+    let err = tx
+        .insert_chain("other", &ghost, Attach::Nothing)
+        .unwrap_err();
     assert!(
         err.to_string().contains("signer 'ghost' not found"),
         "{err}"
@@ -436,4 +440,152 @@ fn config_errors_do_not_echo_the_source_line() {
     let err = format!("{:#}", tx.config().unwrap_err());
     assert!(!err.contains("super-secret-key"), "{err}");
     assert!(err.contains("edited config does not parse"), "{err}");
+}
+
+const SIGNER: &str = "[signers.deployer]\nbackend = \"keystore\"\npath = \"/k\"\naddress = \"0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf\"\n";
+
+#[test]
+fn edit_chain_applies_one_patch() {
+    let mut tx = tx(&format!("{DOC}{SIGNER}"));
+    let edit = ChainEdit {
+        signer: Some(Some("deployer".into())),
+        rpc: Some("https://mainnet.infura.io/v3/0123456789abcdef0123456789abcdef".into()),
+        headers: vec![("x-tag".into(), "chainz".into())],
+        failover: Some(vec!["a".into()]),
+        explorer: Some(Some("etherscan".into())),
+        api_key: Some(zeroize::Zeroizing::new("es-key".into())),
+        add_aliases: vec!["Mainnet".into(), "eth".into()],
+        name: Some("mainnet-eth".into()),
+        ..ChainEdit::default()
+    };
+    let report = tx.edit_chain("eth", &edit).unwrap();
+    assert_eq!(report.chain, "mainnet-eth");
+    assert_eq!(report.added_endpoint.as_deref(), Some("infura"));
+    assert_eq!(report.created_explorer.as_deref(), Some("etherscan"));
+    assert_eq!(report.api_key_var.as_deref(), Some("ETHERSCAN_API_KEY"));
+    assert_eq!(report.moved.len(), 1, "{:?}", report.moved);
+    let config = tx.config().unwrap();
+    let chain = &config.chains["mainnet-eth"];
+    assert_eq!(chain.rpc, "infura");
+    assert_eq!(
+        chain.rpcs["infura"].url,
+        "https://mainnet.infura.io/v3/${INFURA_KEY}"
+    );
+    assert_eq!(chain.rpcs["infura"].headers["x-tag"], "chainz");
+    assert_eq!(chain.failover, ["a"]);
+    assert_eq!(chain.signer.as_deref(), Some("deployer"));
+    assert_eq!(chain.explorer.as_deref(), Some("etherscan"));
+    assert_eq!(chain.aliases, ["Mainnet"]);
+    assert_eq!(
+        config.explorers["etherscan"].api,
+        "https://api.etherscan.io/v2/api?chainid=${CHAIN_ID}"
+    );
+    let secrets = tx.secrets().unwrap();
+    assert_eq!(secrets.vars["ETHERSCAN_API_KEY"], "es-key");
+    assert!(secrets.vars["INFURA_KEY"].starts_with("0123"));
+    let (config_text, _) = tx.texts();
+    assert!(
+        config_text.contains("# eth is my main chain"),
+        "{config_text}"
+    );
+    assert!(config_text.contains("# keep me"), "{config_text}");
+    assert_eq!(config.default.as_deref(), Some("mainnet-eth"));
+}
+
+#[test]
+fn edit_chain_rejects_what_it_cannot_apply() {
+    let err = |edit: ChainEdit| tx(DOC).edit_chain("eth", &edit).unwrap_err().to_string();
+    assert!(
+        err(ChainEdit {
+            rpc: Some("nope".into()),
+            ..Default::default()
+        })
+        .contains("no endpoint 'nope'")
+    );
+    assert!(
+        err(ChainEdit {
+            signer: Some(Some("ghost".into())),
+            ..Default::default()
+        })
+        .contains("chainz signer add ghost")
+    );
+    assert!(
+        err(ChainEdit {
+            failover: Some(vec!["a".into()]),
+            ..Default::default()
+        })
+        .contains("active endpoint")
+    );
+    assert!(
+        err(ChainEdit {
+            explorer: Some(Some("blockscout".into())),
+            ..Default::default()
+        })
+        .contains("built in")
+    );
+    assert!(
+        err(ChainEdit {
+            add_aliases: vec!["10".into()],
+            ..Default::default()
+        })
+        .contains("number")
+    );
+    assert!(
+        err(ChainEdit {
+            remove_aliases: vec!["x".into()],
+            ..Default::default()
+        })
+        .contains("no alias")
+    );
+    assert!(
+        err(ChainEdit {
+            api_key: Some(zeroize::Zeroizing::new("k".into())),
+            ..Default::default()
+        })
+        .contains("no explorer")
+    );
+    // An existing URL activates its endpoint; nothing is added.
+    let mut doc = tx(DOC);
+    let edit = ChainEdit {
+        rpc: Some("https://b.example".into()),
+        ..Default::default()
+    };
+    let report = doc.edit_chain("eth", &edit).unwrap();
+    assert_eq!(report.added_endpoint, None);
+    let chain = &doc.config().unwrap().chains["eth"];
+    assert_eq!((chain.rpc.as_str(), chain.failover.len()), ("b", 0));
+}
+
+#[test]
+fn defaults_attach_the_only_signer_and_the_builtin_explorer() {
+    let mut tx = tx(&format!(
+        "{DOC}{SIGNER}[explorers.etherscan]\napi = \"https://api.etherscan.io/v2/api?chainid=${{CHAIN_ID}}\"\n"
+    ));
+    let base = Chain {
+        id: 8453,
+        aliases: vec![],
+        signer: None,
+        explorer: None,
+        rpc: "a".into(),
+        failover: vec![],
+        rpcs: IndexMap::from([("a".to_string(), Endpoint::new("https://base.example"))]),
+    };
+    let attached = tx.insert_chain("base", &base, Attach::Defaults).unwrap();
+    assert_eq!(attached.signer.as_deref(), Some("deployer"));
+    assert_eq!(attached.explorer.as_deref(), Some("etherscan"));
+    let mut op = base.clone();
+    op.id = 10;
+    let attached = tx.insert_chain("op", &op, Attach::ExplorerOnly).unwrap();
+    assert_eq!(attached.signer, None);
+    assert_eq!(attached.explorer.as_deref(), Some("etherscan"));
+    let attached = tx.attach_signer_where_missing("deployer").unwrap();
+    assert_eq!(attached, ["eth", "op"]);
+    let config = tx.config().unwrap();
+    assert!(
+        config
+            .chains
+            .values()
+            .all(|c| c.signer.as_deref() == Some("deployer"))
+    );
+    assert!(tx.attach_signer_where_missing("ghost").is_err());
 }

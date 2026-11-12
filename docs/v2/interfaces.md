@@ -308,6 +308,23 @@ and the gateway all use it.
   completion: no v1 migration, no permission changes, no validation.
   `migrate::migrate_locked(&WriteLock)` takes the held lock as proof; a
   migration that runs inside `transact` is reported like one on first load.
+- Chain edits: `tx.edit_chain(name, &ChainEdit) -> Result<EditReport>` applies
+  one patch (`chain set` flags or its menu): signer, `rpc` (an endpoint name,
+  or a URL: an existing one activates, a new one is added with its secrets
+  extracted and activated), headers and `clear_headers` on that endpoint (or
+  the active one), failover, explorer (`etherscan` creates the built-in
+  `Explorer::etherscan()`: `api = "https://api.etherscan.io/v2/api?chainid=${CHAIN_ID}"`,
+  `key = "${ETHERSCAN_API_KEY}"`, the URL v1 migration writes), `api_key`
+  (stored in the explorer's variable, `ETHERSCAN_API_KEY` or
+  `<EXPLORER>_API_KEY`), aliases, and the rename last. `EditReport` lists the
+  changes, the added endpoint, the created explorer, the key variable and
+  the moved secrets. Checking a new URL's chain ID is the caller's (network)
+  job. `tx.insert_chain(name, &chain, Attach)` checks name, ID and signer and,
+  with `Attach::Defaults`, attaches the only signer and
+  `[explorers.etherscan]` if configured (`Attach::ExplorerOnly` for
+  `--no-signer`, `Attach::Nothing` keeps the chain as given; `Attached` says
+  what was added). `tx.attach_signer_where_missing(signer)` gives a first
+  signer to every chain without one and returns them.
 - Notices: core never prints. A load or write that has something to say (a
   v1 migration, a file whose loose permissions could not be tightened)
   queues a `store::Notice` on the `Chainz`; take them with `take_notices()`
