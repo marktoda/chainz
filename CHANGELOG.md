@@ -302,9 +302,17 @@ changed before 2.0.0; they are listed under Removed and Changed.
   ID (and `--name`).
 - Ranking endpoints (`doctor CHAIN`, was `rpc bench`) showed dead
   endpoints with a `0ms` latency and ranked them by how fast they failed.
-  They now come last in config order, with `–` and what went wrong (`✗
-  connection failed`); the chain says how many endpoints answered, and a
-  chain with no healthy endpoint is a problem (exit 1).
+  They now come last in config order, with what went wrong (`✗ connection
+  failed`); the chain says how many endpoints answered, and a chain with no
+  healthy endpoint is a problem (exit 1). `doctor` with no chain names the
+  next step when nothing configured can replace a failing active endpoint
+  (`chainz doctor CHAIN --discover`).
+- A foreground `serve` or `fork` whose terminal went away (a closed pipe)
+  exited without cleaning up, leaving `serve.json`, a fork's record and a
+  running anvil behind. Notices to a closed terminal are now dropped and
+  the process cleans up as usual.
+- Completion for `update CHAIN --rm-rpc` no longer offers the active
+  endpoint, which `update` refuses to remove.
 - An endpoint that can't be probed (a `${VAR}` set nowhere) is a `doctor`
   problem and exits 1. Benching a chain whose only endpoint was one said
   "no HTTP endpoints to probe" and exited 0, and `doctor` called such an
