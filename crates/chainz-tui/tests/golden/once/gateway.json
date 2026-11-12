@@ -663,6 +663,8 @@
         "errors": 3,
         "rate_limited": 12,
         "failovers": 1,
+        "p50_ms": 0,
+        "p95_ms": 0,
         "bytes": 379904,
         "methods": [
           {
@@ -729,6 +731,8 @@
         "errors": 0,
         "rate_limited": 0,
         "failovers": 0,
+        "p50_ms": 0,
+        "p95_ms": 0,
         "bytes": 4608000,
         "methods": [
           {

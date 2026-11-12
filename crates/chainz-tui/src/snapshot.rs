@@ -16,7 +16,7 @@ use chainz_rpc::abi::units::format_exact;
 
 /// The whole document.
 #[derive(Debug, Serialize)]
-pub struct Snapshot {
+pub struct Snapshot<'a> {
     /// When the snapshot was taken, unix seconds.
     pub at: u64,
     /// The gateway, if one runs.
@@ -26,7 +26,7 @@ pub struct Snapshot {
     /// Every signer with a cached address.
     pub balances: Vec<SignerBalances>,
     /// The gateway's status and metrics; `null` without a gateway.
-    pub traffic: Option<Traffic>,
+    pub traffic: Option<&'a model::TrafficSnapshot>,
 }
 
 /// Whether a gateway runs.
@@ -267,119 +267,9 @@ fn balances(state: &State) -> Vec<SignerBalances> {
         .collect()
 }
 
-/// The gateway's status and metrics.
-#[derive(Debug, Serialize)]
-pub struct Traffic {
-    /// Gateway version.
-    pub version: String,
-    /// Gateway port.
-    pub port: u16,
-    /// Seconds since the gateway started.
-    pub uptime_secs: u64,
-    /// Served chains.
-    pub chains: Vec<GatewayChain>,
-    /// Metrics windows, shortest first.
-    pub windows: Vec<TrafficWindow>,
-}
-
-/// The gateway's view of one chain.
-#[derive(Debug, Serialize)]
-pub struct GatewayChain {
-    /// Chain name.
-    pub chain: String,
-    /// The endpoint it serves from.
-    pub active: String,
-    /// Head high-water mark.
-    pub head: Option<u64>,
-}
-
-/// One metrics window.
-#[derive(Debug, Serialize)]
-pub struct TrafficWindow {
-    /// Window length.
-    pub window_secs: u64,
-    /// Requests in the window.
-    pub requests: u64,
-    /// Errors in the window.
-    pub errors: u64,
-    /// 429s in the window.
-    pub rate_limited: u64,
-    /// Failovers in the window.
-    pub failovers: u64,
-    /// Response bytes in the window.
-    pub bytes: u64,
-    /// Per method, busiest first.
-    pub methods: Vec<TrafficRow>,
-    /// Per `chain/endpoint`, busiest first.
-    pub endpoints: Vec<TrafficRow>,
-}
-
-/// One method or endpoint within a window.
-#[derive(Debug, Serialize)]
-pub struct TrafficRow {
-    /// Method name, or `chain/endpoint`.
-    pub name: String,
-    /// Requests.
-    pub requests: u64,
-    /// Errors of every class.
-    pub errors: u64,
-    /// HTTP 429s.
-    pub rate_limited: u64,
-    /// Failovers.
-    pub failovers: u64,
-    /// Median latency (request-weighted across merged rows).
-    pub p50_ms: u32,
-    /// Worst 95th percentile among merged rows.
-    pub p95_ms: u32,
-}
-
-fn traffic(t: &model::TrafficSnapshot) -> Traffic {
-    let rows = |rows: &[model::TrafficRow]| -> Vec<TrafficRow> {
-        rows.iter()
-            .map(|r| TrafficRow {
-                name: r.name.clone(),
-                requests: r.requests,
-                errors: r.errors,
-                rate_limited: r.rate_limited,
-                failovers: r.failovers,
-                p50_ms: r.p50_ms,
-                p95_ms: r.p95_ms,
-            })
-            .collect()
-    };
-    Traffic {
-        version: t.version.clone(),
-        port: t.port,
-        uptime_secs: t.uptime_secs,
-        chains: t
-            .chains
-            .iter()
-            .map(|c| GatewayChain {
-                chain: c.chain.clone(),
-                active: c.active.clone(),
-                head: c.head,
-            })
-            .collect(),
-        windows: t
-            .windows
-            .iter()
-            .map(|w| TrafficWindow {
-                window_secs: w.window_secs,
-                requests: w.totals.requests,
-                errors: w.totals.errors,
-                rate_limited: w.totals.rate_limited,
-                failovers: w.totals.failovers,
-                bytes: w.totals.bytes,
-                methods: rows(&w.methods),
-                endpoints: rows(&w.endpoints),
-            })
-            .collect(),
-    }
-}
-
-impl Snapshot {
+impl<'a> Snapshot<'a> {
     /// The snapshot of `state` at `now_ms`.
-    pub fn new(state: &State, now_ms: u64) -> Self {
+    pub fn new(state: &'a State, now_ms: u64) -> Self {
         Snapshot {
             at: now_ms / 1_000,
             gateway: Gateway {
@@ -391,7 +281,7 @@ impl Snapshot {
                 .map(|row| chain(state, row))
                 .collect(),
             balances: balances(state),
-            traffic: state.traffic.as_ref().map(traffic),
+            traffic: state.traffic.as_ref(),
         }
     }
 }

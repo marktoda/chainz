@@ -1,12 +1,13 @@
 //! The gateway's traffic, in the dashboard's own shape.
 
 use chainz_rpc::control::MetricsTotals;
+use serde::Serialize;
 
 /// Request records kept for the Traffic feed.
 pub const FEED_CAP: usize = 500;
 
 /// The gateway's view of one chain.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GatewayChain {
     /// Chain name.
     pub chain: String,
@@ -17,7 +18,7 @@ pub struct GatewayChain {
 }
 
 /// Totals for one method or one endpoint within a metrics window.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 pub struct TrafficRow {
     /// Method name, or `chain/endpoint`.
     pub name: String,
@@ -36,12 +37,13 @@ pub struct TrafficRow {
 }
 
 /// One metrics window, aggregated two ways.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 pub struct TrafficWindow {
     /// Window length.
     pub window_secs: u64,
     /// The gateway's totals for the window. The rows can't stand in for
     /// them: they miss requests the rate limiter turned away.
+    #[serde(flatten)]
     pub totals: MetricsTotals,
     /// Per method, busiest first.
     pub methods: Vec<TrafficRow>,
@@ -49,8 +51,9 @@ pub struct TrafficWindow {
     pub endpoints: Vec<TrafficRow>,
 }
 
-/// Gateway status plus metrics at one instant.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// Gateway status plus metrics at one instant; `top --once --json` prints
+/// it as it is.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 pub struct TrafficSnapshot {
     /// Gateway version.
     pub version: String,
