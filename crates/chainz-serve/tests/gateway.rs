@@ -1086,12 +1086,18 @@ async fn a_change_already_reloaded_is_not_reloaded_again_by_the_watch() {
         &eth_config("a", &[], &[("a", a.url()), ("b", a.url())]),
     );
     rig.gateway().reload().await.unwrap();
+    let mut reloads = || {
+        let mut n = 0;
+        while let Ok(notice) = notices.try_recv() {
+            n += usize::from(notice.contains("reloaded"));
+        }
+        n
+    };
+    // A watch tick between the write and the reload may reload first; the
+    // explicit reload then reloads again, as SIGHUP always does.
+    assert!(reloads() >= 1);
     tokio::time::sleep(watch * 3).await;
-    let mut reloads = 0;
-    while let Ok(notice) = notices.try_recv() {
-        reloads += usize::from(notice.contains("reloaded"));
-    }
-    assert_eq!(reloads, 1);
+    assert_eq!(reloads(), 0, "the watch reloaded an unchanged config");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
