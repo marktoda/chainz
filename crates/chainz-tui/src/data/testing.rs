@@ -322,6 +322,7 @@ pub(crate) fn fast() -> Tuning {
         traffic_every: Duration::from_millis(100),
         watch_every: Duration::from_millis(100),
         stagger: Duration::ZERO,
+        once_retry_wait: Duration::from_millis(50),
     }
 }
 

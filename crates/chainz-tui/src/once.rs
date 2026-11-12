@@ -23,9 +23,6 @@ use crate::ui::{self, Body, Content, Ctx};
 /// footer instead.
 pub type WarnFn = Box<dyn FnMut(&str)>;
 
-/// The wait before retrying a rate-limited request (then twice that).
-const RETRY_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
-
 /// The width the text tables are laid out for.
 const WIDTH: u16 = 120;
 
@@ -46,7 +43,7 @@ pub(crate) fn run(
         .enable_all()
         .build()
         .context("failed to start the async runtime")?;
-    rt.block_on(data::collect_once(&shared, &plan, RETRY_WAIT));
+    rt.block_on(data::collect_once(&shared, &plan));
     for event in received.try_iter() {
         match event {
             Event::Update(update) => state.apply(update),

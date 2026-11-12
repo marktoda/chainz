@@ -74,6 +74,9 @@ pub struct Tuning {
     /// Gap between the first requests to chains that share a provider, so
     /// start-up is not a burst against one API key.
     pub stagger: Duration,
+    /// `--once`: the wait before retrying a rate-limited request (then
+    /// twice that).
+    pub once_retry_wait: Duration,
 }
 
 impl Default for Tuning {
@@ -89,6 +92,7 @@ impl Default for Tuning {
             traffic_every: Duration::from_secs(1),
             watch_every: Duration::from_secs(2),
             stagger: Duration::from_millis(250),
+            once_retry_wait: Duration::from_secs(1),
         }
     }
 }
@@ -476,11 +480,37 @@ fn provider_slots(plan: &Plan) -> Vec<u32> {
 /// How often `--once` retries a rate-limited request.
 const ONCE_RETRIES: u32 = 2;
 
+/// `--once`'s one chance at a result: a result that asks for another
+/// try gets one after [`Tuning::once_retry_wait`] times the attempt,
+/// [`ONCE_RETRIES`] times at most.
+struct OnceRetry {
+    wait: Duration,
+    attempt: u32,
+}
+
+impl OnceRetry {
+    fn new(wait: Duration) -> Self {
+        OnceRetry { wait, attempt: 0 }
+    }
+
+    /// Whether to take the step again, after waiting: `wanted` when the
+    /// last result asks for it, and only while tries are left.
+    async fn again(&mut self, wanted: bool) -> bool {
+        if !wanted || self.attempt == ONCE_RETRIES {
+            return false;
+        }
+        self.attempt += 1;
+        tokio::time::sleep(self.wait * self.attempt).await;
+        true
+    }
+}
+
 /// One round of everything `--once` reports, sent as the live workers
 /// send theirs: every chain's head and balances, and the gateway's metrics
 /// when one runs. No endpoint probes. A rate-limited request is retried
-/// after `retry_wait`, then twice that.
-pub async fn collect_once(shared: &Arc<Shared>, plan: &Plan, retry_wait: Duration) {
+/// after [`Tuning::once_retry_wait`], then twice that.
+pub async fn collect_once(shared: &Arc<Shared>, plan: &Plan) {
+    let wait = shared.tuning.once_retry_wait;
     // Reports a gateway it finds before anything read from it.
     shared.watch_gateway();
     if shared.gateway().is_some() {
@@ -497,36 +527,34 @@ pub async fn collect_once(shared: &Arc<Shared>, plan: &Plan, retry_wait: Duratio
         let task = set.spawn(async move {
             let mut poller = heads::Poller::new(shared.clone(), chain.clone(), slot, 0);
             tokio::time::sleep(poller.offset()).await;
+            // A snapshot has one chance: give a rate limit (or a block time
+            // that needed a second look) a moment and try again.
+            let mut retry = OnceRetry::new(wait);
             let mut head = poller.step().await;
-            for attempt in 1..=ONCE_RETRIES {
-                // A snapshot has one chance: give a rate limit (or a block
-                // time that needed a second look) a moment and try again.
-                let again = match &head {
+            while retry
+                .again(match &head {
                     Update::Head {
                         result: Err(fault), ..
                     } => fault.rate_limited,
                     Update::Head { block_time, .. } => block_time.is_none(),
                     _ => false,
-                };
-                if !again {
-                    break;
-                }
-                tokio::time::sleep(retry_wait * attempt).await;
+                })
+                .await
+            {
                 head = poller.step().await;
             }
             shared.send(head);
             if !holders.is_empty() {
                 let read = || balances::read_update(shared.clone(), chain.clone(), holders.clone());
+                let mut retry = OnceRetry::new(wait);
                 let mut balances = read().await;
-                for attempt in 1..=ONCE_RETRIES {
-                    let again = matches!(
+                while retry
+                    .again(matches!(
                         &balances,
                         Update::Balances { result: Err(fault), .. } if fault.rate_limited
-                    );
-                    if !again {
-                        break;
-                    }
-                    tokio::time::sleep(retry_wait * attempt).await;
+                    ))
+                    .await
+                {
                     balances = read().await;
                 }
                 shared.send(balances);

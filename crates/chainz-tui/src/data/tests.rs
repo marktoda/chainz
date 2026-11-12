@@ -924,7 +924,7 @@ async fn once_collects_every_chain_and_retries_a_rate_limit() {
     ]);
     let (shared, updates) = shared(dir.path(), fast());
     let mut state = State::new(&plan, &shared.store());
-    collect_once(&shared, &plan, Duration::from_millis(50)).await;
+    collect_once(&shared, &plan).await;
     for update in testing::updates(&updates) {
         state.apply(update);
     }
@@ -1050,7 +1050,7 @@ async fn once_does_not_hang_on_a_wedged_gateway() {
 
     tokio::time::timeout(
         Duration::from_secs(10),
-        collect_once(&shared, &plan(vec![]), Duration::from_millis(50)),
+        collect_once(&shared, &plan(vec![])),
     )
     .await
     .expect("collect_once returns");
