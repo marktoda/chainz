@@ -474,7 +474,7 @@ pub struct ChainSetArgs {
     #[arg(long, conflicts_with = "api_key")]
     pub api_key_stdin: bool,
     /// The explorer's API key as an argument (visible in history and `ps`; prefer --api-key-stdin)
-    #[arg(long, value_name = "KEY")]
+    #[arg(long, hide = true, value_name = "KEY")]
     pub api_key: Option<String>,
     /// Rename the chain
     #[arg(long, value_name = "NEW")]
