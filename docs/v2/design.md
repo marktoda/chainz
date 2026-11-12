@@ -110,7 +110,7 @@ chainz chain set [CHAIN] [--signer S | --no-signer] [--rpc NAME|URL] [--header '
                  [--failover A,B | --no-failover] [--explorer E | --no-explorer] [--api-key-stdin]
                  [--name NEW] [--alias A]... [--rm-alias A]... [--no-check]   # no flags on a TTY: a menu
 chainz chain rm CHAIN
-chainz rpc ls [CHAIN] [--json] [--reveal]   # endpoints, with latest health
+chainz rpc ls [CHAIN] [--json] [--reveal]   # endpoints, with latest health and its age
 chainz rpc add CHAIN URL [--name N] [--header 'k: v']... [--failover | --activate] [--no-check]
 chainz rpc rm CHAIN NAME
 chainz rpc bench [CHAIN] [--fix [-y]]       # rank and tag endpoints; --fix activates the best and proposes a failover list; exit 1 when a chain has no live endpoint

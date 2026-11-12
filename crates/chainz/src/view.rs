@@ -41,6 +41,9 @@ pub fn marker(active: bool, failover: bool) -> &'static str {
     }
 }
 
+/// What the role markers mean, under a listing that shows them.
+pub const LEGEND: &str = "● active  ◐ failover";
+
 /// `-` for an empty cell.
 pub fn or_dash(value: &str) -> String {
     if value.is_empty() {
@@ -169,6 +172,15 @@ pub fn compact(config: &Config, reveal: bool) -> String {
 /// Widths are display widths, so styled and wide cells line up; trailing
 /// spaces are trimmed.
 pub fn table<R: AsRef<[String]>>(headers: &[&str], rows: &[R]) -> String {
+    table_lines(headers, rows)
+        .into_iter()
+        .map(|line| line + "\n")
+        .collect()
+}
+
+/// [`table`] as lines without their newline: the header, then one per row,
+/// for a caller that puts lines between them (sections, sub-lines).
+pub fn table_lines<R: AsRef<[String]>>(headers: &[&str], rows: &[R]) -> Vec<String> {
     let mut widths: Vec<usize> = headers
         .iter()
         .map(|h| console::measure_text_width(h))
@@ -185,12 +197,13 @@ pub fn table<R: AsRef<[String]>>(headers: &[&str], rows: &[R]) -> String {
             .collect::<Vec<_>>()
             .join("  ");
         text.truncate(text.trim_end().len());
-        text.push('\n');
         text
     };
-    let mut out = line(&mut headers.iter().map(|h| style(h).bold().to_string()));
+    let mut out = vec![line(
+        &mut headers.iter().map(|h| style(h).bold().to_string()),
+    )];
     for row in rows {
-        out.push_str(&line(&mut row.as_ref().iter().cloned()));
+        out.push(line(&mut row.as_ref().iter().cloned()));
     }
     out
 }

@@ -139,7 +139,11 @@ fn errors_use_the_same_prefix_as_clap() {
     // An error from a handler (anyhow) and a usage error (clap).
     let handler = sb.run(&["chain", "show", "nope"]);
     assert_eq!(handler.status.code(), Some(1));
-    assert!(stderr(&handler).starts_with("error: "), "{}", stderr(&handler));
+    assert!(
+        stderr(&handler).starts_with("error: "),
+        "{}",
+        stderr(&handler)
+    );
     let usage = sb.run(&["ls", "--nope"]);
     assert_eq!(usage.status.code(), Some(2));
     assert!(stderr(&usage).starts_with("error: "), "{}", stderr(&usage));

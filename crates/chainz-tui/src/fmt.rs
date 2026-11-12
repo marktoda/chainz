@@ -1,17 +1,8 @@
 //! Number, time and text formatting shared by the renderer and `--once`.
 
+pub use chainz_core::fmt::age;
 use chainz_core::fmt::group;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
-
-/// A coarse age: `4s`, `3m`, `2h`, `5d`.
-pub fn age(secs: u64) -> String {
-    match secs {
-        0..=99 => format!("{secs}s"),
-        100..=5_999 => format!("{}m", secs / 60),
-        6_000..=172_799 => format!("{}h", secs / 3_600),
-        _ => format!("{}d", secs / 86_400),
-    }
-}
 
 /// An average block time: `12.0s`, `2.0s`, `0.25s`.
 pub fn block_time(secs: f64) -> String {
@@ -143,15 +134,6 @@ pub fn sparkline(samples: &[Option<u32>], width: usize) -> Vec<Option<char>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn ages() {
-        assert_eq!(age(4), "4s");
-        assert_eq!(age(99), "99s");
-        assert_eq!(age(100), "1m");
-        assert_eq!(age(7_200), "2h");
-        assert_eq!(age(400_000), "4d");
-    }
 
     #[test]
     fn block_times_and_latencies() {

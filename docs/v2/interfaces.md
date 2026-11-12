@@ -83,7 +83,7 @@ these shapes.
 | --- | --- |
 | `ls`, `chain ls` | `[ChainView]`, where `ChainView` is `{name, id, aliases, rpc, rpc_url, failover, signer, explorer, default, endpoints: [{name, url, active, failover, websocket, headers?}]}` |
 | `chain show` | one `ChainView` |
-| `rpc ls` | `[{chain, name, url, active, failover, websocket, headers?, latency_ms, head, error, tags}]` (an endpoint view plus its latest health) |
+| `rpc ls` | `[{chain, name, url, active, failover, websocket, headers?, latency_ms, head, probed_at_ms, error, tags}]` (an endpoint view plus its latest health; `probed_at_ms` is when that sample was taken) |
 | `signer ls` | `[{name, backend, address, chains}]` |
 | `var ls` | `[{name, value, used_by}]` (`value` is `[REDACTED] (N chars)` unless `--reveal`) |
 | `addr ls` | `[{name, scope, chain_id, address, source, shadowed}]` |

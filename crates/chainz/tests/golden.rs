@@ -120,27 +120,42 @@ base = "0x2222222222222222222222222222222222222222"
 "#;
 
 /// Health history for `rpc ls`: a healthy, tagged active endpoint and a
-/// timed-out one.
+/// timed-out one, both checked [`PROBED_AGO_MS`] ago (`AT_MS` becomes
+/// that time).
 const LISTING_HEALTH: &str = r#"{"version":1,"endpoints":[
- {"chain_id":1,"endpoint":"infura","samples":[{"at_ms":1700000000000,"latency_ms":42,"head":19000000,"error":null}],
+ {"chain_id":1,"endpoint":"infura","samples":[{"at_ms":AT_MS,"latency_ms":42,"head":19000000,"error":null}],
   "capabilities":{"archive":true,"debug_trace":false,"trace_block":true,"max_logs_range":10000,"websocket":false,"probed_at":1700000000}},
- {"chain_id":1,"endpoint":"gw","samples":[{"at_ms":1700000000000,"latency_ms":5000,"head":null,"error":"timeout"}]}
+ {"chain_id":1,"endpoint":"gw","samples":[{"at_ms":AT_MS,"latency_ms":5000,"head":null,"error":"timeout"}]}
 ]}"#;
 
-fn listing_sandbox() -> Sandbox {
+/// How long before the run the health samples were taken: `rpc ls` prints
+/// `3m ago`.
+const PROBED_AGO_MS: u64 = 200_000;
+
+/// The unix time in ms the listing's health samples were taken.
+fn probed_at_ms() -> u64 {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap();
+    u64::try_from(now.as_millis()).unwrap() - PROBED_AGO_MS
+}
+
+fn listing_sandbox(probed_at_ms: u64) -> Sandbox {
     let sb = Sandbox::new();
     sb.write_config(LISTING_CONFIG);
     sb.write_secrets(&format!(
         "[vars]\nALCHEMY_KEY = \"alchemy-secret-value\"\nTEAM = \"core\"\nETHERSCAN_API_KEY = \"etherscan-secret\"\n\n[signers.default]\nprivate_key = \"{TEST_KEY}\"\n"
     ));
     fs::create_dir_all(sb.path("state/chainz")).unwrap();
-    fs::write(sb.state_file("health.json"), LISTING_HEALTH).unwrap();
+    let health = LISTING_HEALTH.replace("AT_MS", &probed_at_ms.to_string());
+    fs::write(sb.state_file("health.json"), health).unwrap();
     sb
 }
 
 #[test]
 fn listings() {
-    let sb = listing_sandbox();
+    let at = probed_at_ms();
+    let sb = listing_sandbox(at);
     for (file, args) in [
         ("ls.txt", &["ls"][..]),
         ("ls.json", &["ls", "--json"]),
@@ -154,7 +169,9 @@ fn listings() {
         ("var-ls.json", &["var", "ls", "--json"]),
         ("addr-ls.json", &["addr", "ls", "--json"]),
     ] {
-        golden(&format!("listing/{file}"), &sb.ok(args));
+        // The sample time is the run's own: pin it as a token.
+        let out = sb.ok(args).replace(&at.to_string(), "AT_MS");
+        golden(&format!("listing/{file}"), &out);
     }
     // Listing never writes.
     assert_eq!(sb.config(), LISTING_CONFIG);

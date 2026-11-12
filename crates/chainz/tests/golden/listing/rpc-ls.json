@@ -8,6 +8,7 @@
     "websocket": false,
     "latency_ms": 42,
     "head": 19000000,
+    "probed_at_ms": AT_MS,
     "error": null,
     "tags": [
       "archive",
@@ -24,6 +25,7 @@
     "websocket": false,
     "latency_ms": null,
     "head": null,
+    "probed_at_ms": null,
     "error": null,
     "tags": []
   },
@@ -46,6 +48,7 @@
     "websocket": false,
     "latency_ms": null,
     "head": null,
+    "probed_at_ms": AT_MS,
     "error": "timeout",
     "tags": []
   },
@@ -58,6 +61,7 @@
     "websocket": false,
     "latency_ms": null,
     "head": null,
+    "probed_at_ms": null,
     "error": null,
     "tags": []
   },
@@ -70,6 +74,7 @@
     "websocket": true,
     "latency_ms": null,
     "head": null,
+    "probed_at_ms": null,
     "error": null,
     "tags": []
   }

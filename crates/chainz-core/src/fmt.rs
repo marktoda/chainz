@@ -24,6 +24,16 @@ pub fn uptime(secs: u64) -> String {
     }
 }
 
+/// A coarse age (`top`, `rpc ls`): `4s`, `3m`, `2h`, `5d`.
+pub fn age(secs: u64) -> String {
+    match secs {
+        0..=99 => format!("{secs}s"),
+        100..=5_999 => format!("{}m", secs / 60),
+        6_000..=172_799 => format!("{}h", secs / 3_600),
+        _ => format!("{}d", secs / 86_400),
+    }
+}
+
 /// `0x7E5F4552…` → `0x7E5F…5Bdf` (checksummed).
 pub fn short_address(address: &crate::Address) -> String {
     let address = address.to_checksum();
@@ -51,6 +61,15 @@ mod tests {
         assert_eq!(uptime(725), "12m05s");
         assert_eq!(uptime(7_380), "2h03m");
         assert_eq!(uptime(273_600), "3d04h");
+    }
+
+    #[test]
+    fn ages() {
+        assert_eq!(age(4), "4s");
+        assert_eq!(age(99), "99s");
+        assert_eq!(age(100), "1m");
+        assert_eq!(age(7_200), "2h");
+        assert_eq!(age(400_000), "4d");
     }
 
     #[test]

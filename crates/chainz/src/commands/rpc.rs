@@ -5,15 +5,16 @@ use crate::cli::{BenchArgs, DiscoverArgs, RpcAddArgs, RpcCommand, RpcLsArgs, Rpc
 use crate::load::open;
 use crate::probe::{self, Depth, Repair, check, probe_urls};
 use crate::prompt::{self, Ask, Consent, Tty};
-use crate::view::EndpointView;
+use crate::view::{self, EndpointView};
 use crate::{net, ui};
 use anyhow::{Result, bail};
-use chainz_core::Chainz;
 use chainz_core::model::Endpoint;
 use chainz_core::resolve::{self, Policy};
 use chainz_core::tx::EndpointRole;
+use chainz_core::{Chainz, fmt};
 use chainz_rpc::chainlist;
 use serde::Serialize;
+use std::fmt::Write;
 
 pub fn run(cmd: RpcCommand) -> Result<i32> {
     match cmd {
@@ -46,6 +47,8 @@ struct EndpointRow {
     endpoint: EndpointView,
     latency_ms: Option<u32>,
     head: Option<u64>,
+    /// When the latest health sample was taken (unix ms).
+    probed_at_ms: Option<u64>,
     error: Option<String>,
     tags: Vec<String>,
 }
@@ -63,6 +66,7 @@ fn ls(args: &RpcLsArgs) -> Result<i32> {
                 endpoint: EndpointView::new(ep, e, c, args.reveal),
                 latency_ms: latest.filter(|s| s.error.is_none()).map(|s| s.latency_ms),
                 head: latest.and_then(|s| s.head),
+                probed_at_ms: latest.map(|s| s.at_ms),
                 error: latest.and_then(|s| s.error).map(|c| c.to_string()),
                 tags: store
                     .capabilities(c.id, ep)
@@ -75,31 +79,52 @@ fn ls(args: &RpcLsArgs) -> Result<i32> {
         println!("{}", serde_json::to_string_pretty(&rows)?);
         return Ok(0);
     }
-    let mut current = String::new();
-    for r in rows {
+    print!("{}", render(&rows, chainz_os::now_ms()));
+    Ok(0)
+}
+
+/// The `rpc ls` text: per chain, a section title and an aligned table
+/// (column widths shared by every chain), each endpoint's headers under
+/// it; then the legend of the role markers.
+fn render(rows: &[EndpointRow], now_ms: u64) -> String {
+    let cells: Vec<[String; 5]> = rows
+        .iter()
+        .map(|r| {
+            let e = &r.endpoint;
+            let health = match (&r.latency_ms, &r.error) {
+                (Some(ms), _) => format!("{ms}ms"),
+                (None, Some(error)) => error.clone(),
+                _ => "-".into(),
+            };
+            let checked = r.probed_at_ms.map_or_else(
+                || "-".to_string(),
+                |at| format!("{} ago", fmt::age(now_ms.saturating_sub(at) / 1_000)),
+            );
+            let url = match r.tags.is_empty() {
+                true => e.url.clone(),
+                false => format!("{} {}", e.url, ui::dim(&r.tags.join(" "))),
+            };
+            [e.marker().to_string(), e.name.clone(), health, checked, url]
+        })
+        .collect();
+    let lines = view::table_lines(&["", "NAME", "HEALTH", "CHECKED", "URL"], &cells);
+    let (header, lines) = lines.split_first().expect("a header line");
+    let mut out = String::new();
+    let mut current = "";
+    for (r, line) in rows.iter().zip(lines) {
         if r.chain != current {
-            println!("{}", ui::section(&r.chain));
-            current = r.chain.clone();
+            let _ = writeln!(out, "{}\n  {header}", ui::section(&r.chain));
+            current = &r.chain;
         }
-        let health = match (&r.latency_ms, &r.error) {
-            (Some(ms), _) => format!("{ms}ms"),
-            (None, Some(e)) => e.clone(),
-            _ => "-".into(),
-        };
-        let e = &r.endpoint;
-        println!(
-            "  {} {:<18} {:<8} {} {}",
-            e.marker(),
-            e.name,
-            health,
-            e.url,
-            ui::dim(&r.tags.join(" "))
-        );
-        for (k, v) in &e.headers {
-            println!("      {}", ui::dim(&format!("{k}: {v}")));
+        let _ = writeln!(out, "  {line}");
+        for (k, v) in &r.endpoint.headers {
+            let _ = writeln!(out, "      {}", ui::dim(&format!("{k}: {v}")));
         }
     }
-    Ok(0)
+    if !rows.is_empty() {
+        let _ = writeln!(out, "\n{}", ui::dim(view::LEGEND));
+    }
+    out
 }
 
 fn add(args: &RpcAddArgs) -> Result<i32> {
@@ -323,4 +348,58 @@ fn discover(args: &DiscoverArgs) -> Result<i32> {
     );
     ui::report_moved(&moved);
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chainz_core::model::Chain;
+
+    fn row(chain: &Chain, name: &str, probed_at_ms: Option<u64>) -> EndpointRow {
+        EndpointRow {
+            chain: "eth".into(),
+            endpoint: EndpointView::new(name, &chain.rpcs[name], chain, false),
+            latency_ms: probed_at_ms.map(|_| 42),
+            head: None,
+            probed_at_ms,
+            error: None,
+            tags: vec![],
+        }
+    }
+
+    #[test]
+    fn long_names_keep_the_columns_aligned() {
+        console::set_colors_enabled(false);
+        let mut rpcs = indexmap::IndexMap::new();
+        for name in ["a", "gw-uniswap-internal-prod"] {
+            rpcs.insert(
+                name.to_string(),
+                Endpoint::new(format!("https://{name}.example")),
+            );
+        }
+        let chain = Chain {
+            id: 1,
+            aliases: vec![],
+            signer: None,
+            explorer: None,
+            rpc: "a".into(),
+            failover: vec![],
+            rpcs,
+        };
+        let now = 1_000_000_000;
+        let rows = [
+            row(&chain, "a", Some(now - 120_000)),
+            row(&chain, "gw-uniswap-internal-prod", None),
+        ];
+        assert_eq!(
+            render(&rows, now),
+            "\neth
+     NAME                      HEALTH  CHECKED  URL
+  ●  a                         42ms    2m ago   https://a.example/
+     gw-uniswap-internal-prod  -       -        https://gw-uniswap-internal-prod.example/
+
+● active  ◐ failover
+"
+        );
+    }
 }

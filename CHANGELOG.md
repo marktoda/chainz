@@ -180,6 +180,11 @@ changed before 2.0.0; they are listed under Removed and Changed.
   each rule has one owner and no crate or module depends on itself.
 - Errors print as `error: …`, the prefix clap's usage errors (and cargo
   and Foundry) use; they printed `Error: …`.
+- `rpc ls` is an aligned table with a header (`NAME HEALTH CHECKED URL`):
+  long endpoint names no longer push columns apart, rows have no trailing
+  spaces, `CHECKED` says how old the health sample is (`3m ago`), and a
+  legend explains `●` active and `◐` failover. `--json` rows add
+  `probed_at_ms`.
 
 - Writes say what changed: `chain set` and `update` print each change as
   a transition (`active endpoint: alchemy → infura`) with its side effects
