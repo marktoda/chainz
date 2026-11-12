@@ -589,3 +589,51 @@ fn defaults_attach_the_only_signer_and_the_builtin_explorer() {
     );
     assert!(tx.attach_signer_where_missing("ghost").is_err());
 }
+
+#[test]
+fn endpoints_from_urls_are_checked_named_and_matched_one_way() {
+    let mut doc = tx(DOC);
+    // Named after the host, unique among the chain's endpoints.
+    let (name, moved) = doc
+        .add_endpoint_url(
+            "eth",
+            None,
+            &Endpoint::new("https://mainnet.infura.io/v3/0123456789abcdef0123456789abcdef"),
+            EndpointRole::Failover,
+        )
+        .unwrap();
+    assert_eq!((name.as_str(), moved.len()), ("infura", 1));
+    let (name, _) = doc
+        .add_endpoint_url(
+            "eth",
+            None,
+            &Endpoint::new("https://other.infura.io"),
+            EndpointRole::Spare,
+        )
+        .unwrap();
+    assert_eq!(name, "infura-2");
+    let chain = doc.config().unwrap().chains["eth"].clone();
+    assert_eq!(chain.failover, ["b", "infura"]);
+
+    let err = |url: &str, name: Option<&str>| {
+        tx(DOC)
+            .add_endpoint_url("eth", name, &Endpoint::new(url), EndpointRole::Spare)
+            .unwrap_err()
+            .to_string()
+    };
+    // A URL the chain has, up to a trailing slash, is refused by name.
+    assert!(err("https://b.example/", None).contains("as endpoint 'b'"));
+    assert!(err("ftp://x.example", None).contains("http(s)://"));
+    assert!(err("https://c.example", Some("a")).contains("named 'a'"));
+    // `chain set --rpc` sees the same match: it activates `b`.
+    assert_eq!(chain.endpoint_at("https://b.example/"), Some("b"));
+    let edit = ChainEdit {
+        rpc: Some("https://new.example".into()),
+        ..Default::default()
+    };
+    let (name, endpoint) = edit.new_endpoint("eth", &chain).unwrap().unwrap();
+    assert_eq!(
+        (name.as_str(), endpoint.url.as_str()),
+        ("new", "https://new.example")
+    );
+}

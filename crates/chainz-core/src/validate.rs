@@ -103,11 +103,7 @@ pub fn issues(config: &Config, secrets: Option<&Secrets>) -> Vec<String> {
                     "chain '{name}' endpoint name '{ep_name}' must match [a-z0-9][a-z0-9_-]*"
                 ));
             }
-            if endpoint.url.trim().is_empty() || endpoint.url.chars().any(char::is_whitespace) {
-                err(format!(
-                    "chain '{name}' endpoint '{ep_name}' has an empty or malformed URL"
-                ));
-            } else if let Err(e) = template::references(&endpoint.url) {
+            if let Err(e) = model::Endpoint::check_url_text(&endpoint.url) {
                 err(format!("chain '{name}' endpoint '{ep_name}': {e}"));
             }
             for (header, value) in &endpoint.headers {

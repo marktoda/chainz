@@ -262,6 +262,32 @@ impl Tx {
         })
     }
 
+    /// Add an endpoint from a user's URL to chain `chain`: the one way
+    /// `rpc add`, `rpc discover`, `chain add` and `chain set --rpc URL` do
+    /// it. The URL and name are checked by [`Chain::new_endpoint`] (which
+    /// also names it when `name` is `None`), and literal secrets in the URL
+    /// and headers move into variables. Returns the endpoint's name and
+    /// what moved.
+    pub fn add_endpoint_url(
+        &mut self,
+        chain: &str,
+        name: Option<&str>,
+        endpoint: &Endpoint,
+        role: EndpointRole,
+    ) -> Result<(String, Vec<Moved>)> {
+        let name = self
+            .config()?
+            .chains
+            .get(chain)
+            .ok_or_else(|| anyhow!("chain '{chain}' not found"))?
+            .new_endpoint(chain, &endpoint.url, name)?;
+        let mut endpoints = [(name.clone(), endpoint.clone())];
+        let moved = self.extract_secrets(chain, &mut endpoints)?;
+        let [(_, endpoint)] = &endpoints;
+        self.add_endpoint(chain, &name, endpoint, role)?;
+        Ok((name, moved))
+    }
+
     /// Replace an existing endpoint's URL and headers.
     pub(crate) fn set_endpoint(
         &mut self,

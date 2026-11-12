@@ -16,7 +16,7 @@ use chainz_core::labels::{LabelIndex, LabelSource};
 use chainz_core::model::{Chain, Endpoint};
 use chainz_core::names;
 use chainz_core::resolve::{self, Policy};
-use chainz_core::tx::Attach;
+use chainz_core::tx::{Attach, EndpointRole};
 use chainz_rpc::ProbeResult;
 use chainz_rpc::chainlist::{self, ChainlistEntry};
 
@@ -234,12 +234,15 @@ pub fn add(chainz: &mut Chainz, args: &ChainAddArgs, ask: &mut dyn Ask) -> Resul
         .config()
         .check_new_chain(&short, id, args.signer.as_deref())?;
 
-    let mut endpoints: Vec<(String, Endpoint)> = Vec::new();
-    let push = |endpoints: &mut Vec<(String, Endpoint)>, url: &str| {
-        let ep = names::unique_name(&names::endpoint_name_for_url(url), |n| {
-            endpoints.iter().any(|(e, _)| e == n)
-        });
-        endpoints.push((ep, Endpoint::new(url)));
+    // The URLs, active first; a URL listed twice is added once.
+    let mut urls: Vec<String> = Vec::new();
+    let push = |urls: &mut Vec<String>, url: &str| {
+        if !urls
+            .iter()
+            .any(|u| u.trim_end_matches('/') == url.trim_end_matches('/'))
+        {
+            urls.push(url.to_string());
+        }
     };
     match &found {
         Found::Listed(entry) if args.urls.is_empty() => {
@@ -266,22 +269,28 @@ pub fn add(chainz: &mut Chainz, args: &ChainAddArgs, ask: &mut dyn Ask) -> Resul
             );
             let probed = probe_urls(id, &http);
             let chosen = choose_active(&probed, &entry.name, ask)?;
-            push(&mut endpoints, chosen);
-            for url in public.iter().filter(|u| *u != chosen) {
-                push(&mut endpoints, url);
+            push(&mut urls, chosen);
+            for url in &public {
+                push(&mut urls, url);
             }
         }
         _ => {
             for url in &args.urls {
-                push(&mut endpoints, url);
+                Endpoint::check_url(url)?;
+                push(&mut urls, url);
             }
-            let (ep_name, endpoint) = &endpoints[0];
+            let endpoint = Endpoint::new(urls[0].as_str());
             if !args.no_check && !endpoint.is_websocket() {
-                check(chainz, &short, id, ep_name, endpoint)?;
+                check(
+                    chainz,
+                    &short,
+                    id,
+                    &names::endpoint_name_for_url(&urls[0]),
+                    &endpoint,
+                )?;
             }
         }
     }
-    let active = endpoints[0].0.clone();
 
     let aliases: Vec<String> = found
         .entry()
@@ -295,21 +304,31 @@ pub fn add(chainz: &mut Chainz, args: &ChainAddArgs, ask: &mut dyn Ask) -> Resul
     } else {
         Attach::Defaults
     };
-    let count = endpoints.len();
-    let (moved, attached) = chainz.transact(|tx| {
-        let mut rpcs = endpoints;
-        let moved = tx.extract_secrets(&short, &mut rpcs)?;
+    let count = urls.len();
+    let (active, moved, attached) = chainz.transact(|tx| {
         let new = Chain {
             id,
             aliases,
             signer: args.signer.clone(),
             explorer: None,
-            rpc: active.clone(),
+            rpc: String::new(),
             failover: vec![],
-            rpcs: rpcs.into_iter().collect(),
+            rpcs: Default::default(),
         };
         let attached = tx.insert_chain(&short, &new, attach)?;
-        Ok((moved, attached))
+        let (mut active, mut moved) = (String::new(), Vec::new());
+        for (i, url) in urls.iter().enumerate() {
+            let role = match i {
+                0 => EndpointRole::Active,
+                _ => EndpointRole::Spare,
+            };
+            let (ep, m) = tx.add_endpoint_url(&short, None, &Endpoint::new(url.as_str()), role)?;
+            if i == 0 {
+                active = ep;
+            }
+            moved.extend(m);
+        }
+        Ok((active, moved, attached))
     })?;
     println!("Added chain '{short}' ({id}) with {count} endpoint(s); active: {active}");
     if let Some(signer) = &attached.signer {

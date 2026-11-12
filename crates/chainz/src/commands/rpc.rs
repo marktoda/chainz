@@ -8,10 +8,10 @@ use crate::prompt::{self, Consent, is_tty};
 use crate::view::EndpointView;
 use crate::{net, ui};
 use anyhow::{Result, bail};
+use chainz_core::Chainz;
 use chainz_core::model::Endpoint;
 use chainz_core::resolve::{self, Policy};
 use chainz_core::tx::EndpointRole;
-use chainz_core::{Chainz, names};
 use chainz_rpc::chainlist;
 use serde::Serialize;
 
@@ -110,34 +110,19 @@ fn add(args: &RpcAddArgs) -> Result<i32> {
         url: args.url.clone(),
         headers: parse_headers(&args.headers)?.into_iter().collect(),
     };
-    let ep = match &args.name {
-        Some(n) => {
-            if c.rpcs.contains_key(n) {
-                bail!("chain '{chain}' already has an endpoint named '{n}'");
-            }
-            n.clone()
-        }
-        None => names::unique_name(&names::endpoint_name_for_url(&args.url), |n| {
-            c.rpcs.contains_key(n)
-        }),
-    };
+    let ep = c.new_endpoint(&chain, &args.url, args.name.as_deref())?;
     if !args.no_check && !endpoint.is_websocket() {
         check(&chainz, &chain, c.id, &ep, &endpoint)?;
     }
-    let moved = chainz.transact(|tx| {
-        let mut endpoints = [(ep.clone(), endpoint)];
-        let moved = tx.extract_secrets(&chain, &mut endpoints)?;
-        let [(_, endpoint)] = &endpoints;
-        let role = if args.activate {
-            EndpointRole::Active
-        } else if args.failover {
-            EndpointRole::Failover
-        } else {
-            EndpointRole::Spare
-        };
-        tx.add_endpoint(&chain, &ep, endpoint, role)?;
-        Ok(moved)
-    })?;
+    let role = if args.activate {
+        EndpointRole::Active
+    } else if args.failover {
+        EndpointRole::Failover
+    } else {
+        EndpointRole::Spare
+    };
+    let (ep, moved) =
+        chainz.transact(|tx| tx.add_endpoint_url(&chain, Some(&ep), &endpoint, role))?;
     println!(
         "Added endpoint '{ep}' to '{chain}'{}",
         if args.activate { " (active)" } else { "" }
@@ -241,16 +226,9 @@ fn discover(args: &DiscoverArgs) -> Result<i32> {
         eprintln!("{}", ui::warn(warning));
     }
     let entry = registry.find(c.id)?;
-    let known: Vec<&str> = c
-        .rpcs
-        .values()
-        .map(|e| e.url.trim_end_matches('/'))
-        .collect();
     let fresh: Vec<String> = chainlist::public_rpcs(entry)
         .into_iter()
-        .filter(|u| {
-            Endpoint::new(u.as_str()).is_http() && !known.contains(&u.trim_end_matches('/'))
-        })
+        .filter(|u| Endpoint::new(u.as_str()).is_http() && c.endpoint_at(u).is_none())
         .collect();
     if fresh.is_empty() {
         println!("Every public chainlist RPC for '{chain}' is already configured");
@@ -283,29 +261,22 @@ fn discover(args: &DiscoverArgs) -> Result<i32> {
         println!("Nothing added");
         return Ok(0);
     }
-    let added = chainz.transact(|tx| {
-        let mut taken: Vec<String> = c.rpcs.keys().cloned().collect();
-        let mut added = Vec::new();
+    let (added, moved) = chainz.transact(|tx| {
+        let (mut added, mut moved) = (Vec::new(), Vec::new());
         for p in &picked {
             let url = &probed[order[*p]].0;
-            let ep = names::unique_name(&names::endpoint_name_for_url(url), |n| {
-                taken.iter().any(|t| t == n)
-            });
-            tx.add_endpoint(
-                &chain,
-                &ep,
-                &Endpoint::new(url.as_str()),
-                EndpointRole::Spare,
-            )?;
-            taken.push(ep.clone());
+            let endpoint = Endpoint::new(url.as_str());
+            let (ep, m) = tx.add_endpoint_url(&chain, None, &endpoint, EndpointRole::Spare)?;
             added.push(ep);
+            moved.extend(m);
         }
-        Ok(added)
+        Ok((added, moved))
     })?;
     println!(
         "Added {} endpoint(s) to '{chain}': {}",
         added.len(),
         added.join(", ")
     );
+    ui::report_moved(&moved);
     Ok(0)
 }

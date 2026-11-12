@@ -177,15 +177,25 @@ impl Endpoint {
     /// (with templates blanked) an `http(s)://` or `ws(s)://` URL with a
     /// host. Never echoes the URL.
     pub fn check_url(url: &str) -> anyhow::Result<()> {
-        if url.trim().is_empty() || url.chars().any(char::is_whitespace) {
-            anyhow::bail!("the endpoint URL is empty or malformed");
-        }
-        crate::template::references(url)?;
+        Self::check_url_text(url)?;
         let parsed = url::Url::parse(&crate::template::blanked(url))
             .map_err(|e| anyhow::anyhow!("the endpoint URL is not a valid URL ({e})"))?;
         if !matches!(parsed.scheme(), "http" | "https" | "ws" | "wss") || parsed.host().is_none() {
             anyhow::bail!("the endpoint URL must be an http(s):// or ws(s):// URL with a host");
         }
+        Ok(())
+    }
+}
+
+impl Endpoint {
+    /// The part of [`Endpoint::check_url`] every stored URL must pass
+    /// (validation applies it to the config): non-empty, no whitespace,
+    /// well-formed `${NAME}` templates.
+    pub fn check_url_text(url: &str) -> anyhow::Result<()> {
+        if url.trim().is_empty() || url.chars().any(char::is_whitespace) {
+            anyhow::bail!("the endpoint URL is empty or malformed");
+        }
+        crate::template::references(url)?;
         Ok(())
     }
 }
@@ -518,6 +528,46 @@ impl Chain {
     /// case. The chain's own name (its key) is not checked.
     pub fn matches_alias(&self, query: &str) -> bool {
         self.aliases.iter().any(|a| a.eq_ignore_ascii_case(query))
+    }
+
+    /// The endpoint at `url`, if this chain has one. URLs that differ only
+    /// by a trailing `/` are the same endpoint.
+    pub fn endpoint_at(&self, url: &str) -> Option<&str> {
+        let url = url.trim_end_matches('/');
+        self.rpcs
+            .iter()
+            .find(|(_, e)| e.url.trim_end_matches('/') == url)
+            .map(|(name, _)| name.as_str())
+    }
+
+    /// Check a new endpoint at `url` for this chain (`chain` is its name,
+    /// for messages) and return its name: `name`, or the URL's
+    /// [endpoint name](crate::names::endpoint_name_for_url) made unique
+    /// among the chain's endpoints. The URL must pass
+    /// [`Endpoint::check_url`] and be new to the chain; a given name must
+    /// be free.
+    pub fn new_endpoint(
+        &self,
+        chain: &str,
+        url: &str,
+        name: Option<&str>,
+    ) -> anyhow::Result<String> {
+        Endpoint::check_url(url)?;
+        if let Some(existing) = self.endpoint_at(url) {
+            anyhow::bail!(
+                "chain '{chain}' already has this URL as endpoint '{existing}'; activate it with `chainz chain set {chain} --rpc {existing}`"
+            );
+        }
+        match name {
+            Some(name) if self.rpcs.contains_key(name) => {
+                anyhow::bail!("chain '{chain}' already has an endpoint named '{name}'")
+            }
+            Some(name) => Ok(name.to_string()),
+            None => Ok(crate::names::unique_name(
+                &crate::names::endpoint_name_for_url(url),
+                |n| self.rpcs.contains_key(n),
+            )),
+        }
     }
 }
 

@@ -10,8 +10,7 @@ use crate::prompt::{self, Ask, StdinTrim, Tty, is_tty, read_stdin_secret};
 use crate::select::pick_chain;
 use crate::view;
 use anyhow::{Result, bail};
-use chainz_core::model::{Config, Endpoint};
-use chainz_core::names;
+use chainz_core::model::Config;
 use chainz_core::resolve::{self, Policy};
 use chainz_core::tx::{ChainEdit, EditReport};
 use zeroize::Zeroizing;
@@ -99,31 +98,16 @@ fn build_edit(
     }
 }
 
-/// A `--rpc` URL that adds an endpoint must answer with the chain's ID
-/// (with the headers the edit gives it).
+/// The endpoint a `--rpc` URL adds must answer with the chain's ID (with
+/// the headers the edit gives it).
 fn check_new_url(chainz: &chainz_core::Chainz, name: &str, edit: &ChainEdit) -> Result<()> {
-    let Some(url) = edit.rpc.as_deref() else {
-        return Ok(());
-    };
     let chain = &chainz.config().chains[name];
-    let known = chain.rpcs.contains_key(url) || chain.rpcs.values().any(|e| e.url == url);
-    if known || !url.contains("://") {
-        return Ok(());
+    match edit.new_endpoint(name, chain)? {
+        Some((ep, endpoint)) if !endpoint.is_websocket() => {
+            check(chainz, name, chain.id, &ep, &endpoint)
+        }
+        _ => Ok(()),
     }
-    let endpoint = Endpoint {
-        url: url.to_string(),
-        headers: edit.headers.iter().cloned().collect(),
-    };
-    if endpoint.is_websocket() {
-        return Ok(());
-    }
-    check(
-        chainz,
-        name,
-        chain.id,
-        &names::endpoint_name_for_url(url),
-        &endpoint,
-    )
 }
 
 fn print_report(report: &EditReport) {
@@ -280,10 +264,16 @@ impl Shown {
             });
         let aliases = pending_aliases.as_ref().unwrap_or(&chain.aliases);
         Shown {
-            rpc: match edit.rpc.as_deref() {
-                Some(url) if url.contains("://") => chainz_core::redact::url(url, false),
-                Some(endpoint) => endpoint.to_string(),
-                None => chain.rpc.clone(),
+            rpc: match edit.new_endpoint(name, chain) {
+                Ok(Some((_, endpoint))) => chainz_core::redact::url(&endpoint.url, false),
+                _ => match edit.rpc.as_deref() {
+                    Some(rpc) if rpc.contains("://") => match chain.endpoint_at(rpc) {
+                        Some(endpoint) => endpoint.to_string(),
+                        None => chainz_core::redact::url(rpc, false),
+                    },
+                    Some(endpoint) => endpoint.to_string(),
+                    None => chain.rpc.clone(),
+                },
             },
             signer: match &edit.signer {
                 Some(signer) => or_dash(signer.as_deref()),

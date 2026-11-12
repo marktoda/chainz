@@ -55,6 +55,42 @@ impl ChainEdit {
             && self.add_aliases.is_empty()
             && self.remove_aliases.is_empty()
     }
+
+    /// The endpoint `--rpc` would add to `chain` (named `name`), with the
+    /// edit's headers: `None` when `rpc` is unset or names an endpoint the
+    /// chain has (by name or URL). An error when it is neither an endpoint
+    /// nor a URL [`Tx::edit_chain`] would accept.
+    pub fn new_endpoint(&self, name: &str, chain: &Chain) -> Result<Option<(String, Endpoint)>> {
+        let Some(rpc) = self.rpc.as_deref() else {
+            return Ok(None);
+        };
+        if chain.rpcs.contains_key(rpc) || chain.endpoint_at(rpc).is_some() {
+            return Ok(None);
+        }
+        if !rpc.contains("://") {
+            bail!(
+                "chain '{name}' has no endpoint '{rpc}' (endpoints: {})",
+                chain
+                    .rpcs
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+        let ep_name = chain.new_endpoint(name, rpc, None)?;
+        let mut endpoint = Endpoint::new(rpc);
+        for (header, value) in &self.headers {
+            let header = header.trim();
+            if !is_header_name(header) {
+                bail!("invalid header name '{header}'");
+            }
+            endpoint
+                .headers
+                .insert(header.to_string(), value.trim().to_string());
+        }
+        Ok(Some((ep_name, endpoint)))
+    }
 }
 
 /// What [`Tx::edit_chain`] did, for the caller to report.
@@ -240,36 +276,32 @@ impl Tx {
         edit: &ChainEdit,
         report: &mut EditReport,
     ) -> Result<()> {
-        // The endpoint the header flags apply to, and whether it is new.
-        let (ep_name, mut endpoint, new) = match edit.rpc.as_deref() {
-            None => match chain.rpcs.get(&chain.rpc) {
-                Some(active) => (chain.rpc.clone(), active.clone(), false),
-                None => bail!("chain '{name}' has no active endpoint '{}'", chain.rpc),
-            },
-            Some(rpc) if chain.rpcs.contains_key(rpc) => {
-                (rpc.to_string(), chain.rpcs[rpc].clone(), false)
+        // A new endpoint is added, with the header flags, and activated.
+        if let Some((ep_name, endpoint)) = edit.new_endpoint(name, chain)? {
+            for (header, _) in &endpoint.headers {
+                report
+                    .changes
+                    .push(format!("header {header} set on {ep_name}"));
             }
-            Some(rpc) => match chain.rpcs.iter().find(|(_, e)| e.url == rpc) {
-                Some((ep, e)) => (ep.clone(), e.clone(), false),
-                None if rpc.contains("://") => {
-                    Endpoint::check_url(rpc)?;
-                    let ep = names::unique_name(&names::endpoint_name_for_url(rpc), |n| {
-                        chain.rpcs.contains_key(n)
-                    });
-                    (ep, Endpoint::new(rpc), true)
-                }
-                None => bail!(
-                    "chain '{name}' has no endpoint '{rpc}' (endpoints: {})",
-                    chain
-                        .rpcs
-                        .keys()
-                        .map(String::as_str)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-            },
+            let (ep_name, moved) =
+                self.add_endpoint_url(name, Some(&ep_name), &endpoint, EndpointRole::Active)?;
+            report.moved = moved;
+            report.added_endpoint = Some(ep_name.clone());
+            report.changes.push(format!("active endpoint: {ep_name}"));
+            return Ok(());
+        }
+        // Else the header flags apply to the `--rpc` endpoint, or the
+        // active one.
+        let ep_name = match edit.rpc.as_deref() {
+            None => chain.rpc.as_str(),
+            Some(rpc) if chain.rpcs.contains_key(rpc) => rpc,
+            Some(rpc) => chain.endpoint_at(rpc).unwrap_or(rpc),
+        }
+        .to_string();
+        let Some(mut endpoint) = chain.rpcs.get(&ep_name).cloned() else {
+            bail!("chain '{name}' has no active endpoint '{ep_name}'");
         };
-        let mut changed = new;
+        let mut changed = false;
         if edit.clear_headers && !endpoint.headers.is_empty() {
             endpoint.headers.clear();
             changed = true;
@@ -292,14 +324,9 @@ impl Tx {
             let mut endpoints = [(ep_name.clone(), endpoint)];
             report.moved = self.extract_secrets(name, &mut endpoints)?;
             let [(_, endpoint)] = endpoints;
-            if new {
-                self.add_endpoint(name, &ep_name, &endpoint, EndpointRole::Active)?;
-                report.added_endpoint = Some(ep_name.clone());
-            } else {
-                self.set_endpoint(name, &ep_name, &endpoint)?;
-            }
+            self.set_endpoint(name, &ep_name, &endpoint)?;
         }
-        if edit.rpc.is_some() && (new || chain.rpc != ep_name) {
+        if edit.rpc.is_some() && chain.rpc != ep_name {
             self.set_active(name, &ep_name)?;
             report.changes.push(format!("active endpoint: {ep_name}"));
         }
