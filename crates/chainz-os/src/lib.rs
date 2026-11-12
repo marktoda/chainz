@@ -7,7 +7,9 @@
 //! - [`create_private_dir`], [`write_private`] (atomic and durable),
 //!   [`read_private`] (tightens loose permissions), [`open_private`],
 //!   [`open_private_log`];
-//! - [`try_lock`], one non-blocking `flock` attempt;
+//! - file locks whose holder is alive while it holds them: [`probe_lock`]
+//!   asks, [`try_lock_file`] and [`lock_file`] take one, and [`try_lock`]
+//!   is one non-blocking attempt on an open file;
 //! - [`FileStamp`], enough metadata to see that a file changed;
 //! - [`now_ms`] and [`now_secs`], the wall clock as unix time.
 //!
@@ -23,7 +25,7 @@ use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Create `dir` (and any missing parents) and restrict it to the owner.
 ///
@@ -219,6 +221,92 @@ pub fn try_lock(file: &File) -> io::Result<bool> {
     }
 }
 
+/// Whether someone holds the lock on the file at `path` (a process that
+/// is alive for as long as it holds it). One *shared*, non-blocking
+/// `flock` attempt, released at once: two probes never contend, and a
+/// probe delays a [`lock_file`] or [`try_lock_file`] only for the moment
+/// it holds it. A missing file is not held; nothing is created.
+pub fn probe_lock(path: &Path) -> io::Result<bool> {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e),
+    };
+    match file.try_lock_shared() {
+        Ok(()) => Ok(false),
+        Err(fs::TryLockError::WouldBlock) => Ok(true),
+        Err(fs::TryLockError::Error(e)) => Err(e),
+    }
+}
+
+/// How hard [`try_lock_file`] tries a lock someone else holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Contention {
+    /// Give up at once.
+    GiveUp,
+    /// Retry for up to [`PROBE_GRACE`]: a lock held only by a
+    /// [`probe_lock`] is taken; one held by a live process is not.
+    OutwaitProbes,
+}
+
+/// How long [`Contention::OutwaitProbes`] retries. A probe holds its lock
+/// for microseconds; this leaves room for a loaded machine.
+pub const PROBE_GRACE: Duration = Duration::from_millis(100);
+const PROBE_RETRY: Duration = Duration::from_millis(2);
+
+/// Take the exclusive lock on the file at `path` without blocking:
+/// `Ok(None)` when another process holds it (see [`Contention`]). The
+/// file is created mode 0600 if missing, and its directory owner-only.
+/// The lock is held until the returned file is closed.
+///
+/// A holder may remove the file when it is done; a lock taken on a file
+/// that was removed in between is retried on the new one, since a lock on
+/// a file nobody else will open rules nothing out.
+pub fn try_lock_file(path: &Path, contention: Contention) -> io::Result<Option<File>> {
+    create_parent(path)?;
+    let deadline = Instant::now() + PROBE_GRACE;
+    loop {
+        let file = open_private(path)?;
+        if try_lock(&file)? {
+            if same_file(&file, path)? {
+                return Ok(Some(file));
+            }
+            continue;
+        }
+        if contention == Contention::GiveUp || Instant::now() >= deadline {
+            return Ok(None);
+        }
+        std::thread::sleep(PROBE_RETRY);
+    }
+}
+
+/// Block until the exclusive lock on the file at `path` is held, creating
+/// the file (mode 0600) and its directory (owner-only) if missing. The
+/// lock is held until the returned file is closed.
+pub fn lock_file(path: &Path) -> io::Result<File> {
+    create_parent(path)?;
+    let file = open_private(path)?;
+    file.lock()?;
+    Ok(file)
+}
+
+fn create_parent(path: &Path) -> io::Result<()> {
+    match path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        Some(dir) => create_private_dir(dir),
+        None => Ok(()),
+    }
+}
+
+/// Whether `file` is still the file at `path`.
+fn same_file(file: &File, path: &Path) -> io::Result<bool> {
+    let held = file.metadata()?;
+    match fs::metadata(path) {
+        Ok(now) => Ok((held.dev(), held.ino()) == (now.dev(), now.ino())),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
 /// Enough of a file's metadata to see that it changed. Config writes are
 /// atomic renames, so the inode changes even when the size and the
 /// (coarse-grained) modification time come out the same.
@@ -396,6 +484,59 @@ mod tests {
         assert!(!try_lock(&second).unwrap());
         drop(first);
         assert!(try_lock(&second).unwrap());
+    }
+
+    #[test]
+    fn probes_see_a_held_lock_and_never_contend() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("locks/x.lock");
+        assert!(!probe_lock(&path).unwrap());
+        assert!(!path.exists(), "a probe creates nothing");
+        let held = try_lock_file(&path, Contention::GiveUp).unwrap().unwrap();
+        assert_eq!(mode(path.parent().unwrap()), 0o700);
+        assert!(probe_lock(&path).unwrap());
+        assert!(probe_lock(&path).unwrap());
+        assert!(
+            try_lock_file(&path, Contention::OutwaitProbes)
+                .unwrap()
+                .is_none()
+        );
+        drop(held);
+        assert!(!probe_lock(&path).unwrap());
+    }
+
+    #[test]
+    fn a_patient_lock_outwaits_a_probe() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("x.lock");
+        drop(lock_file(&path).unwrap());
+        // A probe that holds its shared lock right as the lock is taken.
+        let probe = File::open(&path).unwrap();
+        probe.try_lock_shared().unwrap();
+        assert!(try_lock_file(&path, Contention::GiveUp).unwrap().is_none());
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            drop(probe);
+        });
+        assert!(
+            try_lock_file(&path, Contention::OutwaitProbes)
+                .unwrap()
+                .is_some()
+        );
+        release.join().unwrap();
+    }
+
+    #[test]
+    fn a_lock_follows_a_removed_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("x.lock");
+        let held = lock_file(&path).unwrap();
+        // The holder removes the file as it lets go.
+        fs::remove_file(&path).unwrap();
+        drop(held);
+        let file = try_lock_file(&path, Contention::GiveUp).unwrap().unwrap();
+        assert!(same_file(&file, &path).unwrap());
+        assert!(probe_lock(&path).unwrap());
     }
 
     #[test]

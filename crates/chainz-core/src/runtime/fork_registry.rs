@@ -18,12 +18,11 @@
 //! any other child never inherit the lock.
 
 use super::{Runtime, loopback_url, read_json, remove_if_exists, write_json};
+use chainz_os::Contention;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{self, Read, Seek, Write};
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 /// A fork, `forks/<name>.json`. Forks resolve by name only and keep their
 /// parent's chain ID unless started with `--chain-id`.
@@ -158,27 +157,6 @@ impl Drop for PortReservation {
     }
 }
 
-/// One non-blocking attempt at an exclusive lock on the file at `path`
-/// (created 0600): `Ok(None)` when someone else holds it. Retried when the
-/// holder before us removed the file after we opened it, since a lock on a
-/// file nobody else will see would rule nothing out.
-fn lock_path(path: &Path) -> io::Result<Option<File>> {
-    loop {
-        let file = chainz_os::open_private(path)?;
-        if !chainz_os::try_lock(&file)? {
-            return Ok(None);
-        }
-        if same_file(&file, path)? {
-            return Ok(Some(file));
-        }
-    }
-}
-
-/// How often, and how long apart, a claim retries a lock that a reader is
-/// probing (a probe holds a shared lock for microseconds).
-const CLAIM_ATTEMPTS: u32 = 50;
-const CLAIM_RETRY: Duration = Duration::from_millis(2);
-
 /// Whether `name` can be a file name in the registry. Fork names follow
 /// the chain-name rules ([`crate::forks::check_fork_name`]); this is only
 /// the path guard for lookups by arbitrary text.
@@ -198,28 +176,18 @@ impl Runtime {
     }
 
     /// Whether a supervisor holds `name`'s lock (the fork is alive,
-    /// starting or not): one shared, non-blocking `flock` attempt. Creates
+    /// starting or not): a probe ([`chainz_os::probe_lock`]). Creates
     /// nothing.
     pub fn fork_live(&self, name: &str) -> io::Result<bool> {
         if !safe_name(name) {
             return Ok(false);
         }
-        let file = match File::open(self.fork_lock_path(name)) {
-            Ok(file) => file,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
-            Err(e) => return Err(e),
-        };
-        match file.try_lock_shared() {
-            Ok(()) => Ok(false),
-            Err(std::fs::TryLockError::WouldBlock) => Ok(true),
-            Err(std::fs::TryLockError::Error(e)) => Err(e),
-        }
+        chainz_os::probe_lock(&self.fork_lock_path(name))
     }
 
-    /// Take `name`'s lock: `Ok(None)` when someone else holds it. With
-    /// `patient`, a lock held only briefly (a reader probing it) is
-    /// retried.
-    fn lock_fork_name(&self, name: &str, patient: bool) -> io::Result<Option<ForkClaim>> {
+    /// Take `name`'s lock: `Ok(None)` when someone else holds it (see
+    /// [`Contention`]).
+    fn lock_fork_name(&self, name: &str, contention: Contention) -> io::Result<Option<ForkClaim>> {
         if !safe_name(name) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -228,22 +196,14 @@ impl Runtime {
         }
         self.ensure_dir()?;
         let lock = self.fork_lock_path(name);
-        let attempts = if patient { CLAIM_ATTEMPTS } else { 1 };
-        for attempt in 1..=attempts {
-            let Some(file) = lock_path(&lock)? else {
-                if attempt < attempts {
-                    std::thread::sleep(CLAIM_RETRY);
-                }
-                continue;
-            };
-            return Ok(Some(ForkClaim {
+        Ok(
+            chainz_os::try_lock_file(&lock, contention)?.map(|file| ForkClaim {
                 file,
                 record: self.fork_record_path(name),
                 lock,
                 name: name.to_string(),
-            }));
-        }
-        Ok(None)
+            }),
+        )
     }
 
     /// `ports/`.
@@ -257,21 +217,21 @@ impl Runtime {
     /// about other programs: the caller still checks the port is free.
     pub fn reserve_port(&self, port: u16) -> io::Result<Option<PortReservation>> {
         self.ensure_dir()?;
-        let dir = self.ports_dir();
-        chainz_os::create_private_dir(&dir)?;
-        let lock = dir.join(format!("{port}.lock"));
-        Ok(lock_path(&lock)?.map(|file| PortReservation {
-            _file: file,
-            lock,
-            port,
-        }))
+        let lock = self.ports_dir().join(format!("{port}.lock"));
+        Ok(
+            chainz_os::try_lock_file(&lock, Contention::GiveUp)?.map(|file| PortReservation {
+                _file: file,
+                lock,
+                port,
+            }),
+        )
     }
 
     /// Claim `name` for this process (a fork supervisor): `Ok(None)` when a
     /// live fork has it. A record left by a dead fork of the same name is
     /// removed.
     pub fn claim_fork(&self, name: &str) -> io::Result<Option<ForkClaim>> {
-        let Some(mut claim) = self.lock_fork_name(name, true)? else {
+        let Some(mut claim) = self.lock_fork_name(name, Contention::OutwaitProbes)? else {
             return Ok(None);
         };
         remove_if_exists(&claim.record)?;
@@ -322,7 +282,8 @@ impl Runtime {
         if !record_path.exists() && !self.fork_lock_path(name).exists() {
             return Ok(false);
         }
-        let Some(claim) = self.lock_fork_name(name, false)? else {
+        // A live fork is the common case here: don't wait on it.
+        let Some(claim) = self.lock_fork_name(name, Contention::GiveUp)? else {
             return Ok(false);
         };
         // Unreadable means nothing to stop; the files go regardless.
@@ -395,16 +356,6 @@ fn lock_owner(path: &Path) -> Option<u32> {
     let mut text = String::new();
     File::open(path).ok()?.read_to_string(&mut text).ok()?;
     text.trim().parse().ok()
-}
-
-/// Whether `file` is still the file at `path`.
-fn same_file(file: &File, path: &Path) -> io::Result<bool> {
-    let held = file.metadata()?;
-    match std::fs::metadata(path) {
-        Ok(now) => Ok((held.dev(), held.ino()) == (now.dev(), now.ino())),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(e) => Err(e),
-    }
 }
 
 #[cfg(test)]

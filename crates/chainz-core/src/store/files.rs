@@ -119,11 +119,7 @@ pub struct WriteLock {
 impl WriteLock {
     /// Block until the lock for `paths` is held.
     pub fn acquire(paths: &StorePaths) -> Result<Self> {
-        chainz_os::create_private_dir(&paths.dir)
-            .with_context(|| format!("failed to create {}", paths.dir.display()))?;
-        let file = chainz_os::open_private(&paths.lock)
-            .with_context(|| format!("failed to open {}", paths.lock.display()))?;
-        file.lock()
+        let file = chainz_os::lock_file(&paths.lock)
             .with_context(|| format!("failed to lock {}", paths.lock.display()))?;
         Ok(Self {
             file,

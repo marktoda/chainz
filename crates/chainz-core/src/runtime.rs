@@ -21,6 +21,7 @@
 //! does not know rather than misreading it.
 
 use crate::paths;
+use chainz_os::Contention;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::io;
@@ -272,27 +273,13 @@ impl Runtime {
         self.dir.join("forks")
     }
 
-    /// Whether a gateway holds `serve.lock`: one non-blocking `flock`
-    /// attempt. A missing lock file means no gateway; nothing is created.
-    fn serve_locked(&self) -> bool {
-        let Ok(file) = std::fs::File::open(self.serve_lock_path()) else {
-            return false;
-        };
-        match chainz_os::try_lock(&file) {
-            Ok(true) => {
-                let _ = file.unlock();
-                false
-            }
-            Ok(false) | Err(_) => true,
-        }
-    }
-
-    /// **The** answer to "is a gateway running": one non-blocking `flock`
-    /// attempt, then (only while the lock is held) a read of `serve.json`.
-    /// Creates nothing. An unreadable or unknown `serve.json` under a held
-    /// lock is an error, never [`GatewayState::Down`].
+    /// **The** answer to "is a gateway running": a probe of `serve.lock`
+    /// ([`chainz_os::probe_lock`]), then (only while the lock is held) a
+    /// read of `serve.json`. Creates nothing. An unreadable lock, or an
+    /// unreadable or unknown `serve.json` under a held lock, is an error,
+    /// never [`GatewayState::Down`].
     pub fn gateway(&self) -> io::Result<GatewayState> {
-        if !self.serve_locked() {
+        if !chainz_os::probe_lock(&self.serve_lock_path())? {
             return Ok(GatewayState::Down);
         }
         let path = self.serve_json_path();
@@ -309,13 +296,14 @@ impl Runtime {
     /// For the gateway: take `serve.lock` for the process lifetime, and
     /// remove the `serve.json` a dead gateway left (failing if it can't be
     /// removed, so nobody reads a dead gateway's record while we run).
-    /// `Ok(None)` when another gateway already holds the lock.
+    /// `Ok(None)` when another gateway already holds the lock; a probe
+    /// ([`Runtime::gateway`]) that holds it for a moment is outwaited.
     pub fn acquire_serve_lock(&self) -> io::Result<Option<ServeLock>> {
         self.ensure_dir()?;
-        let file = chainz_os::open_private(&self.serve_lock_path())?;
-        if !chainz_os::try_lock(&file)? {
+        let lock = self.serve_lock_path();
+        let Some(file) = chainz_os::try_lock_file(&lock, Contention::OutwaitProbes)? else {
             return Ok(None);
-        }
+        };
         let serve_json = self.serve_json_path();
         remove_if_exists(&serve_json).map_err(|e| {
             io::Error::new(
@@ -402,6 +390,39 @@ mod tests {
         assert!(!rt.serve_json_path().exists(), "withdrawn on drop");
         drop(lock);
         assert_eq!(rt.gateway().unwrap(), GatewayState::Down);
+    }
+
+    #[test]
+    fn a_probe_never_makes_a_starting_gateway_fail() {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = Runtime::at(dir.path().join("chainz"));
+        drop(rt.acquire_serve_lock().unwrap().unwrap());
+
+        // A probe (exec, top) holding the lock right as the gateway starts.
+        let probe = std::fs::File::open(rt.serve_lock_path()).unwrap();
+        probe.try_lock_shared().unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            drop(probe);
+        });
+        assert!(rt.acquire_serve_lock().unwrap().is_some());
+        release.join().unwrap();
+
+        // And under a stream of probes.
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let prober = {
+            let (rt, stop) = (rt.clone(), stop.clone());
+            std::thread::spawn(move || {
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let _ = rt.gateway();
+                }
+            })
+        };
+        for _ in 0..200 {
+            assert!(rt.acquire_serve_lock().unwrap().is_some());
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        prober.join().unwrap();
     }
 
     #[test]
