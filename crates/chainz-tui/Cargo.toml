@@ -9,7 +9,7 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-base64 = "0.22"
+base64.workspace = true
 chainz-core.workspace = true
 chainz-rpc.workspace = true
 chainz-os.workspace = true
