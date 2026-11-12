@@ -11,13 +11,13 @@ use chainz_core::StorePaths;
 use chainz_core::runtime::{
     DEFAULT_PORT, GatewayAddr, GatewayState, LOOPBACK, Published, Runtime, ServeInfo, ServeLock,
 };
-use chainz_rpc::control::{MetricsSnapshot, MetricsTotals, SocketPath, Status, Window};
+use chainz_rpc::control::{MetricsSnapshot, MetricsTotals, Status, Window};
 use chainz_rpc::error::SERVER_ERROR;
 use chainz_rpc::{HttpUpstream, RpcClient};
 use hyper::body::Incoming;
 use hyper::{Request, Response};
 use serde_json::Value;
-use tokio::net::{TcpListener, UnixListener};
+use tokio::net::TcpListener;
 use tokio::sync::{broadcast, watch};
 use tokio::task::{JoinHandle, JoinSet};
 
@@ -261,17 +261,8 @@ impl Gateway {
 
         // We hold the lock, so any socket file here is stale.
         let sock = config.runtime.serve_sock_path();
-        match std::fs::remove_file(&sock) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
-                return Err(e).with_context(|| format!("can't replace {}", sock.display()));
-            }
-            _ => {}
-        }
-        let unix = SocketPath::new(&sock)
-            .and_then(|short| UnixListener::bind(short.as_path()))
+        let unix = control::bind(&sock)
             .with_context(|| format!("can't bind the control socket {}", sock.display()))?;
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600))?;
 
         let (notices, _) = broadcast::channel(64);
         let (inspector, log_writer) =

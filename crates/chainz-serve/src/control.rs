@@ -6,21 +6,38 @@
 
 use std::convert::Infallible;
 use std::future::Future;
+use std::io;
+use std::path::Path;
 use std::pin::Pin;
 use std::task::Poll;
 
 use bytes::Bytes;
 use chainz_rpc::control::{
-    ControlRoute, EventsOptions, MetricsSnapshot, RequestRecord, Status, write_line,
+    ControlRoute, EventsOptions, MetricsSnapshot, RequestRecord, SocketPath, Status, write_line,
 };
 use http_body_util::BodyExt;
 use hyper::body::{Body, Frame, Incoming};
 use hyper::header::{ALLOW, CONTENT_TYPE, HeaderValue};
 use hyper::{Request, Response, StatusCode};
+use tokio::net::UnixListener;
 use tokio::sync::{broadcast, watch};
 
 use crate::events::EventRing;
 use crate::http::{BoxBody, full, json, plain};
+
+/// Bind the control socket at `socket`, mode 0600. A file already there
+/// is stale (the caller holds the lock or owns the directory) and is
+/// replaced.
+pub(crate) fn bind(socket: &Path) -> io::Result<UnixListener> {
+    match std::fs::remove_file(socket) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+        _ => {}
+    }
+    let listener = UnixListener::bind(SocketPath::new(socket)?.as_path())?;
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
+    Ok(listener)
+}
 
 /// What the control API serves.
 pub(crate) trait ControlState: Send + Sync + 'static {

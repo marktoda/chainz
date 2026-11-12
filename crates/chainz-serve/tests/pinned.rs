@@ -2,6 +2,7 @@
 //! loopback.
 mod common;
 
+use chainz_core::runtime::GatewayAddr;
 use chainz_rpc::{RpcClient, Target};
 use chainz_serve::PinnedProxy;
 use common::{Mock, R, http};
@@ -12,13 +13,24 @@ async fn proxy_to(mock: &Mock) -> PinnedProxy {
     PinnedProxy::start(RpcClient::new(), target).await.unwrap()
 }
 
+/// The proxy's port and token, read back from its URL.
+fn addr_of(proxy: &PinnedProxy) -> GatewayAddr {
+    let url = proxy.url();
+    let rest = url.strip_prefix("http://127.0.0.1:").unwrap();
+    let (port, token) = rest.split_once('/').unwrap();
+    GatewayAddr {
+        port: port.parse().unwrap(),
+        token: token.trim_end_matches('/').to_string(),
+    }
+}
+
 const BODY: &str = r#"{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}"#;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn forwards_only_tokened_loopback_json_posts() {
     let a = Mock::named("a").await;
     let proxy = proxy_to(&a).await;
-    let addr = proxy.addr();
+    let addr = addr_of(&proxy);
     assert_eq!(proxy.url(), addr.base_url());
     let path = &addr.path(None, None);
     assert_eq!(addr.token.len(), 64);
@@ -26,7 +38,7 @@ async fn forwards_only_tokened_loopback_json_posts() {
     let json_type = ("Content-Type", "application/json");
 
     let ok = http(
-        proxy.addr().port,
+        addr_of(&proxy).port,
         "POST",
         path,
         &[("Host", &host), json_type],
@@ -35,7 +47,7 @@ async fn forwards_only_tokened_loopback_json_posts() {
     .await;
     assert_eq!((ok.status, ok.json()["result"].as_str()), (200, Some("a")));
     let ok = http(
-        proxy.addr().port,
+        addr_of(&proxy).port,
         "POST",
         path,
         &[("Host", "localhost"), json_type],
@@ -61,7 +73,7 @@ async fn forwards_only_tokened_loopback_json_posts() {
         ),
     ];
     for (method, path, headers, expected) in &cases {
-        let reply = http(proxy.addr().port, method, path, headers, BODY).await;
+        let reply = http(addr_of(&proxy).port, method, path, headers, BODY).await;
         assert_eq!(reply.status, *expected, "{method} {path} {headers:?}");
         assert!(!reply.head.contains("access-control"));
     }
@@ -72,13 +84,13 @@ async fn forwards_only_tokened_loopback_json_posts() {
 async fn upstream_failures_are_http_errors_without_the_url() {
     let a = Mock::start("a", |_| R::Http(429, Some("3"))).await;
     let proxy = proxy_to(&a).await;
-    let path = proxy.addr().path(None, None);
-    let host = format!("127.0.0.1:{}", proxy.addr().port);
+    let path = addr_of(&proxy).path(None, None);
+    let host = format!("127.0.0.1:{}", addr_of(&proxy).port);
     let headers = [
         ("Host", host.as_str()),
         ("Content-Type", "application/json"),
     ];
-    let reply = http(proxy.addr().port, "POST", &path, &headers, BODY).await;
+    let reply = http(addr_of(&proxy).port, "POST", &path, &headers, BODY).await;
     assert_eq!(reply.status, 429);
     assert!(reply.head.contains("retry-after: 3"), "{}", reply.head);
     assert!(!reply.body.contains("127.0.0.1"), "{}", reply.body);
@@ -88,25 +100,25 @@ async fn upstream_failures_are_http_errors_without_the_url() {
     let mut b = Mock::named("b").await;
     let proxy = proxy_to(&b).await;
     b.kill().await;
-    let path = proxy.addr().path(None, None);
-    let host = format!("127.0.0.1:{}", proxy.addr().port);
+    let path = addr_of(&proxy).path(None, None);
+    let host = format!("127.0.0.1:{}", addr_of(&proxy).port);
     let headers = [
         ("Host", host.as_str()),
         ("Content-Type", "application/json"),
     ];
-    let reply = http(proxy.addr().port, "POST", &path, &headers, BODY).await;
+    let reply = http(addr_of(&proxy).port, "POST", &path, &headers, BODY).await;
     assert_eq!(reply.status, 502);
 
     // An upstream 4xx is passed on, as the gateway does.
     let c = Mock::start("c", |_| R::Http(403, None)).await;
     let proxy = proxy_to(&c).await;
-    let path = proxy.addr().path(None, None);
-    let host = format!("127.0.0.1:{}", proxy.addr().port);
+    let path = addr_of(&proxy).path(None, None);
+    let host = format!("127.0.0.1:{}", addr_of(&proxy).port);
     let headers = [
         ("Host", host.as_str()),
         ("Content-Type", "application/json"),
     ];
-    let reply = http(proxy.addr().port, "POST", &path, &headers, BODY).await;
+    let reply = http(addr_of(&proxy).port, "POST", &path, &headers, BODY).await;
     assert_eq!(reply.status, 403);
     assert_eq!(reply.json()["error"]["code"], json!(-32000));
 }
@@ -122,13 +134,13 @@ async fn a_limit_exceeded_answer_is_retried_on_the_same_endpoint() {
     })
     .await;
     let proxy = proxy_to(&a).await;
-    let host = format!("127.0.0.1:{}", proxy.addr().port);
+    let host = format!("127.0.0.1:{}", addr_of(&proxy).port);
     let headers = [
         ("Host", host.as_str()),
         ("Content-Type", "application/json"),
     ];
-    let path = proxy.addr().path(None, None);
-    let reply = http(proxy.addr().port, "POST", &path, &headers, BODY).await;
+    let path = addr_of(&proxy).path(None, None);
+    let reply = http(addr_of(&proxy).port, "POST", &path, &headers, BODY).await;
     assert_eq!(
         (reply.status, reply.json()["result"].as_str()),
         (200, Some("a"))
@@ -138,32 +150,23 @@ async fn a_limit_exceeded_answer_is_retried_on_the_same_endpoint() {
     // Retries run out: the last -32005 answer, as the endpoint sent it.
     let b = Mock::start("b", |_| R::Error(-32005)).await;
     let proxy = proxy_to(&b).await;
-    let host = format!("127.0.0.1:{}", proxy.addr().port);
+    let host = format!("127.0.0.1:{}", addr_of(&proxy).port);
     let headers = [
         ("Host", host.as_str()),
         ("Content-Type", "application/json"),
     ];
-    let path = proxy.addr().path(None, None);
-    let reply = http(proxy.addr().port, "POST", &path, &headers, BODY).await;
+    let path = addr_of(&proxy).path(None, None);
+    let reply = http(addr_of(&proxy).port, "POST", &path, &headers, BODY).await;
     assert_eq!(reply.status, 200);
     assert_eq!(reply.json()["error"]["message"], json!("mock error"));
     assert_eq!(b.calls().len(), 3);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn shutdown_releases_the_port() {
+async fn dropping_releases_the_port() {
     let a = Mock::named("a").await;
     let proxy = proxy_to(&a).await;
-    let port = proxy.addr().port;
-    proxy.shutdown().await;
-    assert!(
-        tokio::net::TcpStream::connect(("127.0.0.1", port))
-            .await
-            .is_err()
-    );
-    // Dropping works too.
-    let proxy = proxy_to(&a).await;
-    let port = proxy.addr().port;
+    let port = addr_of(&proxy).port;
     drop(proxy);
     common::eventually(|| std::net::TcpStream::connect(("127.0.0.1", port)).is_err()).await;
 }

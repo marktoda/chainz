@@ -7,8 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use chainz_rpc::control::{MetricsSnapshot, RequestRecord, SocketPath, Status};
-use tokio::net::UnixListener;
+use chainz_rpc::control::{MetricsSnapshot, RequestRecord, Status};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
@@ -76,13 +75,7 @@ impl ControlServer {
         status: Status,
         metrics: MetricsSnapshot,
     ) -> io::Result<Self> {
-        match std::fs::remove_file(socket) {
-            Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
-            _ => {}
-        }
-        let listener = UnixListener::bind(SocketPath::new(socket)?.as_path())?;
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
+        let listener = crate::control::bind(socket)?;
         let state = Arc::new(Canned {
             status: Mutex::new(status),
             metrics: Mutex::new(metrics),

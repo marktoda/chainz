@@ -30,8 +30,8 @@ use crate::auth;
 /// The `Retry-After` sent with a 429 when the upstream named no wait.
 pub(crate) const DEFAULT_RETRY_AFTER: Duration = Duration::from_secs(2);
 
-/// How long open connections get to finish once a server stops: the pinned
-/// proxy's drain, and the gateway's by default.
+/// How long open connections get to finish once the gateway stops, by
+/// default.
 pub(crate) const DRAIN: Duration = Duration::from_secs(5);
 
 pub(crate) type BoxBody = http_body_util::combinators::UnsyncBoxBody<Bytes, Infallible>;

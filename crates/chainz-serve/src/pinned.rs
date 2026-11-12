@@ -14,6 +14,7 @@
 use std::io;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use bytes::Bytes;
 use chainz_core::runtime::{GatewayAddr, LOOPBACK};
@@ -27,14 +28,14 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 use crate::auth;
-use crate::http::{self, BoxBody, DRAIN, PINNED, Reply, json};
+use crate::http::{self, BoxBody, PINNED, Reply, json};
 
-/// A running pinned proxy. [`shutdown`](Self::shutdown) stops it cleanly;
-/// dropping it stops it at once.
+/// A running pinned proxy; dropping it stops it at once (its only client,
+/// the fork's anvil, is stopped with it).
 pub struct PinnedProxy {
     addr: GatewayAddr,
     stop: watch::Sender<bool>,
-    task: Option<JoinHandle<()>>,
+    task: JoinHandle<()>,
 }
 
 impl std::fmt::Debug for PinnedProxy {
@@ -71,12 +72,8 @@ impl PinnedProxy {
             let state = state.clone();
             async move { handle(&state, request).await }
         };
-        let task = tokio::spawn(http::serve(listener, handler, stopped, DRAIN));
-        Ok(PinnedProxy {
-            addr,
-            stop,
-            task: Some(task),
-        })
+        let task = tokio::spawn(http::serve(listener, handler, stopped, Duration::ZERO));
+        Ok(PinnedProxy { addr, stop, task })
     }
 
     /// The URL to hand out (for example to `anvil --fork-url`). Contains
@@ -84,28 +81,12 @@ impl PinnedProxy {
     pub fn url(&self) -> String {
         self.addr.base_url()
     }
-
-    /// Port and token: the proxy's URL. The token is a secret.
-    pub fn addr(&self) -> &GatewayAddr {
-        &self.addr
-    }
-
-    /// Stop accepting, let in-flight requests finish (for the gateway's
-    /// default drain time), and wait until every task has ended.
-    pub async fn shutdown(mut self) {
-        let _ = self.stop.send(true);
-        if let Some(task) = self.task.take() {
-            let _ = task.await;
-        }
-    }
 }
 
 impl Drop for PinnedProxy {
     fn drop(&mut self) {
         let _ = self.stop.send(true);
-        if let Some(task) = &self.task {
-            task.abort();
-        }
+        self.task.abort();
     }
 }
 
