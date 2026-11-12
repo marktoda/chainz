@@ -32,5 +32,5 @@ mod urls;
 pub mod validate;
 
 pub use address::Address;
-pub use store::{Chainz, LoadMode, StorePaths};
+pub use store::{Chainz, LoadMode, StorePaths, StoreStamp};
 pub use tx::Tx;

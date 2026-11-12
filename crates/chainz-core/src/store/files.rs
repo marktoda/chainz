@@ -7,7 +7,7 @@
 use crate::model::{CONFIG_VERSION, Config};
 use crate::paths;
 use anyhow::{Context, Result, anyhow};
-use chainz_os::PermissionWarning;
+use chainz_os::{FileStamp, PermissionWarning};
 use std::path::{Path, PathBuf};
 
 /// Text of a brand-new config file: `header` (comment lines), then the
@@ -88,6 +88,25 @@ impl StorePaths {
         }
         self.v1_legacy.clone().filter(|p| p.exists())
     }
+
+    /// The files a config is read from, as they are now: compare two
+    /// stamps to see that the config changed.
+    pub fn stamp(&self) -> StoreStamp {
+        StoreStamp {
+            config: FileStamp::of(&self.config),
+            secrets: FileStamp::of(&self.secrets),
+        }
+    }
+}
+
+/// The [`FileStamp`]s of every file a config is read from
+/// (`config.toml` and `secrets.toml`), from [`StorePaths::stamp`]. Two
+/// stamps differ whenever any of the files was written, created or
+/// removed, even within the same second.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StoreStamp {
+    config: Option<FileStamp>,
+    secrets: Option<FileStamp>,
 }
 
 /// The exclusive cross-process write lock on `config.lock`; released on

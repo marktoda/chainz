@@ -13,7 +13,7 @@
 
 pub(crate) mod files;
 
-pub use files::{StorePaths, WriteLock};
+pub use files::{StorePaths, StoreStamp, WriteLock};
 
 use crate::contract::Env;
 use crate::migrate::{self, Summary};
@@ -443,6 +443,21 @@ mod tests {
             .unwrap_err();
         assert!(format!("{err:#}").contains("ghost"), "{err:#}");
         assert_eq!(std::fs::read_to_string(paths.config()).unwrap(), before);
+    }
+
+    #[test]
+    fn the_stamp_changes_with_either_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = StorePaths::in_dir(dir.path().join("chainz"));
+        let empty = paths.stamp();
+        assert_eq!(empty, paths.stamp());
+        let mut chainz = Chainz::open_at(paths.clone(), LoadMode::Strict).unwrap();
+        chainz.transact(|tx| tx.set_var("K", "one")).unwrap();
+        let written = paths.stamp();
+        assert_ne!(written, empty);
+        // A secrets-only edit is a change too.
+        chainz.transact(|tx| tx.set_var("K", "two")).unwrap();
+        assert_ne!(paths.stamp(), written);
     }
 
     #[test]
