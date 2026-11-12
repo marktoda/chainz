@@ -12,6 +12,7 @@ pub mod contract;
 mod envelope;
 pub mod extract;
 pub mod fmt;
+pub mod forks;
 mod grammar;
 pub mod labels;
 pub mod migrate;

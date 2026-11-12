@@ -44,9 +44,6 @@ pub fn context_tokens() -> impl Iterator<Item = &'static str> {
         .map(|(n, _)| *n)
 }
 
-/// Names a fork may not take (they are `chainz fork` subcommands).
-pub const RESERVED_FORK_NAMES: [&str; 3] = ["ls", "list", "stop"];
-
 /// Short names for well-known chain IDs (first match wins in reverse
 /// lookups). Unknown IDs fall back to [`slugify`] of the chainlist name.
 pub const SHORT_NAMES: &[(u64, &str)] = &[
