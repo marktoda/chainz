@@ -44,20 +44,20 @@ Elvish (`eval (chainz completions elvish | slurp)`) and PowerShell
 Generate the loader at startup rather than saving it, so it follows upgrades.
 Completing never migrates, writes or unlocks anything.
 
-## The five nouns
+## The nouns
 
 | Noun | What it is | Commands |
 | --- | --- | --- |
-| **Chain** | A network you work on, with a short name (`eth`, `base`, `arb`) and aliases | `chain ls/add/show/set/rm`, `update`, `use`, `edit` |
-| **Endpoint** | A named RPC URL on a chain; one is active, some may be failover | `rpc ls/add/rm/bench/discover`, `chain set --rpc` |
+| **Chain** | A network you work on, with a short name (`eth`, `base`, `arb`) and aliases | `ls`, `add`, `update`, `rm`, `use`, `edit` |
+| **Endpoint** | A named RPC URL on a chain; one is active, some may be failover | `ls CHAIN`, `update --rpc/--add-rpc/--rm-rpc`, `doctor CHAIN` |
 | **Signer** | A reference to key material plus its cached address | `signer add/ls/rm/migrate` |
-| **Address** | A label for a contract or wallet, per chain or everywhere | `addr add/ls/rm/find`, `label` |
+| **Label** | A name for a contract or wallet, per chain or everywhere | `label 0x…`, `label add/ls/rm/import`, `… \| chainz label` |
 | **Runtime** | Live processes chainz started: the gateway and forks | `serve`, `fork`, `top` |
 
 Chain references accept a name, an alias, a chain ID, an unambiguous prefix,
 or a live fork name. Well-known long names (`ethereum`, `arbitrum`,
 `optimism`…) find the configured chain with that ID, so `arbitrum` means
-your `arb`. Destructive commands (`chain rm`) take only an exact
+your `arb`. Destructive commands (`rm`) take only an exact
 name or ID.
 
 ## Quick start
@@ -71,47 +71,72 @@ On a terminal, `chainz init` walks through the same steps.
 ```
 
 The first signer you add attaches to every chain that has none, and
-`chain add` attaches the only signer (`--no-signer` skips it; with several
+`add` attaches the only signer (`--no-signer` skips it; with several
 it attaches none and names the command that does) and the `etherscan`
 explorer once it is configured, on chains Etherscan's v2 API covers (not
-anvil's 31337 or custom chains). With `--url` (`chainz chain add
-42161 --url https://…`, or a built-in name such as `arb` or `arbitrum`) `chain add`
+anvil's 31337 or custom chains). With `--url` (`chainz add
+42161 --url https://…`, or a built-in name such as `arb` or `arbitrum`) `add`
 never downloads chainlist; any other name needs the chain ID and `--name`.
 More setup:
 
 ```bash
-chainz rpc add base https://base-mainnet.infura.io/v3/'${INFURA_KEY}' --activate
 printf %s "$KEY" | chainz var set INFURA_KEY --stdin
-printf %s "$ETHERSCAN_KEY" | chainz chain set base --explorer etherscan --api-key-stdin
+chainz update base --rpc https://base-mainnet.infura.io/v3/'${INFURA_KEY}'
+printf %s "$ETHERSCAN_KEY" | chainz update base --explorer etherscan --api-key-stdin
 chainz use base                       # default chain for `exec -- …`
 chainz use                            # show the default
-chainz ls
-chainz doctor
+chainz ls                             # every chain
+chainz ls base                        # one chain: endpoints with their health
+chainz doctor                         # check everything; `doctor base` ranks base's endpoints
 ```
 
-## Changing a chain: `chain set` (or `update`)
+## Changing a chain: `update`
 
-One command changes any of a chain's settings, in one atomic write:
+One command changes any of a chain's settings, endpoints included, in one
+atomic write:
 
 ```bash
-chainz chain set eth --signer deployer            # or --no-signer
-chainz chain set eth --rpc infura                 # activate an endpoint by name
-chainz chain set eth --rpc https://gw/rpc/1 --header 'x-secret: ${GW}'
-                                                  # a new URL is added, checked and activated
-chainz chain set eth --rpc gw --clear-headers
-chainz chain set eth --failover llama,ankr        # or --no-failover
-chainz chain set eth --explorer etherscan         # built in; or --no-explorer
-printf %s KEY | chainz chain set eth --api-key-stdin   # one key per explorer
-chainz chain set eth --name ethereum --alias main --rm-alias mainnet
-chainz update                                     # on a terminal: pick a chain, then a menu
+chainz update eth --signer deployer            # or --no-signer
+chainz update eth --rpc infura                 # activate an endpoint by name
+chainz update eth --rpc https://gw/rpc/1 --header 'x-secret: ${GW}'
+                                               # a new URL is added, checked and activated
+chainz update eth --add-rpc gw=https://gw/rpc/1 --header 'x-key: ${GW}' --failover llama,gw
+                                               # add without activating (repeatable)
+chainz update eth --add-rpc wss://eth.example  # websockets too (named from the host)
+chainz update eth --rm-rpc drpc                # remove one (repeatable; leaves failover too)
+chainz update eth --rpc llama --rm-rpc infura  # replace the active one in one go
+chainz update eth --rpc gw --clear-headers
+chainz update eth --failover llama,ankr        # or --no-failover
+chainz update eth --explorer etherscan         # built in; or --no-explorer
+printf %s KEY | chainz update eth --api-key-stdin   # one key per explorer
+chainz update eth --name ethereum --alias main --rm-alias mainnet
+chainz update                                  # on a terminal: pick a chain, then a menu
 ```
 
-With no flags on a terminal, `chain set` opens a menu (RPC, Signer,
+`--header` goes to the `--rpc` endpoint, else the one `--add-rpc` endpoint,
+else the active one. New URLs are checked for the chain's ID unless
+`--no-check` (websockets never are).
+
+With no flags on a terminal, `update` opens a menu (RPC, Signer,
 Explorer, Name, Aliases, Done) and applies your choices together. Each
 picker starts on the current value, so Enter keeps it; Esc in a picker goes
 back to the menu, and Esc in the menu asks before discarding pending
 changes. Off a terminal it needs flags. `chainz edit [CHAIN]` opens config.toml (or one
 chain's table) in `$EDITOR` for everything else.
+
+## doctor: check and repair
+
+```bash
+chainz doctor                  # files, config, credentials, signers, every chain's active endpoint
+chainz doctor --fix            # chmod, move literal credentials into variables, swap dead actives
+chainz doctor base             # the same checks, then every base endpoint probed, ranked and tagged
+chainz doctor base --fix       # activate the best endpoint, propose a failover list (-y writes it)
+chainz doctor uni --discover   # add public endpoints from chainlist that answer (asks; -y adds all)
+```
+
+`doctor` exits 1 while a problem is left, an endpoint it can't probe (a
+`${VAR}` set nowhere) included. Its `files` section lists every path chainz
+uses; `chainz edit --path` prints config.toml's.
 
 ## exec: run a tool with chain context
 
@@ -160,7 +185,7 @@ chainz exec eth --signer funder -- cast send @wallet --value 1ether
 chainz exec op --rpc llama -- cast block-number
 chainz exec op --rpc http://127.0.0.1:8545 -- cast block-number   # a URL, this run only
 eval "$(chainz env base)"             # export into the current shell
-chainz shell base                     # or open a subshell
+chainz x base                         # or open a subshell (no command: $SHELL)
 ```
 
 ## serve: local RPC gateway
@@ -229,17 +254,17 @@ $ chainz fork stop base-fork        # or Ctrl-C, or --all
   foreground fork stopped by Ctrl-C exits 130; by `fork stop` or SIGTERM,
   143.
 
-## Address book
+## Labels: the address book
 
 ```bash
-chainz addr add myrouter 0x… --chain base
-chainz addr add my-safe 0x… --all-chains
-chainz addr ls --chain base --builtin   # include built-in tokens
-chainz addr ls --builtin --all          # …on every chain, not just yours
-chainz addr find 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
-chainz addr ls --json                    # also `addr find --json`
-cast logs … | chainz label --chain base  # 0x… → usdc(0x…), topics too
-chainz addr import .                     # label contracts from Foundry broadcast/
+chainz label add myrouter 0x… --chain base
+chainz label add my-safe 0x… --all-chains
+chainz label ls --chain base --builtin    # include built-in tokens
+chainz label ls --builtin --all           # …on every chain, not just yours
+chainz label 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913   # what is this address?
+chainz label ls --json                    # also `label 0x… --json`
+cast logs … | chainz label --chain base   # 0x… → usdc(0x…), topics too
+chainz label import .                     # label contracts from Foundry broadcast/
 ```
 
 Built-in labels cover major tokens
@@ -248,7 +273,7 @@ labels take precedence; `chainz doctor` notes each label that shadows a
 built-in token. `chainz doctor --tokens` verifies the built-in registry on
 chain.
 
-`chainz addr import PATH…` labels the contracts a `forge script --broadcast`
+`chainz label import PATH…` labels the contracts a `forge script --broadcast`
 deployed. PATH is a `run-latest.json` (or any run file, named explicitly) or a
 directory: a project's `broadcast/` is searched for `run-latest.json`, skipping
 history files, `dry-run/` and dependencies under `lib/`. Each label goes on the
@@ -260,9 +285,9 @@ unnamed contracts, invalid or reserved names, and runs on chains you have not
 configured.
 
 ```bash
-chainz addr import ~/src/v4-periphery --dry-run    # show the plan, write nothing
-chainz addr import broadcast/ --prefix v4- --only PoolManager,position-manager
-chainz addr import run-latest.json --force --json  # replace labels that differ
+chainz label import ~/src/v4-periphery --dry-run    # show the plan, write nothing
+chainz label import broadcast/ --prefix v4- --only PoolManager,position-manager
+chainz label import run-latest.json --force --json  # replace labels that differ
 ```
 
 A label that already holds the same address is left unchanged. One that holds a
@@ -338,24 +363,24 @@ base = "0x…"
 ```
 
 `${NAME}` resolves from the built-ins (`${CHAIN_ID}`, `${CHAIN}`), then the
-environment, then `secrets.toml`. Inside a chainz context (`chainz shell`,
+environment, then `secrets.toml`. Inside a chainz context (an `exec` subshell,
 `eval "$(chainz env …)"`) the exec contract's own variables are not read
 from the environment, so a nested `chainz exec` never inherits the outer
 chain's keys. An unresolved reference is an error.
 `chainz edit` and `chainz edit eth` validate on save.
 `chainz doctor` flags literal credentials in URLs, and `doctor --fix` moves
-them into variables. `chain add --url`, `chain set --rpc URL` and `rpc add` do the same as they
+them into variables. `add --url`, `update --rpc URL` and `update --add-rpc` do the same as they
 write a URL with a known key (Infura, Alchemy) or a credential header, and
 say what they moved.
 
-`--yes` (`-y`) always means "accept without asking". Every `rm` (`chain rm`,
-`rpc rm`, `addr rm`, `var rm`, `signer rm`) asks first on a terminal and
-needs `--yes` off one; `chain rm` names what goes with the chain (its
-labels, and the default). `rpc bench --fix --yes` also writes the proposed
-failover lists, `rpc discover --yes` adds every endpoint that answered.
+`--yes` (`-y`) always means "accept without asking". Every `rm` (`rm`,
+`label rm`, `var rm`, `signer rm`) asks first on a terminal and
+needs `--yes` off one; `rm` names what goes with the chain (its
+labels, and the default). `doctor CHAIN --fix --yes` also writes the proposed
+failover list, `doctor CHAIN --discover --yes` adds every endpoint that answered.
 Off a terminal chainz never prompts: it reports and tells you which flag
-to pass. Listing commands take `--json` (`ls`, `chain show`, `rpc ls`,
-`signer ls`, `var ls`, `addr ls`, `addr find`, `addr import`, `fork ls`,
+to pass. Listing commands take `--json` (`ls`, `ls CHAIN`,
+`signer ls`, `var ls`, `label ls`, `label 0x…`, `label import`, `fork ls`,
 `serve status`, `top --once`). Secrets are shown only with `--reveal`;
 otherwise only the credential-shaped parts of a URL or header are masked
 (`https://mainnet.infura.io/v3/[REDACTED]`), and anything chainz can't
@@ -379,15 +404,15 @@ migrates once, under a lock:
 - `config.json` is renamed to `config.v1.json.bak` only after both new files
   are written.
 
-Preview first with `chainz config migrate --dry-run`. The v1 names
+Any command triggers it (`chainz ls` is a harmless one); it is reversible,
+since the v1 file is only renamed. The v1 names
 `CHAIN_NAME`, `@chainname`, `@verification_url` and `@verifier_api_key` keep
 working for one release, with a warning. `@key` is gone; use `--expose-key`.
-Some v1 spellings still work: `chainz list`, `list` and `remove` under
-each noun (`chain remove eth`, not `chainz remove eth`), `chainz update`
-(now `chain set`, with v1's menu when given no flags), `chainz init`,
-`key …` (for `signer …`), `--type private-key`/`one-password`, and
-`var get --show`. The other top-level v1 commands moved under `chain`:
-`chain add`, `chain show`, `chain rm`.
+v1 command spellings are gone: `chainz ls` (not `list`), `add`, `update`
+(v1's menu when given no flags), `rm` (not `remove`), `ls CHAIN` (for
+`show`), `init`, `signer …` (for `key …`), `--backend plaintext`/`1password`
+(for `--type private-key`/`one-password`) and `var ls NAME --reveal` (for
+`var get --show`). An old spelling is an unknown command (exit 2).
 
 ## Development
 

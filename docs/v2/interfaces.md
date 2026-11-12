@@ -32,39 +32,39 @@ below are mode 0600 in 0700 directories.
 | File | Written by | Meaning |
 | --- | --- | --- |
 | `$XDG_CONFIG_HOME/chainz/config.lock` | any config write | exclusive `flock` serializing writes (reads take no lock) |
-| `$XDG_STATE_HOME/chainz/health.json` (+ `health.lock`) | probes (`rpc bench`, `doctor`, `top`) | per-endpoint sample ring (`HealthStore::CAPACITY` = 64) and capability tags; a corrupt file is moved aside to `health.json.corrupt` |
+| `$XDG_STATE_HOME/chainz/health.json` (+ `health.lock`) | probes (`doctor`, `doctor CHAIN`, `top`) | per-endpoint sample ring (`HealthStore::CAPACITY` = 64) and capability tags; a corrupt file is moved aside to `health.json.corrupt` |
 | `$XDG_STATE_HOME/chainz/serve.log`, `forks/<name>.log` | `serve --detach`, fork supervisor | process output (`paths::serve_log`, `paths::fork_log`) |
-| `$XDG_CACHE_HOME/chainz/` | `chain add`, `rpc discover` | the chainlist cache (rebuildable; `--refresh`) |
+| `$XDG_CACHE_HOME/chainz/` | `add`, `doctor CHAIN --discover` | the chainlist cache (rebuildable; `--refresh`) |
 | runtime dir: `serve.lock`, `serve.json`, `serve.sock`, `forks/<name>.{lock,json}`, `ports/<port>.lock` | gateway, fork supervisor | see [Runtime registry](#runtime-registry-chainz_coreruntime) |
 
-`config path --all` prints every one of these paths.
+`edit --path` prints the config path, and `doctor` lists every other one.
 
 ## Environment variables
 
 | Variable | Read by | Meaning |
 | --- | --- | --- |
-| `CHAINZ_CHAIN` | resolver, templates | the chain context (`chainz shell`, `eval "$(chainz env …)"`); step 2 of chain selection. Inside a context, the exec contract's own variables are not read from the environment |
-| exec contract (`ETH_RPC_URL`, `CHAIN_ID`, …) | exported by `exec`/`shell`/`env` | the table in [design.md, Exec contract](design.md#exec-contract); every name is a const in `chainz_core::contract`, listed in `CONTRACT_VARS` and unset before a context sets its own |
+| `CHAINZ_CHAIN` | resolver, templates | the chain context (an `exec` subshell, `eval "$(chainz env …)"`); step 2 of chain selection. Inside a context, the exec contract's own variables are not read from the environment |
+| exec contract (`ETH_RPC_URL`, `CHAIN_ID`, …) | exported by `exec` (and its subshell) and `env` | the table in [design.md, Exec contract](design.md#exec-contract); every name is a const in `chainz_core::contract`, listed in `CONTRACT_VARS` and unset before a context sets its own |
 | any `${NAME}` | templates | after the built-ins (`CHAIN_ID`, `CHAIN`), before `secrets.toml` |
 | `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME`, `XDG_RUNTIME_DIR`, `HOME` | `chainz_core::paths` | file locations; without `XDG_RUNTIME_DIR` the runtime dir is the state dir |
 | `CHAINZ_DISABLE_KEYRING` | `chainz_core::signer` | set: the OS keyring is unavailable (tests, perf gate) |
 | `CHAINZ_COMPLETE` | bin `complete` | a shell completion request (set by the `completions` loader) |
 | `CHAINZ_DETACHED` | bin `sys` | set in a `--detach` child |
 | `VISUAL`, `EDITOR` | `edit` | the editor, in that order |
-| `SHELL`, `PS1` | `shell`, `env` | the subshell and export syntax |
+| `SHELL`, `PS1` | `exec` with no command, `env` | the subshell and export syntax |
 | `NO_COLOR` | every styled output: bin `ui` (`console`), `top` | no colour (the test sandbox sets it) |
 | `CHAINZ_BLESS`, `CHAINZ_REQUIRE_TOOLS` | tests | `1` rewrites golden files; set, a missing anvil or strace fails the test instead of skipping it |
 
 ## CLI
 
 The command tree is [design.md, CLI surface](design.md#cli-surface) and
-`chainz <command> --help`. Removed commands and flags get no hidden aliases;
-v1 spellings that still work are listed in the README. Usage lines in
+`chainz <command> --help`. Removed commands and flags get no hidden aliases,
+and no v1 spelling is accepted: an old name is an unknown command (exit 2). Usage lines in
 errors are rendered from the clap definition.
 
 Exit codes: 0 on success, also when stdout closes early (`chainz … | head`);
 1 for an error (`error: …` on stderr) or a result the command reports
-itself (`doctor` found problems, `addr find` matched nothing, `serve status`
+itself (`doctor` found problems, `label 0x…` matched nothing, `serve status`
 found no gateway, a fork's anvil died); 2 for a usage error, a missing
 argument off a terminal included (always `cli::usage_error(path, message)`,
 which prints the subcommand's usage line); 126 and 127
@@ -81,14 +81,13 @@ these shapes.
 
 | Command | Shape |
 | --- | --- |
-| `ls`, `chain ls` | `[ChainView]`, where `ChainView` is `{name, id, aliases, rpc, rpc_url, failover, signer, explorer, default, endpoints: [{name, url, active, failover, websocket, headers?}]}` |
-| `chain show` | one `ChainView` |
-| `rpc ls` | `[{chain, name, url, active, failover, websocket, headers?, latency_ms, head, probed_at_ms, error, tags}]` (an endpoint view plus its latest health; `probed_at_ms` is when that sample was taken) |
+| `ls` | `[ChainView]`, where `ChainView` is `{name, id, aliases, rpc, rpc_url, failover, signer, explorer, default, endpoints: [{name, url, active, failover, websocket, headers?}]}` |
+| `ls CHAIN` | one `ChainView`, each endpoint with its latest health: `{…, latency_ms, head, probed_at_ms, error, tags}` (`probed_at_ms` is when that sample was taken) |
 | `signer ls` | `[{name, backend, address, chains}]` |
-| `var ls` | `[{name, value, used_by}]` (`value` is `[REDACTED] (N chars)` unless `--reveal`; `used_by` lists every config path, which the text summarises unless `-v`) |
-| `addr ls` | `[{name, scope, chain_id, address, source, shadowed}]` |
-| `addr find` | the same rows, for one address (exit 1 when empty) |
-| `addr import` | `[{chain, chain_id, name, address, action, reason?, previous?, contract, file}]`; `action` is `added`, `unchanged`, `overwritten` or `skipped` |
+| `var ls [NAME…]` | `[{name, value, used_by}]` (`value` is `[REDACTED] (N chars)` unless `--reveal`; `used_by` lists every config path, which the text summarises unless `-v`) |
+| `label ls` | `[{name, scope, chain_id, address, source, shadowed}]` |
+| `label 0x… --json` | the same rows, for one address (exit 1 when empty) |
+| `label import` | `[{chain, chain_id, name, address, action, reason?, previous?, contract, file}]`; `action` is `added`, `unchanged`, `overwritten` or `skipped` |
 | `fork ls` | `[{name, pid, port, parent, chain_id, fork_block, started_at, url, block, uptime_secs}]` (the command's own rows, not the registry format) |
 | `serve status` | `{running, version, pid, port, uptime_secs, chains, last_60s, totals_60s, chain_totals_60s}`: `chains` is `Status.chains`, `last_60s` the 60 s `MetricsRow`s, `totals_60s`/`chain_totals_60s` the window's `MetricsTotals` (absent from a gateway that sends none). Stopped: only `{running: false}`, exit 1 |
 | `top --once --json` | `{at, gateway: {running, port}, chains: [{name, id, aliases, rpc, via_gateway, status, head, block_timestamp, block_age_secs, block_time_secs, base_fee_wei, base_fee_gwei, latency_ms, p50_ms, lag_blocks, error, endpoints: [{name, url, active, websocket, status, tags, latency_ms, p50_ms, head, lag_blocks, error, probed_at_ms}]}], balances: [{signer, address, chains: [{chain, id, via, native, tokens, error}]}], traffic}` |
@@ -212,9 +211,9 @@ Target::new(route.chain_id, &route.endpoint, &route.url, &route.headers)
 The rule: through a running gateway (pinned to the endpoint when one is
 named) unless `direct` or the endpoint is a websocket; otherwise the
 endpoint itself, `${VAR}`s expanded. `RouteOpts::endpoint` is `--rpc
-NAME|URL`, read by `Chain::rpc_choice` (the rule `chain set --rpc` uses): a
+NAME|URL`, read by `Chain::rpc_choice` (the rule `update --rpc` uses): a
 URL the chain has no endpoint for goes straight to it, for that route only,
-never written and never through the gateway (`exec`/`env`/`shell --rpc`
+never written and never through the gateway (`exec`/`env --rpc`
 and `fork --rpc`). `direct_route` is the one public way
 to expand an endpoint; the gateway, `top`, probes and forks all use it.
 
@@ -315,7 +314,7 @@ anvil can't fork). A bin test keeps `RESERVED_FORK_NAMES` equal to the
 `fork` subcommands and aliases.
 
 **Logs.** `paths::serve_log()` (`$XDG_STATE_HOME/chainz/serve.log`) and
-`paths::fork_log(name)` (`…/forks/<name>.log`); `config path --all` lists
+`paths::fork_log(name)` (`…/forks/<name>.log`); `doctor` lists
 them.
 
 **Background launch** (bin `sys`). `launch_detached(log, LogMode)`
@@ -445,7 +444,7 @@ names follow `names::check_label_name(name, signers)` and can't be a
 context, deprecated or removed token (`names::context_tokens()` lists the
 context ones).
 
-The address book (`addr …`, `label`, `doctor --tokens`) is built on:
+The address book (`label …`, the stdin filter, `doctor --tokens`) is built on:
 
 ```rust
 // chainz_core::tx::Tx, inside `transact`
@@ -456,8 +455,8 @@ pub fn write_address(&mut self, write: &broadcast::AddressWrite) -> Result<SetAd
 pub fn remove_address(&mut self, name: &str, scope: Option<&str>) -> Result<Vec<(String, String)>>;
 
 // chainz_core::addrbook
-pub fn find(config: &Config, address: &Address) -> Vec<Label>; // `addr find`
-pub struct Labeler { /* … */ }                                 // `chainz label`
+pub fn find(config: &Config, address: &Address) -> Vec<Label>; // `label 0x…`
+pub struct Labeler { /* … */ }                                 // `… | chainz label`
 impl Labeler {
     pub fn for_chain(config: &Config, chain_id: u64) -> Self;
     pub fn any_chain(config: &Config) -> Self;   // "*" labels, signers, names that agree on every chain
@@ -469,7 +468,7 @@ impl Labeler {
 `Labeler::name` skips a built-in token that a user label shadows on that
 chain, so a name it returns always resolves back to the same address.
 
-`addr import` reads Foundry broadcast output with `chainz_core::broadcast`:
+`label import` reads Foundry broadcast output with `chainz_core::broadcast`:
 
 ```rust
 pub fn find_runs(paths: &[PathBuf]) -> Result<Vec<PathBuf>>; // files as given; dirs → broadcast/**/run-latest.json
@@ -555,7 +554,7 @@ pub struct EndpointProbe { pub chain_id: u64, pub endpoint: String, pub result: 
 pub fn record(store: &mut HealthStore, probes) -> io::Result<()>; // samples + capabilities, saved
 ```
 
-`p50` and `median` are the one median rule: `rpc bench` ranks with
+`p50` and `median` are the one median rule: `doctor CHAIN` ranks with
 `health::p50(&store.samples(..))`, and the dashboard uses both.
 `HealthSample::from_probe` builds the one sample a probe gives.
 `HealthStore::load(dir)` returns an error for an unreadable store; a corrupt
@@ -587,28 +586,30 @@ names the file. `ErrorClass::phrase()` is the class in a sentence
   completion: no v1 migration, no permission changes, no validation.
   `StorePaths::stamp() -> StoreStamp` stamps every file a config is read
   from; the gateway and the dashboard compare stamps to see a change.
-  `migrate::status(&paths)` and `migrate::preview(&paths)` answer
-  `config migrate`; `migrate::migrate_locked(&WriteLock)` takes the held lock
+  `migrate::status(&paths)` says whether a v1 file is waiting; `migrate::migrate_locked(&WriteLock)` takes the held lock
   as proof. A migration that runs inside `transact` is reported like one on
   first load.
 - Endpoints: `tx.add_endpoint_url(chain, name, &endpoint, EndpointRole)` is
-  the one way to add an endpoint from a user's URL (`rpc add`,
-  `rpc discover`, `chain add`, `chain set --rpc URL`): `Chain::new_endpoint`
+  the one way to add an endpoint from a user's URL (`update --add-rpc`,
+  `doctor CHAIN --discover`, `add`, `update --rpc URL`): `Chain::new_endpoint`
   checks the URL (`Endpoint::check_url`: http(s) or ws(s), a host) and names
   it, refuses a URL the chain already has (`Chain::endpoint_at`,
   `Endpoint::same_url(a, b, &vars)`: a trailing `/` ignored, and every
   `${NAME}` that `secrets.toml`'s `[vars]` holds expanded on both sides, so a
   pasted URL matches the stored one whose key moved into a variable;
-  `ChainEdit::rpc_choice` and `chain add`'s own dedupe use the same rule), and
+  `ChainEdit::rpc_choice` and `add`'s own dedupe use the same rule), and
   literal secrets move into variables.
 - Chain edits: `tx.edit_chain(name, &ChainEdit) -> Result<EditReport>` applies
-  one patch (`chain set` flags or its menu): signer, `rpc` (an endpoint name,
+  one patch (`update` flags or its menu): signer, added endpoints
+  (`add_rpcs`, from `ChainEdit::parse_add_rpc`; `ChainEdit::added_endpoints`
+  lists them, so the caller probes exactly what the write adds), removed
+  endpoints (`remove_rpcs`, after the activation; the active one can't go), `rpc` (an endpoint name,
   or a URL: an existing one activates, a new one is added with its secrets
   extracted and activated; `ChainEdit::rpc_choice` says which, by
   `Chain::rpc_choice(name, rpc)` (in `model`, shared with routes):
   `RpcChoice::{Existing(name), New(name, endpoint)}`, so the caller probes
   exactly that and the menu shows it), headers and `clear_headers` on that endpoint
-  (or the active one), failover, explorer (`Explorer::ETHERSCAN` creates the
+  (else the one added endpoint, else the active one), failover, explorer (`Explorer::ETHERSCAN` creates the
   built-in `Explorer::etherscan()`:
   `api = "https://api.etherscan.io/v2/api?chainid=${CHAIN_ID}"`,
   `key = "${ETHERSCAN_API_KEY}"`, the URL v1 migration writes), `api_key`
@@ -620,11 +621,10 @@ names the file. `ErrorClass::phrase()` is the class in a sentence
   described, `edit CHAIN` included: `active endpoint: a → b`, side effects
   such as `failover: b, c → c`, and a chain ID change; then the explorer
   key line, `replaced the value of ${VAR}` when it held another, and the
-  rename), the added endpoint, the created explorer, the key variable and
+  rename), the added endpoints, the created explorer, the key variable and
   the moved secrets, and `warnings` (an `etherscan` explorer on a chain
   `Explorer::etherscan_covers` rejects: `Explorer::etherscan_gap(id)`);
-  `EditReport::is_empty` is a no-op edit, which `chain
-  set` reports as "No changes". Checking a new URL's chain ID is the caller's (network)
+  `EditReport::is_empty` is a no-op edit, which `update` reports as "No changes". Checking a new URL's chain ID is the caller's (network)
   job. `tx.insert_chain(name, &chain, Attach)` checks name, ID and signer and,
   with `Attach::Defaults`, attaches the only signer and
   `[explorers.etherscan]` if configured and it covers the chain ID
@@ -650,7 +650,7 @@ names the file. `ErrorClass::phrase()` is the class in a sentence
   returns the chains left without a signer). `signer::keystore_signer_address`
   is the keystore rule (its `address` field, else `--address`; a missing
   file or no address at all is an error). `tx.remove_chain(name)` returns
-  `RemovedChain { endpoints, labels, was_default }`, which `chain rm`
+  `RemovedChain { endpoints, labels, was_default }`, which `rm`
   previews (`Chainz::preview`) to confirm and then reports. `KeyBackend` is external storage only;
   `Prompter` (hidden prompts) is implemented by the binary
   (`prompt::Terminal`, or the init flow's `AskPrompter`).
@@ -661,8 +661,8 @@ names the file. `ErrorClass::phrase()` is the class in a sentence
   `resolve::NO_CHAINS` is the one "no chains configured" message.
   Management commands use `resolve::configured(config, query, Policy) ->
   Result<(&str, &Chain)>` (no forks): `Policy::Prefix` (name, alias, ID or
-  unambiguous prefix), `Policy::Exact` (name or ID: `chain rm`) or
-  `Policy::ExactOrAlias` (`addr rm --chain`). `resolve::exact` (ID, name or
+  unambiguous prefix), `Policy::Exact` (name or ID: `rm`) or
+  `Policy::ExactOrAlias` (`label rm --chain`). `resolve::exact` (ID, name or
   alias, any case) is the gateway's. Every policy but `Exact` then tries
   `resolve::implicit_alias(config, query)`: a `names::LONG_NAMES` entry
   (`arbitrum` → 42161) names the configured chain with that ID; fork names
@@ -697,8 +697,8 @@ names the file. `ErrorClass::phrase()` is the class in a sentence
   of the compact `ls`. `extract` owns the credential shapes it moves into
   variables; `extract::manual_credential(url)` is the detector for what
   only a person can move (migration notes and `doctor`). The bin's
-  `view::EndpointView` applies `url`/`header` once for `chain show`, `ls
-  --json` and `rpc ls`.
+  `view::EndpointView` applies `url`/`header` once for `ls CHAIN` and `ls
+  --json`.
 - Shared helpers, so crates don't keep private copies:
   `chainz_core::fmt::{group, uptime, short_address}` (thousands separators,
   `42s`/`12m05s`/`2h03m`/`3d04h`, `short_address(&Address)` → `0x1234…abcd`);
@@ -742,15 +742,15 @@ names the file. `ErrorClass::phrase()` is the class in a sentence
    `to_target`, `health_store`, `chainlist`), `probe`, `view`
    (`EndpointView`, `marker`, `table`, `QUICK_START`).
    The return value is the exit code: 0, or the code of a failure the
-   handler reported itself (`doctor`, `addr find`, `serve status`). An `Err`
+   handler reported itself (`doctor`, `label 0x…`, `serve status`). An `Err`
    prints `error: …` and exits 1, or with the code of a `ui::ExitCode` in
    its chain (exec uses 127/126) or a clap usage error (2);
    `ui::cancelled()` exits 130 and a broken stdout pipe exits 0, all in
    `main` through `ui::report`/`ui::exit_code`.
 3. Network work goes through `net::block_on(async { … })`, which creates a
    current-thread tokio runtime. A long-running server (`serve`, `top`) can
-   build a multi-threaded runtime in its own crate. `exec`, `env`, `ls`, and
-   `shell` must stay free of runtimes, sockets, and threads. The Linux strace
+   build a multi-threaded runtime in its own crate. `exec` (and its subshell),
+   `env` and `ls` must stay free of runtimes, sockets, and threads. The Linux strace
    test (`crates/chainz/tests/strace.rs`) enforces this.
 4. Tests go in `crates/chainz/tests/cli.rs` (or a new file with
    `mod common;`) through `common::Sandbox::new()`. Its `.cmd()` /
