@@ -13,14 +13,11 @@ use crate::prompt::{Ask, Tty, is_tty};
 use crate::{ui, view};
 use anyhow::Result;
 use chainz_core::Chainz;
-use chainz_core::model::Config;
+use chainz_core::model::{Config, Explorer};
 use chainz_core::signer::SystemKeyBackend;
 use chainz_core::tx::ChainEdit;
 use clap::CommandFactory;
 use zeroize::Zeroizing;
-
-/// The built-in explorer `init` attaches.
-const ETHERSCAN: &str = "etherscan";
 
 /// `chainz` with no command: the quick start until a chain exists, then
 /// the help.
@@ -137,7 +134,7 @@ fn etherscan_edits(config: &Config, key: Zeroizing<String>) -> Vec<(String, Chai
         .filter(|(_, c)| c.explorer.is_none())
         .map(|(name, _)| {
             let edit = ChainEdit {
-                explorer: Some(Some(ETHERSCAN.to_string())),
+                explorer: Some(Some(Explorer::ETHERSCAN.to_string())),
                 api_key: key.take(),
                 ..ChainEdit::default()
             };
@@ -253,7 +250,7 @@ api = "https://blockscout.example/api"
         assert!(edits[0].1.api_key.is_some());
         assert!(edits[1].1.api_key.is_none());
         for (_, edit) in &edits {
-            assert_eq!(edit.explorer, Some(Some(ETHERSCAN.to_string())));
+            assert_eq!(edit.explorer, Some(Some(Explorer::ETHERSCAN.to_string())));
         }
         // Declined, or an empty key: nothing.
         assert!(

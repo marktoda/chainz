@@ -119,7 +119,10 @@ pub fn explorers(current: &OsStr) -> Vec<CompletionCandidate> {
     for (name, explorer) in &config.explorers {
         out.push(name, chainz_core::redact::url(&explorer.api, false));
     }
-    out.push("etherscan", "built in".to_string());
+    out.push(
+        chainz_core::model::Explorer::ETHERSCAN,
+        "built in".to_string(),
+    );
     out.done()
 }
 

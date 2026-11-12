@@ -10,13 +10,10 @@ use crate::prompt::{self, Ask, StdinTrim, Tty, is_tty, read_stdin_secret};
 use crate::select::pick_chain;
 use crate::view;
 use anyhow::{Result, bail};
-use chainz_core::model::Config;
+use chainz_core::model::{Config, Explorer};
 use chainz_core::resolve::{self, Policy};
 use chainz_core::tx::{ChainEdit, EditReport};
 use zeroize::Zeroizing;
-
-/// The built-in explorer `--explorer etherscan` creates when missing.
-const ETHERSCAN: &str = "etherscan";
 
 /// What `chain set` with no flags says off a TTY.
 const USAGE: &str = "usage: chainz chain set <CHAIN> [--signer NAME | --no-signer] \
@@ -188,8 +185,8 @@ pub(super) fn menu(ask: &mut dyn Ask, config: &Config, name: &str) -> Result<Cha
             }
             2 => {
                 let mut names: Vec<String> = config.explorers.keys().cloned().collect();
-                if !names.iter().any(|n| n == ETHERSCAN) {
-                    names.push(ETHERSCAN.to_string());
+                if !names.iter().any(|n| n == Explorer::ETHERSCAN) {
+                    names.push(Explorer::ETHERSCAN.to_string());
                 }
                 let mut options = names.clone();
                 options.push("No explorer".to_string());

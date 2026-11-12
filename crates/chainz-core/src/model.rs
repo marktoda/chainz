@@ -230,6 +230,10 @@ impl Explorer {
         crate::urls::host_has_label(&crate::template::blanked(&self.api), "etherscan")
     }
 
+    /// The built-in explorer's name: `--explorer etherscan` creates
+    /// [`Explorer::etherscan`] when it is not configured.
+    pub const ETHERSCAN: &'static str = "etherscan";
+
     /// The built-in `[explorers.etherscan]`: Etherscan's v2 multichain API
     /// (the same URL v1 migration writes) with the key in
     /// `${ETHERSCAN_API_KEY}`.

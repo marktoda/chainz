@@ -131,8 +131,7 @@ pub struct Attached {
     pub explorer: Option<String>,
 }
 
-/// The built-in explorer's name.
-const ETHERSCAN: &str = "etherscan";
+const ETHERSCAN: &str = Explorer::ETHERSCAN;
 
 impl Tx {
     /// Insert a new chain (name, ID and signer checked), first filling in

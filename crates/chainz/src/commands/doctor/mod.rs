@@ -10,7 +10,7 @@ use crate::probe::{self, Depth, Repair, health_problem};
 use crate::{net, ui};
 use anyhow::Result;
 use chainz_core::extract::{self, Location};
-use chainz_core::labels::{Label, LabelIndex, LabelScope, LabelSource, builtin_tokens};
+use chainz_core::labels::LabelIndex;
 use chainz_core::model::{Backend, Config};
 use chainz_core::{Chainz, paths, validate};
 
@@ -145,17 +145,8 @@ fn files(chainz: &Chainz, fix: bool, report: &mut Report) {
 /// note, since shadowing is allowed but easy to forget.
 fn shadowed_tokens(config: &Config, report: &Report) {
     let index = LabelIndex::new(config);
-    for token in builtin_tokens() {
-        let token_label = Label {
-            name: token.name.clone(),
-            address: token.address,
-            source: LabelSource::Token,
-            scope: LabelScope::Chain(token.chain_id),
-        };
-        if let Some((chain, _)) = config.chain_by_id(token.chain_id)
-            && let Some(label) = index.shadowed(&token_label)
-            && label.address != token.address
-        {
+    for (token, label) in index.shadowed_tokens() {
+        if let Some((chain, _)) = config.chain_by_id(token.chain_id) {
             report.note(&format!(
                 "{chain}: your @{} ({}) shadows the built-in token",
                 token.name, label.address

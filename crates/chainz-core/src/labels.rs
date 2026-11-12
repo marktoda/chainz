@@ -389,6 +389,16 @@ impl LabelIndex {
             .filter(|winner| (winner.source, winner.address) != (label.source, label.address))
     }
 
+    /// Every built-in token another label hides at a different address on
+    /// the token's chain, with the label that wins.
+    pub fn shadowed_tokens(&self) -> impl Iterator<Item = (&'static BuiltinToken, Label)> + '_ {
+        builtin_tokens().iter().filter_map(|token| {
+            self.shadowed(&token_label(token))
+                .filter(|winner| winner.address != token.address)
+                .map(|winner| (token, winner))
+        })
+    }
+
     /// Every known label name (deduplicated, sorted).
     pub fn names(&self) -> impl Iterator<Item = &str> {
         let mut all: Vec<&str> = self
@@ -561,6 +571,11 @@ eth = "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf"
         assert_eq!(index.shadowed(&base_usdc), None, "nothing hides base usdc");
         let user = index.resolve("usdc", 1).unwrap();
         assert_eq!(index.shadowed(&user), None, "the winner is not shadowed");
+        let hidden: Vec<_> = index
+            .shadowed_tokens()
+            .map(|(t, winner)| (t.chain_id, t.name.as_str(), winner.source))
+            .collect();
+        assert_eq!(hidden, [(1, "usdc", LabelSource::User)]);
         assert_eq!(LabelSource::Token.to_string(), "built-in");
         assert_eq!(builtin_token_at(1, &eth_usdc.address), Some(eth_usdc));
         assert_eq!(builtin_token_at(8453, &eth_usdc.address), None);

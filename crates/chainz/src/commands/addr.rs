@@ -11,7 +11,7 @@ use crate::{ui, view};
 use anyhow::{Context, Result, anyhow, bail};
 use chainz_core::addrbook::{self, Labeler};
 use chainz_core::broadcast::{self, Action, Planned};
-use chainz_core::labels::{ALL_CHAINS, Label, LabelIndex, LabelScope, LabelSource, builtin_tokens};
+use chainz_core::labels::{self, ALL_CHAINS, Label, LabelIndex, LabelScope, LabelSource};
 use chainz_core::model::Config;
 use chainz_core::resolve::{self, ChainRef, Policy, Source};
 use chainz_core::runtime::Runtime;
@@ -103,14 +103,15 @@ fn add(args: &AddrAddArgs) -> Result<i32> {
         SetAddress::Unchanged => println!("@{name} is already {address} {on}"),
         SetAddress::Added | SetAddress::Replaced(_) => println!("Added @{name} {on}: {address}"),
     }
-    let shadowed: Vec<String> = builtin_tokens()
-        .iter()
-        .filter(|t| t.name == name && t.address != address)
-        .filter(|t| match chainz.config().chains.get(&scope) {
+    let config = chainz.config();
+    let shadowed: Vec<String> = LabelIndex::new(config)
+        .shadowed_tokens()
+        .filter(|(t, winner)| t.name == name && winner.address == address)
+        .filter(|(t, _)| match config.chains.get(&scope) {
             Some(chain) => chain.id == t.chain_id,
-            None => chainz.config().chain_by_id(t.chain_id).is_some(),
+            None => config.chain_by_id(t.chain_id).is_some(),
         })
-        .map(|t| chainz.config().chain_display(t.chain_id))
+        .map(|(t, _)| config.chain_display(t.chain_id))
         .collect();
     if !shadowed.is_empty() {
         eprintln!(
@@ -214,7 +215,7 @@ fn rm(args: &AddrRmArgs) -> Result<i32> {
         if config.signers.contains_key(&name) {
             bail!("@{name} is a signer, not a label; remove it with `chainz signer rm {name}`");
         }
-        if builtin_tokens().iter().any(|t| t.name == name) {
+        if labels::builtin_tokens().iter().any(|t| t.name == name) {
             bail!("@{name} is a built-in token; only your own labels can be removed");
         }
         let hint = names::suggest(&name, config.addresses.keys().map(String::as_str))
@@ -437,9 +438,9 @@ fn import(args: &AddrImportArgs) -> Result<i32> {
         .filter(|p| p.action.write().is_some())
         .filter_map(|p| {
             let name = p.name.as_deref()?;
-            builtin_tokens()
-                .iter()
-                .any(|t| t.name == name && t.chain_id == p.chain_id && Some(t.address) != p.address)
+            // A per-chain label always hides the built-in token of its name.
+            labels::builtin_token(p.chain_id, name)
+                .is_some_and(|t| Some(t.address) != p.address)
                 .then(|| format!("@{name} on {}", config.chain_display(p.chain_id)))
         })
         .collect();

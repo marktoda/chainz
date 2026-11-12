@@ -4,7 +4,7 @@
 
 use anyhow::{Result, anyhow, bail};
 use chainz_core::Address;
-use chainz_core::labels::{LabelIndex, NATIVE_DECIMALS, builtin_tokens};
+use chainz_core::labels::{self, LabelIndex, NATIVE_DECIMALS};
 use chainz_core::model::Config;
 use chainz_rpc::abi::{self, units};
 use chainz_rpc::{BlockId, RpcClient, Target};
@@ -86,9 +86,7 @@ pub fn plan_tokens(
         let label = index
             .resolve(&name, chain_id)
             .map_err(|e| anyhow!("--fund: {e} ('{chain_name}')"))?;
-        let registry = builtin_tokens()
-            .iter()
-            .find(|t| t.chain_id == chain_id && t.address == label.address);
+        let registry = labels::builtin_token_at(chain_id, &label.address);
         let grant = TokenGrant {
             label: name.clone(),
             address: label.address,
