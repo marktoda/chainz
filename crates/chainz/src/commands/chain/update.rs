@@ -297,18 +297,7 @@ pub(super) fn menu(
                     .filter(|a| !a.is_empty())
                     .map(str::to_string)
                     .collect();
-                let has = |list: &[String], a: &str| list.iter().any(|x| x.eq_ignore_ascii_case(a));
-                edit.add_aliases = wanted
-                    .iter()
-                    .filter(|a| !has(&chain.aliases, a))
-                    .cloned()
-                    .collect();
-                edit.remove_aliases = chain
-                    .aliases
-                    .iter()
-                    .filter(|a| !has(&wanted, a))
-                    .cloned()
-                    .collect();
+                edit.want_aliases(chain, &wanted);
             }
         }
         cursor = if edit == before { pick } else { DONE };
@@ -350,16 +339,7 @@ impl Shown {
     fn of(config: &Config, vars: &Vars, name: &str, edit: &ChainEdit) -> Self {
         let chain = &config.chains[name];
         let or_dash = |v: Option<&str>| v.unwrap_or("-").to_string();
-        let pending_aliases = (!edit.add_aliases.is_empty() || !edit.remove_aliases.is_empty())
-            .then(|| {
-                chain
-                    .aliases
-                    .iter()
-                    .filter(|a| !edit.remove_aliases.contains(a))
-                    .chain(&edit.add_aliases)
-                    .cloned()
-                    .collect::<Vec<_>>()
-            });
+        let pending_aliases = edit.aliases_after(name, chain);
         let aliases = pending_aliases.as_ref().unwrap_or(&chain.aliases);
         Shown {
             rpc: match edit.rpc_choice(name, chain, vars) {
@@ -459,6 +439,19 @@ path = "/o"
         assert_eq!(edit.add_aliases, ["main", "l1"]);
         assert_eq!(edit.remove_aliases, ["mainnet"]);
         assert_eq!(script.asked.len(), 13);
+    }
+
+    /// The menu previews the aliases `update` will write: without case,
+    /// and never the chain's own name.
+    #[test]
+    fn the_alias_preview_is_what_the_edit_writes() {
+        let edit = ChainEdit {
+            remove_aliases: vec!["MAINNET".into()],
+            add_aliases: vec![" l1 ".into(), "ETH".into(), "L1".into()],
+            ..ChainEdit::default()
+        };
+        let shown = Shown::of(&config(), &Vars::new(), "eth", &edit);
+        assert_eq!(shown.aliases, "l1");
     }
 
     #[test]

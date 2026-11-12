@@ -66,6 +66,50 @@ impl ChainEdit {
         *self == ChainEdit::default()
     }
 
+    /// Chain `name`'s aliases after this edit, `None` if it touches none:
+    /// the removals, then the additions (trimmed), all compared without
+    /// case; an addition equal to the name or to an alias held is skipped.
+    /// [`Tx::edit_chain`] applies it (after checking each alias), and the
+    /// `update` menu previews it.
+    pub fn aliases_after(&self, name: &str, chain: &Chain) -> Option<Vec<String>> {
+        if self.add_aliases.is_empty() && self.remove_aliases.is_empty() {
+            return None;
+        }
+        let held =
+            |list: &[String], alias: &str| list.iter().any(|a| a.eq_ignore_ascii_case(alias));
+        let mut aliases: Vec<String> = chain
+            .aliases
+            .iter()
+            .filter(|a| !held(&self.remove_aliases, a))
+            .cloned()
+            .collect();
+        for alias in &self.add_aliases {
+            let alias = alias.trim();
+            if !alias.eq_ignore_ascii_case(name) && !held(&aliases, alias) {
+                aliases.push(alias.to_string());
+            }
+        }
+        Some(aliases)
+    }
+
+    /// Set the alias changes so that `chain`'s aliases become `wanted`
+    /// (compared without case): the `update` menu's alias field.
+    pub fn want_aliases(&mut self, chain: &Chain, wanted: &[String]) {
+        let held =
+            |list: &[String], alias: &str| list.iter().any(|a| a.eq_ignore_ascii_case(alias));
+        self.add_aliases = wanted
+            .iter()
+            .filter(|a| !held(&chain.aliases, a))
+            .cloned()
+            .collect();
+        self.remove_aliases = chain
+            .aliases
+            .iter()
+            .filter(|a| !held(wanted, a))
+            .cloned()
+            .collect();
+    }
+
     /// What `--rpc` means for `chain` (named `name`): `None` when unset,
     /// else [`Chain::rpc_choice`] (URLs compared with `vars`,
     /// `secrets.toml`'s `[vars]`), a new endpoint carrying the edit's
@@ -372,24 +416,14 @@ impl Tx {
             })?;
         }
 
-        if !edit.add_aliases.is_empty() || !edit.remove_aliases.is_empty() {
-            let mut aliases = chain.aliases.clone();
+        if let Some(aliases) = edit.aliases_after(name, &chain) {
             for alias in &edit.remove_aliases {
-                let before = aliases.len();
-                aliases.retain(|a| !a.eq_ignore_ascii_case(alias));
-                if aliases.len() == before {
+                if !chain.aliases.iter().any(|a| a.eq_ignore_ascii_case(alias)) {
                     bail!("chain '{name}' has no alias '{alias}'");
                 }
             }
             for alias in &edit.add_aliases {
-                let alias = alias.trim();
-                names::check_alias(alias)?;
-                if alias.eq_ignore_ascii_case(name)
-                    || aliases.iter().any(|a| a.eq_ignore_ascii_case(alias))
-                {
-                    continue;
-                }
-                aliases.push(alias.to_string());
+                names::check_alias(alias.trim())?;
             }
             self.set_aliases(name, &aliases)?;
         }

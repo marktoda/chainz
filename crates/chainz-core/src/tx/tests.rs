@@ -641,6 +641,29 @@ fn the_builtin_explorer_attaches_only_where_etherscan_covers_the_chain() {
 }
 
 #[test]
+fn alias_edits_ignore_case_in_the_preview_and_the_write() {
+    let mut tx = tx(&DOC.replace(
+        "id = 1 # mainnet",
+        "id = 1 # mainnet\naliases = [\"mainnet\"]",
+    ));
+    let chain = tx.config().unwrap().chains["eth"].clone();
+    let mut edit = ChainEdit::default();
+    assert_eq!(edit.aliases_after("eth", &chain), None);
+    edit.want_aliases(&chain, &["MAINNET".into(), "l1".into()]);
+    assert_eq!(edit.add_aliases, ["l1"]);
+    assert!(edit.remove_aliases.is_empty());
+    let edit = ChainEdit {
+        remove_aliases: vec!["MainNet".into()],
+        add_aliases: vec![" l1 ".into(), "ETH".into(), "L1".into()],
+        ..ChainEdit::default()
+    };
+    let after = edit.aliases_after("eth", &chain).unwrap();
+    assert_eq!(after, ["l1"]);
+    tx.edit_chain("eth", &edit).unwrap();
+    assert_eq!(tx.config().unwrap().chains["eth"].aliases, after);
+}
+
+#[test]
 fn several_signers_attach_none_and_say_why() {
     let mut tx = tx(&format!(
         "{DOC}{SIGNER}[signers.ops]\nbackend = \"keyring\"\n"
