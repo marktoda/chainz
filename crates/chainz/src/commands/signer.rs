@@ -2,7 +2,7 @@
 //! read here (add, migrate) and by `exec --expose-key`.
 
 use crate::args::parse_address;
-use crate::cli::{SignerAddArgs, SignerCommand, SignerMigrateArgs, SignerRmArgs};
+use crate::cli::{JsonArgs, SignerAddArgs, SignerCommand, SignerMigrateArgs, SignerRmArgs};
 use crate::load::open;
 use crate::prompt::{self, Consent, StdinTrim, Terminal, read_stdin_secret};
 use crate::{ui, view};
@@ -18,7 +18,7 @@ pub fn run(cmd: SignerCommand) -> Result<i32> {
     let backend = SystemKeyBackend;
     match cmd {
         SignerCommand::Add(args) => add(&mut open()?, &backend, &Terminal, &args),
-        SignerCommand::Ls(args) => ls(args.json),
+        SignerCommand::Ls(args) => ls(&args),
         SignerCommand::Rm(args) => rm(&backend, &args),
         SignerCommand::Migrate(args) => migrate(&backend, &args),
     }
@@ -169,7 +169,8 @@ struct SignerRow<'a> {
     chains: Vec<&'a str>,
 }
 
-fn ls(json: bool) -> Result<i32> {
+fn ls(args: &JsonArgs) -> Result<i32> {
+    let json = args.json;
     let chainz = open()?;
     let config = chainz.config();
     let rows: Vec<SignerRow> = config

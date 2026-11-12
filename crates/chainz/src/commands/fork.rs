@@ -31,8 +31,8 @@ pub fn run(
     use crate::cli::ForkCommand;
     match cmd {
         None => start::start(args),
-        Some(ForkCommand::Ls(args)) => ls_stop::ls(args.json),
-        Some(ForkCommand::Stop(args)) => ls_stop::stop(args.name.as_deref(), args.all),
+        Some(ForkCommand::Ls(args)) => ls_stop::ls(&args),
+        Some(ForkCommand::Stop(args)) => ls_stop::stop(&args),
     }
 }
 

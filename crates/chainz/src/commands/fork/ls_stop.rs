@@ -2,6 +2,7 @@
 
 use super::process;
 use super::start::anvil_target;
+use crate::cli::{ForkStopArgs, JsonArgs};
 use crate::{net, ui, view};
 use anyhow::{Context as _, Result, bail};
 use chainz_core::fmt::{group, uptime};
@@ -32,7 +33,8 @@ struct ForkRow<'a> {
     uptime_secs: u64,
 }
 
-pub fn ls(json: bool) -> Result<i32> {
+pub fn ls(args: &JsonArgs) -> Result<i32> {
+    let json = args.json;
     let runtime = Runtime::resolve()?;
     process::reap(&runtime)?;
     let entries = runtime
@@ -106,7 +108,8 @@ async fn heights(forks: &[&ForkRecord]) -> Result<Vec<Option<u64>>> {
     net::join_indexed(asks.collect()).await
 }
 
-pub fn stop(name: Option<&str>, all: bool) -> Result<i32> {
+pub fn stop(args: &ForkStopArgs) -> Result<i32> {
+    let (name, all) = (args.name.as_deref(), args.all);
     let runtime = Runtime::resolve()?;
     process::reap(&runtime)?;
     let entries = runtime
