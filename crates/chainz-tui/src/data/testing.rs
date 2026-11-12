@@ -6,8 +6,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use chainz_core::Address;
+use chainz_core::route::Route;
 use chainz_core::runtime::Runtime;
-use chainz_rpc::{HealthStore, Target};
+use chainz_rpc::HealthStore;
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -232,14 +233,20 @@ pub(crate) fn address(s: &str) -> Address {
     s.parse().unwrap()
 }
 
-/// An endpoint plan for `url`.
+/// An endpoint plan for `url` (no templates, no headers).
 pub(crate) fn endpoint(chain_id: u64, name: &str, url: &str) -> EndpointPlan {
-    EndpointPlan {
-        name: name.into(),
-        url: chainz_core::redact::redact(url),
-        websocket: url.starts_with("ws"),
-        target: Target::new(chain_id, name, url, &[]).map_err(|e| e.to_string()),
-    }
+    let endpoint = chainz_core::model::Endpoint::new(url);
+    let route = Route {
+        chain_id,
+        chain: String::new(),
+        endpoint: name.into(),
+        url: url.into(),
+        headers: Vec::new(),
+        display: String::new(),
+        via_gateway: false,
+        websocket: endpoint.is_websocket(),
+    };
+    EndpointPlan::new(name, &endpoint, Ok(route), false)
 }
 
 /// A chain plan whose first endpoint is active, with WETH and USDC.
@@ -263,7 +270,7 @@ pub(crate) fn chain(name: &str, id: u64, endpoints: &[(&str, &str)]) -> ChainPla
             token("usdc", "USDC", 6, USDC),
             token("weth", "WETH", 18, WETH),
         ],
-        native_symbol: Some("ETH".into()),
+        native_symbol: "ETH",
     }
 }
 

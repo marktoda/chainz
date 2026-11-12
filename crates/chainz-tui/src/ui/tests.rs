@@ -29,8 +29,14 @@ fn fixture_plan() -> std::sync::Arc<Plan> {
             ("infura", "https://mainnet.infura.io/v3/0123456789abcdef"),
             ("llama", "https://eth.llamarpc.com"),
             ("publicnode", "https://ethereum-rpc.publicnode.com"),
-            ("quiknode", "https://quiet-dawn.quiknode.pro/s3cr3t/"),
-            ("alchemy-ws", "wss://eth-mainnet.g.alchemy.com/v2/s3cr3t"),
+            (
+                "quiknode",
+                "https://quiet-dawn.quiknode.pro/0123456789abcdef0123/",
+            ),
+            (
+                "alchemy-ws",
+                "wss://eth-mainnet.g.alchemy.com/v2/s3cr3t0123456789ab",
+            ),
             ("broken", "https://rpc.example.org"),
         ],
     );
@@ -40,7 +46,7 @@ fn fixture_plan() -> std::sync::Arc<Plan> {
     let mut zora = chain("zora", 7777777, &[("uniswap", "https://zora.example.org")]);
     zora.tokens.remove(0); // no usdc on zora
     let mut polygon = chain("polygon", 137, &[("infura", "https://polygon.example.org")]);
-    polygon.native_symbol = Some("POL".into());
+    polygon.native_symbol = "POL";
     plan(vec![
         eth,
         chain("base", 8453, &[("infura", "https://base.example.org")]),
@@ -410,14 +416,15 @@ fn endpoints_tab_shows_health_errors_and_tags() {
 #[test]
 fn endpoints_tab_redacts_urls_and_follows_the_selection() {
     let state = fixture();
-    // Wide enough for the URL column: redacted, never the credential.
+    // Wide enough for the URL column: hosts and paths readable, never the
+    // credential.
     let text = frame(&app(Tab::Endpoints), &state, 220, 11);
     assert!(
-        text.contains("https://redacted.infura.io/REDACTED"),
+        text.contains("https://mainnet.infura.io/v3/[REDACTED]"),
         "{text}"
     );
     assert!(
-        text.contains("wss://redacted.alchemy.com/REDACTED"),
+        text.contains("wss://eth-mainnet.g.alchemy.com/v2/[REDACTED]"),
         "{text}"
     );
     assert!(

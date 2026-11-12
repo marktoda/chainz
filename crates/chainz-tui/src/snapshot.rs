@@ -11,6 +11,7 @@
 use serde::Serialize;
 
 use crate::model::{ChainState, State, TrafficSnapshot, Via};
+use chainz_core::labels::NATIVE_DECIMALS;
 use chainz_rpc::abi::units::format_exact;
 
 /// The whole document.
@@ -262,9 +263,9 @@ impl Snapshot {
                             chain: c.plan.name.clone(),
                             id: c.plan.id,
                             via: c.balances.as_ref().map(|s| s.via),
-                            native: holding
-                                .and_then(|h| h.native)
-                                .map(|raw| amount(raw, 18, c.plan.native_symbol.as_deref())),
+                            native: holding.and_then(|h| h.native).map(|raw| {
+                                amount(raw, NATIVE_DECIMALS, Some(c.plan.native_symbol))
+                            }),
                             tokens: c
                                 .plan
                                 .tokens

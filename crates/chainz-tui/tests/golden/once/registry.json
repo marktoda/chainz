@@ -27,7 +27,7 @@
       "endpoints": [
         {
           "name": "infura",
-          "url": "https://redacted.infura.io/REDACTED/${INFURA_KEY}",
+          "url": "https://mainnet.infura.io/v3/${INFURA_KEY}",
           "active": true,
           "websocket": false,
           "status": "unknown",
@@ -41,7 +41,7 @@
         },
         {
           "name": "llama",
-          "url": "https://redacted.llamarpc.com/",
+          "url": "https://eth.llamarpc.com/",
           "active": false,
           "websocket": false,
           "status": "unknown",
@@ -55,7 +55,7 @@
         },
         {
           "name": "alchemy",
-          "url": "https://redacted.alchemy.com/REDACTED",
+          "url": "https://eth-mainnet.g.alchemy.com/v2/[REDACTED]",
           "active": false,
           "websocket": false,
           "status": "unknown",
@@ -69,7 +69,7 @@
         },
         {
           "name": "stream",
-          "url": "wss://redacted.example.org/REDACTED",
+          "url": "wss://eth.example.org/ws/hunter2",
           "active": false,
           "websocket": true,
           "status": "websocket",
@@ -105,7 +105,7 @@
       "endpoints": [
         {
           "name": "public",
-          "url": "https://redacted.base.org/",
+          "url": "https://mainnet.base.org/",
           "active": true,
           "websocket": false,
           "status": "unknown",
@@ -139,7 +139,7 @@
       "endpoints": [
         {
           "name": "public",
-          "url": "https://redacted.gnosischain.com/",
+          "url": "https://rpc.gnosischain.com/",
           "active": true,
           "websocket": false,
           "status": "unknown",
@@ -207,7 +207,7 @@
       "endpoints": [
         {
           "name": "forno",
-          "url": "https://redacted.celo.org/",
+          "url": "https://forno.celo.org/",
           "active": true,
           "websocket": false,
           "status": "unknown",
@@ -409,7 +409,7 @@
           "id": 100,
           "via": "multicall3",
           "native": {
-            "symbol": null,
+            "symbol": "xDAI",
             "decimals": 18,
             "raw": "12000000000000000000",
             "formatted": "12",

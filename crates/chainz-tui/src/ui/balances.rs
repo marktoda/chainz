@@ -6,6 +6,8 @@ use ratatui::text::{Line, Span};
 
 use super::grid::{Cell, Col, Grid};
 use super::{Ctx, context_line, empty, scroll_hint, split_context};
+use chainz_core::labels::NATIVE_DECIMALS;
+
 use crate::fmt;
 use crate::model::Via;
 
@@ -99,7 +101,7 @@ pub(super) fn render(area: Rect, buf: &mut Buffer, ctx: Ctx) {
         };
         let mut row = vec![Cell::new(chain.plan.name.clone(), t.text())];
         row.push(match holding {
-            Some(h) => amount(h.native, 18, chain.plan.native_symbol.as_deref()),
+            Some(h) => amount(h.native, NATIVE_DECIMALS, Some(chain.plan.native_symbol)),
             None => pending(),
         });
         for name in &state.token_names {

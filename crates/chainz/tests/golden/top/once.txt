@@ -4,6 +4,6 @@
  dead   8453      –    –      –          –  local     –         ×  down connect
 
  signer default 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
- CHAIN      NATIVE  @weth   @usdc  @usdt  @dai  @wbtc  @usdce  VIA        UPDATED
- live   1.5000 ETH      0  2.5000      0     0      0          multicall  Ns ago
- dead            –      –       –      –     –              –             connect
+ CHAIN      NATIVE  @weth   @usdc  @usdce  @usdt  @dai  @wbtc  VIA        UPDATED
+ live   1.5000 ETH      0  2.5000              0     0      0  multicall  Ns ago
+ dead            –      –       –       –      –     –                    connect

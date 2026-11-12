@@ -27,7 +27,7 @@
       "endpoints": [
         {
           "name": "main",
-          "url": "http://127.0.0.1:<port>/REDACTED/${RPC_KEY}",
+          "url": "http://127.0.0.1:<port>/v3/${RPC_KEY}",
           "active": true,
           "websocket": false,
           "status": "unknown",
@@ -41,7 +41,7 @@
         },
         {
           "name": "spare",
-          "url": "http://127.0.0.1:1/REDACTED",
+          "url": "http://127.0.0.1:1/spare",
           "active": false,
           "websocket": false,
           "status": "unknown",
@@ -55,7 +55,7 @@
         },
         {
           "name": "stream",
-          "url": "wss://redacted.example.org/REDACTED",
+          "url": "wss://live.example.org/ws/hunter2",
           "active": false,
           "websocket": true,
           "status": "websocket",

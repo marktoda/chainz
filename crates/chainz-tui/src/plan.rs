@@ -7,8 +7,10 @@
 
 use chainz_core::Address;
 use chainz_core::Chainz;
-use chainz_core::labels::builtin_tokens;
-use chainz_core::redact::redact;
+use chainz_core::labels::{TOKEN_ORDER, builtin_tokens, native_symbol};
+use chainz_core::model::Endpoint;
+use chainz_core::redact;
+use chainz_core::route::Route;
 use chainz_rpc::Target;
 
 /// Everything the workers and the renderer need to know about the config.
@@ -35,8 +37,8 @@ pub struct ChainPlan {
     pub endpoints: Vec<EndpointPlan>,
     /// Built-in tokens on this chain, by label name.
     pub tokens: Vec<TokenPlan>,
-    /// Symbol of the native currency, when the registry implies one.
-    pub native_symbol: Option<String>,
+    /// Symbol of the native currency.
+    pub native_symbol: &'static str,
 }
 
 impl ChainPlan {
@@ -58,6 +60,32 @@ pub struct EndpointPlan {
     pub websocket: bool,
     /// The resolved target, or why it could not be built (never a URL).
     pub target: Result<Target, String>,
+}
+
+impl EndpointPlan {
+    /// The plan for endpoint `name`, configured as `endpoint`, read through
+    /// `route` (or why it cannot be).
+    pub fn new(
+        name: &str,
+        endpoint: &Endpoint,
+        route: anyhow::Result<Route>,
+        reveal: bool,
+    ) -> Self {
+        // The bare cause ("variable ${X} is not set"): the row already
+        // names the chain and the endpoint.
+        let target = route
+            .map_err(|e| e.root_cause().to_string())
+            .and_then(|route| {
+                Target::new(route.chain_id, &route.endpoint, &route.url, &route.headers)
+                    .map_err(|e| e.to_string())
+            });
+        EndpointPlan {
+            name: name.to_string(),
+            url: redact::url(&endpoint.url, reveal),
+            websocket: endpoint.is_websocket(),
+            target,
+        }
+    }
 }
 
 /// One signer; only its cached address is ever used.
@@ -95,30 +123,8 @@ impl Plan {
                     .rpcs
                     .iter()
                     .map(|(ep_name, endpoint)| {
-                        // The bare cause ("variable ${X} is not set"): the
-                        // row already names the chain and the endpoint.
-                        let target = chainz
-                            .expand_endpoint(name, chain.id, ep_name, endpoint)
-                            .map_err(|e| e.root_cause().to_string())
-                            .and_then(|expanded| {
-                                Target::new(
-                                    chain.id,
-                                    ep_name.as_str(),
-                                    &expanded.url,
-                                    &expanded.headers,
-                                )
-                                .map_err(|e| e.to_string())
-                            });
-                        EndpointPlan {
-                            name: ep_name.clone(),
-                            url: if reveal {
-                                endpoint.url.clone()
-                            } else {
-                                redact(&endpoint.url)
-                            },
-                            websocket: endpoint.is_websocket(),
-                            target,
-                        }
+                        let route = chainz.direct_route(name, chain.id, ep_name, endpoint);
+                        EndpointPlan::new(ep_name, endpoint, route, reveal)
                     })
                     .collect();
                 let tokens: Vec<TokenPlan> = builtin_tokens()
@@ -137,7 +143,7 @@ impl Plan {
                     aliases: chain.aliases.clone(),
                     active: chain.rpc.clone(),
                     endpoints,
-                    native_symbol: native_symbol(&tokens),
+                    native_symbol: native_symbol(chain.id),
                     tokens,
                 }
             })
@@ -166,9 +172,9 @@ impl Plan {
             .collect()
     }
 
-    /// Token label names across every chain: the Balances tab's columns.
-    /// The wrapped native token sits next to the native balance, then the
-    /// majors in a fixed order, then anything else by name.
+    /// Token label names across every chain: the Balances tab's columns,
+    /// in the registry's display order ([`TOKEN_ORDER`]), then anything
+    /// else by name.
     pub fn token_names(&self) -> Vec<String> {
         let mut names: Vec<String> = Vec::new();
         for token in self.chains.iter().flat_map(|c| &c.tokens) {
@@ -176,18 +182,13 @@ impl Plan {
                 names.push(token.name.clone());
             }
         }
-        const ORDER: [&str; 5] = ["weth", "usdc", "usdt", "dai", "wbtc"];
-        let rank = |name: &str| ORDER.iter().position(|n| *n == name).unwrap_or(ORDER.len());
+        let rank = |name: &str| {
+            TOKEN_ORDER
+                .iter()
+                .position(|n| *n == name)
+                .unwrap_or(TOKEN_ORDER.len())
+        };
         names.sort_by_key(|name| (rank(name), name.clone()));
         names
     }
-}
-
-/// The registry's `weth` entry is each chain's wrapped native token (WETH,
-/// WBNB, WPOL), so the native symbol is its symbol without the `W`. Where
-/// the native token is itself the ERC-20 (CELO), the symbol has no `W`.
-fn native_symbol(tokens: &[TokenPlan]) -> Option<String> {
-    let wrapped = tokens.iter().find(|t| t.name == "weth")?;
-    let native = wrapped.symbol.strip_prefix('W').unwrap_or(&wrapped.symbol);
-    (!native.is_empty()).then(|| native.to_string())
 }

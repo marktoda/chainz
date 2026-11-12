@@ -21,6 +21,7 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
+use chainz_core::names;
 use chainz_core::route::{self, Route};
 use chainz_core::runtime::{GatewayState, Runtime, ServeInfo};
 use chainz_rpc::{ErrorClass, HealthSample, HealthStore, RpcClient, Target, probe_all};
@@ -362,20 +363,13 @@ fn same_source(a: &ChainPlan, b: &ChainPlan) -> bool {
     a.name == b.name && a.id == b.id && same_target
 }
 
-/// For each chain, how many earlier chains use the same provider (the
-/// registrable part of the active endpoint's host). Chains on one provider
+/// For each chain, how many earlier chains use the same provider
+/// ([`names::provider_of`] the active endpoint). Chains on one provider
 /// usually share one API key and one rate limit.
 fn provider_slots(plan: &Plan) -> Vec<u32> {
     let provider = |chain: &ChainPlan| -> Option<String> {
         let target = chain.active_endpoint()?.target.as_ref().ok()?;
-        let host = target.url().host_str()?;
-        let labels: Vec<&str> = host.rsplit('.').take(2).collect();
-        let numeric = host.parse::<std::net::IpAddr>().is_ok();
-        Some(if numeric || labels.len() < 2 {
-            format!("{host}:{:?}", target.url().port())
-        } else {
-            format!("{}.{}", labels[1], labels[0])
-        })
+        names::provider_of(target.url().as_str())
     };
     let mut seen: HashMap<String, u32> = HashMap::new();
     plan.chains

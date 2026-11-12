@@ -28,7 +28,7 @@
       "endpoints": [
         {
           "name": "infura",
-          "url": "https://redacted.infura.io/REDACTED",
+          "url": "https://mainnet.infura.io/v3/[REDACTED]",
           "active": true,
           "websocket": false,
           "status": "ok",
@@ -42,7 +42,7 @@
         },
         {
           "name": "llama",
-          "url": "https://redacted.llamarpc.com/",
+          "url": "https://eth.llamarpc.com/",
           "active": false,
           "websocket": false,
           "status": "lagging",
@@ -56,7 +56,7 @@
         },
         {
           "name": "publicnode",
-          "url": "https://redacted.publicnode.com/",
+          "url": "https://ethereum-rpc.publicnode.com/",
           "active": false,
           "websocket": false,
           "status": "failing",
@@ -70,7 +70,7 @@
         },
         {
           "name": "quiknode",
-          "url": "https://redacted.quiknode.pro/REDACTED",
+          "url": "https://quiet-dawn.quiknode.pro/[REDACTED]/",
           "active": false,
           "websocket": false,
           "status": "ok",
@@ -84,7 +84,7 @@
         },
         {
           "name": "alchemy-ws",
-          "url": "wss://redacted.alchemy.com/REDACTED",
+          "url": "wss://eth-mainnet.g.alchemy.com/v2/[REDACTED]",
           "active": false,
           "websocket": true,
           "status": "websocket",
@@ -100,7 +100,7 @@
         },
         {
           "name": "broken",
-          "url": "https://redacted.example.org/",
+          "url": "https://rpc.example.org/",
           "active": false,
           "websocket": false,
           "status": "invalid",
@@ -134,7 +134,7 @@
       "endpoints": [
         {
           "name": "infura",
-          "url": "https://redacted.example.org/",
+          "url": "https://base.example.org/",
           "active": true,
           "websocket": false,
           "status": "unknown",
@@ -168,7 +168,7 @@
       "endpoints": [
         {
           "name": "infura",
-          "url": "https://redacted.example.org/",
+          "url": "https://uni.example.org/",
           "active": true,
           "websocket": false,
           "status": "ok",
@@ -202,7 +202,7 @@
       "endpoints": [
         {
           "name": "uniswap",
-          "url": "https://redacted.example.org/",
+          "url": "https://zora.example.org/",
           "active": true,
           "websocket": false,
           "status": "unknown",
@@ -239,7 +239,7 @@
       "endpoints": [
         {
           "name": "uniswap",
-          "url": "https://redacted.example.org/",
+          "url": "https://arb.example.org/",
           "active": true,
           "websocket": false,
           "status": "unknown",
@@ -273,7 +273,7 @@
       "endpoints": [
         {
           "name": "infura",
-          "url": "https://redacted.example.org/",
+          "url": "https://polygon.example.org/",
           "active": true,
           "websocket": false,
           "status": "unknown",

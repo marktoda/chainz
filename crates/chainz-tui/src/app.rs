@@ -397,7 +397,10 @@ mod tests {
             "eth",
             1,
             &[
-                ("infura", "https://mainnet.infura.io/v3/s3cr3t"),
+                (
+                    "infura",
+                    "https://mainnet.infura.io/v3/0123456789abcdef0123456789abcdef",
+                ),
                 ("llama", "https://eth.llamarpc.com"),
                 ("publicnode", "https://ethereum-rpc.publicnode.com"),
             ],
@@ -623,7 +626,7 @@ mod tests {
         };
         assert_eq!(
             (text.as_str(), what.as_str()),
-            ("https://redacted.llamarpc.com/", "eth.llama URL")
+            ("https://eth.llamarpc.com/", "eth.llama URL")
         );
         // Endpoints: the selected one. Its credential never reaches the
         // clipboard, because the plan holds only the redacted form.
@@ -631,7 +634,7 @@ mod tests {
             panic!("expected a copy");
         };
         assert_eq!(what, "eth.infura URL");
-        assert_eq!(text, "https://redacted.infura.io/REDACTED");
+        assert_eq!(text, "https://mainnet.infura.io/v3/[REDACTED]");
         // Balances: the shown signer's checksummed address.
         assert_eq!(
             press(&mut app, &state, "3y"),
