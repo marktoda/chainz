@@ -350,7 +350,10 @@ pub fn add(chainz: &mut Chainz, args: &AddArgs, ask: &mut dyn Ask) -> Result<i32
         }
         Ok((active, moved, attached))
     })?;
-    println!("Added chain '{short}' ({id}) with {count} endpoint(s); active: {active}");
+    println!(
+        "Added chain '{short}' ({id}) with {}; active: {active}",
+        ui::count(count, "endpoint")
+    );
     if let Some(signer) = &attached.signer {
         println!("  signer: {signer} (the only signer; --no-signer to skip)");
     }
@@ -390,7 +393,7 @@ pub fn rm(args: &RmArgs) -> Result<i32> {
         .0
         .to_string();
     let going = chainz.preview(|tx| tx.remove_chain(&name))?;
-    let mut with = vec![format!("{} endpoint(s)", going.endpoints)];
+    let mut with = vec![ui::count(going.endpoints, "endpoint")];
     if !going.labels.is_empty() {
         with.push(format!("labels {}", at_labels(&going.labels)));
     }

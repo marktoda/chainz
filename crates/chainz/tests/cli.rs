@@ -683,7 +683,7 @@ fn chain_rm_names_its_labels_and_the_default() {
     assert_eq!(out.status.code(), Some(1));
     let err = stderr(&out);
     assert!(
-        err.contains("removes chain 'arb' (1 endpoint(s); labels @myrouter, @pool; it is the default chain); pass --yes"),
+        err.contains("removes chain 'arb' (1 endpoint; labels @myrouter, @pool; it is the default chain); pass --yes"),
         "{err}"
     );
     assert!(sb.config().contains("[chains.arb]"));
@@ -1553,7 +1553,7 @@ fn chain_add_from_chainlist_skips_invalid_urls_and_picks_a_live_one() {
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(
         stdout(&out),
-        "Added chain 'base' (8453) with 2 endpoint(s); active: local\n"
+        "Added chain 'base' (8453) with 2 endpoints; active: local\n"
     );
     let (active, list) = endpoints(&sb, "base");
     assert_eq!(active, "local");
@@ -1771,7 +1771,7 @@ fn doctor_discover_lists_off_a_tty_and_yes_adds_the_live_ones() {
     // then rank it with the others.
     let added = stdout(&sb.run(&["doctor", "eth", "--discover", "--yes"]));
     assert!(
-        added.contains("Added 1 endpoint(s) to 'eth': local\n"),
+        added.contains("Added 1 endpoint to 'eth': local\n"),
         "{added}"
     );
     assert!(

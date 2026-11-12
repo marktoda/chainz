@@ -40,9 +40,39 @@ pub fn short_address(address: &crate::Address) -> String {
     format!("{}…{}", &address[..6], &address[38..])
 }
 
+/// `n` and the noun, plural unless `n` is 1: `1 chain`, `3 chains`.
+pub fn count(n: usize, noun: &str) -> String {
+    match n {
+        1 => format!("1 {noun}"),
+        _ => format!("{n} {noun}s"),
+    }
+}
+
+/// Where something applies: up to three names (`eth, base`), else a
+/// [`count`] of `noun` (`17 chains`).
+pub fn names_or_count<S: AsRef<str>>(names: &[S], noun: &str) -> String {
+    match names.len() {
+        0..=3 => names
+            .iter()
+            .map(AsRef::as_ref)
+            .collect::<Vec<_>>()
+            .join(", "),
+        n => count(n, noun),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_few_names_or_a_count() {
+        assert_eq!(count(1, "chain"), "1 chain");
+        assert_eq!(count(0, "chain"), "0 chains");
+        assert_eq!(names_or_count(&["eth", "base"], "chain"), "eth, base");
+        let many: Vec<String> = (0..4).map(|i| format!("c{i}")).collect();
+        assert_eq!(names_or_count(&many, "chain"), "4 chains");
+    }
 
     #[test]
     fn groups_thousands() {

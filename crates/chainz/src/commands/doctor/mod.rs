@@ -47,15 +47,8 @@ type Groups<T = Finding> = IndexMap<(String, String), Vec<T>>;
 /// Where a group's findings are: the names when there are a few, else a
 /// count (`eth, base`, `17 chains`).
 fn places(findings: &[Finding], noun: &str) -> String {
-    if findings.len() <= 3 {
-        findings
-            .iter()
-            .map(|f| f.on.as_str())
-            .collect::<Vec<_>>()
-            .join(", ")
-    } else {
-        ui::count(findings.len(), noun)
-    }
+    let on: Vec<&str> = findings.iter().map(|f| f.on.as_str()).collect();
+    chainz_core::fmt::names_or_count(&on, noun)
 }
 
 impl Report {

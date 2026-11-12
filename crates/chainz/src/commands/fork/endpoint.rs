@@ -118,8 +118,8 @@ pub async fn find_archive(
     eprintln!(
         "{}",
         ui::dim(&format!(
-            "--block {block}: probing {} endpoint(s) of '{parent}' for archive state…",
-            candidates.len()
+            "--block {block}: probing {} of '{parent}' for archive state…",
+            ui::count(candidates.len(), "endpoint")
         ))
     );
     let probes = candidates.iter().map(|(_, target)| {
@@ -147,8 +147,8 @@ pub async fn find_archive(
     }
     chosen.map(|name| Pinned::endpoint(&name)).ok_or_else(|| {
         anyhow!(
-            "--block {block} needs an archive endpoint, and none of the {} HTTP endpoint(s) of '{parent}' serves historical state; add one with `chainz update {parent} --add-rpc URL`",
-            candidates.len()
+            "--block {block} needs an archive endpoint, and none of the {} of '{parent}' serves historical state; add one with `chainz update {parent} --add-rpc URL`",
+            ui::count(candidates.len(), "HTTP endpoint")
         )
     })
 }

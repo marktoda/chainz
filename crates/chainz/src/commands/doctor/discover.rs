@@ -67,8 +67,8 @@ pub fn run(chainz: &mut Chainz, chain: &str, refresh: bool, yes: bool) -> Result
         Ok((added, moved))
     })?;
     println!(
-        "Added {} endpoint(s) to '{chain}': {}",
-        added.len(),
+        "Added {} to '{chain}': {}",
+        ui::count(added.len(), "endpoint"),
         added.join(", ")
     );
     ui::report_moved(&moved);

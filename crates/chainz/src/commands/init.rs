@@ -85,7 +85,7 @@ type AddChain<'a> = dyn FnMut(&mut Chainz, &AddArgs, &mut dyn Ask) -> Result<i32
 fn add_chains(chainz: &mut Chainz, ask: &mut dyn Ask, add: &mut AddChain<'_>) -> Result<()> {
     let have = chainz.config().chains.len();
     if have > 0 {
-        println!("{have} chain(s) configured");
+        println!("{} configured", ui::count(have, "chain"));
     }
     let mut more = ask.confirm("Add a chain from chainlist?", have == 0)?;
     while more {

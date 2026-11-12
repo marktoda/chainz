@@ -129,11 +129,10 @@ pub(crate) fn without_down_chains(state: &State) -> (State, Vec<String>) {
 
 /// The line that stands for the balances of the chains that are down.
 fn skipped_note(down: &[String]) -> String {
-    if down.len() <= 3 {
-        format!(" balances skipped on down chains: {}", down.join(", "))
-    } else {
-        format!(" balances skipped on {} down chains", down.len())
-    }
+    format!(
+        " balances skipped on down chains: {}",
+        chainz_core::fmt::names_or_count(down, "chain")
+    )
 }
 
 /// One tab's body as text: the context line (or `heading`), then the
@@ -167,7 +166,7 @@ mod tests {
         );
         assert_eq!(
             skipped_note(&names(17)),
-            " balances skipped on 17 down chains"
+            " balances skipped on down chains: 17 chains"
         );
     }
 }

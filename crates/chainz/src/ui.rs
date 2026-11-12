@@ -154,12 +154,7 @@ pub fn item(msg: &str) -> String {
 }
 
 /// `1 chain`, `17 chains`: a count with its noun (plural with `s`).
-pub fn count(n: usize, noun: &str) -> String {
-    match n {
-        1 => format!("1 {noun}"),
-        _ => format!("{n} {noun}s"),
-    }
-}
+pub use chainz_core::fmt::count;
 
 pub fn dim(msg: &str) -> String {
     style(msg).dim().to_string()

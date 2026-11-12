@@ -184,9 +184,8 @@ pub(super) fn menu(
             if pending.is_empty()
                 || ask.confirm(
                     &format!(
-                        "Discard {} pending change{} ({})?",
-                        pending.len(),
-                        if pending.len() == 1 { "" } else { "s" },
+                        "Discard {} ({})?",
+                        ui::count(pending.len(), "pending change"),
                         pending.join(", ")
                     ),
                     false,
