@@ -26,6 +26,7 @@ use crate::model::{Backend, Chain, Config};
 use crate::names::{self, Token};
 use crate::redact::redact;
 use crate::resolve::{self, ChainRef};
+use crate::route::RouteOpts;
 use crate::runtime::{ForkRecord, Runtime};
 use crate::secrets::{Builtins, VarResolver};
 use crate::signer::{KeyBackend, Prompter};
@@ -279,7 +280,7 @@ pub fn build(
     opts: &ExecOptions,
 ) -> Result<Context> {
     let (chain_name, chain, fork) = chain_of(chainz.config(), target)?;
-    let rpc = rpc_context(chainz, runtime, &chain_name, chain, fork.as_ref(), opts)?;
+    let rpc = rpc_context(chainz, runtime, &chain_name, fork.as_ref(), opts)?;
     let signer = signer_context(
         chainz.config(),
         opts.signer.as_deref().or(chain.signer.as_deref()),
@@ -323,7 +324,6 @@ fn rpc_context(
     chainz: &Chainz,
     runtime: &Runtime,
     chain_name: &str,
-    chain: &Chain,
     fork: Option<&ForkRecord>,
     opts: &ExecOptions,
 ) -> Result<RpcContext> {
@@ -340,44 +340,20 @@ fn rpc_context(
             via_gateway: false,
         });
     }
-    let endpoint_name = opts.rpc.clone().unwrap_or_else(|| chain.rpc.clone());
-    let endpoint = chain.rpcs.get(&endpoint_name).ok_or_else(|| {
-        anyhow!(
-            "chain '{chain_name}' has no endpoint '{endpoint_name}' (endpoints: {})",
-            chain
-                .rpcs
-                .keys()
-                .map(String::as_str)
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
-    })?;
-    let gateway = if opts.direct || endpoint.is_websocket() {
-        None
-    } else {
-        runtime
-            .gateway_url(chain_name, opts.rpc.as_deref())
-            .context("a gateway is running, but its record can't be read (--direct bypasses it)")?
-    };
-    Ok(match gateway {
-        Some(url) => RpcContext {
-            display: redact(&url),
-            url,
-            headers: vec![],
-            endpoint: Some(endpoint_name),
-            via_gateway: true,
+    let route = chainz.route(
+        chain_name,
+        &RouteOpts {
+            endpoint: opts.rpc.clone(),
+            direct: opts.direct,
         },
-        None => {
-            let expanded =
-                chainz.expand_endpoint(chain_name, chain.id, &endpoint_name, endpoint)?;
-            RpcContext {
-                display: redact(&endpoint.url),
-                url: expanded.url,
-                headers: expanded.headers,
-                endpoint: Some(endpoint_name),
-                via_gateway: false,
-            }
-        }
+        runtime,
+    )?;
+    Ok(RpcContext {
+        url: route.url,
+        headers: route.headers,
+        endpoint: Some(route.endpoint),
+        via_gateway: route.via_gateway,
+        display: route.display,
     })
 }
 
@@ -793,19 +769,12 @@ impl<'a> Expander<'a> {
             Scope::Other(other) => other,
         };
         if other.rpc.get().is_none() {
-            let (chain_name, chain, fork) = chain_of(self.chainz.config(), &other.target)?;
+            let (chain_name, _, fork) = chain_of(self.chainz.config(), &other.target)?;
             let opts = ExecOptions {
                 direct: self.direct,
                 ..ExecOptions::default()
             };
-            let rpc = rpc_context(
-                self.chainz,
-                self.runtime,
-                &chain_name,
-                chain,
-                fork.as_ref(),
-                &opts,
-            )?;
+            let rpc = rpc_context(self.chainz, self.runtime, &chain_name, fork.as_ref(), &opts)?;
             let _ = other.rpc.set(rpc);
         }
         Ok(other.rpc.get().expect("set above"))
