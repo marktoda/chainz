@@ -100,7 +100,7 @@ what `serve status`, `serve log` and `top` read; its types are in
 | --- | --- | --- |
 | `/_chainz/status` | GET | version, PID, port, uptime, each chain's active endpoint, failover list and head |
 | `/_chainz/metrics` | GET | 60 s and 900 s windows: rows per (chain, endpoint, method), plus totals overall and per chain with true percentiles |
-| `/_chainz/events?backlog=N&after=ID&follow=false` | GET | NDJSON request records: the last `N` above `after`, then live ones unless `follow=false` |
+| `/_chainz/events?backlog=N\|all&after=ID&follow=false` | GET | NDJSON request records: the last `N` (or all) above `after`, then live ones unless `follow=false` |
 | `/_chainz/reload` | POST | 204, or 500 with the reason when the new config is invalid (the old one stays) |
 
 Clients give up after 5 s (an events body excepted), so a wedged gateway
