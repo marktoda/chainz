@@ -540,7 +540,7 @@ pub struct UpdateArgs {
     )]
     pub add_rpcs: Vec<String>,
     /// Remove an endpoint, and its failover entry (repeatable)
-    #[arg(long = "rm-rpc", value_name = "NAME", help_heading = "Endpoints", add = ArgValueCompleter::new(complete::endpoints))]
+    #[arg(long = "rm-rpc", value_name = "NAME", help_heading = "Endpoints", add = ArgValueCompleter::new(complete::removable_endpoints))]
     pub rm_rpcs: Vec<String>,
     /// Failover endpoints, in order
     #[arg(

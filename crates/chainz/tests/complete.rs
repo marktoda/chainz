@@ -197,13 +197,14 @@ fn rpc_completes_the_typed_chain_endpoints() {
         fish(&sb, &["update", "base", "--failover", "p"]),
         &["public"],
     );
-    assert_set(fish(&sb, &["update", "eth", "--rm-rpc", "l"]), &["llama"]);
+    // --rm-rpc never offers the active endpoint: removing it is refused.
+    assert_set(fish(&sb, &["update", "eth", "--rm-rpc", ""]), &["llama"]);
     assert_set(
         fish(
             &sb,
-            &["update", "eth", "--rm-rpc", "llama", "--rm-rpc", "a"],
+            &["update", "base", "--rm-rpc", "quicknode", "--rm-rpc", ""],
         ),
-        &["alchemy"],
+        &["quicknode"],
     );
 }
 

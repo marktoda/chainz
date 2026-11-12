@@ -148,6 +148,16 @@ fn chains(current: &OsStr, with_forks: bool) -> Vec<CompletionCandidate> {
 /// Endpoints of the chain typed earlier on the line, else of the
 /// `$CHAINZ_CHAIN` / default chain.
 pub fn endpoints(current: &OsStr) -> Vec<CompletionCandidate> {
+    chain_endpoints(current, true)
+}
+
+/// [`endpoints`] for `update --rm-rpc`: not the active one, which it
+/// refuses to remove.
+pub fn removable_endpoints(current: &OsStr) -> Vec<CompletionCandidate> {
+    chain_endpoints(current, false)
+}
+
+fn chain_endpoints(current: &OsStr, with_active: bool) -> Vec<CompletionCandidate> {
     let (Some(prefix), Some(config)) = (current.to_str(), load_config()) else {
         return Vec::new();
     };
@@ -163,6 +173,9 @@ pub fn endpoints(current: &OsStr) -> Vec<CompletionCandidate> {
     };
     let mut out = Candidates::new(prefix);
     for endpoint in chain.rpcs.keys() {
+        if !with_active && *endpoint == chain.rpc {
+            continue;
+        }
         let help = if *endpoint == chain.rpc {
             format!("{name} (active)")
         } else {
