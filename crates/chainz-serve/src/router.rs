@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use chainz_rpc::control::{MetricsSnapshot, RecordStatus, RequestRecord};
 use chainz_rpc::error::{LIMIT_EXCEEDED, SERVER_ERROR};
-use chainz_rpc::upstream::rpc_error_code;
+use chainz_rpc::upstream::{MAX_INSPECTED_BODY, rpc_error_code};
 use chainz_rpc::{ErrorClass, HttpUpstream, RpcError};
 use serde_json::Value;
 
@@ -54,9 +54,6 @@ pub const MAX_QUEUE: Duration = Duration::from_secs(10);
 const BACKOFF_429: Duration = Duration::from_millis(250);
 /// Wait before the one same-endpoint retry of a read with nowhere to go.
 const RETRY_PAUSE: Duration = Duration::from_millis(100);
-/// Answers larger than this are not parsed for filter IDs and transaction
-/// hashes.
-const MAX_INSPECTED_BODY: usize = 16 * 1024;
 
 /// How one request may be routed.
 #[derive(Debug, Clone, PartialEq, Eq)]

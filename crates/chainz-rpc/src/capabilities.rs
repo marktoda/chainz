@@ -25,8 +25,9 @@ pub struct Capabilities {
     pub debug_trace: Option<bool>,
     /// Serves `trace_block`.
     pub trace_block: Option<bool>,
-    /// The largest `eth_getLogs` block range accepted among the ranges probed (100,000 down to 100);
-    /// `None` when unknown or when even the smallest range failed.
+    /// The largest `eth_getLogs` block range accepted among the ranges
+    /// [`probe`] tries; `None` when unknown or when even the smallest range
+    /// failed.
     pub max_logs_range: Option<u64>,
     /// The URL is `ws://` or `wss://`.
     pub websocket: bool,
@@ -63,9 +64,9 @@ impl Capabilities {
 /// - archive: `eth_getBalance(zero address, block 1)` succeeds;
 /// - debug / trace: `debug_traceTransaction(zero hash)` / `trace_block(1)`
 ///   errors with something other than "method missing";
-/// - max_logs_range: the largest of the ranges probed (100,000, 10,000,
-///   2,000, 500, 100) for which `eth_getLogs`
-///   over `[head - range, head]` with a never-matching topic succeeds;
+/// - max_logs_range: the largest of a fixed set of ranges, tried from the
+///   widest down, for which `eth_getLogs` over `[head - range, head]` with
+///   a never-matching topic succeeds;
 /// - websocket: [`Target::is_websocket`]. Websocket targets are otherwise not
 ///   probed (all other fields stay `None`).
 pub async fn probe_capabilities(client: &RpcClient, target: &Target) -> Capabilities {

@@ -15,6 +15,13 @@ fn fast_policy() -> RetryPolicy {
     }
 }
 
+/// One request, no retry policy: [`HttpUpstream::send`] makes one attempt.
+async fn send_once(server: &Mock) -> Result<Bytes, RpcError> {
+    HttpUpstream::new(RpcClient::new())
+        .send(&server.target(1), Bytes::from_static(BODY.as_bytes()))
+        .await
+}
+
 async fn send(server: &Mock, policy: &RetryPolicy) -> Result<Bytes, RpcError> {
     send_with(server, policy, RpcClient::new()).await
 }
@@ -38,7 +45,7 @@ fn ok(req: &Request) -> Reply {
 #[tokio::test]
 async fn forwards_body_and_headers_verbatim() {
     let server = Mock::http(|_, req| ok(req));
-    let r = send(&server, &RetryPolicy::none()).await.unwrap();
+    let r = send_once(&server).await.unwrap();
     assert_eq!(server.hits(), 1);
     let req = &server.requests()[0];
     assert_eq!(req.body, BODY.as_bytes());
@@ -111,13 +118,13 @@ async fn non_retryable_status_fails_after_one_attempt() {
 }
 
 #[tokio::test]
-async fn policy_none_makes_a_single_attempt() {
+async fn send_makes_a_single_attempt() {
     for resp in [
         Reply::status(503),
         Reply::status(429).header("Retry-After", "0"),
     ] {
         let server = Mock::http(move |_, _| resp.clone());
-        let err = send(&server, &RetryPolicy::none()).await.unwrap_err();
+        let err = send_once(&server).await.unwrap_err();
         assert!(matches!(
             err,
             RpcError::Http(503) | RpcError::RateLimited { .. }
@@ -167,7 +174,7 @@ async fn a_body_cut_off_mid_read_is_transient() {
     assert_eq!(server.hits(), 2, "retried on the same endpoint");
 
     let server = Mock::http(|_, req| ok(req).cut());
-    let err = send(&server, &RetryPolicy::none()).await.unwrap_err();
+    let err = send_once(&server).await.unwrap_err();
     assert_eq!(err, RpcError::BodyRead);
     assert!(err.is_transient());
     assert_eq!(server.hits(), 1);

@@ -39,16 +39,6 @@ pub struct RetryPolicy {
 }
 
 impl RetryPolicy {
-    /// One attempt, no retries.
-    pub fn none() -> Self {
-        RetryPolicy {
-            max_attempts: 1,
-            backoff: Duration::from_millis(100),
-            max_backoff: Duration::from_secs(1),
-            max_retry_after: Duration::ZERO,
-        }
-    }
-
     /// 3 attempts, every transient failure retried, backoff 100 ms doubling
     /// to 1 s, `Retry-After` waited out up to 2 s.
     pub fn same_endpoint_transient() -> Self {
@@ -147,15 +137,16 @@ impl HttpUpstream {
     }
 }
 
-/// Answers larger than this are not looked into for an error code: an
-/// error answer is small.
-const MAX_INSPECTED_BODY: usize = 16 * 1024;
+/// Answers larger than this are not parsed for an error code (or, by the
+/// gateway, for filter IDs and transaction hashes): an error answer, an ID
+/// or a hash is small.
+pub const MAX_INSPECTED_BODY: usize = 16 * 1024;
 
 /// The JSON-RPC error code of a single-object response body, if any: the
 /// one way chainz tells a 2xx answer that is an error (a
 /// [`LIMIT_EXCEEDED`](crate::error::LIMIT_EXCEEDED) rate limit, say).
-/// Batch (array) bodies, bodies without an error and bodies over 16 KiB
-/// yield `None`.
+/// Batch (array) bodies, bodies without an error and bodies over
+/// [`MAX_INSPECTED_BODY`] yield `None`.
 pub fn rpc_error_code(body: &[u8]) -> Option<i64> {
     if body.len() > MAX_INSPECTED_BODY {
         return None;
@@ -195,7 +186,7 @@ mod tests {
         assert!(all.retries(&RpcError::Timeout));
         assert!(all.retries(&RpcError::RateLimited { retry_after: None }));
         assert!(!all.retries(&RpcError::Http(404)));
-        assert!(!RetryPolicy::none().retries(&RpcError::Timeout));
+        assert!(!quick(1).retries(&RpcError::Timeout));
     }
 
     #[tokio::test]

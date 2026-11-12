@@ -130,32 +130,37 @@ pub fn read_cache(cache_dir: &Path) -> Option<Vec<ChainlistEntry>> {
 /// dropped; well-formed `http(s)` and `ws(s)` URLs with a host are kept, in
 /// registry order, without duplicates.
 pub fn public_rpcs(entry: &ChainlistEntry) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
+    public(entry).into_iter().map(|(url, _)| url).collect()
+}
+
+/// The `http(s)` URLs of [`public_rpcs`]: the ones chainz can probe.
+pub fn public_http_rpcs(entry: &ChainlistEntry) -> Vec<String> {
+    public(entry)
+        .into_iter()
+        .filter_map(|(url, http)| http.then_some(url))
+        .collect()
+}
+
+/// [`public_rpcs`], each with whether it is HTTP (not websocket).
+fn public(entry: &ChainlistEntry) -> Vec<(String, bool)> {
+    let mut out: Vec<(String, bool)> = Vec::new();
     for url in &entry.rpc {
         let url = url.trim();
         if url.contains("${") || url.contains(char::is_whitespace) {
             continue;
         }
-        let ok = url::Url::parse(url).is_ok_and(|parsed| {
-            Target::SCHEMES.contains(&parsed.scheme()) && parsed.host().is_some()
-        });
-        if ok && !out.iter().any(|u| u == url) {
-            out.push(url.to_string());
+        let Ok(parsed) = url::Url::parse(url) else {
+            continue;
+        };
+        if Target::supports_scheme(parsed.scheme())
+            && parsed.host().is_some()
+            && !out.iter().any(|(u, _)| u == url)
+        {
+            let http = Target::HTTP_SCHEMES.contains(&parsed.scheme());
+            out.push((url.to_string(), http));
         }
     }
     out
-}
-
-/// The `http(s)` URLs of [`public_rpcs`]: the ones chainz can probe.
-pub fn public_http_rpcs(entry: &ChainlistEntry) -> Vec<String> {
-    public_rpcs(entry)
-        .into_iter()
-        .filter(|u| {
-            u.split_once("://").is_some_and(|(scheme, _)| {
-                scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")
-            })
-        })
-        .collect()
 }
 
 async fn fetch_all_from(

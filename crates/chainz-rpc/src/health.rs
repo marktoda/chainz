@@ -40,7 +40,7 @@ pub(crate) const P50_WINDOW: usize = 16;
 /// behind their endpoint is now. Two of the dashboard's 15 s probe rounds.
 pub const ROUND_WINDOW_MS: u64 = 30_000;
 
-/// Median latency over the last 16 successful samples of a
+/// Median latency over a short window of the most recent successful samples of a
 /// history (oldest first, as [`HealthStore::samples`] gives them); the
 /// lower median for even counts. `None` when none succeeded.
 pub fn p50<'a, I>(samples: I) -> Option<Duration>

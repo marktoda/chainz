@@ -18,12 +18,20 @@ pub struct Target {
 }
 
 impl Target {
-    /// The URL schemes an endpoint may use.
-    pub(crate) const SCHEMES: [&str; 4] = ["http", "https", "ws", "wss"];
+    /// The HTTP URL schemes (the ones chainz can send requests to).
+    pub(crate) const HTTP_SCHEMES: [&str; 2] = ["http", "https"];
+    /// The websocket URL schemes (accepted, never requested).
+    const WS_SCHEMES: [&str; 2] = ["ws", "wss"];
+
+    /// Whether an endpoint may use `scheme` (lowercase, as
+    /// [`url::Url::scheme`] gives it).
+    pub(crate) fn supports_scheme(scheme: &str) -> bool {
+        Self::HTTP_SCHEMES.contains(&scheme) || Self::WS_SCHEMES.contains(&scheme)
+    }
 
     /// Build a target from a URL string and `(name, value)` header pairs.
     ///
-    /// The URL must use `http`, `https`, `ws` or `wss`. Errors never echo the
+    /// The URL must use a supported scheme (HTTP or websocket). Errors never echo the
     /// URL or a header value; an invalid header *value* names its header.
     pub fn new(
         chain_id: u64,
@@ -33,7 +41,7 @@ impl Target {
     ) -> Result<Self, RpcError> {
         let url = url::Url::parse(url.trim())
             .map_err(|_| RpcError::InvalidEndpoint("invalid URL".into()))?;
-        if !Self::SCHEMES.contains(&url.scheme()) {
+        if !Self::supports_scheme(url.scheme()) {
             return Err(RpcError::InvalidEndpoint(
                 "unsupported URL scheme (expected http, https, ws or wss)".into(),
             ));
@@ -81,7 +89,7 @@ impl Target {
 
     /// Whether the URL scheme is `ws://` or `wss://`.
     pub fn is_websocket(&self) -> bool {
-        matches!(self.url.scheme(), "ws" | "wss")
+        Self::WS_SCHEMES.contains(&self.url.scheme())
     }
 
     /// `Err(Unsupported)` for websocket targets, which HTTP operations can't use.
