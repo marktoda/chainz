@@ -25,7 +25,7 @@ serde_json.workspace = true
 indexmap.workspace = true
 tokio.workspace = true
 clap = { version = "4", features = ["derive"] }
-clap_complete = "4"
+clap_complete = { version = "4.6", features = ["unstable-dynamic"] }
 console = "0.16"
 dialoguer = { version = "0.12", features = ["fuzzy-select"] }
 zeroize = "1"

@@ -26,6 +26,24 @@ cargo install chainz --locked
 
 Forks need [Foundry](https://getfoundry.sh)'s `anvil` on `PATH`.
 
+### Completions
+
+Completions are dynamic: the shell asks chainz as you type, so chain names
+and aliases, live forks, endpoints (of the chain on the line), signers,
+labels, variables and `exec`'s `@tokens` (`@usdc`, `@usdc:arb`) come from
+your current config. Load the loader at shell startup:
+
+```bash
+source <(chainz completions zsh)     # ~/.zshrc, after compinit
+source <(chainz completions bash)    # ~/.bashrc
+chainz completions fish | source     # ~/.config/fish/config.fish
+```
+
+Elvish (`eval (chainz completions elvish | slurp)`) and PowerShell
+(`chainz completions powershell | Out-String | Invoke-Expression`) work too.
+Generate the loader at startup rather than saving it, so it follows upgrades.
+Completing never migrates, writes or unlocks anything.
+
 ## The five nouns
 
 | Noun | What it is | Commands |

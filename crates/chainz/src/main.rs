@@ -6,6 +6,7 @@
 
 mod cli;
 mod commands;
+mod complete;
 mod net;
 mod prompt;
 mod sys;
@@ -15,6 +16,11 @@ mod view;
 use clap::Parser;
 
 fn main() {
+    // Shell completion requests (`COMPLETE=zsh chainz -- …`): one env
+    // lookup on every other run.
+    if complete::requested() {
+        complete::run();
+    }
     let opt = cli::Opt::parse();
     let code = match commands::dispatch(opt) {
         Ok(code) => code,
