@@ -217,7 +217,7 @@ fn ranked_lines(
     ranking: &Ranking,
     store: &HealthStore,
 ) -> Vec<String> {
-    ranking
+    let rows: Vec<[String; 5]> = ranking
         .order
         .iter()
         .map(|&i| {
@@ -225,29 +225,36 @@ fn ranked_lines(
             let marker = view::marker(
                 chain.rpc == p.endpoint,
                 chain.failover.contains(&p.endpoint),
-            );
+            )
+            .to_string();
             match ranking.health[i] {
-                Health::Failing(class) => format!(
-                    "  {marker} {:<18} {:>8}  {}",
-                    p.endpoint,
-                    "–",
-                    ui::fail(class.phrase())
-                ),
+                Health::Failing(class) => [
+                    marker,
+                    p.endpoint.clone(),
+                    "–".to_string(),
+                    ui::fail(class.phrase()),
+                    String::new(),
+                ],
                 ref health => {
                     let tags = store
                         .capabilities(p.chain_id, &p.endpoint)
                         .map(|c| c.tags().join(" "))
                         .unwrap_or_default();
-                    format!(
-                        "  {marker} {:<18} {:>6}ms  {:<10} {}",
-                        p.endpoint,
-                        p.result.latency.as_millis(),
+                    [
+                        marker,
+                        p.endpoint.clone(),
+                        format!("{}ms", p.result.latency.as_millis()),
                         health_label(health),
-                        ui::dim(&tags)
-                    )
+                        ui::dim(&tags),
+                    ]
                 }
             }
         })
+        .collect();
+    // No header row: the chain's section title heads the list.
+    view::table_lines(&["", "", "", "", ""], &rows)[1..]
+        .iter()
+        .map(|line| format!("  {line}"))
         .collect()
 }
 

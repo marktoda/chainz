@@ -248,13 +248,22 @@ pub fn show(view: &ChainView, extra: &[(String, String)]) -> String {
         let _ = writeln!(out, "  {k:<9} {v}");
     }
     let _ = writeln!(out, "  {}", style("endpoints").bold());
-    for e in &view.endpoints {
-        let marker = match (e.active, e.failover) {
-            (true, _) => style(e.marker()).green().to_string(),
-            (false, true) => style(e.marker()).yellow().to_string(),
-            _ => e.marker().to_string(),
-        };
-        let _ = writeln!(out, "  {marker} {:<16} {}", e.name, e.url);
+    let rows: Vec<[String; 3]> = view
+        .endpoints
+        .iter()
+        .map(|e| {
+            let marker = match (e.active, e.failover) {
+                (true, _) => style(e.marker()).green().to_string(),
+                (false, true) => style(e.marker()).yellow().to_string(),
+                _ => e.marker().to_string(),
+            };
+            [marker, e.name.clone(), e.url.clone()]
+        })
+        .collect();
+    // No header row: the `endpoints` title names the list.
+    let lines = table_lines(&["", "", ""], &rows);
+    for (e, line) in view.endpoints.iter().zip(&lines[1..]) {
+        let _ = writeln!(out, "  {line}");
         for (k, v) in &e.headers {
             let _ = writeln!(out, "      {}", ui::dim(&format!("{k}: {v}")));
         }
