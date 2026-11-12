@@ -1,5 +1,7 @@
 //! The gateway's traffic, in the dashboard's own shape.
 
+use chainz_rpc::control::MetricsTotals;
+
 /// Request records kept for the Traffic feed.
 pub const FEED_CAP: usize = 500;
 
@@ -38,16 +40,9 @@ pub struct TrafficRow {
 pub struct TrafficWindow {
     /// Window length.
     pub window_secs: u64,
-    /// Requests in the window.
-    pub requests: u64,
-    /// Errors in the window.
-    pub errors: u64,
-    /// 429s in the window.
-    pub rate_limited: u64,
-    /// Failovers in the window.
-    pub failovers: u64,
-    /// Response bytes in the window.
-    pub bytes: u64,
+    /// The gateway's totals for the window; `None` from a 2.0 gateway,
+    /// which sent none (shown as `-`, as `serve status` does).
+    pub totals: Option<MetricsTotals>,
     /// Per method, busiest first.
     pub methods: Vec<TrafficRow>,
     /// Per `chain/endpoint`, busiest first.

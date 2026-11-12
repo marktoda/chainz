@@ -8,8 +8,8 @@ use std::io;
 use std::path::PathBuf;
 
 use chainz_rpc::control::{
-    Backlog, ControlClient, EventsOptions, MetricsRow, MetricsSnapshot, MetricsTotals,
-    MetricsWindow, RecordStatus, RequestRecord, Status,
+    Backlog, ControlClient, EventsOptions, MetricsRow, MetricsSnapshot, MetricsWindow,
+    RecordStatus, RequestRecord, Status,
 };
 use tokio::sync::mpsc;
 
@@ -135,25 +135,11 @@ impl Merge {
 }
 
 fn window(w: MetricsWindow) -> TrafficWindow {
-    // A 2.0 gateway sends no totals: add the rows up.
-    let totals = w.totals.unwrap_or_else(|| {
-        let mut sum = MetricsTotals::default();
-        for row in &w.rows {
-            sum.requests += row.requests;
-            sum.errors += row.errors.values().sum::<u64>();
-            sum.rate_limited += row.rate_limited;
-            sum.failovers += row.failovers;
-            sum.bytes += row.bytes;
-        }
-        sum
-    });
+    // A 2.0 gateway sends no totals: they stay unknown. The rows can't
+    // stand in for them (they miss requests the rate limiter turned away).
     let mut out = TrafficWindow {
         window_secs: w.window_secs,
-        requests: totals.requests,
-        errors: totals.errors,
-        rate_limited: totals.rate_limited,
-        failovers: totals.failovers,
-        bytes: totals.bytes,
+        totals: w.totals,
         ..TrafficWindow::default()
     };
     let mut methods: BTreeMap<String, Merge> = BTreeMap::new();
@@ -186,7 +172,7 @@ pub(crate) mod testing {
 
     use super::*;
     use chainz_rpc::ErrorClass;
-    use chainz_rpc::control::ChainStatus;
+    use chainz_rpc::control::{ChainStatus, MetricsTotals};
     pub(crate) use chainz_serve::testing::ControlServer;
 
     pub(crate) fn status() -> Status {
@@ -241,15 +227,13 @@ pub(crate) mod testing {
         MetricsSnapshot {
             at_ms: 1_700_000_000_000,
             windows: vec![
-                MetricsWindow {
-                    window_secs: 900,
-                    rows: vec![row("eth", "infura", "eth_call", 9_000, 50, &[], 0)],
-                    totals: None,
-                    chains: BTreeMap::new(),
-                },
-                MetricsWindow {
-                    window_secs: 60,
-                    rows: vec![
+                metrics_window(
+                    900,
+                    vec![row("eth", "infura", "eth_call", 9_000, 50, &[], 0)],
+                ),
+                metrics_window(
+                    60,
+                    vec![
                         row("eth", "infura", "eth_call", 400, 40, &[], 0),
                         row("base", "infura", "eth_call", 200, 70, &[], 12),
                         row(
@@ -263,10 +247,27 @@ pub(crate) mod testing {
                         ),
                         row("eth", "infura", "eth_blockNumber", 22, 31, &[], 0),
                     ],
-                    totals: None,
-                    chains: BTreeMap::new(),
-                },
+                ),
             ],
+        }
+    }
+
+    /// A window with the totals a current gateway sends: here, its rows
+    /// added up (percentiles aside).
+    pub(crate) fn metrics_window(window_secs: u64, rows: Vec<MetricsRow>) -> MetricsWindow {
+        let mut totals = MetricsTotals::default();
+        for row in &rows {
+            totals.requests += row.requests;
+            totals.errors += row.errors.values().sum::<u64>();
+            totals.rate_limited += row.rate_limited;
+            totals.failovers += row.failovers;
+            totals.bytes += row.bytes;
+        }
+        MetricsWindow {
+            window_secs,
+            rows,
+            totals: Some(totals),
+            chains: BTreeMap::new(),
         }
     }
 
@@ -322,6 +323,7 @@ pub(crate) mod testing {
 mod tests {
     use super::testing::*;
     use super::*;
+    use chainz_rpc::control::MetricsTotals;
     use std::time::Duration;
 
     #[test]
@@ -332,7 +334,11 @@ mod tests {
         // Shortest window first, whatever order the gateway sent.
         let w = &t.windows[0];
         assert_eq!(w.window_secs, 60);
-        assert_eq!((w.requests, w.errors, w.rate_limited), (742, 3, 12));
+        let totals = w.totals.unwrap();
+        assert_eq!(
+            (totals.requests, totals.errors, totals.rate_limited),
+            (742, 3, 12)
+        );
         let call = &w.methods[0];
         assert_eq!((call.name.as_str(), call.requests), ("eth_call", 600));
         // (400 × 40 + 200 × 70) / 600
@@ -347,11 +353,9 @@ mod tests {
     #[test]
     fn window_totals_are_the_gateways_when_it_sends_them() {
         let mut minute = metrics().windows.remove(1);
-        // A 2.0 gateway: the rows added up.
-        assert_eq!(window(minute.clone()).requests, 742);
-        // A newer one counts what the rows cannot show (requests its rate
-        // limiter turned away, say): its totals win.
-        minute.totals = Some(MetricsTotals {
+        // The gateway counts what the rows cannot show (requests its rate
+        // limiter turned away, say): its totals are used as they are.
+        let totals = MetricsTotals {
             requests: 750,
             errors: 4,
             rate_limited: 13,
@@ -359,14 +363,15 @@ mod tests {
             p50_ms: 45,
             p95_ms: 200,
             bytes: 1_000,
-        });
-        let w = window(minute);
-        assert_eq!(
-            (w.requests, w.errors, w.rate_limited, w.failovers, w.bytes),
-            (750, 4, 13, 2, 1_000)
-        );
+        };
+        minute.totals = Some(totals);
+        let w = window(minute.clone());
+        assert_eq!(w.totals, Some(totals));
         // The per-method rows still come from the rows.
         assert_eq!(w.methods[0].requests, 600);
+        // A 2.0 gateway sent none: unknown, not the rows added up.
+        minute.totals = None;
+        assert_eq!(window(minute).totals, None);
     }
 
     #[tokio::test]

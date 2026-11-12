@@ -825,11 +825,18 @@ async fn traffic_follows_the_gateway_control_socket() {
 
     // Metrics are polled: a change shows up, and `r` asks at once.
     let mut busier = gw::metrics();
-    busier.windows[1].rows[0].requests = 4_000;
+    let minute = busier.windows.remove(1);
+    let mut rows = minute.rows;
+    rows[0].requests = 4_000;
+    busier
+        .windows
+        .push(gw::metrics_window(minute.window_secs, rows));
     server.set_metrics(busier);
     engine.refresh(Refresh::Traffic);
     wait_for(&updates, |u| match u {
-        Update::Traffic(Ok(s)) => (s.windows[0].requests == 4_342).then_some(()),
+        Update::Traffic(Ok(s)) => {
+            (s.windows[0].totals.map(|t| t.requests) == Some(4_342)).then_some(())
+        }
         _ => None,
     })
     .await;

@@ -304,16 +304,17 @@ pub struct GatewayChain {
 pub struct TrafficWindow {
     /// Window length.
     pub window_secs: u64,
-    /// Requests in the window.
-    pub requests: u64,
+    /// Requests in the window (this and the totals below are `null` from a
+    /// 2.0 gateway, which sent none).
+    pub requests: Option<u64>,
     /// Errors in the window.
-    pub errors: u64,
+    pub errors: Option<u64>,
     /// 429s in the window.
-    pub rate_limited: u64,
+    pub rate_limited: Option<u64>,
     /// Failovers in the window.
-    pub failovers: u64,
+    pub failovers: Option<u64>,
     /// Response bytes in the window.
-    pub bytes: u64,
+    pub bytes: Option<u64>,
     /// Per method, busiest first.
     pub methods: Vec<TrafficRow>,
     /// Per `chain/endpoint`, busiest first.
@@ -371,11 +372,11 @@ fn traffic(t: &model::TrafficSnapshot) -> Traffic {
             .iter()
             .map(|w| TrafficWindow {
                 window_secs: w.window_secs,
-                requests: w.requests,
-                errors: w.errors,
-                rate_limited: w.rate_limited,
-                failovers: w.failovers,
-                bytes: w.bytes,
+                requests: w.totals.map(|t| t.requests),
+                errors: w.totals.map(|t| t.errors),
+                rate_limited: w.totals.map(|t| t.rate_limited),
+                failovers: w.totals.map(|t| t.failovers),
+                bytes: w.totals.map(|t| t.bytes),
                 methods: rows(&w.methods),
                 endpoints: rows(&w.endpoints),
             })
