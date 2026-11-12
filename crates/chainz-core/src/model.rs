@@ -236,7 +236,7 @@ impl fmt::Debug for Explorer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Explorer")
             .field("api", &redact(&self.api))
-            .field("key", &self.key.as_ref().map(|_| "[REDACTED]"))
+            .field("key", &self.key.as_ref().map(|_| crate::redact::REDACTED))
             .field("url", &self.url)
             .finish()
     }

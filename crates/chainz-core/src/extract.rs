@@ -11,6 +11,10 @@
 //!   break), see [`header_needs_extraction`];
 //! - a literal explorer key.
 //!
+//! What cannot move automatically, [`manual_credential`] finds: user info,
+//! a key-like query value, or a long mixed alphanumeric path segment. The
+//! same shapes are what [`crate::redact`] masks.
+//!
 //! Variable names: `INFURA_KEY` and `ALCHEMY_KEY` for URL keys,
 //! `<ENDPOINT>_<HEADER>` for headers, `ETHERSCAN_API_KEY` for an
 //! Etherscan explorer's key and `<EXPLORER>_API_KEY` for any other; `_2`,
@@ -162,6 +166,51 @@ pub fn extract_known_key(url: &str) -> Option<(&str, &str, &'static str, &str)> 
         return None;
     }
     Some((&url[..start], &rest[end..], base, key))
+}
+
+/// Query parameter names that carry a credential.
+const CREDENTIAL_PARAMS: [&str; 6] = ["key", "token", "secret", "auth", "password", "apikey"];
+
+/// Whether query parameter `name` names a credential (`apikey`, `token`…).
+pub(crate) fn is_credential_param(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    CREDENTIAL_PARAMS.iter().any(|k| name.contains(k))
+}
+
+/// Whether `text` looks like a credential: 16 or more `[A-Za-z0-9_-]`
+/// characters mixing letters and digits, with no template.
+pub(crate) fn is_credential_shaped(text: &str) -> bool {
+    text.len() >= 16
+        && !template::has_templates(text)
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        && text.bytes().any(|b| b.is_ascii_digit())
+        && text.bytes().any(|b| b.is_ascii_alphabetic())
+}
+
+/// A literal credential in `url` that extraction cannot move (only a
+/// person can): user info, a key-like query value, or a long mixed
+/// alphanumeric path segment. A known Infura/Alchemy key is not one
+/// ([`extract_endpoint`] moves it). The kind found, if any.
+pub fn manual_credential(url: &str) -> Option<&'static str> {
+    if extract_known_key(url).is_some() {
+        return None;
+    }
+    let parsed = url::Url::parse(url).ok()?;
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Some("user info");
+    }
+    for (name, value) in parsed.query_pairs() {
+        if !template::has_templates(&value) && !value.is_empty() && is_credential_param(&name) {
+            return Some("query parameter");
+        }
+    }
+    let decoded = crate::urls::unescape_braces(parsed.path());
+    if decoded.split('/').any(is_credential_shaped) {
+        return Some("path segment");
+    }
+    None
 }
 
 /// Whether a header value should move into a variable: it is literal and
@@ -479,5 +528,29 @@ plain = "https://mainnet.base.org"
         assert!(header_needs_extraction("a,b"));
         assert!(!header_needs_extraction("json"));
         assert!(!header_needs_extraction("Bearer ${TOKEN_THAT_IS_LONG}"));
+    }
+
+    #[test]
+    fn manual_credential_heuristic() {
+        assert_eq!(
+            manual_credential("https://u:p@x.example/"),
+            Some("user info")
+        );
+        assert_eq!(
+            manual_credential("https://x.example/?apikey=abc"),
+            Some("query parameter")
+        );
+        assert_eq!(manual_credential("https://x.example/?apikey=${K}"), None);
+        assert_eq!(
+            manual_credential("https://x.example/abc123def456ghi789/"),
+            Some("path segment")
+        );
+        assert_eq!(manual_credential("https://x.example/rpc/1"), None);
+        assert_eq!(manual_credential("https://x.example/v3/${KEY}"), None);
+        // A known provider key is extracted, not left to a person.
+        assert_eq!(
+            manual_credential("https://mainnet.infura.io/v3/0123456789abcdef0123"),
+            None
+        );
     }
 }

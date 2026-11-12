@@ -292,7 +292,7 @@ fn choose_active<'a>(probed: &'a [(String, ProbeResult)], chain: &str) -> Result
 }
 
 fn view_url(url: &str) -> String {
-    chainz_core::redact::redact(url)
+    chainz_core::redact::url(url, false)
 }
 
 fn edit_chain(query: &str) -> Result<i32> {

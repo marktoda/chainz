@@ -115,7 +115,7 @@ impl fmt::Debug for ExplorerContext {
         f.debug_struct("ExplorerContext")
             .field("name", &self.name)
             .field("api", &redact(&self.api))
-            .field("key", &self.key.as_ref().map(|_| "[REDACTED]"))
+            .field("key", &self.key.as_ref().map(|_| crate::redact::REDACTED))
             .field("key_error", &self.key_error)
             .field("etherscan", &self.etherscan)
             .finish()
@@ -192,12 +192,12 @@ impl EnvVar {
                 .value
                 .split(',')
                 .map(|pair| match pair.split_once(':') {
-                    Some((name, _)) => format!("{name}: [REDACTED]"),
-                    None => "[REDACTED]".to_string(),
+                    Some((name, _)) => format!("{name}: {}", crate::redact::REDACTED),
+                    None => crate::redact::REDACTED.to_string(),
                 })
                 .collect::<Vec<_>>()
                 .join(","),
-            Shown::Secret => "[REDACTED]".to_string(),
+            Shown::Secret => crate::redact::REDACTED.to_string(),
         }
     }
 }
@@ -869,7 +869,7 @@ impl<'a> Expander<'a> {
                 };
                 Value {
                     value: key,
-                    display: "[REDACTED]".to_string(),
+                    display: crate::redact::REDACTED.to_string(),
                 }
             }
             other => {

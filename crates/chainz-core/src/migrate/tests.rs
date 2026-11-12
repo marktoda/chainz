@@ -573,25 +573,6 @@ fn v1_encrypted_keys_still_decrypt_after_migration() {
 }
 
 #[test]
-fn credential_heuristic() {
-    assert_eq!(
-        inline_credential("https://u:p@x.example/"),
-        Some("user info")
-    );
-    assert_eq!(
-        inline_credential("https://x.example/?apikey=abc"),
-        Some("query parameter")
-    );
-    assert_eq!(inline_credential("https://x.example/?apikey=${K}"), None);
-    assert_eq!(
-        inline_credential("https://x.example/abc123def456ghi789/"),
-        Some("path segment")
-    );
-    assert_eq!(inline_credential("https://x.example/rpc/1"), None);
-    assert_eq!(inline_credential("https://x.example/v3/${KEY}"), None);
-}
-
-#[test]
 #[ignore = "prints the migrated fixture for inspection"]
 fn print_fixture_migration() {
     let plan = plan(FIXTURE).unwrap();

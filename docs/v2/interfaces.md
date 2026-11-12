@@ -346,6 +346,14 @@ and the gateway all use it.
   for template resolution and the context; `resolve::select` takes it.
 - Variables: `${NAME}` resolves to the built-ins (`CHAIN_ID`, `CHAIN`), then
   the environment, then `secrets.toml [vars]`.
+- Display policy: `redact::url(value, reveal)` and `redact::header(value,
+  reveal)` print templates, hosts and ordinary paths verbatim and mask only
+  credential-shaped parts (user info, key-like query values, long mixed
+  alphanumeric segments, known Infura/Alchemy keys, the fragment) as
+  `redact::REDACTED`; an unparseable URL fails closed. `extract` owns the
+  credential shapes; `extract::manual_credential(url)` is the detector for
+  what only a person can move (migration notes and `doctor`). `redact` and
+  `summarize` stay as the stricter `Debug` and compact views.
 - Shared helpers, so crates don't keep private copies:
   `chainz_core::fmt::{group, uptime, short_address}` (thousands separators,
   `42s`/`12m05s`/`2h03m`/`3d04h`, `0x1234…abcd`);

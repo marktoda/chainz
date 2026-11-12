@@ -223,40 +223,6 @@ impl fmt::Debug for Plan {
     }
 }
 
-/// Heuristic: does `url` still embed a literal credential (userinfo, a
-/// key-like query value, or a long mixed alphanumeric path segment)?
-pub fn inline_credential(url: &str) -> Option<&'static str> {
-    let parsed = url::Url::parse(url).ok()?;
-    if !parsed.username().is_empty() || parsed.password().is_some() {
-        return Some("user info");
-    }
-    for (name, value) in parsed.query_pairs() {
-        let name = name.to_ascii_lowercase();
-        if !template::has_templates(&value)
-            && !value.is_empty()
-            && ["key", "token", "secret", "auth", "password", "apikey"]
-                .iter()
-                .any(|k| name.contains(k))
-        {
-            return Some("query parameter");
-        }
-    }
-    let decoded = crate::urls::unescape_braces(parsed.path());
-    for segment in decoded.split('/') {
-        if segment.len() >= 16
-            && !template::has_templates(segment)
-            && segment
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-            && segment.bytes().any(|b| b.is_ascii_digit())
-            && segment.bytes().any(|b| b.is_ascii_alphabetic())
-        {
-            return Some("path segment");
-        }
-    }
-    None
-}
-
 fn normalize_explorer_api(url: &str, chain_id: u64) -> String {
     let needle = format!("chainid={chain_id}");
     match url.find(&needle) {
@@ -800,7 +766,7 @@ fn migrate_endpoints(
                 "{at} contains a comma or line break, so `exec --direct` cannot export it via ETH_RPC_HEADERS (the gateway still sends it)"
             ));
         }
-        if let Some(kind) = inline_credential(&endpoint.url) {
+        if let Some(kind) = extract::manual_credential(&endpoint.url) {
             summary.attention.push(format!(
                 "chain '{name}' endpoint '{ep_name}' embeds a credential ({kind}); move it into a variable"
             ));

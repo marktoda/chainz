@@ -1,10 +1,136 @@
-//! Credential-safe endpoint presentation (ported from v1).
+//! Credential-safe presentation of endpoint URLs and header values.
 //!
-//! This is the single policy boundary for displaying endpoint URLs. Callers
-//! choose between a detailed redaction and a compact summary; neither view
-//! exposes credentials embedded in user info, paths, queries, or fragments.
+//! The display policy is [`url`] and [`header`]: `${VAR}` templates, hosts
+//! and ordinary paths print verbatim, only credential-shaped parts (the
+//! shapes [`crate::extract`] detects) are masked as [`REDACTED`], and
+//! anything unparseable fails closed. `reveal` prints the value as stored.
+//!
+//! [`redact`] (every literal part masked) and [`summarize`] (a terse
+//! host label) are the stricter views kept for `Debug` output and compact
+//! listings.
 
+use crate::template;
 use crate::urls::{self, is_local_host as is_local, registrable_domain as public_domain};
+
+/// What replaces a masked value.
+pub const REDACTED: &str = "[REDACTED]";
+
+/// `value` (an endpoint or explorer URL) for display: verbatim with
+/// `reveal`, else with user info, credential-shaped host labels, path
+/// segments and query values, known provider keys and the fragment
+/// masked. Templates, hosts and ordinary paths stay readable. A value that
+/// does not parse as a URL is masked whole.
+pub fn url(value: &str, reveal: bool) -> String {
+    if reveal {
+        return value.to_string();
+    }
+    let Ok(parsed) = url::Url::parse(value) else {
+        return "[REDACTED URL]".to_string();
+    };
+    let mut out = format!("{}://", parsed.scheme());
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        out.push_str(REDACTED);
+        out.push('@');
+    }
+    if let Some(host) = parsed.host_str() {
+        let host = urls::unescape_braces(host);
+        let labels: Vec<&str> = host
+            .split('.')
+            .map(|l| if is_secret_text(l) { REDACTED } else { l })
+            .collect();
+        out.push_str(&labels.join("."));
+    }
+    if let Some(port) = parsed.port() {
+        out.push_str(&format!(":{port}"));
+    }
+    let known_key = crate::extract::extract_known_key(value).map(|(_, _, _, key)| key);
+    let path = urls::unescape_braces(parsed.path());
+    let segments: Vec<&str> = path
+        .split('/')
+        .map(|seg| {
+            if is_secret_text(seg) || known_key == Some(seg) {
+                REDACTED
+            } else {
+                seg
+            }
+        })
+        .collect();
+    out.push_str(&segments.join("/"));
+    if let Some(query) = parsed.query() {
+        let query = urls::unescape_braces(query);
+        let pairs: Vec<String> = query
+            .split('&')
+            .map(|pair| match pair.split_once('=') {
+                Some((name, value))
+                    if !template::has_templates(value)
+                        && !value.is_empty()
+                        && (crate::extract::is_credential_param(name) || is_secret_text(value)) =>
+                {
+                    format!("{name}={REDACTED}")
+                }
+                Some(_) => pair.to_string(),
+                None if is_secret_text(pair) => REDACTED.to_string(),
+                None => pair.to_string(),
+            })
+            .collect();
+        out.push('?');
+        out.push_str(&pairs.join("&"));
+    }
+    if parsed.fragment().is_some_and(|f| !f.is_empty()) {
+        out.push('#');
+        out.push_str(REDACTED);
+    }
+    out
+}
+
+/// A header value for display: verbatim with `reveal`, else templates and
+/// plain words (`Bearer`, `application/json`) kept and every other literal
+/// word masked.
+pub fn header(value: &str, reveal: bool) -> String {
+    if reveal {
+        return value.to_string();
+    }
+    let mut out = String::with_capacity(value.len());
+    for span in template::spans(value) {
+        match span {
+            template::Span::Var(name) => {
+                out.push_str("${");
+                out.push_str(name);
+                out.push('}');
+            }
+            template::Span::Text(text) => {
+                let mut word = String::new();
+                for c in text.chars().chain(std::iter::once(' ')) {
+                    if c.is_whitespace() || c == ',' {
+                        out.push_str(if is_plain_word(&word) {
+                            &word
+                        } else {
+                            REDACTED
+                        });
+                        word.clear();
+                        out.push(c);
+                    } else {
+                        word.push(c);
+                    }
+                }
+                out.pop();
+            }
+            template::Span::Unterminated(_) => out.push_str(REDACTED),
+        }
+    }
+    out
+}
+
+/// A word a header shows: empty, or short and digit-free (`Bearer`,
+/// `application/json`). Anything else may be a key.
+fn is_plain_word(word: &str) -> bool {
+    word.is_empty() || (word.len() < 20 && !word.bytes().any(|b| b.is_ascii_digit()))
+}
+
+/// Literal text that is credential-shaped (templates never are).
+fn is_secret_text(text: &str) -> bool {
+    crate::extract::is_credential_shaped(text)
+}
 
 /// Preserve useful public URL structure while removing credential-bearing
 /// values. Malformed input fails closed.
@@ -95,9 +221,9 @@ pub fn summarize(value: &str) -> String {
 }
 
 fn variable_templates(input: &str) -> Vec<String> {
-    crate::template::spans(input)
+    template::spans(input)
         .filter_map(|span| match span {
-            crate::template::Span::Var(name) => Some(format!("${{{name}}}")),
+            template::Span::Var(name) => Some(format!("${{{name}}}")),
             _ => None,
         })
         .collect()
@@ -152,5 +278,47 @@ mod tests {
             "http://localhost:8545/…"
         );
         assert_eq!(summarize("http://[::1]:8545"), "http://[::1]:8545");
+    }
+
+    #[test]
+    fn display_policy_masks_only_credential_shapes() {
+        let shown = url(
+            "https://mainnet.infura.io/v3/0123456789abcdef0123456789abcdef",
+            false,
+        );
+        assert_eq!(shown, "https://mainnet.infura.io/v3/[REDACTED]");
+        assert_eq!(
+            url("https://mainnet.infura.io/v3/${INFURA_KEY}", false),
+            "https://mainnet.infura.io/v3/${INFURA_KEY}"
+        );
+        assert_eq!(
+            url("https://eth.llamarpc.com", false),
+            "https://eth.llamarpc.com/"
+        );
+        assert_eq!(
+            url("https://u:p@rpc.example/api?apikey=abc&chain=1#frag", false),
+            "https://[REDACTED]@rpc.example/api?apikey=[REDACTED]&chain=1#[REDACTED]"
+        );
+        assert_eq!(
+            url("https://x.example/?chainid=${CHAIN_ID}&key=${K}", false),
+            "https://x.example/?chainid=${CHAIN_ID}&key=${K}"
+        );
+        assert_eq!(url("not a url secret", false), "[REDACTED URL]");
+        assert_eq!(url("not a url secret", true), "not a url secret");
+        // A known provider key is masked even when short.
+        assert_eq!(
+            url("https://eth-mainnet.g.alchemy.com/v2/abcdefgh", false),
+            "https://eth-mainnet.g.alchemy.com/v2/[REDACTED]"
+        );
+    }
+
+    #[test]
+    fn header_policy_keeps_words_and_templates() {
+        assert_eq!(header("Bearer ${TOKEN}", false), "Bearer ${TOKEN}");
+        assert_eq!(header("application/json", false), "application/json");
+        assert_eq!(header("Bearer abc123", false), "Bearer [REDACTED]");
+        assert_eq!(header("sk-live-verylongsecretvalue", false), "[REDACTED]");
+        assert_eq!(header("a, b1", false), "a, [REDACTED]");
+        assert_eq!(header("Bearer abc123", true), "Bearer abc123");
     }
 }

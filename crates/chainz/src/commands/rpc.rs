@@ -7,7 +7,7 @@ use crate::{net, ui};
 use anyhow::{Result, anyhow, bail};
 use chainz_core::extract::Moved;
 use chainz_core::model::Endpoint;
-use chainz_core::redact::redact;
+use chainz_core::redact::{self, redact};
 use chainz_core::tx::EndpointRole;
 use chainz_core::{Chainz, names};
 use chainz_rpc::chainlist;
@@ -506,9 +506,12 @@ fn discover(chain: &str, refresh: bool, yes: bool) -> Result<i32> {
     let items: Vec<String> = order
         .iter()
         .map(|&i| match &probed[i] {
-            (url, r) if r.is_ok() => format!("{url}  {}ms", r.latency.as_millis()),
+            (url, r) if r.is_ok() => {
+                format!("{}  {}ms", redact::url(url, false), r.latency.as_millis())
+            }
             (url, r) => format!(
-                "{url}  {}",
+                "{}  {}",
+                redact::url(url, false),
                 r.error
                     .as_ref()
                     .map(|e| e.class().to_string())

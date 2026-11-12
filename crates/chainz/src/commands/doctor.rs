@@ -8,7 +8,7 @@ use anyhow::Result;
 use chainz_core::extract::{self, Location};
 use chainz_core::labels::{Label, LabelIndex, LabelScope, LabelSource, builtin_tokens};
 use chainz_core::model::{Backend, Config};
-use chainz_core::{Chainz, migrate, paths, validate};
+use chainz_core::{Chainz, paths, validate};
 use chainz_rpc::{Health, classify, rank};
 
 #[derive(Default)]
@@ -165,9 +165,7 @@ fn credentials(chainz: &mut Chainz, fix: bool, report: &mut Report) -> Result<()
     // in the query or an unknown provider's path).
     for (chain, c) in &config.chains {
         for (ep, e) in &c.rpcs {
-            if let Some(kind) = migrate::inline_credential(&e.url)
-                && extract::extract_known_key(&e.url).is_none()
-            {
+            if let Some(kind) = extract::manual_credential(&e.url) {
                 found += 1;
                 report.problem(&format!(
                     "chains.{chain}.rpcs.{ep}: literal credential in the URL ({kind}); move it into a variable by hand"
