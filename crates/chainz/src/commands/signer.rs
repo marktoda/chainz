@@ -209,9 +209,9 @@ fn rm(backend: &dyn KeyBackend, args: &SignerRmArgs) -> Result<i32> {
         bail!("signer '{name}' not found");
     };
     let users = chainz.config().chains_using_signer(name);
-    if !users.is_empty() && !args.detach {
+    if !users.is_empty() && !args.unassign {
         bail!(
-            "signer '{name}' is used by {}; pass --detach to detach it",
+            "signer '{name}' is used by {}; pass --unassign to unassign it from them",
             users.join(", ")
         );
     }
@@ -225,8 +225,8 @@ fn rm(backend: &dyn KeyBackend, args: &SignerRmArgs) -> Result<i32> {
             Consent::Destructive { hint: &hint },
         )?;
     }
-    let users = if args.detach {
-        Users::Detach
+    let users = if args.unassign {
+        Users::Unassign
     } else {
         Users::Keep
     };
@@ -240,8 +240,8 @@ fn rm(backend: &dyn KeyBackend, args: &SignerRmArgs) -> Result<i32> {
             ))
         );
     }
-    let suffix = if removed.detached > 0 {
-        format!(" (detached from {} chain(s))", removed.detached)
+    let suffix = if removed.unassigned > 0 {
+        format!(" (unassigned from {} chain(s))", removed.unassigned)
     } else {
         String::new()
     };

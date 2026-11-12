@@ -116,7 +116,7 @@ chainz rpc rm CHAIN NAME
 chainz rpc bench [CHAIN] [--fix [--yes]]   # rank and tag endpoints; --fix activates the best and proposes a failover list
 chainz rpc discover CHAIN [--yes]    # pull public RPCs from chainlist, probe, offer to add
 chainz signer add NAME [--stdin] [--backend keyring|encrypted|1password|keystore|plaintext] [--no-attach]
-chainz signer ls | rm NAME [--detach] [--yes] | migrate [NAME|--all] [--to BACKEND]
+chainz signer ls | rm NAME [--unassign] [--yes] | migrate [NAME|--all] [--to BACKEND]
 chainz addr add NAME ADDRESS [--chain C | --all-chains]
 chainz addr ls [--chain C] [--builtin] | rm NAME [--chain C] | find 0x…
 chainz label [--chain C]             # stdin filter: 0x… → name(0x…)

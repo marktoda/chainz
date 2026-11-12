@@ -385,16 +385,16 @@ fn signer_add_rejects_invalid_key_and_duplicates() {
 }
 
 #[test]
-fn signer_rm_requires_detach_when_attached() {
+fn signer_rm_requires_unassign_when_attached() {
     let sb = Sandbox::new();
     sb.seed(&[("eth", 1)]);
     sb.cmd()
         .args(["signer", "rm", "default"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("--detach"));
+        .stderr(predicate::str::contains("--unassign"));
     sb.cmd()
-        .args(["signer", "rm", "default", "--detach", "--yes"])
+        .args(["signer", "rm", "default", "--unassign", "--yes"])
         .assert()
         .success();
     assert!(!sb.config().contains("[signers.default]"));
@@ -1354,7 +1354,7 @@ fn signer_migrate_off_a_tty_changes_nothing_and_reports_each_failure() {
 fn signer_rm_needs_yes_off_a_tty_but_references_do_not() {
     let sb = Sandbox::new();
     sb.seed(&[("eth", 1)]);
-    let out = sb.run(&["signer", "rm", "default", "--detach"]);
+    let out = sb.run(&["signer", "rm", "default", "--unassign"]);
     assert!(!out.status.success());
     assert!(
         stderr(&out).contains("pass --yes to confirm"),
@@ -1380,7 +1380,7 @@ fn signer_rm_needs_yes_off_a_tty_but_references_do_not() {
         .assert()
         .success();
     sb.ok(&["signer", "remove", "ks"]);
-    sb.ok(&["key", "rm", "default", "--detach", "-y"]);
+    sb.ok(&["key", "rm", "default", "--unassign", "-y"]);
     assert!(!sb.secrets().contains(TEST_KEY));
 }
 

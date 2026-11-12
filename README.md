@@ -269,7 +269,7 @@ Chainz needs a signer's address often and its key almost never. Only
 `chainz signer migrate` moves plaintext keys into safe storage
 (`--all` for every plaintext signer; a failure doesn't stop the rest).
 `chainz signer rm` deletes the key material too, so it asks first; off a
-terminal pass `--yes`; a signer chains still use needs `--detach`. Pass keys and variable values on stdin (`--stdin`):
+terminal pass `--yes`; a signer chains still use needs `--unassign`. Pass keys and variable values on stdin (`--stdin`):
 a secret given as an argument works but warns, since it lands in shell
 history and `ps`.
 

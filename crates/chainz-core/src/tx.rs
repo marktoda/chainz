@@ -69,7 +69,7 @@ pub enum Users {
     /// Leave them: validation then refuses the write if any chain uses it.
     Keep,
     /// Clear their `signer`.
-    Detach,
+    Unassign,
 }
 
 impl Tx {
@@ -375,7 +375,7 @@ impl Tx {
     }
 
     /// Remove `[signers.NAME]` and its key material in `secrets.toml`.
-    /// Returns how many chains were detached.
+    /// Returns how many chains it was unassigned from.
     pub fn remove_signer(&mut self, name: &str, users: Users) -> Result<usize> {
         let removed = self
             .config
@@ -386,8 +386,8 @@ impl Tx {
             bail!("signer '{name}' not found");
         }
         self.set_signer_secret(name, None)?;
-        let mut detached = 0;
-        if users == Users::Detach {
+        let mut unassigned = 0;
+        if users == Users::Unassign {
             let config = self.config()?;
             let chains: Vec<String> = config
                 .chains_using_signer(name)
@@ -399,10 +399,10 @@ impl Tx {
                     c.signer = None;
                     Ok(())
                 })?;
-                detached += 1;
+                unassigned += 1;
             }
         }
-        Ok(detached)
+        Ok(unassigned)
     }
 
     /// Write (or, with `None`, remove) `[signers.NAME]` key material in

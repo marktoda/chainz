@@ -653,9 +653,9 @@ pub struct SignerRmArgs {
     /// Signer name
     #[arg(add = ArgValueCompleter::new(complete::signers))]
     pub name: String,
-    /// Detach it from chains that use it
+    /// Unassign it from the chains that use it
     #[arg(long)]
-    pub detach: bool,
+    pub unassign: bool,
     /// Delete the key material without asking (required off a TTY)
     #[arg(long, short)]
     pub yes: bool,
