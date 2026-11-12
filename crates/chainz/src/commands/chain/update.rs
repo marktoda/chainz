@@ -54,7 +54,7 @@ pub fn update(args: &UpdateArgs) -> Result<i32> {
         return Ok(0);
     }
     if !args.no_check {
-        check_new_url(&chainz, &name, &edit)?;
+        check_new_urls(&chainz, &name, &edit)?;
     }
     let report = chainz.transact(|tx| tx.edit_chain(&name, &edit))?;
     print_report(&report);
@@ -88,6 +88,12 @@ fn build_edit(
     ChainEdit {
         signer: either(&args.signer, args.no_signer),
         rpc: args.rpc.clone(),
+        add_rpcs: args
+            .add_rpcs
+            .iter()
+            .map(|arg| ChainEdit::parse_add_rpc(arg))
+            .collect(),
+        remove_rpcs: args.rm_rpcs.clone(),
         headers,
         clear_headers: args.clear_headers,
         failover: match (args.failover.is_empty(), args.no_failover) {
@@ -103,16 +109,17 @@ fn build_edit(
     }
 }
 
-/// The endpoint a `--rpc` URL adds must answer with the chain's ID (with
-/// the headers the edit gives it).
-fn check_new_url(chainz: &chainz_core::Chainz, name: &str, edit: &ChainEdit) -> Result<()> {
+/// Every endpoint the edit adds (a `--rpc` URL, `--add-rpc`) must answer
+/// with the chain's ID (with the headers the edit gives it); websockets
+/// are not checked.
+fn check_new_urls(chainz: &chainz_core::Chainz, name: &str, edit: &ChainEdit) -> Result<()> {
     let chain = &chainz.config().chains[name];
-    match edit.rpc_choice(name, chain, &chainz.secrets()?.vars)? {
-        Some(RpcChoice::New(ep, endpoint)) if !endpoint.is_websocket() => {
-            check(chainz, name, chain.id, &ep, &endpoint)
+    for (ep, endpoint, _) in edit.added_endpoints(name, chain, &chainz.secrets()?.vars)? {
+        if !endpoint.is_websocket() {
+            check(chainz, name, chain.id, &ep, &endpoint)?;
         }
-        _ => Ok(()),
     }
+    Ok(())
 }
 
 fn print_report(report: &EditReport) {

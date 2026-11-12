@@ -147,7 +147,7 @@ pub async fn find_archive(
     }
     chosen.map(|name| Pinned::endpoint(&name)).ok_or_else(|| {
         anyhow!(
-            "--block {block} needs an archive endpoint, and none of the {} HTTP endpoint(s) of '{parent}' serves historical state; add one with `chainz rpc add {parent} URL`",
+            "--block {block} needs an archive endpoint, and none of the {} HTTP endpoint(s) of '{parent}' serves historical state; add one with `chainz update {parent} --add-rpc URL`",
             candidates.len()
         )
     })

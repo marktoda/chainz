@@ -185,7 +185,7 @@ fn rpc_completes_the_typed_chain_endpoints() {
     assert_set(fish(&sb, &["env", "base", "--rpc", "q"]), &["quicknode"]);
     // No chain typed: the default chain's.
     assert_set(fish(&sb, &["exec", "--rpc", ""]), &["alchemy", "llama"]);
-    // `update` and `rpc rm` take the chain positionally.
+    // `update` takes the chain positionally.
     assert_set(
         fish(&sb, &["update", "base", "--rpc", ""]),
         &["public", "quicknode"],
@@ -194,7 +194,11 @@ fn rpc_completes_the_typed_chain_endpoints() {
         fish(&sb, &["update", "base", "--failover", "p"]),
         &["public"],
     );
-    assert_set(fish(&sb, &["rpc", "rm", "eth", "l"]), &["llama"]);
+    assert_set(fish(&sb, &["update", "eth", "--rm-rpc", "l"]), &["llama"]);
+    assert_set(
+        fish(&sb, &["update", "eth", "--rm-rpc", "llama", "--rm-rpc", "a"]),
+        &["alchemy"],
+    );
 }
 
 #[test]
@@ -394,8 +398,9 @@ fn broken_config_completes_nothing_silently() {
 #[test]
 fn subcommands_and_flags_still_complete() {
     let sb = fixture();
-    let got = fish(&sb, &["rp"]);
-    assert_set(got, &["rpc"]);
+    assert_set(fish(&sb, &["up"]), &["update"]);
+    assert_set(fish(&sb, &["d"]), &["doctor"]);
+    assert!(has(&fish_all(&sb, &["update", "base", "--"]), "--add-rpc"));
     assert!(has(&fish_all(&sb, &["exec", "base", "--"]), "--rpc"));
     assert!(has(&fish_all(&sb, &["exec", "base", ""]), "--rpc"));
 }

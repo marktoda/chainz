@@ -24,7 +24,7 @@ pub fn uptime(secs: u64) -> String {
     }
 }
 
-/// A coarse age (`top`, `rpc ls`): `4s`, `3m`, `2h`, `5d`.
+/// A coarse age (`top`, `ls CHAIN`): `4s`, `3m`, `2h`, `5d`.
 pub fn age(secs: u64) -> String {
     match secs {
         0..=99 => format!("{secs}s"),

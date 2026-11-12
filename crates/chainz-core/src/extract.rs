@@ -1,6 +1,6 @@
 //! Moving literal credentials out of `config.toml` into `secrets.toml`
 //! variables. One set of rules serves v1 migration, `doctor --fix` and
-//! `rpc add`.
+//! endpoints added by `add` and `update`.
 //!
 //! What moves:
 //!
@@ -329,7 +329,7 @@ impl SecretPlan {
 
 /// Plan moving every literal secret in `config` into variables, reusing
 /// `existing` variables (`secrets.toml`'s `[vars]`) that hold the same
-/// value. Used by `doctor --fix`; `rpc add` and `add` extract only
+/// value. Used by `doctor --fix`; `add` and `update` extract only
 /// the endpoints they write ([`Tx::add_endpoint_url`](crate::tx::Tx::add_endpoint_url)).
 pub fn plan_secret_extraction(config: &Config, existing: &IndexMap<String, String>) -> SecretPlan {
     let mut vars = VarTable::with_vars(existing);

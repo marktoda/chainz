@@ -11,7 +11,6 @@ mod edit;
 mod exec;
 mod fork;
 mod init;
-mod rpc;
 mod serve;
 mod signer;
 mod top;
@@ -42,7 +41,6 @@ pub fn dispatch(opt: Opt) -> Result<i32> {
         Command::Update(args) => chain::update(&args),
         Command::Rm(args) => chain::rm(&args),
         Command::Edit(args) => edit::run(&args),
-        Command::Rpc { cmd } => rpc::run(cmd),
         Command::Signer { cmd } => signer::run(cmd),
         Command::Addr { cmd } => addr::run(cmd),
         Command::Label(args) => addr::label(&args),

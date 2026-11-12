@@ -470,7 +470,7 @@ fn edit_chain_applies_one_patch() {
     };
     let report = tx.edit_chain("eth", &edit).unwrap();
     assert_eq!(report.chain, "mainnet-eth");
-    assert_eq!(report.added_endpoint.as_deref(), Some("infura"));
+    assert_eq!(report.added_endpoints, ["infura"]);
     assert_eq!(report.created_explorer.as_deref(), Some("etherscan"));
     assert_eq!(report.api_key_var.as_deref(), Some("ETHERSCAN_API_KEY"));
     assert_eq!(report.moved.len(), 1, "{:?}", report.moved);
@@ -561,7 +561,7 @@ fn edit_chain_rejects_what_it_cannot_apply() {
         ..Default::default()
     };
     let report = doc.edit_chain("eth", &edit).unwrap();
-    assert_eq!(report.added_endpoint, None);
+    assert!(report.added_endpoints.is_empty());
     let chain = &doc.config().unwrap().chains["eth"];
     assert_eq!((chain.rpc.as_str(), chain.failover.len()), ("b", 0));
 }
@@ -709,7 +709,7 @@ fn endpoints_from_urls_are_checked_named_and_matched_one_way() {
 }
 
 /// Re-adding a URL whose key an earlier write moved into a variable is the
-/// same endpoint (it used to add `alchemy-2`, `alchemy-3`…), for `rpc add`
+/// same endpoint (it used to add `alchemy-2`, `alchemy-3`…), for `update --add-rpc`
 /// and `update --rpc` alike.
 #[test]
 fn a_url_whose_key_moved_is_still_the_same_endpoint() {
@@ -737,7 +737,7 @@ fn a_url_whose_key_moved_is_still_the_same_endpoint() {
         ..Default::default()
     };
     let report = doc.edit_chain("eth", &edit).unwrap();
-    assert_eq!(report.added_endpoint, None);
+    assert!(report.added_endpoints.is_empty());
     let chain = doc.config().unwrap().chains["eth"].clone();
     assert_eq!(chain.rpc, "alchemy");
     assert_eq!(chain.rpcs.len(), 3);
@@ -856,4 +856,85 @@ fn chain_changes_cover_every_field() {
         ]
     );
     assert!(Chain::changes(&config.chains["a"], &config.chains["a"]).is_empty());
+}
+
+#[test]
+fn add_rpc_arguments_name_an_endpoint_or_stay_a_url() {
+    let parse = ChainEdit::parse_add_rpc;
+    assert_eq!(
+        parse("gw=https://gw.example/1"),
+        (Some("gw".into()), "https://gw.example/1".into())
+    );
+    assert_eq!(parse("https://x.example/?k=v"), (None, "https://x.example/?k=v".into()));
+    assert_eq!(parse("wss://x.example"), (None, "wss://x.example".into()));
+    assert_eq!(parse("=https://x.example"), (None, "=https://x.example".into()));
+}
+
+/// `--add-rpc` adds spares (headers on the one added), `--rm-rpc` removes
+/// after `--rpc` switches, so the active one can be replaced in one edit.
+#[test]
+fn edit_chain_adds_and_removes_endpoints() {
+    let mut tx = tx(DOC);
+    let edit = ChainEdit {
+        add_rpcs: vec![
+            (Some("gw".into()), "https://gw.example/1".into()),
+        ],
+        headers: vec![("x-api-key".into(), "${GW}".into())],
+        failover: Some(vec!["b".into(), "gw".into()]),
+        ..ChainEdit::default()
+    };
+    let report = tx.edit_chain("eth", &edit).unwrap();
+    assert_eq!(report.added_endpoints, ["gw"]);
+    let chain = tx.config().unwrap().chains["eth"].clone();
+    assert_eq!(chain.rpc, "a");
+    assert_eq!(chain.failover, ["b", "gw"]);
+    assert_eq!(chain.rpcs["gw"].headers["x-api-key"], "${GW}");
+    assert!(chain.rpcs["a"].headers.is_empty());
+    assert!(report.changes.contains(&"added endpoint 'gw'".to_string()), "{report:?}");
+
+    // Several unnamed URLs get unique names; a URL the chain has is refused.
+    let edit = ChainEdit {
+        add_rpcs: vec![
+            (None, "https://c.example/x".into()),
+            (None, "https://c.example/y".into()),
+        ],
+        ..ChainEdit::default()
+    };
+    let added = tx.edit_chain("eth", &edit).unwrap().added_endpoints;
+    assert_eq!(added.len(), 2);
+    assert_ne!(added[0], added[1]);
+    let dup = ChainEdit {
+        add_rpcs: vec![(None, "https://a.example".into())],
+        ..ChainEdit::default()
+    };
+    assert!(tx.edit_chain("eth", &dup).unwrap_err().to_string().contains("already has this URL"));
+    let ambiguous = ChainEdit {
+        add_rpcs: vec![(None, "https://d.example".into()), (None, "https://e.example".into())],
+        headers: vec![("x".into(), "y".into())],
+        ..ChainEdit::default()
+    };
+    assert!(tx.edit_chain("eth", &ambiguous).unwrap_err().to_string().contains("ambiguous"));
+
+    // The active endpoint can't go alone; with --rpc it can.
+    let rm_active = ChainEdit {
+        remove_rpcs: vec!["a".into()],
+        ..ChainEdit::default()
+    };
+    assert!(tx.edit_chain("eth", &rm_active).unwrap_err().to_string().contains("is the active endpoint"));
+    let switch = ChainEdit {
+        rpc: Some("gw".into()),
+        remove_rpcs: vec!["a".into(), "b".into()],
+        ..ChainEdit::default()
+    };
+    let report = tx.edit_chain("eth", &switch).unwrap();
+    let chain = tx.config().unwrap().chains["eth"].clone();
+    assert_eq!(chain.rpc, "gw");
+    assert!(!chain.rpcs.contains_key("a") && !chain.rpcs.contains_key("b"));
+    assert!(chain.failover.is_empty());
+    assert!(report.changes.contains(&"removed endpoint 'a'".to_string()), "{report:?}");
+    let missing = ChainEdit {
+        remove_rpcs: vec!["nope".into()],
+        ..ChainEdit::default()
+    };
+    assert!(tx.edit_chain("eth", &missing).unwrap_err().to_string().contains("has no endpoint 'nope'"));
 }

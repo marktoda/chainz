@@ -105,12 +105,6 @@ pub enum Command {
     /// Edit config.toml, or one chain's table, in $EDITOR (validated on save)
     Edit(EditArgs),
 
-    /// Manage a chain's RPC endpoints
-    Rpc {
-        #[command(subcommand)]
-        cmd: RpcCommand,
-    },
-
     /// Manage signers (key references with cached addresses)
     Signer {
         #[command(subcommand)]
@@ -438,102 +432,67 @@ pub struct UpdateArgs {
     /// Chain name, alias, prefix or ID (picker if omitted on a TTY)
     #[arg(add = ArgValueCompleter::new(complete::configured_chains))]
     pub chain: Option<String>,
-    /// Attach this signer
-    #[arg(long, value_name = "NAME", conflicts_with = "no_signer", add = ArgValueCompleter::new(complete::signers))]
-    pub signer: Option<String>,
-    /// Detach the signer
-    #[arg(long)]
-    pub no_signer: bool,
-    /// Activate an endpoint by name or URL; a new URL is added as an endpoint
-    #[arg(long, value_name = "NAME|URL", add = ArgValueCompleter::new(complete::endpoints))]
+    /// Activate an endpoint by name or URL; a new URL is added, checked and
+    /// activated
+    #[arg(long, value_name = "NAME|URL", help_heading = "Endpoints", add = ArgValueCompleter::new(complete::endpoints))]
     pub rpc: Option<String>,
-    /// Header for the --rpc endpoint (else the active one), as 'name: value' (repeatable)
-    #[arg(long = "header", value_name = "NAME: VALUE")]
-    pub headers: Vec<String>,
-    /// Drop that endpoint's headers first
-    #[arg(long)]
-    pub clear_headers: bool,
+    /// Add an endpoint without activating it (repeatable; the name
+    /// defaults to the host)
+    #[arg(long = "add-rpc", value_name = "[NAME=]URL", help_heading = "Endpoints")]
+    pub add_rpcs: Vec<String>,
+    /// Remove an endpoint, and its failover entry (repeatable)
+    #[arg(long = "rm-rpc", value_name = "NAME", help_heading = "Endpoints", add = ArgValueCompleter::new(complete::endpoints))]
+    pub rm_rpcs: Vec<String>,
     /// Failover endpoints, in order
     #[arg(
         long,
         value_name = "NAME,...",
         value_delimiter = ',',
         conflicts_with = "no_failover",
+        help_heading = "Endpoints",
         add = ArgValueCompleter::new(complete::endpoints)
     )]
     pub failover: Vec<String>,
     /// Clear the failover list
-    #[arg(long)]
+    #[arg(long, help_heading = "Endpoints")]
     pub no_failover: bool,
+    /// Header for the --rpc endpoint, else the one --add-rpc endpoint, else
+    /// the active one, as 'name: value' (repeatable)
+    #[arg(long = "header", value_name = "NAME: VALUE", help_heading = "Endpoints")]
+    pub headers: Vec<String>,
+    /// Drop that endpoint's headers first
+    #[arg(long, help_heading = "Endpoints")]
+    pub clear_headers: bool,
+    /// Skip the chain-ID check of new URLs (--rpc, --add-rpc)
+    #[arg(long, help_heading = "Endpoints")]
+    pub no_check: bool,
+    /// Attach this signer
+    #[arg(long, value_name = "NAME", conflicts_with = "no_signer", help_heading = "Signer and explorer", add = ArgValueCompleter::new(complete::signers))]
+    pub signer: Option<String>,
+    /// Detach the signer
+    #[arg(long, help_heading = "Signer and explorer")]
+    pub no_signer: bool,
     /// Attach this explorer (`etherscan` is built in)
-    #[arg(long, value_name = "NAME", conflicts_with = "no_explorer", add = ArgValueCompleter::new(complete::explorers))]
+    #[arg(long, value_name = "NAME", conflicts_with = "no_explorer", help_heading = "Signer and explorer", add = ArgValueCompleter::new(complete::explorers))]
     pub explorer: Option<String>,
     /// Detach the explorer
-    #[arg(long)]
+    #[arg(long, help_heading = "Signer and explorer")]
     pub no_explorer: bool,
     /// Read the explorer's API key from stdin (one key per explorer, shared by its chains)
-    #[arg(long, conflicts_with = "api_key")]
+    #[arg(long, conflicts_with = "api_key", help_heading = "Signer and explorer")]
     pub api_key_stdin: bool,
     /// The explorer's API key as an argument (visible in history and `ps`; prefer --api-key-stdin)
     #[arg(long, hide = true, value_name = "KEY")]
     pub api_key: Option<String>,
     /// Rename the chain
-    #[arg(long, value_name = "NEW")]
+    #[arg(long, value_name = "NEW", help_heading = "Naming")]
     pub name: Option<String>,
     /// Add an alias (repeatable)
-    #[arg(long = "alias", value_name = "ALIAS")]
+    #[arg(long = "alias", value_name = "ALIAS", help_heading = "Naming")]
     pub aliases: Vec<String>,
     /// Remove an alias (repeatable)
-    #[arg(long = "rm-alias", value_name = "ALIAS")]
+    #[arg(long = "rm-alias", value_name = "ALIAS", help_heading = "Naming")]
     pub rm_aliases: Vec<String>,
-    /// Skip the chain-ID check of a new --rpc URL
-    #[arg(long)]
-    pub no_check: bool,
-}
-
-#[derive(Debug, Subcommand)]
-pub enum RpcCommand {
-    /// Add an endpoint
-    Add(RpcAddArgs),
-    /// Remove an endpoint; asks first unless --yes
-    Rm(RpcRmArgs),
-}
-
-#[derive(Debug, Args)]
-pub struct RpcAddArgs {
-    /// Chain name, alias, prefix or ID
-    #[arg(add = ArgValueCompleter::new(complete::configured_chains))]
-    pub chain: String,
-    /// The endpoint's URL (http(s) or ws(s))
-    pub url: String,
-    /// Endpoint name (default: from the host)
-    #[arg(long)]
-    pub name: Option<String>,
-    /// Header for this endpoint only, as 'name: value' (repeatable)
-    #[arg(long = "header", value_name = "NAME: VALUE")]
-    pub headers: Vec<String>,
-    /// Append to the chain's failover list
-    #[arg(long, conflicts_with = "activate")]
-    pub failover: bool,
-    /// Make it the active endpoint
-    #[arg(long)]
-    pub activate: bool,
-    /// Skip the chain-ID check
-    #[arg(long)]
-    pub no_check: bool,
-}
-
-#[derive(Debug, Args)]
-pub struct RpcRmArgs {
-    /// Chain name, alias, prefix or ID
-    #[arg(add = ArgValueCompleter::new(complete::configured_chains))]
-    pub chain: String,
-    /// Endpoint name
-    #[arg(add = ArgValueCompleter::new(complete::endpoints))]
-    pub name: String,
-    /// Remove without asking (required off a terminal)
-    #[arg(long, short)]
-    pub yes: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

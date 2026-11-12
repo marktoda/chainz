@@ -4,7 +4,7 @@
 
 use super::{EndpointRole, Tx};
 use crate::extract::Moved;
-use crate::model::{Chain, Explorer, RpcChoice, is_header_name};
+use crate::model::{Chain, Endpoint, Explorer, RpcChoice, is_header_name};
 use crate::names;
 use anyhow::{Result, anyhow, bail};
 use zeroize::Zeroizing;
@@ -19,8 +19,16 @@ pub struct ChainEdit {
     /// added as an endpoint (its literal secrets moved into variables) and
     /// activated. Checking a new URL's chain ID is the caller's job.
     pub rpc: Option<String>,
-    /// `--header 'name: value'`…: set on the `--rpc` endpoint, else the
-    /// active one.
+    /// `--add-rpc [NAME=]URL`…: endpoints to add without activating them
+    /// (name, URL; see [`ChainEdit::parse_add_rpc`]). Their literal
+    /// secrets move into variables; checking their chain ID is the
+    /// caller's job ([`ChainEdit::added_endpoints`]).
+    pub add_rpcs: Vec<(Option<String>, String)>,
+    /// `--rm-rpc NAME`…: endpoints to remove (after `--rpc` applies, so
+    /// the active one can be replaced and removed in one edit).
+    pub remove_rpcs: Vec<String>,
+    /// `--header 'name: value'`…: set on the `--rpc` endpoint, else the one
+    /// `--add-rpc` endpoint, else the active one.
     pub headers: Vec<(String, String)>,
     /// `--clear-headers`: drop that endpoint's headers first.
     pub clear_headers: bool,
@@ -46,7 +54,7 @@ impl EditReport {
     /// set).
     pub fn is_empty(&self) -> bool {
         self.changes.is_empty()
-            && self.added_endpoint.is_none()
+            && self.added_endpoints.is_empty()
             && self.created_explorer.is_none()
             && self.moved.is_empty()
     }
@@ -76,6 +84,40 @@ impl ChainEdit {
             RpcChoice::New(ep_name, endpoint) => (ep_name, endpoint),
             existing => return Ok(Some(existing)),
         };
+        self.put_headers(&mut endpoint)?;
+        Ok(Some(RpcChoice::New(ep_name, endpoint)))
+    }
+
+    /// `--add-rpc`'s argument: `NAME=URL`, or a bare URL (named from its
+    /// host). Only text before the first `=` that holds no `:` or `/` is a
+    /// name, so a URL with `=` in its query stays whole.
+    pub fn parse_add_rpc(arg: &str) -> (Option<String>, String) {
+        match arg.split_once('=') {
+            Some((name, url)) if !name.is_empty() && !name.contains([':', '/']) => {
+                (Some(name.trim().to_string()), url.trim().to_string())
+            }
+            _ => (None, arg.trim().to_string()),
+        }
+    }
+
+    /// Whether the header flags go to an endpoint this edit adds by
+    /// `--add-rpc` (there is no `--rpc` and exactly one `--add-rpc`). An
+    /// error when they could mean several.
+    fn headers_on_added(&self) -> Result<bool> {
+        if self.rpc.is_some() || (self.headers.is_empty() && !self.clear_headers) {
+            return Ok(false);
+        }
+        match self.add_rpcs.len() {
+            0 => Ok(false),
+            1 => Ok(true),
+            _ => bail!(
+                "--header with several --add-rpc is ambiguous; add the endpoint that needs headers on its own"
+            ),
+        }
+    }
+
+    /// Set the header flags on `endpoint`.
+    fn put_headers(&self, endpoint: &mut Endpoint) -> Result<()> {
         for (header, value) in &self.headers {
             let header = header.trim();
             if !is_header_name(header) {
@@ -85,7 +127,38 @@ impl ChainEdit {
                 .headers
                 .insert(header.to_string(), value.trim().to_string());
         }
-        Ok(Some(RpcChoice::New(ep_name, endpoint)))
+        Ok(())
+    }
+
+    /// The endpoints this edit adds to `chain` (named `name`), named, with
+    /// their role: a new `--rpc` URL (active), then each `--add-rpc`
+    /// (spare), the header flags on the one they apply to. URLs are
+    /// checked as [`Chain::new_endpoint`] does, against the chain and each
+    /// other (compared with `vars`). [`Tx::edit_chain`] adds exactly these;
+    /// the caller probes them first.
+    pub fn added_endpoints(
+        &self,
+        name: &str,
+        chain: &Chain,
+        vars: &crate::secrets::Vars,
+    ) -> Result<Vec<(String, Endpoint, EndpointRole)>> {
+        let mut out = Vec::new();
+        let mut chain = chain.clone();
+        if let Some(RpcChoice::New(ep_name, endpoint)) = self.rpc_choice(name, &chain, vars)? {
+            chain.rpcs.insert(ep_name.clone(), endpoint.clone());
+            out.push((ep_name, endpoint, EndpointRole::Active));
+        }
+        let headers_here = self.headers_on_added()?;
+        for (ep_name, url) in &self.add_rpcs {
+            let ep_name = chain.new_endpoint(name, url, ep_name.as_deref(), vars)?;
+            let mut endpoint = Endpoint::new(url.as_str());
+            if headers_here {
+                self.put_headers(&mut endpoint)?;
+            }
+            chain.rpcs.insert(ep_name.clone(), endpoint.clone());
+            out.push((ep_name, endpoint, EndpointRole::Spare));
+        }
+        Ok(out)
     }
 }
 
@@ -95,8 +168,8 @@ pub struct EditReport {
     /// One line per change ([`Chain::changes`], then the explorer key and
     /// the rename): `signer: deployer → ops`.
     pub changes: Vec<String>,
-    /// The endpoint `--rpc URL` added, if it added one.
-    pub added_endpoint: Option<String>,
+    /// The endpoints `--rpc URL` and `--add-rpc` added, in that order.
+    pub added_endpoints: Vec<String>,
     /// The explorer `--explorer etherscan` created, if it created one.
     pub created_explorer: Option<String>,
     /// The variable `--api-key` stored the key in.
@@ -262,7 +335,7 @@ impl Tx {
         Ok(report)
     }
 
-    /// `--rpc` and the header flags.
+    /// `--rpc`, `--add-rpc`, the header flags and `--rm-rpc`.
     fn edit_endpoint(
         &mut self,
         name: &str,
@@ -270,22 +343,49 @@ impl Tx {
         edit: &ChainEdit,
         report: &mut EditReport,
     ) -> Result<()> {
-        // A new endpoint is added, with the header flags, and activated.
-        // Else the header flags apply to the `--rpc` endpoint, or the
-        // active one.
+        // New endpoints are added (a new `--rpc` URL activated), the header
+        // flags on the one they name. Else the header flags apply to the
+        // `--rpc` endpoint, or the active one.
         let secrets = self.secrets()?;
-        let ep_name = match edit.rpc_choice(name, chain, &secrets.vars)? {
-            None => chain.rpc.clone(),
-            Some(RpcChoice::Existing(ep_name)) => ep_name,
-            Some(RpcChoice::New(ep_name, endpoint)) => {
-                let (ep_name, moved) =
-                    self.add_endpoint_url(name, Some(&ep_name), &endpoint, EndpointRole::Active)?;
-                report.moved = moved;
-                report.added_endpoint = Some(ep_name);
-                return Ok(());
+        for (ep_name, endpoint, role) in edit.added_endpoints(name, chain, &secrets.vars)? {
+            let (ep_name, moved) = self.add_endpoint_url(name, Some(&ep_name), &endpoint, role)?;
+            report.moved.extend(moved);
+            report.added_endpoints.push(ep_name);
+        }
+        match edit.rpc_choice(name, chain, &secrets.vars)? {
+            // Added and activated above, with the header flags.
+            Some(RpcChoice::New(..)) => {}
+            Some(RpcChoice::Existing(ep_name)) => {
+                self.edit_headers(name, chain, &ep_name, edit, report)?;
+                if chain.rpc != ep_name {
+                    self.set_active(name, &ep_name)?;
+                }
             }
-        };
-        let Some(mut endpoint) = chain.rpcs.get(&ep_name).cloned() else {
+            // On the `--add-rpc` endpoint, added above.
+            None if edit.headers_on_added()? => {}
+            None => self.edit_headers(name, chain, &chain.rpc, edit, report)?,
+        }
+        for ep_name in &edit.remove_rpcs {
+            if self.config()?.chains[name].rpc == *ep_name {
+                bail!(
+                    "'{ep_name}' is the active endpoint of '{name}'; activate another in the same command with --rpc NAME"
+                );
+            }
+            self.remove_endpoint(name, ep_name)?;
+        }
+        Ok(())
+    }
+
+    /// The header flags on existing endpoint `ep_name`.
+    fn edit_headers(
+        &mut self,
+        name: &str,
+        chain: &Chain,
+        ep_name: &str,
+        edit: &ChainEdit,
+        report: &mut EditReport,
+    ) -> Result<()> {
+        let Some(mut endpoint) = chain.rpcs.get(ep_name).cloned() else {
             bail!("chain '{name}' has no active endpoint '{ep_name}'");
         };
         let mut changed = false;
@@ -293,24 +393,15 @@ impl Tx {
             endpoint.headers.clear();
             changed = true;
         }
-        for (header, value) in &edit.headers {
-            let header = header.trim();
-            if !is_header_name(header) {
-                bail!("invalid header name '{header}'");
-            }
-            endpoint
-                .headers
-                .insert(header.to_string(), value.trim().to_string());
+        if !edit.headers.is_empty() {
+            edit.put_headers(&mut endpoint)?;
             changed = true;
         }
         if changed {
-            let mut endpoints = [(ep_name.clone(), endpoint)];
-            report.moved = self.extract_secrets(name, &mut endpoints)?;
+            let mut endpoints = [(ep_name.to_string(), endpoint)];
+            report.moved.extend(self.extract_secrets(name, &mut endpoints)?);
             let [(_, endpoint)] = endpoints;
-            self.set_endpoint(name, &ep_name, &endpoint)?;
-        }
-        if edit.rpc.is_some() && chain.rpc != ep_name {
-            self.set_active(name, &ep_name)?;
+            self.set_endpoint(name, ep_name, &endpoint)?;
         }
         Ok(())
     }

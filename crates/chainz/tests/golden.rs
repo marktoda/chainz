@@ -228,21 +228,20 @@ fn commented_sandbox() -> Sandbox {
 }
 
 #[test]
-fn rpc_add_keeps_comments_and_order() {
+fn add_rpc_keeps_comments_and_order() {
     let sb = commented_sandbox();
     sb.ok(&[
-        "rpc",
-        "add",
+        "update",
         "eth",
-        "http://127.0.0.1:1/extra",
-        "--name",
-        "extra",
+        "--add-rpc",
+        "extra=http://127.0.0.1:1/extra",
         "--header",
         "x-team: core",
         "--failover",
+        "extra",
         "--no-check",
     ]);
-    golden("edit/rpc-add.config.toml", &sb.config());
+    golden("edit/add-rpc.config.toml", &sb.config());
 }
 
 #[test]

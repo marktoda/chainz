@@ -84,7 +84,7 @@ pub fn is_broken_pipe(error: &anyhow::Error) -> bool {
     })
 }
 
-/// Make a closed stdout or stderr (`chainz rpc ls | head`) end the process
+/// Make a closed stdout or stderr (`chainz ls eth | head`) end the process
 /// quietly with exit 0, as [`exit_code`] does for an error: `println!`
 /// panics on a broken pipe, and this hook turns that panic, wherever it
 /// happens, into a silent exit. Every other panic goes to the previous

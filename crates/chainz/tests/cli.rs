@@ -666,9 +666,9 @@ fn re_adding_a_url_whose_key_moved_adds_nothing() {
     let out = sb.ok(&["update", "base", "--rpc", url, "--no-check"]);
     assert!(!out.contains("added endpoint"), "{out}");
     assert!(sb.config().contains("rpc = \"alchemy\""));
-    // `rpc add` refuses it by name.
+    // `--add-rpc` refuses it by name.
     sb.cmd()
-        .args(["rpc", "add", "base", url, "--no-check"])
+        .args(["update", "base", "--add-rpc", url, "--no-check"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("as endpoint 'alchemy'"));
@@ -726,7 +726,7 @@ fn chain_rm_names_its_labels_and_the_default() {
 /// Writes say what changed, from → to, with side effects; a no-op says
 /// "No changes".
 #[test]
-fn chain_set_and_rpc_rm_report_what_changed() {
+fn update_reports_what_changed() {
     let sb = Sandbox::new();
     sb.write_config(
         "version = 2\n[chains.eth]\nid = 1\nrpc = \"a\"\nfailover = [\"b\", \"c\"]\n[chains.eth.rpcs]\na = \"http://127.0.0.1:1/a\"\nb = \"http://127.0.0.1:1/b\"\nc = \"http://127.0.0.1:1/c\"\n",
@@ -741,10 +741,10 @@ fn chain_set_and_rpc_rm_report_what_changed() {
         sb.ok(&["update", "eth", "--rpc", "b"]),
         "Updated chain 'eth'\n  active endpoint: a → b\n  failover: b, c → c\n"
     );
-    let out = sb.ok(&["rpc", "rm", "eth", "c", "--yes"]);
+    let out = sb.ok(&["update", "eth", "--rm-rpc", "c"]);
     assert_eq!(
         out,
-        "Removed endpoint 'c' from 'eth'\n  also removed from failover (now: none)\n"
+        "Updated chain 'eth'\n  removed endpoint 'c'\n  failover: c → none\n"
     );
     sb.ok(&["use", "eth"]);
     assert!(sb.ok(&["use", "eth"]).starts_with("No changes"));
@@ -844,55 +844,69 @@ fn output_redacts_credentials_unless_revealed() {
 }
 
 #[test]
-fn rpc_add_with_header_activate_and_rm() {
+fn update_adds_an_endpoint_with_headers_and_removes_it() {
     let sb = Sandbox::new();
     sb.seed(&[("eth", 1)]);
     sb.cmd()
         .args(["var", "set", "KEY", "hdrvalue1234"])
         .assert()
         .success();
-    sb.cmd()
-        .args([
-            "rpc",
-            "add",
-            "eth",
-            "https://private.invalid",
-            "--name",
-            "priv",
-            "--header",
-            "x-api-key: ${KEY}",
-            "--no-check",
-            "--activate",
-        ])
-        .assert()
-        .success();
+    let out = sb.ok(&[
+        "update",
+        "eth",
+        "--add-rpc",
+        "priv=https://private.invalid",
+        "--add-rpc",
+        "wss://ws.invalid",
+        "--no-check",
+    ]);
+    assert!(
+        out.contains("added endpoint 'priv'") && out.contains("added endpoint 'ws-ws'"),
+        "{out}"
+    );
+    assert!(sb.config().contains("rpc = \"local\""), "not activated");
+    // --header goes to the one --add-rpc endpoint; --rpc activates it.
+    sb.ok(&["update", "eth", "--rm-rpc", "priv"]);
+    sb.ok(&[
+        "update",
+        "eth",
+        "--add-rpc",
+        "priv=https://private.invalid",
+        "--header",
+        "x-api-key: ${KEY}",
+        "--no-check",
+    ]);
     assert!(
         sb.config().contains("\"x-api-key\" = \"${KEY}\"")
-            || sb.config().contains("x-api-key = \"${KEY}\"")
+            || sb.config().contains("x-api-key = \"${KEY}\""),
+        "{}",
+        sb.config()
     );
+    sb.ok(&["update", "eth", "--rpc", "priv"]);
     sb.cmd()
         .args(["exec", "eth", "--", "sh", "-c", "echo $ETH_RPC_HEADERS"])
         .assert()
         .success()
         .stdout("x-api-key: hdrvalue1234\n");
     sb.cmd()
-        .args(["rpc", "rm", "eth", "priv"])
+        .args(["update", "eth", "--rm-rpc", "priv"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("active"));
+        .stderr(predicate::str::contains(
+            "'priv' is the active endpoint of 'eth'; activate another in the same command with --rpc NAME",
+        ));
+    let out = sb.ok(&["update", "eth", "--rpc", "local", "--rm-rpc", "priv"]);
+    assert!(
+        out.contains("removed endpoint 'priv'") && out.contains("active endpoint: priv → local"),
+        "{out}"
+    );
+    // A new URL is checked unless --no-check (nothing listens here).
     sb.cmd()
-        .args(["update", "eth", "--rpc", "local"])
-        .assert()
-        .success();
-    sb.cmd()
-        .args(["rpc", "rm", "eth", "priv"])
+        .args(["update", "eth", "--add-rpc", "http://127.0.0.1:1/x"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("pass --yes to confirm"));
-    sb.cmd()
-        .args(["rpc", "rm", "eth", "priv", "--yes"])
-        .assert()
-        .success();
+        .stderr(predicate::str::contains("RPC check failed"));
+    assert!(!sb.config().contains("127.0.0.1:1/x"));
 }
 
 // ---------------------------------------------------------------- exec
@@ -1083,12 +1097,10 @@ fn exec_signer_and_rpc_overrides() {
         .success();
     sb.cmd()
         .args([
-            "rpc",
-            "add",
+            "update",
             "eth",
-            "http://127.0.0.2:1",
-            "--name",
-            "two",
+            "--add-rpc",
+            "two=http://127.0.0.2:1",
             "--no-check",
         ])
         .assert()
@@ -1430,7 +1442,7 @@ fn edit_chain_replaces_one_chain() {
 
 // ------------------------------------------------- regressions and v1 names
 
-/// An infura-style URL whose key `add`/`rpc add` move to secrets.toml.
+/// An infura-style URL whose key `add`/`update --add-rpc` move to secrets.toml.
 const INFURA_URL: &str = "https://mainnet.infura.invalid/v3/0123456789abcdef0123456789abcdef";
 const INFURA_KEY: &str = "0123456789abcdef0123456789abcdef";
 
@@ -1533,12 +1545,10 @@ fn chain_add_and_rpc_add_move_url_keys_into_secrets() {
     let other = INFURA_URL.replace("0123", "9999");
     sb.cmd()
         .args([
-            "rpc",
-            "add",
+            "update",
             "eth",
-            &other,
-            "--name",
-            "second",
+            "--add-rpc",
+            &format!("second={other}"),
             "--no-check",
         ])
         .assert()
@@ -1959,6 +1969,9 @@ fn removed_spellings_are_unknown() {
         &["chain", "add", "1"],
         &["chain", "rm", "eth", "-y"],
         &["rpc", "ls", "eth"],
+        &["rpc", "add", "eth", "http://x.invalid", "--no-check"],
+        &["rpc", "rm", "eth", "local", "-y"],
+        &["rpc", "discover", "eth"],
     ] {
         let out = sb.run(argv);
         assert_eq!(out.status.code(), Some(2), "{argv:?}: {}", stderr(&out));
