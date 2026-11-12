@@ -273,7 +273,7 @@ One `rpc` module gives every feature the same client, the same idea of endpoint 
 - **Consistent heads:** while serving, the gateway probes each pool every 5 s and keeps a per-chain head high-water mark: the best head over the last three probe rounds, so one failed probe doesn't lower it and one bogus head ages out. A failover target must be within 2 blocks of that mark, so `latest` does not visibly go backwards.
 - **Capability-aware:** `debug_*` and `trace_*` calls, and reads pinned to blocks older than 128, go only to endpoints tagged with that capability, or to the active endpoint when tags are unknown.
 - **Secrets stay upstream:** headers and `${VAR}` values are applied by the gateway. Child processes see only the tokenised loopback URL.
-- **HTTP only:** `ws://` and `wss://` endpoints (24 of the 149 in the current config) remain usable with `exec --direct` but are not routed. Websocket support is an open question.
+- **HTTP only:** `ws://` and `wss://` endpoints (24 of the 149 in the current config) remain usable with `exec --direct` but are not routed. Routing them is planned for 2.1 (see Decisions).
 
 **Failover rules**, by request kind:
 
@@ -483,19 +483,19 @@ The foundation is built serially and its interfaces are frozen. Then four featur
 
 **Phase 2: integration and release.** Merge the streams. Run the migration on the real config (dry run, compare, then migrate). Turn on the performance budget in CI. Rewrite the README around the five nouns. Publish 2.0.0 with a migration note in the changelog.
 
-## Open questions
+## Decisions
 
-Each of these has a proposed default. Tick it to accept, or comment to change it.
+These were open questions, each with a proposed default. Every one shipped in 2.0 as its default.
 
-- [ ] **Exec auto-routes through a running gateway.** Default: yes, with `--direct` to opt out. The alternative is opt-in per command (`--via-serve`).
-- [ ] **Failover starts empty after migration.** Default: yes; nothing is retried on an endpoint you didn't approve. The alternative auto-fills `failover` with every public HTTP endpoint that has no credentials.
-- [ ] **Keep `chainz use`.** Default: keep it, with the stderr notice whenever the default chain applies. The stricter alternative removes the global default, so `exec` needs an explicit chain or `$CHAINZ_CHAIN`. That matches how you already type `chainz exec 1 …`.
-- [ ] **`secrets.toml` split.** Default: variables and plaintext keys move out of the main config. The alternative keeps everything in one file and relies on redaction.
-- [ ] **Signer naming.** Default: `signer` replaces `key`, and `chainz key …` stays as a hidden alias for one release.
-- [ ] **Workspace split vs one crate.** Default: workspace. It enforces at compile time that the exec path cannot reach the network, and it makes the parallel streams merge cleanly. One crate with features would be simpler to publish.
-- [ ] **Gateway websockets** (`eth_subscribe`). Default: HTTP only in 2.0. The 24 websocket endpoints stay usable with `--direct`; routing them comes in 2.1.
+- [x] **Exec auto-routes through a running gateway.** Decided: yes, with `--direct` to opt out. The alternative was opt-in per command (`--via-serve`).
+- [x] **Failover starts empty after migration.** Decided: yes; nothing is retried on an endpoint you didn't approve. The alternative auto-filled `failover` with every public HTTP endpoint that has no credentials.
+- [x] **Keep `chainz use`.** Decided: keep it, with the stderr notice whenever the default chain applies. The stricter alternative removed the global default, so `exec` would need an explicit chain or `$CHAINZ_CHAIN`.
+- [x] **`secrets.toml` split.** Decided: variables and plaintext keys move out of the main config. The alternative kept everything in one file and relied on redaction.
+- [x] **Signer naming.** Decided: `signer` replaces `key`, and `chainz key …` stays as a hidden alias.
+- [x] **Workspace split vs one crate.** Decided: workspace. It enforces at compile time that the exec path cannot reach the network. One crate with features would have been simpler to publish.
+- [x] **Gateway websockets** (`eth_subscribe`). Decided: HTTP only in 2.0. Websocket endpoints stay usable with `--direct`; routing them comes in 2.1.
 - [x] **Windows.** Decided: Linux and macOS only in 2.0. The spawn-and-wait fallback and the Windows CI job are gone; v1 stays available for Windows.
-- [ ] **Foundry keystore backend** in 2.0. Default: yes. It is small, and it removes the last reason to use `--expose-key` for Foundry.
+- [x] **Foundry keystore backend** in 2.0. Decided: yes. It is small, and it removes the last reason to use `--expose-key` for Foundry.
 
 ## Self-review
 
@@ -512,7 +512,7 @@ An independent Fable 5.2 reviewer read the first draft against the v1 source, th
 | 7 | Should-fix | Token grammar: `@uniswap/v3-core` would expand, typos pass silently, the `:qualifier` is overloaded | Fixed: `/` and `.` don't end a token, an unknown whole-argument token is an error, the qualifier always means a chain, signers are labels |
 | 8 | Should-fix | Address book: global by default, truncated reverse labels, registry location and provenance unclear | Fixed: per chain by default with `--all-chains`, full addresses, compiled in with a `source` URL |
 | 9 | Should-fix | Forks: a pinned block needs archive, failover corrupts state, zkSync can't fork, orphaned anvil, replay of real signatures | Fixed in Forks: one pinned archive endpoint, zkSync rejected, `PDEATHSIG`, signing restricted to unlocked impersonation |
-| 10 | Should-fix | The global `default` chain risks wrong-chain sends | Partly: a stderr notice now; removing `use` entirely is an open question |
+| 10 | Should-fix | The global `default` chain risks wrong-chain sends | Partly: a stderr notice now; `use` is kept (see Decisions) |
 | 11 | Should-fix | Two files are not atomic as a pair | Fixed in Architecture: secrets written first, fail closed on a missing variable |
 | 12 | Should-fix | A 5 ms absolute CI gate will flake, and "links only core" means nothing in one binary | Fixed: a relative gate plus an `strace` structural test; the claim restated as compile-time API separation |
 | 13 | Should-fix | The CLI tree is missing flags; `--fund` shape; `fork CHAIN` collides with `fork ls` | Fixed in CLI surface |

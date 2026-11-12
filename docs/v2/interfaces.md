@@ -52,7 +52,7 @@ below are mode 0600 in 0700 directories.
 | `CHAINZ_DETACHED` | bin `sys` | set in a `--detach` child |
 | `VISUAL`, `EDITOR` | `edit` | the editor, in that order |
 | `SHELL`, `PS1` | `shell`, `env` | the subshell and export syntax |
-| `NO_COLOR` | `top` | no colour (the test sandbox sets it) |
+| `NO_COLOR` | every styled output: bin `ui` (`console`), `top` | no colour (the test sandbox sets it) |
 | `CHAINZ_BLESS`, `CHAINZ_REQUIRE_TOOLS` | tests | `1` rewrites golden files; set, a missing anvil or strace fails the test instead of skipping it |
 
 ## CLI
