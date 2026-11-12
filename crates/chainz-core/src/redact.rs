@@ -62,7 +62,7 @@ pub fn url(value: &str, reveal: bool) -> String {
     let segments: Vec<&str> = path
         .split('/')
         .map(|seg| {
-            if is_secret_text(seg) || known_key == Some(seg) {
+            if !is_public_text(seg) || known_key == Some(seg) {
                 REDACTED
             } else {
                 seg
@@ -78,12 +78,12 @@ pub fn url(value: &str, reveal: bool) -> String {
                 Some((name, value))
                     if !template::has_templates(value)
                         && !value.is_empty()
-                        && (urls::is_credential_param(name) || is_secret_text(value)) =>
+                        && (urls::is_credential_param(name) || !is_public_text(value)) =>
                 {
                     format!("{name}={REDACTED}")
                 }
                 Some(_) => pair.to_string(),
-                None if is_secret_text(pair) => REDACTED.to_string(),
+                None if !is_public_text(pair) => REDACTED.to_string(),
                 None => pair.to_string(),
             })
             .collect();
@@ -144,6 +144,27 @@ fn is_plain_word(word: &str) -> bool {
 /// Literal text that is credential-shaped (templates never are).
 fn is_secret_text(text: &str) -> bool {
     urls::is_credential_shaped(text)
+}
+
+/// A path segment or query value that is safe to show: empty, a `${VAR}`
+/// template, a number, a version (`v2`), or a short lowercase word
+/// (`rpc`, `eth-mainnet`, `ext`). Everything else may be a key, so it
+/// fails closed: a short or letters-only token is masked too.
+fn is_public_text(text: &str) -> bool {
+    if text.is_empty() || template::has_templates(text) {
+        return true;
+    }
+    let bytes = text.as_bytes();
+    let number = bytes.iter().all(u8::is_ascii_digit);
+    let version = bytes.len() <= 4
+        && bytes[0] == b'v'
+        && bytes.len() > 1
+        && bytes[1..].iter().all(u8::is_ascii_digit);
+    let word = bytes.len() <= 24
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_lowercase() || matches!(b, b'-' | b'_' | b'.'));
+    number || version || word
 }
 
 /// Preserve useful public URL structure while removing credential-bearing
@@ -319,6 +340,23 @@ mod tests {
         );
         assert_eq!(url("not a url secret", false), "[REDACTED URL]");
         assert_eq!(url("not a url secret", true), "not a url secret");
+        // Short or letters-only literal keys never show: anything that is
+        // not a number, version or short lowercase word is masked.
+        assert_eq!(
+            url("https://rpc.example/ext/bc/C/rpc/Ab3xYz9", false),
+            "https://rpc.example/ext/bc/[REDACTED]/rpc/[REDACTED]"
+        );
+        assert_eq!(
+            url(
+                "https://rpc.example/KJHGFDSAPOIUYTREWQ?token=s3cr3t&page=2",
+                false
+            ),
+            "https://rpc.example/[REDACTED]?token=[REDACTED]&page=2"
+        );
+        assert_eq!(
+            url("https://x.example/v3/abc12?k=Zz", false),
+            "https://x.example/v3/[REDACTED]?k=[REDACTED]"
+        );
         // A known provider key is masked even when short.
         assert_eq!(
             url("https://eth-mainnet.g.alchemy.com/v2/abcdefgh", false),
