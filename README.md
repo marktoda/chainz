@@ -48,8 +48,8 @@ Completing never migrates, writes or unlocks anything.
 
 | Noun | What it is | Commands |
 | --- | --- | --- |
-| **Chain** | A network you work on, with a short name (`eth`, `base`, `arb`) and aliases | `chain ls/add/show/edit/rename/alias/rm`, `use` |
-| **Endpoint** | A named RPC URL on a chain; one is active, some may be failover | `rpc ls/add/use/rm/bench/discover` |
+| **Chain** | A network you work on, with a short name (`eth`, `base`, `arb`) and aliases | `chain ls/add/show/set/rm`, `update`, `use`, `edit` |
+| **Endpoint** | A named RPC URL on a chain; one is active, some may be failover | `rpc ls/add/rm/bench/discover`, `chain set --rpc` |
 | **Signer** | A reference to key material plus its cached address | `signer add/ls/rm/migrate` |
 | **Address** | A label for a contract or wallet, per chain or everywhere | `addr add/ls/rm/find`, `label` |
 | **Runtime** | Live processes chainz started: the gateway and forks | `serve`, `fork`, `top` |
@@ -60,17 +60,48 @@ name or ID.
 
 ## Quick start
 
-```bash
-chainz chain add 8453                 # from chainlist; becomes `base`
-chainz rpc add base https://base-mainnet.infura.io/v3/'${INFURA_KEY}' --use
-printf %s "$KEY" | chainz var set INFURA_KEY --stdin
-chainz signer add default             # stored in the OS keyring
-chainz use base                       # default chain for `exec -- …`
+```
+Quick start:
+  chainz signer add deployer               # store a key (OS keyring by default)
+  chainz chain add base                    # add a chain from chainlist; the signer attaches
+  chainz exec base -- cast block-number    # run a tool with the chain's context
+On a terminal, `chainz init` walks through the same steps.
+```
 
+The first signer you add attaches to every chain that has none, and
+`chain add` attaches the only signer (`--no-signer` skips it) and the
+`etherscan` explorer once it is configured. More setup:
+
+```bash
+chainz rpc add base https://base-mainnet.infura.io/v3/'${INFURA_KEY}' --activate
+printf %s "$KEY" | chainz var set INFURA_KEY --stdin
+printf %s "$ETHERSCAN_KEY" | chainz chain set base --explorer etherscan --api-key-stdin
+chainz use base                       # default chain for `exec -- …`
 chainz ls
-chainz exec -- cast block-number
 chainz doctor
 ```
+
+## Changing a chain: `chain set` (or `update`)
+
+One command changes any of a chain's settings, in one atomic write:
+
+```bash
+chainz chain set eth --signer deployer            # or --no-signer
+chainz chain set eth --rpc infura                 # activate an endpoint by name
+chainz chain set eth --rpc https://gw/rpc/1 --header 'x-secret: ${GW}'
+                                                  # a new URL is added, checked and activated
+chainz chain set eth --rpc gw --clear-headers
+chainz chain set eth --failover llama,ankr        # or --no-failover
+chainz chain set eth --explorer etherscan         # built in; or --no-explorer
+printf %s KEY | chainz chain set eth --api-key-stdin   # one key per explorer
+chainz chain set eth --name ethereum --alias main --rm-alias mainnet
+chainz update                                     # on a terminal: pick a chain, then a menu
+```
+
+With no flags on a terminal, `chain set` opens a menu (RPC, Signer,
+Explorer, Name, Aliases, Done) and applies your choices together. Off a
+terminal it needs flags. `chainz edit [CHAIN]` opens config.toml (or one
+chain's table) in `$EDITOR` for everything else.
 
 ## exec: run a tool with chain context
 
@@ -238,7 +269,7 @@ Chainz needs a signer's address often and its key almost never. Only
 `chainz signer migrate` moves plaintext keys into safe storage
 (`--all` for every plaintext signer; a failure doesn't stop the rest).
 `chainz signer rm` deletes the key material too, so it asks first; off a
-terminal pass `--yes`. Pass keys and variable values on stdin (`--stdin`):
+terminal pass `--yes`; a signer chains still use needs `--detach`. Pass keys and variable values on stdin (`--stdin`):
 a secret given as an argument works but warns, since it lands in shell
 history and `ps`.
 
@@ -283,16 +314,17 @@ base = "0x…"
 
 `${NAME}` resolves from the environment, then `secrets.toml`, then built-ins
 (`${CHAIN_ID}`, `${CHAIN}`). An unresolved reference is an error.
-`chainz config edit` and `chainz chain edit eth` validate on save.
+`chainz edit` and `chainz edit eth` validate on save.
 `chainz doctor` flags literal credentials in URLs, and `doctor --fix` moves
-them into variables. `chain add --rpc` and `rpc add` do the same as they
+them into variables. `chain add --url`, `chain set --rpc URL` and `rpc add` do the same as they
 write a URL with a known key (Infura, Alchemy) or a credential header, and
 say what they moved.
 
-Commands that change several things at once take `--yes` to skip the
-question (`rpc bench --fix --yes` also writes the proposed failover lists;
-`rpc discover --yes` adds every endpoint that answered). Off a terminal
-they never prompt: they report and tell you which flag to pass. Listing
+`--yes` (`-y`) always means "accept without asking": `signer rm --yes`
+deletes key material, `rpc bench --fix --yes` also writes the proposed
+failover lists, `rpc discover --yes` adds every endpoint that answered.
+Off a terminal chainz never prompts: it reports and tells you which flag
+to pass. Listing
 commands take `--json` (`ls`, `rpc ls`, `signer ls`, `var ls`, `addr ls`,
 `addr find`, `fork ls`, `serve status`).
 

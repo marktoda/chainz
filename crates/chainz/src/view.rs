@@ -2,21 +2,51 @@
 //! and the one plain-text [`table`] layout.
 //!
 //! Redaction happens when a view is built, so renderers cannot leak raw
-//! secrets. `--reveal` here shows raw config values (templates
-//! unexpanded). Resolved secret values are printed only where the user
+//! secrets: `chainz_core::redact` masks only credential-shaped parts
+//! (`${VAR}` templates, hosts and ordinary paths print as they are).
+//! `--reveal` here shows raw config values (templates unexpanded). Resolved secret values are printed only where the user
 //! asks for them: `var get --reveal`, `var ls --reveal`, `exec`'s
 //! environment (`env`, `shell`, `exec --expose-key`), and `top --reveal`.
 
 use crate::ui;
 use chainz_core::model::{Chain, Config, Endpoint};
-use chainz_core::redact::{redact, summarize};
+use chainz_core::redact;
 use console::{Alignment, pad_str, style};
 use serde::Serialize;
 use std::fmt::Write;
 
+/// How to start from nothing: `chainz` with no chains, `init` off a
+/// terminal, and the README (a test keeps them identical).
+pub const QUICK_START: &str = "\
+Quick start:
+  chainz signer add deployer               # store a key (OS keyring by default)
+  chainz chain add base                    # add a chain from chainlist; the signer attaches
+  chainz exec base -- cast block-number    # run a tool with the chain's context
+On a terminal, `chainz init` walks through the same steps.
+";
+
 /// Hint shown when no chains are configured.
-pub const EMPTY_HINT: &str =
-    "No chains configured. Add one with `chainz chain add <chain-id|name>`.";
+const EMPTY_HINT: &str = "No chains configured. Add one with `chainz chain add <chain-id|name>`.";
+
+/// The marker for an endpoint's role: `●` active, `◐` failover.
+pub fn marker(active: bool, failover: bool) -> &'static str {
+    if active {
+        "●"
+    } else if failover {
+        "◐"
+    } else {
+        " "
+    }
+}
+
+/// `-` for an empty cell.
+pub fn or_dash(value: &str) -> String {
+    if value.is_empty() {
+        "-".to_string()
+    } else {
+        value.to_string()
+    }
+}
 
 #[derive(Serialize)]
 pub struct EndpointView {
@@ -43,33 +73,25 @@ pub struct ChainView {
     pub endpoints: Vec<EndpointView>,
 }
 
-fn present_url(url: &str, reveal: bool) -> String {
-    if reveal { url.to_string() } else { redact(url) }
-}
-
 impl EndpointView {
     pub fn new(name: &str, endpoint: &Endpoint, chain: &Chain, reveal: bool) -> Self {
         Self {
             name: name.to_string(),
-            url: present_url(&endpoint.url, reveal),
+            url: redact::url(&endpoint.url, reveal),
             headers: endpoint
                 .headers
                 .iter()
-                .map(|(k, v)| {
-                    (
-                        k.clone(),
-                        if reveal {
-                            v.clone()
-                        } else {
-                            "[REDACTED]".to_string()
-                        },
-                    )
-                })
+                .map(|(k, v)| (k.clone(), redact::header(v, reveal)))
                 .collect(),
             active: chain.rpc == name,
             failover: chain.failover.iter().any(|f| f == name),
             websocket: endpoint.is_websocket(),
         }
+    }
+
+    /// The role marker (`●` active, `◐` failover).
+    pub fn marker(&self) -> &'static str {
+        marker(self.active, self.failover)
     }
 }
 
@@ -82,7 +104,7 @@ impl ChainView {
             rpc: chain.rpc.clone(),
             rpc_url: chain
                 .active()
-                .map(|e| present_url(&e.url, reveal))
+                .map(|e| redact::url(&e.url, reveal))
                 .unwrap_or_default(),
             failover: chain.failover.clone(),
             signer: chain.signer.clone(),
@@ -122,20 +144,14 @@ pub fn compact(config: &Config, reveal: bool) -> String {
             };
             let url = chain
                 .active()
-                .map(|e| {
-                    if reveal {
-                        e.url.clone()
-                    } else {
-                        summarize(&e.url)
-                    }
-                })
+                .map(|e| redact::url(&e.url, reveal))
                 .unwrap_or_default();
             [
                 format!("{marker}{name}"),
                 chain.id.to_string(),
                 format!("{} {}", chain.rpc, ui::dim(&url)),
-                chain.signer.clone().unwrap_or_else(|| "-".into()),
-                chain.explorer.clone().unwrap_or_else(|| "-".into()),
+                or_dash(chain.signer.as_deref().unwrap_or_default()),
+                or_dash(chain.explorer.as_deref().unwrap_or_default()),
             ]
         })
         .collect();
@@ -217,12 +233,10 @@ pub fn show(view: &ChainView, extra: &[(String, String)]) -> String {
     }
     writeln!(out, "  {}", style("endpoints").bold()).ok();
     for e in &view.endpoints {
-        let marker = if e.active {
-            style("●").green().to_string()
-        } else if e.failover {
-            style("◐").yellow().to_string()
-        } else {
-            " ".to_string()
+        let marker = match (e.active, e.failover) {
+            (true, _) => style(e.marker()).green().to_string(),
+            (false, true) => style(e.marker()).yellow().to_string(),
+            _ => e.marker().to_string(),
         };
         writeln!(out, "  {marker} {:<16} {}", e.name, e.url).ok();
         for (k, v) in &e.headers {

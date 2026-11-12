@@ -1,10 +1,11 @@
 //! `signer …`: key references with cached addresses. Key material is only
 //! read here (add, migrate) and by `exec --expose-key`.
 
-use super::{open, parse_address};
-use crate::cli::{BackendArg, MigrateTarget, SignerCommand};
-use crate::prompt::{self, StdinTrim, Terminal, read_stdin_secret};
-use crate::ui;
+use crate::args::parse_address;
+use crate::cli::{SignerAddArgs, SignerCommand, SignerMigrateArgs, SignerRmArgs};
+use crate::load::open;
+use crate::prompt::{self, Consent, StdinTrim, Terminal, read_stdin_secret};
+use crate::{ui, view};
 use anyhow::{Context, Result, anyhow, bail};
 use chainz_core::model::{Backend, Signer};
 use chainz_core::signer::{self, KeyBackend, Prompter, Provision, SystemKeyBackend};
@@ -16,31 +17,10 @@ use zeroize::Zeroizing;
 pub fn run(cmd: SignerCommand) -> Result<i32> {
     let backend = SystemKeyBackend;
     match cmd {
-        SignerCommand::Add {
-            name,
-            stdin,
-            key,
-            backend: kind,
-            path,
-            vault,
-            item,
-            address,
-        } => add(
-            &backend, &name, stdin, key, kind, path, vault, item, address,
-        ),
-        SignerCommand::Ls { json } => ls(json),
-        SignerCommand::Rm { name, force, yes } => rm(&backend, &name, force, yes),
-        SignerCommand::Migrate { name, all, to } => migrate(&backend, name, all, to),
-    }
-}
-
-fn backend_of(arg: BackendArg) -> Backend {
-    match arg {
-        BackendArg::Keyring => Backend::Keyring,
-        BackendArg::Encrypted => Backend::Encrypted,
-        BackendArg::OnePassword => Backend::OnePassword,
-        BackendArg::Keystore => Backend::Keystore,
-        BackendArg::Plaintext => Backend::Plaintext,
+        SignerCommand::Add(args) => add(&mut open()?, &backend, &args),
+        SignerCommand::Ls(args) => ls(args.json),
+        SignerCommand::Rm(args) => rm(&backend, &args),
+        SignerCommand::Migrate(args) => migrate(&backend, &args),
     }
 }
 
@@ -71,36 +51,32 @@ fn read_key(
     terminal.secret(&format!("Private key for {name}: "))
 }
 
-#[allow(clippy::too_many_arguments)]
-fn add(
-    backend: &dyn KeyBackend,
-    name: &str,
-    stdin: bool,
-    key: Option<String>,
-    kind: Option<BackendArg>,
-    path: Option<String>,
-    vault: Option<String>,
-    item: Option<String>,
-    address: Option<String>,
-) -> Result<i32> {
-    let mut chainz = open()?;
-    check_name(&chainz, name)?;
-    let kind = kind.map(backend_of).unwrap_or_else(|| {
-        if path.is_some() {
+/// `signer add`: store the key (or reference), then attach a first
+/// signer to every chain that has none (unless `--no-attach`).
+pub fn add(chainz: &mut Chainz, backend: &dyn KeyBackend, args: &SignerAddArgs) -> Result<i32> {
+    let name = args.name.as_str();
+    check_name(chainz, name)?;
+    let first = chainz.config().signers.is_empty();
+    let kind = args.backend.map(Backend::from).unwrap_or_else(|| {
+        if args.path.is_some() {
             Backend::Keystore
-        } else if vault.is_some() || item.is_some() {
+        } else if args.vault.is_some() || args.item.is_some() {
             Backend::OnePassword
         } else {
             signer::safe_default(backend)
         }
     });
-    let address = address
+    let address = args
+        .address
         .as_deref()
         .map(|a| parse_address(a, "--address"))
         .transpose()?;
     let provision = match kind {
         Backend::Keystore => {
-            let path = path.ok_or_else(|| anyhow!("a keystore signer needs --path"))?;
+            let path = args
+                .path
+                .clone()
+                .ok_or_else(|| anyhow!("a keystore signer needs --path"))?;
             let derived = match signer::keystore_address(&paths::expand_tilde(&path)) {
                 Ok(derived) => Some(derived),
                 Err(e) => {
@@ -124,7 +100,7 @@ fn add(
             Provision::reference(Signer::keystore(path, address))
         }
         Backend::OnePassword => {
-            let (vault, item) = match (vault, item) {
+            let (vault, item) = match (args.vault.clone(), args.item.clone()) {
                 (Some(v), Some(i)) => (v, i),
                 _ => bail!("a 1password signer needs --vault and --item"),
             };
@@ -139,7 +115,7 @@ fn add(
             Provision::reference(Signer::one_password(vault, item, Some(address)))
         }
         Backend::Keyring | Backend::Encrypted | Backend::Plaintext => {
-            let key = read_key(&Terminal, name, stdin, key)?;
+            let key = read_key(&Terminal, name, args.stdin, args.key.clone())?;
             Address::from_private_key(&key)?;
             let provision = signer::provision(backend, &Terminal, name, &key, kind)?;
             if let Some(given) = address
@@ -158,6 +134,15 @@ fn add(
             "{}",
             ui::warn(&format!("'{name}' is stored in plaintext in secrets.toml"))
         );
+    }
+    if first && !args.no_attach {
+        let attached = chainz.transact(|tx| tx.attach_signer_where_missing(name))?;
+        if !attached.is_empty() {
+            println!(
+                "Attached '{name}' to {} (chains without a signer; --no-attach to skip)",
+                attached.join(", ")
+            );
+        }
     }
     Ok(0)
 }
@@ -199,45 +184,52 @@ fn ls(json: bool) -> Result<i32> {
         println!("No signers. Add one with `chainz signer add <name>`.");
         return Ok(0);
     }
-    for r in rows {
-        let chains = if r.chains.is_empty() {
-            "-".to_string()
-        } else {
-            r.chains.join(", ")
-        };
-        println!(
-            "{:<16} {:<10} {:<42} {}",
-            r.name,
-            r.backend,
-            r.address.as_deref().unwrap_or("-"),
-            ui::dim(&chains)
-        );
-    }
+    let cells: Vec<[String; 4]> = rows
+        .into_iter()
+        .map(|r| {
+            [
+                r.name.to_string(),
+                r.backend.to_string(),
+                r.address.unwrap_or_else(|| "-".into()),
+                ui::dim(&view::or_dash(&r.chains.join(", "))),
+            ]
+        })
+        .collect();
+    print!(
+        "{}",
+        view::table(&["NAME", "BACKEND", "ADDRESS", "CHAINS"], &cells)
+    );
     Ok(0)
 }
 
-fn rm(backend: &dyn KeyBackend, name: &str, force: bool, yes: bool) -> Result<i32> {
+fn rm(backend: &dyn KeyBackend, args: &SignerRmArgs) -> Result<i32> {
+    let name = args.name.as_str();
     let mut chainz = open()?;
     let Some(record) = chainz.config().signers.get(name).cloned() else {
         bail!("signer '{name}' not found");
     };
     let users = chainz.config().chains_using_signer(name);
-    if !users.is_empty() && !force {
+    if !users.is_empty() && !args.detach {
         bail!(
-            "signer '{name}' is used by {}; pass --force to detach it",
+            "signer '{name}' is used by {}; pass --detach to detach it",
             users.join(", ")
         );
     }
     if let Some(material) = record.key_material() {
+        let hint = format!(
+            "`signer rm {name}` deletes {material}, which can't be undone; pass --yes to confirm"
+        );
         prompt::confirm_or_yes(
-            yes,
+            args.yes,
             &format!("Remove signer '{name}' and delete {material}? This can't be undone"),
-            &format!(
-                "`signer rm {name}` deletes {material}, which can't be undone; pass --yes to confirm"
-            ),
+            Consent::Destructive { hint: &hint },
         )?;
     }
-    let users = if force { Users::Detach } else { Users::Keep };
+    let users = if args.detach {
+        Users::Detach
+    } else {
+        Users::Keep
+    };
     let removed = chainz.remove_signer(backend, name, users)?;
     if let Err(e) = removed.external {
         let material = record.key_material().unwrap_or("its key material");
@@ -257,30 +249,21 @@ fn rm(backend: &dyn KeyBackend, name: &str, force: bool, yes: bool) -> Result<i3
     Ok(0)
 }
 
-fn target_of(backend: &dyn KeyBackend, to: Option<MigrateTarget>) -> Backend {
-    match to {
-        Some(MigrateTarget::Keyring) => Backend::Keyring,
-        Some(MigrateTarget::Encrypted) => Backend::Encrypted,
-        None => signer::safe_default(backend),
-    }
-}
-
-fn migrate(
-    backend: &dyn KeyBackend,
-    name: Option<String>,
-    all: bool,
-    to: Option<MigrateTarget>,
-) -> Result<i32> {
+fn migrate(backend: &dyn KeyBackend, args: &SignerMigrateArgs) -> Result<i32> {
     let mut chainz = open()?;
-    let target = target_of(backend, to);
-    let names: Vec<String> = match (name, all) {
-        (Some(n), _) => {
+    let target = args
+        .to
+        .map(Backend::from)
+        .unwrap_or_else(|| signer::safe_default(backend));
+    let all = args.all;
+    let names: Vec<String> = match args.name.clone() {
+        Some(n) => {
             if !chainz.config().signers.contains_key(&n) {
                 bail!("signer '{n}' not found");
             }
             vec![n]
         }
-        (None, _) => {
+        None => {
             let plain: Vec<String> = chainz
                 .config()
                 .signers

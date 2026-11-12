@@ -2,11 +2,10 @@
 
 use super::process;
 use super::start::anvil_target;
-use crate::commands::runtime;
 use crate::{net, ui, view};
 use anyhow::{Context as _, Result, bail};
 use chainz_core::fmt::{group, uptime};
-use chainz_core::runtime::{ForkEntry, ForkRecord};
+use chainz_core::runtime::{ForkEntry, ForkRecord, Runtime};
 use chainz_rpc::RpcClient;
 use chainz_sys::now_secs;
 use serde::Serialize;
@@ -34,7 +33,7 @@ struct ForkRow<'a> {
 }
 
 pub fn ls(json: bool) -> Result<i32> {
-    let runtime = runtime()?;
+    let runtime = Runtime::resolve()?;
     process::reap(&runtime)?;
     let entries = runtime
         .forks()
@@ -49,7 +48,7 @@ pub fn ls(json: bool) -> Result<i32> {
         println!("no forks running (start one with `chainz fork CHAIN`)");
         return Ok(0);
     }
-    let heights = net::block_on(heights(&forks));
+    let heights = net::block_on(heights(&forks))?;
     let now = now_secs();
     let rows: Vec<ForkRow> = forks
         .iter()
@@ -92,31 +91,23 @@ pub fn ls(json: bool) -> Result<i32> {
 }
 
 /// Every fork's block height, asked concurrently.
-async fn heights(forks: &[&ForkRecord]) -> Vec<Option<u64>> {
+async fn heights(forks: &[&ForkRecord]) -> Result<Vec<Option<u64>>> {
     let client = RpcClient::with_timeout(HEIGHT_TIMEOUT);
-    let mut set = tokio::task::JoinSet::new();
-    for (index, fork) in forks.iter().enumerate() {
+    let asks = forks.iter().map(|fork| {
         let client = client.clone();
         let target = anvil_target(fork.chain_id, fork.port);
-        set.spawn(async move {
-            let height = match target {
+        async move {
+            match target {
                 Ok(target) => client.block_number(&target).await.ok(),
                 Err(_) => None,
-            };
-            (index, height)
-        });
-    }
-    let mut heights = vec![None; forks.len()];
-    while let Some(joined) = set.join_next().await {
-        if let Ok((index, height)) = joined {
-            heights[index] = height;
+            }
         }
-    }
-    heights
+    });
+    net::join_indexed(asks.collect()).await
 }
 
 pub fn stop(name: Option<&str>, all: bool) -> Result<i32> {
-    let runtime = runtime()?;
+    let runtime = Runtime::resolve()?;
     process::reap(&runtime)?;
     let entries = runtime
         .forks()

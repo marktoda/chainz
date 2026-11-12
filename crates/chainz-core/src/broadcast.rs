@@ -456,7 +456,7 @@ pub fn plan(config: &Config, runs: &[Run], options: &Options) -> Vec<Planned> {
                         "@{name} is already {held} on {chain} (--force replaces it)"
                     )),
                     Err(_) => Action::Skip(format!(
-                        "@{name} holds an invalid address on {chain}; fix it with `chainz config edit`"
+                        "@{name} holds an invalid address on {chain}; fix it with `chainz edit`"
                     )),
                 },
             };

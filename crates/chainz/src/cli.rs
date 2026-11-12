@@ -1,7 +1,13 @@
 //! The whole CLI surface (clap definitions only). Handlers live in
-//! `commands/`, one module per command.
+//! `commands/`, one module per command; each takes its `…Args` struct, and
+//! conversions to core options happen here, once. Dynamic completion is
+//! declared on the arguments (`add = complete::…`, see `complete`).
 
+use crate::complete;
+use chainz_core::context::ExecOptions;
+use chainz_core::model::Backend;
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap_complete::engine::ArgValueCompleter;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -33,45 +39,20 @@ pub enum Command {
     Exec(ExecArgs),
 
     /// Open a subshell with a chain's context exported
-    Shell {
-        #[command(flatten)]
-        context: ContextArgs,
-    },
+    Shell(ContextArgs),
 
     /// Print a chain's context as shell exports: eval "$(chainz env base)"
-    Env {
-        #[command(flatten)]
-        context: ContextArgs,
-        /// Output syntax (default: from $SHELL)
-        #[arg(long, value_enum)]
-        shell: Option<ShellKind>,
-    },
+    Env(EnvArgs),
 
     /// Set the default chain (exec notes on stderr whenever it applies)
-    Use {
-        /// Chain name, alias, prefix or ID (picker if omitted on a TTY)
-        chain: Option<String>,
-        /// Clear the default instead
-        #[arg(long, conflicts_with = "chain")]
-        clear: bool,
-    },
+    Use(UseArgs),
 
     /// List chains (alias of `chain ls`)
     #[command(visible_alias = "list")]
     Ls(ListArgs),
 
     /// Live dashboard of chains, endpoints, balances and gateway traffic
-    Top {
-        /// Print one snapshot and exit
-        #[arg(long)]
-        once: bool,
-        /// JSON output (with --once)
-        #[arg(long)]
-        json: bool,
-        /// Show secret values
-        #[arg(long)]
-        reveal: bool,
-    },
+    Top(TopArgs),
 
     /// Local RPC gateway with failover, rate-limit smoothing and an inspector
     #[command(args_conflicts_with_subcommands = true)]
@@ -90,6 +71,15 @@ pub enum Command {
         #[command(flatten)]
         args: ForkArgs,
     },
+
+    /// Guided first-run setup: chains, a signer, an Etherscan key, a default
+    Init,
+
+    /// Change a chain's settings (same as `chain set`)
+    Update(ChainSetArgs),
+
+    /// Edit config.toml, or one chain's table, in $EDITOR (validated on save)
+    Edit(EditArgs),
 
     /// Manage chains
     Chain {
@@ -117,11 +107,7 @@ pub enum Command {
     },
 
     /// Rewrite addresses on stdin as name(0x…)
-    Label {
-        /// Chain whose labels apply
-        #[arg(long)]
-        chain: Option<String>,
-    },
+    Label(LabelArgs),
 
     /// Manage variables (values live in secrets.toml)
     Var {
@@ -130,16 +116,9 @@ pub enum Command {
     },
 
     /// Check config, secrets, references and RPC health
-    Doctor {
-        /// Repair what can be repaired (dead active RPCs, literal credentials)
-        #[arg(long)]
-        fix: bool,
-        /// Verify the built-in token registry on chain (checks only)
-        #[arg(long, conflicts_with = "fix")]
-        tokens: bool,
-    },
+    Doctor(DoctorArgs),
 
-    /// Config file utilities
+    /// Config file paths and the v1 migration
     Config {
         #[command(subcommand)]
         cmd: ConfigCommand,
@@ -157,26 +136,35 @@ pub enum Command {
     ///   elvish:     eval (chainz completions elvish | slurp)
     ///   powershell: chainz completions powershell | Out-String | Invoke-Expression
     #[command(verbatim_doc_comment)]
-    Completions {
-        #[arg(value_enum)]
-        shell: clap_complete::Shell,
-    },
+    Completions(CompletionsArgs),
 }
 
 /// The context selectors shared by `exec`, `env` and `shell`.
 #[derive(Debug, Clone, Default, Args)]
 pub struct ContextArgs {
     /// Chain name, alias, prefix, ID, or fork name
+    #[arg(add = ArgValueCompleter::new(complete::context_chains))]
     pub chain: Option<String>,
     /// Use this signer instead of the chain's
-    #[arg(long)]
+    #[arg(long, add = ArgValueCompleter::new(complete::signers))]
     pub signer: Option<String>,
     /// Use this endpoint instead of the active one
-    #[arg(long)]
+    #[arg(long, add = ArgValueCompleter::new(complete::endpoints))]
     pub rpc: Option<String>,
     /// Bypass a running gateway
     #[arg(long)]
     pub direct: bool,
+}
+
+impl From<&ContextArgs> for ExecOptions {
+    fn from(args: &ContextArgs) -> Self {
+        ExecOptions {
+            signer: args.signer.clone(),
+            rpc: args.rpc.clone(),
+            direct: args.direct,
+            expose_key: false,
+        }
+    }
 }
 
 #[derive(Debug, Args)]
@@ -190,8 +178,17 @@ pub struct ExecArgs {
     #[arg(long)]
     pub explain: bool,
     /// The command to run (after --)
-    #[arg(last = true, required = true, value_name = "CMD")]
+    #[arg(last = true, required = true, value_name = "CMD", add = ArgValueCompleter::new(complete::exec_words))]
     pub command: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct EnvArgs {
+    #[command(flatten)]
+    pub context: ContextArgs,
+    /// Output syntax (default: from $SHELL)
+    #[arg(long, value_enum)]
+    pub shell: Option<ShellKind>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -202,6 +199,16 @@ pub enum ShellKind {
 }
 
 #[derive(Debug, Args)]
+pub struct UseArgs {
+    /// Chain name, alias, prefix or ID (picker if omitted on a TTY)
+    #[arg(add = ArgValueCompleter::new(complete::configured_chains))]
+    pub chain: Option<String>,
+    /// Clear the default instead
+    #[arg(long, conflicts_with = "chain")]
+    pub clear: bool,
+}
+
+#[derive(Debug, Args)]
 pub struct ListArgs {
     /// JSON output
     #[arg(long)]
@@ -209,6 +216,59 @@ pub struct ListArgs {
     /// Show credential-bearing URLs and header values
     #[arg(long)]
     pub reveal: bool,
+}
+
+/// `--json` alone.
+#[derive(Debug, Args)]
+pub struct JsonArgs {
+    /// JSON output
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct TopArgs {
+    /// Print one snapshot and exit
+    #[arg(long)]
+    pub once: bool,
+    /// JSON output (with --once)
+    #[arg(long, requires = "once")]
+    pub json: bool,
+    /// Show secret values
+    #[arg(long)]
+    pub reveal: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct EditArgs {
+    /// Chain name, alias, prefix or ID: edit only its table (default: the
+    /// whole config.toml)
+    #[arg(add = ArgValueCompleter::new(complete::configured_chains))]
+    pub chain: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct LabelArgs {
+    /// Chain whose labels apply
+    #[arg(long, add = ArgValueCompleter::new(complete::chains_and_forks))]
+    pub chain: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct DoctorArgs {
+    /// Repair what can be repaired (dead active RPCs, literal credentials)
+    #[arg(long)]
+    pub fix: bool,
+    /// Verify the built-in token registry on chain (checks only)
+    #[arg(long, conflicts_with = "fix")]
+    pub tokens: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct CompletionsArgs {
+    /// The shell to print the loader for
+    #[arg(value_enum)]
+    pub shell: clap_complete::Shell,
 }
 
 #[derive(Debug, Args)]
@@ -227,31 +287,30 @@ pub struct ServeArgs {
 #[derive(Debug, Subcommand)]
 pub enum ServeCommand {
     /// Show whether the gateway runs, and its chains
-    Status {
-        /// JSON output
-        #[arg(long)]
-        json: bool,
-    },
+    Status(JsonArgs),
     /// Stop the gateway
     Stop,
     /// Show request records
-    Log {
-        /// Follow
-        #[arg(short, long)]
-        follow: bool,
-        /// Only this chain
-        #[arg(long)]
-        chain: Option<String>,
-        /// Only this method
-        #[arg(long)]
-        method: Option<String>,
-    },
+    Log(ServeLogArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ServeLogArgs {
+    /// Follow
+    #[arg(short, long)]
+    pub follow: bool,
+    /// Only this chain
+    #[arg(long, add = ArgValueCompleter::new(complete::configured_chains))]
+    pub chain: Option<String>,
+    /// Only this method
+    #[arg(long)]
+    pub method: Option<String>,
 }
 
 #[derive(Debug, Args)]
 pub struct ForkArgs {
     /// Chain to fork (`ls` and `stop` are subcommands)
-    #[arg(required = true)]
+    #[arg(required = true, add = ArgValueCompleter::new(complete::configured_chains))]
     pub chain: Option<String>,
     /// Fork at this block (needs an archive endpoint)
     #[arg(long)]
@@ -280,19 +339,19 @@ pub struct ForkArgs {
 pub enum ForkCommand {
     /// List live forks
     #[command(visible_alias = "list")]
-    Ls {
-        /// JSON output
-        #[arg(long)]
-        json: bool,
-    },
+    Ls(JsonArgs),
     /// Stop a fork
-    Stop {
-        /// Fork name
-        name: Option<String>,
-        /// Stop every fork
-        #[arg(long, conflicts_with = "name")]
-        all: bool,
-    },
+    Stop(ForkStopArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ForkStopArgs {
+    /// Fork name
+    #[arg(add = ArgValueCompleter::new(complete::fork_names))]
+    pub name: Option<String>,
+    /// Stop every fork
+    #[arg(long, conflicts_with = "name")]
+    pub all: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -301,111 +360,207 @@ pub enum ChainCommand {
     #[command(visible_alias = "list")]
     Ls(ListArgs),
     /// Add a chain from chainlist (by ID or name) or by hand
-    Add {
-        /// Chain ID or chainlist name (picker if omitted on a TTY)
-        chain: Option<String>,
-        /// Short name (default: built-in table, else a slug)
-        #[arg(long)]
-        name: Option<String>,
-        /// RPC URL; repeatable, the first becomes active
-        #[arg(long = "rpc", value_name = "URL")]
-        rpcs: Vec<String>,
-        /// Signer to attach
-        #[arg(long)]
-        signer: Option<String>,
-        /// Skip the chain-ID check of the active endpoint
-        #[arg(long)]
-        no_check: bool,
-        /// Re-download the chainlist
-        #[arg(long)]
-        refresh: bool,
-    },
+    Add(ChainAddArgs),
     /// Show one chain in full
-    Show {
-        chain: String,
-        #[arg(long)]
-        json: bool,
-        /// Show credential-bearing URLs and header values
-        #[arg(long)]
-        reveal: bool,
-    },
-    /// Edit one chain's TOML in $EDITOR (validated on save)
-    Edit { chain: String },
-    /// Rename a chain
-    Rename { chain: String, new_name: String },
-    /// Add (or with --remove, drop) aliases
-    Alias {
-        chain: String,
-        #[arg(required = true)]
-        aliases: Vec<String>,
-        #[arg(long)]
-        remove: bool,
-    },
+    Show(ChainShowArgs),
+    /// Change a chain's settings (also `chainz update`); a menu with no flags
+    Set(ChainSetArgs),
     /// Remove a chain (exact name or ID)
     #[command(visible_alias = "remove")]
-    Rm { chain: String },
+    Rm(ChainRmArgs),
+}
+
+#[derive(Debug, Default, Args)]
+pub struct ChainAddArgs {
+    /// Chain ID or chainlist name (picker if omitted on a TTY)
+    pub chain: Option<String>,
+    /// Short name (default: built-in table, else a slug)
+    #[arg(long)]
+    pub name: Option<String>,
+    /// RPC URL; repeatable, the first becomes active
+    #[arg(long = "url", value_name = "URL")]
+    pub urls: Vec<String>,
+    /// Signer to attach (default: the only signer, if there is one)
+    #[arg(long, conflicts_with = "no_signer", add = ArgValueCompleter::new(complete::signers))]
+    pub signer: Option<String>,
+    /// Attach no signer
+    #[arg(long)]
+    pub no_signer: bool,
+    /// Skip the chain-ID check of the active endpoint
+    #[arg(long)]
+    pub no_check: bool,
+    /// Re-download the chainlist
+    #[arg(long)]
+    pub refresh: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ChainShowArgs {
+    /// Chain name, alias, prefix or ID
+    #[arg(add = ArgValueCompleter::new(complete::configured_chains))]
+    pub chain: String,
+    /// JSON output
+    #[arg(long)]
+    pub json: bool,
+    /// Show credential-bearing URLs and header values
+    #[arg(long)]
+    pub reveal: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ChainRmArgs {
+    /// Exact chain name or ID
+    #[arg(add = ArgValueCompleter::new(complete::configured_chains))]
+    pub chain: String,
+}
+
+/// `chain set` / `update`: one patch to one chain, applied at once.
+#[derive(Debug, Default, Args)]
+pub struct ChainSetArgs {
+    /// Chain name, alias, prefix or ID (picker if omitted on a TTY)
+    #[arg(add = ArgValueCompleter::new(complete::configured_chains))]
+    pub chain: Option<String>,
+    /// Attach this signer
+    #[arg(long, value_name = "NAME", conflicts_with = "no_signer", add = ArgValueCompleter::new(complete::signers))]
+    pub signer: Option<String>,
+    /// Detach the signer
+    #[arg(long)]
+    pub no_signer: bool,
+    /// Activate an endpoint by name or URL; a new URL is added as an endpoint
+    #[arg(long, value_name = "NAME|URL", add = ArgValueCompleter::new(complete::endpoints))]
+    pub rpc: Option<String>,
+    /// Header for the --rpc endpoint (else the active one), as 'name: value' (repeatable)
+    #[arg(long = "header", value_name = "NAME: VALUE")]
+    pub headers: Vec<String>,
+    /// Drop that endpoint's headers first
+    #[arg(long)]
+    pub clear_headers: bool,
+    /// Failover endpoints, in order
+    #[arg(
+        long,
+        value_name = "NAME,...",
+        value_delimiter = ',',
+        conflicts_with = "no_failover",
+        add = ArgValueCompleter::new(complete::endpoints)
+    )]
+    pub failover: Vec<String>,
+    /// Clear the failover list
+    #[arg(long)]
+    pub no_failover: bool,
+    /// Attach this explorer (`etherscan` is built in)
+    #[arg(long, value_name = "NAME", conflicts_with = "no_explorer", add = ArgValueCompleter::new(complete::explorers))]
+    pub explorer: Option<String>,
+    /// Detach the explorer
+    #[arg(long)]
+    pub no_explorer: bool,
+    /// Read the explorer's API key from stdin (one key per explorer, shared by its chains)
+    #[arg(long, conflicts_with = "api_key")]
+    pub api_key_stdin: bool,
+    /// The explorer's API key as an argument (visible in history and `ps`; prefer --api-key-stdin)
+    #[arg(long, value_name = "KEY")]
+    pub api_key: Option<String>,
+    /// Rename the chain
+    #[arg(long, value_name = "NEW")]
+    pub name: Option<String>,
+    /// Add an alias (repeatable)
+    #[arg(long = "alias", value_name = "ALIAS")]
+    pub aliases: Vec<String>,
+    /// Remove an alias (repeatable)
+    #[arg(long = "rm-alias", value_name = "ALIAS")]
+    pub rm_aliases: Vec<String>,
+    /// Skip the chain-ID check of a new --rpc URL
+    #[arg(long)]
+    pub no_check: bool,
 }
 
 #[derive(Debug, Subcommand)]
 pub enum RpcCommand {
     /// List endpoints with their latest health
     #[command(visible_alias = "list")]
-    Ls {
-        /// Only this chain
-        chain: Option<String>,
-        #[arg(long)]
-        json: bool,
-        /// Show credential-bearing URLs and header values (as configured,
-        /// `${VAR}`s unexpanded)
-        #[arg(long)]
-        reveal: bool,
-    },
+    Ls(RpcLsArgs),
     /// Add an endpoint
-    Add {
-        chain: String,
-        url: String,
-        /// Endpoint name (default: from the host)
-        #[arg(long)]
-        name: Option<String>,
-        /// Header for this endpoint only, as 'name: value' (repeatable)
-        #[arg(long = "header", value_name = "NAME: VALUE")]
-        headers: Vec<String>,
-        /// Append to the chain's failover list
-        #[arg(long, conflicts_with = "activate")]
-        failover: bool,
-        /// Make it the active endpoint
-        #[arg(long = "use")]
-        activate: bool,
-        /// Skip the chain-ID check
-        #[arg(long)]
-        no_check: bool,
-    },
-    /// Make an endpoint active
-    Use { chain: String, name: String },
+    Add(RpcAddArgs),
     /// Remove an endpoint
     #[command(visible_alias = "remove")]
-    Rm { chain: String, name: String },
+    Rm(RpcRmArgs),
     /// Probe, rank and tag endpoints
-    Bench {
-        /// Only this chain
-        chain: Option<String>,
-        /// Activate the best endpoint and propose a failover list
-        #[arg(long)]
-        fix: bool,
-        /// With --fix: also write the proposed failover lists, without asking
-        #[arg(long, requires = "fix")]
-        yes: bool,
-    },
+    Bench(BenchArgs),
     /// Find public endpoints on chainlist, probe them, offer to add
-    Discover {
-        chain: String,
-        /// Re-download the chainlist
-        #[arg(long)]
-        refresh: bool,
-        /// Add every endpoint that answered, without asking
-        #[arg(long)]
-        yes: bool,
-    },
+    Discover(DiscoverArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct RpcLsArgs {
+    /// Only this chain (name, alias, prefix or ID)
+    #[arg(add = ArgValueCompleter::new(complete::configured_chains))]
+    pub chain: Option<String>,
+    /// JSON output
+    #[arg(long)]
+    pub json: bool,
+    /// Show credential-bearing URLs and header values (as configured,
+    /// `${VAR}`s unexpanded)
+    #[arg(long)]
+    pub reveal: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct RpcAddArgs {
+    /// Chain name, alias, prefix or ID
+    #[arg(add = ArgValueCompleter::new(complete::configured_chains))]
+    pub chain: String,
+    /// The endpoint's URL (http(s) or ws(s))
+    pub url: String,
+    /// Endpoint name (default: from the host)
+    #[arg(long)]
+    pub name: Option<String>,
+    /// Header for this endpoint only, as 'name: value' (repeatable)
+    #[arg(long = "header", value_name = "NAME: VALUE")]
+    pub headers: Vec<String>,
+    /// Append to the chain's failover list
+    #[arg(long, conflicts_with = "activate")]
+    pub failover: bool,
+    /// Make it the active endpoint
+    #[arg(long)]
+    pub activate: bool,
+    /// Skip the chain-ID check
+    #[arg(long)]
+    pub no_check: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct RpcRmArgs {
+    /// Chain name, alias, prefix or ID
+    #[arg(add = ArgValueCompleter::new(complete::configured_chains))]
+    pub chain: String,
+    /// Endpoint name
+    #[arg(add = ArgValueCompleter::new(complete::endpoints))]
+    pub name: String,
+}
+
+#[derive(Debug, Args)]
+pub struct BenchArgs {
+    /// Only this chain (name, alias, prefix or ID)
+    #[arg(add = ArgValueCompleter::new(complete::configured_chains))]
+    pub chain: Option<String>,
+    /// Activate the best endpoint and propose a failover list
+    #[arg(long)]
+    pub fix: bool,
+    /// With --fix: write the proposed failover lists without asking
+    #[arg(long, short, requires = "fix")]
+    pub yes: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct DiscoverArgs {
+    /// Chain name, alias, prefix or ID
+    #[arg(add = ArgValueCompleter::new(complete::configured_chains))]
+    pub chain: String,
+    /// Re-download the chainlist
+    #[arg(long)]
+    pub refresh: bool,
+    /// Add every endpoint that answered without asking
+    #[arg(long, short)]
+    pub yes: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -421,174 +576,271 @@ pub enum BackendArg {
     Plaintext,
 }
 
+impl From<BackendArg> for Backend {
+    fn from(arg: BackendArg) -> Self {
+        match arg {
+            BackendArg::Keyring => Backend::Keyring,
+            BackendArg::Encrypted => Backend::Encrypted,
+            BackendArg::OnePassword => Backend::OnePassword,
+            BackendArg::Keystore => Backend::Keystore,
+            BackendArg::Plaintext => Backend::Plaintext,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum MigrateTarget {
     Keyring,
     Encrypted,
 }
 
+impl From<MigrateTarget> for Backend {
+    fn from(arg: MigrateTarget) -> Self {
+        match arg {
+            MigrateTarget::Keyring => Backend::Keyring,
+            MigrateTarget::Encrypted => Backend::Encrypted,
+        }
+    }
+}
+
 #[derive(Debug, Subcommand)]
 pub enum SignerCommand {
     /// Add a signer
-    Add {
-        name: String,
-        /// Read the private key from stdin
-        #[arg(long)]
-        stdin: bool,
-        /// Private key as an argument (visible in history and `ps`; prefer --stdin)
-        #[arg(long, hide = true, conflicts_with = "stdin")]
-        key: Option<String>,
-        /// Where the key lives (default: keyring, else encrypted)
-        #[arg(long, value_enum, alias = "type")]
-        backend: Option<BackendArg>,
-        /// Keystore file (keystore backend)
-        #[arg(long)]
-        path: Option<String>,
-        /// 1Password vault (1password backend)
-        #[arg(long)]
-        vault: Option<String>,
-        /// 1Password item (1password backend)
-        #[arg(long)]
-        item: Option<String>,
-        /// Cached address, when it cannot be derived
-        #[arg(long)]
-        address: Option<String>,
-    },
+    Add(SignerAddArgs),
     /// List signers (never shows key material)
     #[command(visible_alias = "list")]
-    Ls {
-        #[arg(long)]
-        json: bool,
-    },
+    Ls(JsonArgs),
     /// Remove a signer and delete its key material (keyring entry or
     /// secrets.toml entry); asks first unless --yes
     #[command(visible_alias = "remove")]
-    Rm {
-        name: String,
-        /// Detach it from chains that use it
-        #[arg(long)]
-        force: bool,
-        /// Don't ask for confirmation (required off a TTY)
-        #[arg(long, short)]
-        yes: bool,
-    },
+    Rm(SignerRmArgs),
     /// Move keys into safe storage
-    Migrate {
-        name: Option<String>,
-        /// Every plaintext signer
-        #[arg(long, conflicts_with = "name")]
-        all: bool,
-        /// Destination (default: keyring, else encrypted)
-        #[arg(long, value_enum)]
-        to: Option<MigrateTarget>,
-    },
+    Migrate(SignerMigrateArgs),
+}
+
+#[derive(Debug, Default, Args)]
+pub struct SignerAddArgs {
+    /// Name for the signer, also its @token (e.g. deployer)
+    pub name: String,
+    /// Read the private key from stdin
+    #[arg(long)]
+    pub stdin: bool,
+    /// Private key as an argument (visible in history and `ps`; prefer --stdin)
+    #[arg(long, hide = true, conflicts_with = "stdin")]
+    pub key: Option<String>,
+    /// Where the key lives (default: keyring, else encrypted)
+    #[arg(long, value_enum, alias = "type")]
+    pub backend: Option<BackendArg>,
+    /// Keystore file (keystore backend)
+    #[arg(long)]
+    pub path: Option<String>,
+    /// 1Password vault (1password backend)
+    #[arg(long)]
+    pub vault: Option<String>,
+    /// 1Password item (1password backend)
+    #[arg(long)]
+    pub item: Option<String>,
+    /// Cached address, when it cannot be derived
+    #[arg(long)]
+    pub address: Option<String>,
+    /// Don't attach a first signer to the chains that have none
+    #[arg(long)]
+    pub no_attach: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct SignerRmArgs {
+    /// Signer name
+    #[arg(add = ArgValueCompleter::new(complete::signers))]
+    pub name: String,
+    /// Detach it from chains that use it
+    #[arg(long)]
+    pub detach: bool,
+    /// Delete the key material without asking (required off a TTY)
+    #[arg(long, short)]
+    pub yes: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct SignerMigrateArgs {
+    /// Signer name (default: the only plaintext signer)
+    #[arg(add = ArgValueCompleter::new(complete::signers))]
+    pub name: Option<String>,
+    /// Every plaintext signer
+    #[arg(long, conflicts_with = "name")]
+    pub all: bool,
+    /// Destination (default: keyring, else encrypted)
+    #[arg(long, value_enum)]
+    pub to: Option<MigrateTarget>,
 }
 
 #[derive(Debug, Subcommand)]
 pub enum AddrCommand {
     /// Name an address
-    Add {
-        name: String,
-        address: String,
-        #[arg(long)]
-        chain: Option<String>,
-        #[arg(long, conflicts_with = "chain")]
-        all_chains: bool,
-    },
+    Add(AddrAddArgs),
     /// List labels
     #[command(visible_alias = "list")]
-    Ls {
-        #[arg(long)]
-        chain: Option<String>,
-        #[arg(long)]
-        builtin: bool,
-        /// JSON output
-        #[arg(long)]
-        json: bool,
-    },
+    Ls(AddrLsArgs),
     /// Remove a label
     #[command(visible_alias = "remove")]
-    Rm {
-        name: String,
-        /// Only on this configured chain (or '*' for the every-chain entry)
-        #[arg(long)]
-        chain: Option<String>,
-    },
+    Rm(AddrRmArgs),
     /// Reverse-look-up an address
-    Find {
-        address: String,
-        /// JSON output
-        #[arg(long)]
-        json: bool,
-    },
+    Find(AddrFindArgs),
     /// Label contracts from Foundry broadcast output
-    Import {
-        /// run-latest.json files, or directories holding broadcast/
-        #[arg(required = true, value_name = "PATH")]
-        paths: Vec<std::path::PathBuf>,
-        /// Show the plan; write nothing
-        #[arg(long)]
-        dry_run: bool,
-        /// Prepend to every name (e.g. `v4-`)
-        #[arg(long, value_name = "STR")]
-        prefix: Option<String>,
-        /// Only these contracts (contract or label names, comma-separated)
-        #[arg(long, value_name = "NAME,...", value_delimiter = ',')]
-        only: Vec<String>,
-        /// Replace labels that hold a different address on the chain
-        #[arg(long)]
-        force: bool,
-        /// JSON output
-        #[arg(long)]
-        json: bool,
-    },
+    Import(AddrImportArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct AddrAddArgs {
+    /// Label name, used as @name
+    pub name: String,
+    /// The 0x address
+    pub address: String,
+    /// Only on this chain (default: the chain context, else a picker)
+    #[arg(long, add = ArgValueCompleter::new(complete::chains_and_forks))]
+    pub chain: Option<String>,
+    /// On every chain
+    #[arg(long, conflicts_with = "chain")]
+    pub all_chains: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct AddrLsArgs {
+    /// What @name means on this chain
+    #[arg(long, add = ArgValueCompleter::new(complete::chains_and_forks))]
+    pub chain: Option<String>,
+    /// Include the built-in tokens
+    #[arg(long)]
+    pub builtin: bool,
+    /// JSON output
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct AddrRmArgs {
+    /// Label name
+    #[arg(add = ArgValueCompleter::new(complete::user_labels))]
+    pub name: String,
+    /// Only on this configured chain (or '*' for the every-chain entry)
+    #[arg(long, add = ArgValueCompleter::new(complete::label_scopes))]
+    pub chain: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct AddrFindArgs {
+    /// The 0x address
+    pub address: String,
+    /// JSON output
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct AddrImportArgs {
+    /// run-latest.json files, or directories holding broadcast/
+    #[arg(required = true, value_name = "PATH")]
+    pub paths: Vec<std::path::PathBuf>,
+    /// Show the plan; write nothing
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Prepend to every name (e.g. `v4-`)
+    #[arg(long, value_name = "STR")]
+    pub prefix: Option<String>,
+    /// Only these contracts (contract or label names, comma-separated)
+    #[arg(long, value_name = "NAME,...", value_delimiter = ',')]
+    pub only: Vec<String>,
+    /// Replace labels that hold a different address on the chain
+    #[arg(long)]
+    pub force: bool,
+    /// JSON output
+    #[arg(long)]
+    pub json: bool,
+}
+
+impl From<&AddrImportArgs> for chainz_core::broadcast::Options {
+    fn from(args: &AddrImportArgs) -> Self {
+        chainz_core::broadcast::Options {
+            prefix: args.prefix.clone().unwrap_or_default(),
+            only: args.only.clone(),
+            force: args.force,
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
 pub enum VarCommand {
     /// Set a variable (prefer --stdin over an argument)
-    Set {
-        name: String,
-        /// The value (visible in shell history and `ps`; prefer --stdin)
-        value: Option<String>,
-        #[arg(long, conflicts_with = "value")]
-        stdin: bool,
-    },
+    Set(VarSetArgs),
     /// Show a variable (redacted unless --reveal)
-    Get {
-        name: String,
-        #[arg(long, alias = "show")]
-        reveal: bool,
-    },
+    Get(VarGetArgs),
     /// List variables
     #[command(visible_alias = "list")]
-    Ls {
-        #[arg(long, alias = "show")]
-        reveal: bool,
-        #[arg(long)]
-        json: bool,
-    },
+    Ls(VarLsArgs),
     /// Remove a variable
     #[command(visible_alias = "remove")]
-    Rm { name: String },
+    Rm(VarNameArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct VarSetArgs {
+    /// Variable name, referenced as ${NAME}
+    #[arg(add = ArgValueCompleter::new(complete::vars))]
+    pub name: String,
+    /// The value (visible in shell history and `ps`; prefer --stdin)
+    pub value: Option<String>,
+    /// Read the value from stdin
+    #[arg(long, conflicts_with = "value")]
+    pub stdin: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct VarGetArgs {
+    /// Variable name
+    #[arg(add = ArgValueCompleter::new(complete::vars))]
+    pub name: String,
+    /// Print the value
+    #[arg(long, alias = "show")]
+    pub reveal: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct VarLsArgs {
+    /// Print the values
+    #[arg(long, alias = "show")]
+    pub reveal: bool,
+    /// JSON output
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct VarNameArgs {
+    /// Variable name
+    #[arg(add = ArgValueCompleter::new(complete::vars))]
+    pub name: String,
 }
 
 #[derive(Debug, Subcommand)]
 pub enum ConfigCommand {
     /// Print the config file path
-    Path {
-        /// Print every chainz path (config, secrets, state, cache, runtime)
-        #[arg(long)]
-        all: bool,
-    },
-    /// Edit config.toml in $EDITOR (validated on save)
-    Edit,
+    Path(ConfigPathArgs),
     /// Migrate the v1 config.json
-    Migrate {
-        /// Print the resulting config.toml without writing anything
-        #[arg(long)]
-        dry_run: bool,
-    },
+    Migrate(ConfigMigrateArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ConfigPathArgs {
+    /// Print every chainz path (config, secrets, state, cache, runtime)
+    #[arg(long)]
+    pub all: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ConfigMigrateArgs {
+    /// Print the resulting config.toml without writing anything
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 #[cfg(test)]

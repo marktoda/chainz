@@ -144,7 +144,10 @@ fn edits_preserve_comments_and_order() {
     sb.write_config(
         "# my chains\nversion = 2\n\n# mainnet first\n[chains.eth]\nid = 1\nrpc = \"a\" # keep me\n\n[chains.eth.rpcs]\na = \"http://a.invalid\"\nb = \"http://b.invalid\"\n",
     );
-    sb.cmd().args(["rpc", "use", "eth", "b"]).assert().success();
+    sb.cmd()
+        .args(["chain", "set", "eth", "--rpc", "b"])
+        .assert()
+        .success();
     let text = sb.config();
     assert!(text.contains("# my chains"));
     assert!(text.contains("# mainnet first"));
@@ -382,16 +385,16 @@ fn signer_add_rejects_invalid_key_and_duplicates() {
 }
 
 #[test]
-fn signer_rm_requires_force_when_attached() {
+fn signer_rm_requires_detach_when_attached() {
     let sb = Sandbox::new();
     sb.seed(&[("eth", 1)]);
     sb.cmd()
         .args(["signer", "rm", "default"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("--force"));
+        .stderr(predicate::str::contains("--detach"));
     sb.cmd()
-        .args(["signer", "rm", "default", "--force", "--yes"])
+        .args(["signer", "rm", "default", "--detach", "--yes"])
         .assert()
         .success();
     assert!(!sb.config().contains("[signers.default]"));
@@ -458,7 +461,7 @@ fn chain_add_by_hand_checks_chain_id() {
     let sb = Sandbox::new();
     let url = chain_id_rpc(8453);
     sb.cmd()
-        .args(["chain", "add", "8453", "--rpc", &url])
+        .args(["chain", "add", "8453", "--url", &url])
         .assert()
         .success()
         .stdout(predicate::str::contains("Added chain 'base'"));
@@ -466,7 +469,7 @@ fn chain_add_by_hand_checks_chain_id() {
     // Wrong ID is refused.
     let url = chain_id_rpc(1);
     sb.cmd()
-        .args(["chain", "add", "10", "--rpc", &url])
+        .args(["chain", "add", "10", "--url", &url])
         .assert()
         .failure()
         .stderr(predicate::str::contains("RPC check failed"));
@@ -480,7 +483,7 @@ fn rpc_failure_never_leaks_the_url() {
             "chain",
             "add",
             "8453",
-            "--rpc",
+            "--url",
             "http://127.0.0.1:1/v3/topsecretkey1234567",
         ])
         .assert()
@@ -502,16 +505,16 @@ fn chain_rm_by_name_and_id_requires_exact_match() {
 }
 
 #[test]
-fn chain_rename_and_alias() {
+fn chain_set_renames_and_aliases() {
     let sb = Sandbox::new();
     sb.seed(&[("eth", 1)]);
     sb.cmd().args(["use", "eth"]).assert().success();
     sb.cmd()
-        .args(["chain", "rename", "eth", "mainnet"])
+        .args(["chain", "set", "eth", "--name", "mainnet"])
         .assert()
         .success();
     sb.cmd()
-        .args(["chain", "alias", "mainnet", "ethereum"])
+        .args(["update", "mainnet", "--alias", "ethereum"])
         .assert()
         .success();
     let text = sb.config();
@@ -596,7 +599,7 @@ fn rpc_add_with_header_and_use_and_rm() {
             "--header",
             "x-api-key: ${KEY}",
             "--no-check",
-            "--use",
+            "--activate",
         ])
         .assert()
         .success();
@@ -615,7 +618,7 @@ fn rpc_add_with_header_and_use_and_rm() {
         .failure()
         .stderr(predicate::str::contains("active"));
     sb.cmd()
-        .args(["rpc", "use", "eth", "local"])
+        .args(["chain", "set", "eth", "--rpc", "local"])
         .assert()
         .success();
     sb.cmd()
@@ -1007,7 +1010,7 @@ fn config_path_lists_every_location() {
 }
 
 #[test]
-fn config_edit_validates_before_saving() {
+fn edit_validates_before_saving() {
     let sb = Sandbox::new();
     sb.seed(&[("eth", 1)]);
     let before = sb.config();
@@ -1017,26 +1020,26 @@ fn config_edit_validates_before_saving() {
             "EDITOR",
             "sed -i s/rpc\\ =\\ \\\"local\\\"/rpc\\ =\\ \\\"nope\\\"/",
         )
-        .args(["config", "edit"])
+        .args(["edit"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("nope"));
     assert_eq!(sb.config(), before);
     sb.cmd()
         .env("EDITOR", "sed -i s/id\\ =\\ 1$/id\\ =\\ 5/")
-        .args(["config", "edit"])
+        .args(["edit"])
         .assert()
         .success();
     assert!(sb.config().contains("id = 5"));
 }
 
 #[test]
-fn chain_edit_replaces_one_chain() {
+fn edit_chain_replaces_one_chain() {
     let sb = Sandbox::new();
     sb.seed(&[("eth", 1), ("base", 8453)]);
     sb.cmd()
         .env("EDITOR", "sed -i s/id\\ =\\ 8453/id\\ =\\ 84532/")
-        .args(["chain", "edit", "base"])
+        .args(["edit", "ba"])
         .assert()
         .success();
     assert!(sb.config().contains("id = 84532"));
@@ -1130,7 +1133,7 @@ fn chain_add_from_chainlist_skips_invalid_urls_and_picks_a_live_one() {
 fn chain_add_and_rpc_add_move_url_keys_into_secrets() {
     let sb = Sandbox::new();
     sb.cmd()
-        .args(["chain", "add", "1", "--rpc", INFURA_URL, "--no-check"])
+        .args(["chain", "add", "1", "--url", INFURA_URL, "--no-check"])
         .assert()
         .success()
         .stdout(
@@ -1351,7 +1354,7 @@ fn signer_migrate_off_a_tty_changes_nothing_and_reports_each_failure() {
 fn signer_rm_needs_yes_off_a_tty_but_references_do_not() {
     let sb = Sandbox::new();
     sb.seed(&[("eth", 1)]);
-    let out = sb.run(&["signer", "rm", "default", "--force"]);
+    let out = sb.run(&["signer", "rm", "default", "--detach"]);
     assert!(!out.status.success());
     assert!(
         stderr(&out).contains("pass --yes to confirm"),
@@ -1377,7 +1380,7 @@ fn signer_rm_needs_yes_off_a_tty_but_references_do_not() {
         .assert()
         .success();
     sb.ok(&["signer", "remove", "ks"]);
-    sb.ok(&["key", "rm", "default", "--force", "-y"]);
+    sb.ok(&["key", "rm", "default", "--detach", "-y"]);
     assert!(!sb.secrets().contains(TEST_KEY));
 }
 

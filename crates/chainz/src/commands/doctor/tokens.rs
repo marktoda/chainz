@@ -2,7 +2,7 @@
 //! chains themselves. For every entry on a configured chain: the address
 //! has code, and `symbol()` and `decimals()` return what the registry says.
 
-use crate::commands::open;
+use crate::load::open;
 use crate::{net, ui};
 use anyhow::Result;
 use chainz_core::Chainz;
@@ -58,7 +58,7 @@ pub fn run() -> Result<i32> {
             }
         }
     }
-    outcomes.extend(net::block_on(check_chains(jobs)));
+    outcomes.extend(net::block_on(check_chains(jobs))?);
 
     println!("{}", ui::section("tokens"));
     let (mut ok, mut failed, mut skipped) = (0, 0, 0);
@@ -147,7 +147,7 @@ fn endpoint(chainz: &Chainz, name: &str, chain: &Chain) -> Result<(String, Targe
         .map_err(|e| format!("{e:#}"))
 }
 
-async fn check_chains(jobs: Vec<Job>) -> Vec<(u64, Outcome)> {
+async fn check_chains(jobs: Vec<Job>) -> anyhow::Result<Vec<(u64, Outcome)>> {
     // Chains on one provider share its rate limit: those go one after
     // another, and only different providers run side by side.
     let mut by_provider: BTreeMap<String, Vec<Job>> = BTreeMap::new();
@@ -158,23 +158,22 @@ async fn check_chains(jobs: Vec<Job>) -> Vec<(u64, Outcome)> {
             .push(job);
     }
     let client = RpcClient::new();
-    let mut set = tokio::task::JoinSet::new();
-    for (_, jobs) in by_provider {
+    let providers = by_provider.into_values().map(|jobs| {
         let client = client.clone();
-        set.spawn(async move {
+        async move {
             let mut out = Vec::with_capacity(jobs.len());
             for job in jobs {
                 let outcome = check_chain(&client, &job.target, job.chain_id, &job.tokens).await;
                 out.push((job.chain_id, outcome));
             }
             out
-        });
-    }
-    let mut out = Vec::new();
-    while let Some(joined) = set.join_next().await {
-        out.extend(joined.expect("token checks do not panic"));
-    }
-    out
+        }
+    });
+    Ok(net::join_indexed(providers.collect())
+        .await?
+        .into_iter()
+        .flatten()
+        .collect())
 }
 
 /// Check one chain's tokens in turn (one endpoint, no bursts).

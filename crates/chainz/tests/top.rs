@@ -309,8 +309,9 @@ fn the_live_view_needs_a_terminal_and_json_needs_once() {
         .code(1)
         .stderr(predicates::str::contains("needs a terminal"))
         .stderr(predicates::str::contains("chainz top --once --json"));
+    // clap refuses `--json` without `--once` (a usage error).
     top(&sandbox, &["--json"])
         .assert()
-        .code(1)
-        .stderr(predicates::str::contains("`--json` needs `--once`"));
+        .code(2)
+        .stderr(predicates::str::contains("--once"));
 }

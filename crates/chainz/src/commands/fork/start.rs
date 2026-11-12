@@ -3,7 +3,7 @@
 use super::fund::{self, FundPlan};
 use super::{endpoint, process};
 use crate::cli::ForkArgs;
-use crate::commands::{chain_arg, open, runtime};
+use crate::load::open;
 use crate::{net, sys, ui};
 use anyhow::{Context as _, Result, anyhow, bail};
 use chainz_core::Chainz;
@@ -11,6 +11,7 @@ use chainz_core::fmt::{group, short_address};
 use chainz_core::forks;
 use chainz_core::labels;
 use chainz_core::model::{Chain, Config};
+use chainz_core::resolve::{self, Policy};
 use chainz_core::runtime::{
     ForkClaim, ForkRecord, LOOPBACK, PortReservation, Runtime, loopback_url,
 };
@@ -152,14 +153,14 @@ pub(super) fn anvil_target(chain_id: u64, port: u16) -> Result<Target> {
 
 pub fn start(args: ForkArgs) -> Result<i32> {
     let chainz = open()?;
-    let runtime = runtime()?;
+    let runtime = Runtime::resolve()?;
     let query = args
         .chain
         .as_deref()
         .ok_or_else(|| anyhow!("no chain given: chainz fork CHAIN"))?;
-    let parent = chain_arg(&chainz, query)?;
     let config = chainz.config();
-    let chain = &config.chains[&parent];
+    let (parent, chain) = resolve::configured(config, query, Policy::Prefix)?;
+    let parent = parent.to_string();
     forks::check_forkable(&parent, chain.id)?;
 
     process::reap(&runtime)?;

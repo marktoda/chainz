@@ -1,9 +1,12 @@
 //! Terminal prompts and stdin secrets. Interrupting a prompt (Ctrl-C, Esc)
 //! is [`ui::cancelled`], which exits 130.
+//!
+//! Interactive flows (the `chain set` menu, `init`) ask through [`Ask`],
+//! so tests drive them with scripted answers; [`Tty`] is the terminal.
 
 use crate::ui;
 use anyhow::{Context, Result, bail};
-use dialoguer::{Confirm, FuzzySelect, MultiSelect};
+use dialoguer::{Confirm, FuzzySelect, Input, MultiSelect};
 use std::io::IsTerminal;
 use zeroize::Zeroizing;
 
@@ -23,20 +26,76 @@ pub fn confirm(message: &str, default: bool) -> Result<bool> {
     )
 }
 
-/// Go ahead with something destructive or batch-editing: `--yes` says so
-/// up front; otherwise ask on a TTY, and off a TTY fail with `hint` (what
-/// to pass instead). Declining is [`ui::cancelled`].
-pub fn confirm_or_yes(yes: bool, message: &str, hint: &str) -> Result<()> {
+/// What declining, or having no TTY to ask on, means for [`confirm_or_yes`].
+#[derive(Clone, Copy, Debug)]
+pub enum Consent<'a> {
+    /// Something that can't be undone: off a TTY it is an error naming
+    /// `hint` (what to pass instead); declining is [`ui::cancelled`].
+    Destructive { hint: &'a str },
+    /// An optional extra: off a TTY it is skipped and `note` says how to
+    /// get it; declining skips it.
+    Proposal { note: &'a str },
+}
+
+/// Whether to go ahead: `--yes` accepts without asking; otherwise ask on
+/// a TTY (default no), and off a TTY follow `consent`.
+pub fn confirm_or_yes(yes: bool, message: &str, consent: Consent<'_>) -> Result<bool> {
     if yes {
-        return Ok(());
+        return Ok(true);
     }
     if !is_tty() {
-        bail!("{hint}");
+        return match consent {
+            Consent::Destructive { hint } => bail!("{hint}"),
+            Consent::Proposal { note } => {
+                println!("{}", ui::dim(note));
+                Ok(false)
+            }
+        };
     }
-    if confirm(message, false)? {
-        Ok(())
-    } else {
-        Err(ui::cancelled())
+    match (confirm(message, false)?, consent) {
+        (true, _) => Ok(true),
+        (false, Consent::Destructive { .. }) => Err(ui::cancelled()),
+        (false, Consent::Proposal { .. }) => Ok(false),
+    }
+}
+
+/// The questions an interactive flow asks. Every method is a cancellation
+/// point: Ctrl-C or Esc is [`ui::cancelled`].
+pub trait Ask {
+    /// Pick one of `items`.
+    fn select(&mut self, message: &str, items: &[String], default: usize) -> Result<usize>;
+    /// A line of text (`default` when the user just presses enter).
+    fn text(&mut self, message: &str, default: Option<&str>) -> Result<String>;
+    /// A hidden line (a key).
+    fn secret(&mut self, message: &str) -> Result<Zeroizing<String>>;
+    /// Yes or no.
+    fn confirm(&mut self, message: &str, default: bool) -> Result<bool>;
+}
+
+/// [`Ask`] on the terminal.
+pub struct Tty;
+
+impl Ask for Tty {
+    fn select(&mut self, message: &str, items: &[String], default: usize) -> Result<usize> {
+        select(message, items, default)
+    }
+
+    fn text(&mut self, message: &str, default: Option<&str>) -> Result<String> {
+        let mut input = Input::<String>::new()
+            .with_prompt(message)
+            .allow_empty(true);
+        if let Some(default) = default {
+            input = input.default(default.to_string());
+        }
+        terminal_prompt(input.interact_text())
+    }
+
+    fn secret(&mut self, message: &str) -> Result<Zeroizing<String>> {
+        chainz_core::signer::Prompter::secret(&Terminal, &format!("{message}: "))
+    }
+
+    fn confirm(&mut self, message: &str, default: bool) -> Result<bool> {
+        confirm(message, default)
     }
 }
 
@@ -149,10 +208,14 @@ mod tests {
 
     #[test]
     fn yes_skips_the_prompt_and_no_tty_needs_it() {
-        assert!(confirm_or_yes(true, "sure?", "pass --yes").is_ok());
+        let destructive = Consent::Destructive { hint: "pass --yes" };
+        let proposal = Consent::Proposal { note: "skipped" };
+        assert!(confirm_or_yes(true, "sure?", destructive).unwrap());
+        assert!(confirm_or_yes(true, "sure?", proposal).unwrap());
         if !is_tty() {
-            let err = confirm_or_yes(false, "sure?", "pass --yes").unwrap_err();
+            let err = confirm_or_yes(false, "sure?", destructive).unwrap_err();
             assert_eq!(err.to_string(), "pass --yes");
+            assert!(!confirm_or_yes(false, "sure?", proposal).unwrap());
         }
     }
 }

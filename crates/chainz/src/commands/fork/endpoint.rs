@@ -25,7 +25,7 @@ pub async fn pin_active(
         .ok_or_else(|| anyhow!("chain '{parent}' has no endpoint '{name}'"))?;
     if !endpoint.is_http() {
         bail!(
-            "chain '{parent}' is on websocket endpoint '{name}', which a fork can't use; activate an HTTP endpoint with `chainz rpc use {parent} NAME`"
+            "chain '{parent}' is on websocket endpoint '{name}', which a fork can't use; activate an HTTP endpoint with `chainz chain set {parent} --rpc NAME`"
         );
     }
     let target = net::target(chainz, parent, chain.id, name, endpoint)?;
@@ -71,23 +71,16 @@ pub async fn find_archive(
             candidates.len()
         ))
     );
-    let mut probes = tokio::task::JoinSet::new();
-    for (index, (_, target)) in candidates.iter().enumerate() {
+    let probes = candidates.iter().map(|(_, target)| {
         let (client, target, id) = (client.clone(), target.clone(), chain.id);
-        probes.spawn(async move {
-            let capabilities = match client.check_chain_id(&target, id).await {
+        async move {
+            match client.check_chain_id(&target, id).await {
                 Ok(()) => Some(probe_capabilities(&client, &target).await),
                 Err(_) => None,
-            };
-            (index, capabilities)
-        });
-    }
-    let mut probed: Vec<Option<Capabilities>> = vec![None; candidates.len()];
-    while let Some(joined) = probes.join_next().await {
-        if let Ok((index, capabilities)) = joined {
-            probed[index] = capabilities;
+            }
         }
-    }
+    });
+    let probed: Vec<Option<Capabilities>> = net::join_indexed(probes.collect()).await?;
     let mut chosen = None;
     for ((name, _), capabilities) in candidates.iter().zip(probed) {
         let Some(capabilities) = capabilities else {

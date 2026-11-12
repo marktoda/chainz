@@ -4,12 +4,13 @@
 //! to a running gateway through the runtime registry (`serve.lock`,
 //! `serve.json`) and the control socket (`serve.sock`).
 
-use super::runtime;
-use crate::cli::{ServeArgs, ServeCommand};
+use crate::cli::{ServeArgs, ServeCommand, ServeLogArgs};
+use crate::load::open;
 use crate::{net, sys, ui, view};
 use anyhow::{Context, Result, bail};
 use chainz_core::StorePaths;
 use chainz_core::paths;
+use chainz_core::resolve::{self, Policy};
 use chainz_core::runtime::{GatewayState, LOOPBACK, Runtime, ServeInfo};
 use chainz_rpc::control::{
     Backlog, ControlClient, EventsOptions, MetricsRow, MetricsTotals, MetricsWindow, RequestRecord,
@@ -35,13 +36,9 @@ const FOLLOW_BACKLOG: usize = 10;
 pub fn run(cmd: Option<ServeCommand>, args: ServeArgs) -> Result<i32> {
     match cmd {
         None => start(args),
-        Some(ServeCommand::Status { json }) => status(json),
+        Some(ServeCommand::Status(args)) => status(args.json),
         Some(ServeCommand::Stop) => stop(),
-        Some(ServeCommand::Log {
-            follow,
-            chain,
-            method,
-        }) => log(follow, chain, method),
+        Some(ServeCommand::Log(args)) => log(&args),
     }
 }
 
@@ -84,7 +81,7 @@ fn start(args: ServeArgs) -> Result<i32> {
     };
     chainz_serve::run(
         StorePaths::resolve()?,
-        runtime()?,
+        Runtime::resolve()?,
         paths::state_dir().ok(),
         options,
         |event| foreground.show(event),
@@ -96,11 +93,11 @@ fn start(args: ServeArgs) -> Result<i32> {
 /// the terminal rather than a background log: the config loads (migrating
 /// v1 on first run) and has chains, and no gateway runs.
 fn preflight() -> Result<()> {
-    let chainz = super::open()?;
+    let chainz = open()?;
     if chainz.config().chains.is_empty() {
         bail!("no chains configured; add one with `chainz chain add`");
     }
-    if let Some(info) = running(&runtime()?)? {
+    if let Some(info) = running(&Runtime::resolve()?)? {
         bail!(chainz_serve::AlreadyRunning(Some(info)));
     }
     Ok(())
@@ -169,7 +166,7 @@ impl Foreground {
 }
 
 fn detach() -> Result<i32> {
-    let runtime = runtime()?;
+    let runtime = Runtime::resolve()?;
     let log_path = paths::serve_log().context("unable to find the state directory")?;
     if let Some(dir) = log_path.parent() {
         chainz_sys::create_private_dir(dir)?;
@@ -212,7 +209,7 @@ fn detach() -> Result<i32> {
 }
 
 fn stop() -> Result<i32> {
-    let runtime = runtime()?;
+    let runtime = Runtime::resolve()?;
     let Some(info) = running(&runtime)? else {
         println!("chainz serve: not running");
         return Ok(0);
@@ -257,7 +254,7 @@ struct StatusJson<'a> {
 }
 
 fn status(json: bool) -> Result<i32> {
-    let runtime = runtime()?;
+    let runtime = Runtime::resolve()?;
     let Some(info) = running(&runtime)? else {
         if json {
             let stopped = StatusJson {
@@ -368,18 +365,24 @@ fn render_status(status: &Status, minute: Option<&MetricsWindow>) -> String {
     out
 }
 
-fn log(follow: bool, chain: Option<String>, method: Option<String>) -> Result<i32> {
-    let runtime = runtime()?;
+fn log(args: &ServeLogArgs) -> Result<i32> {
+    let (follow, method) = (args.follow, &args.method);
+    let runtime = Runtime::resolve()?;
     if running(&runtime)?.is_none() {
         bail!("chainz serve is not running");
     }
-    // Records carry the chain's short name: accept an alias or ID too.
-    let chain = chain.map(|query| {
-        super::open()
-            .ok()
-            .and_then(|chainz| super::chain_arg(&chainz, &query).ok())
-            .unwrap_or(query)
-    });
+    // Records carry the chain's short name: accept an alias or ID too (a
+    // chain no longer configured still filters by the name given).
+    let chain = match &args.chain {
+        Some(query) => {
+            let chainz = open()?;
+            Some(
+                resolve::configured(chainz.config(), query, Policy::Prefix)
+                    .map_or_else(|_| query.clone(), |(name, _)| name.to_string()),
+            )
+        }
+        None => None,
+    };
     let matches = |record: &RequestRecord| {
         chain
             .as_ref()

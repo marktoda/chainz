@@ -45,16 +45,38 @@ impl std::fmt::Display for ExitCode {
 
 impl std::error::Error for ExitCode {}
 
-/// The exit code an error asks for: 130 when cancelled, an [`ExitCode`]'s
-/// own, else 1.
+/// The exit code an error asks for: 130 when cancelled, 0 for a closed
+/// stdout (the reader went away: not a failure), an [`ExitCode`]'s own,
+/// else 1.
 pub fn exit_code(error: &anyhow::Error) -> i32 {
     if is_cancelled(error) {
         130
+    } else if is_broken_pipe(error) {
+        0
     } else if let Some(exit) = error.downcast_ref::<ExitCode>() {
         exit.code
     } else {
         1
     }
+}
+
+/// Print a command's error on stderr: `Cancelled` for a cancellation,
+/// nothing for a closed stdout (`chainz … | head`), else `Error: …`.
+pub fn report(error: &anyhow::Error) {
+    if is_cancelled(error) {
+        eprintln!("Cancelled");
+    } else if !is_broken_pipe(error) {
+        eprintln!("Error: {error:#}");
+    }
+}
+
+/// Whether `error` comes from writing to a closed pipe.
+pub fn is_broken_pipe(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|e| e.kind() == std::io::ErrorKind::BrokenPipe)
+    })
 }
 
 /// A section title: a blank line, then the title in bold cyan.
@@ -84,6 +106,14 @@ pub fn dim(msg: &str) -> String {
 
 pub fn emph(msg: &str) -> String {
     style(msg).yellow().to_string()
+}
+
+/// Say which secrets moved out of `config.toml` (stdout, after the
+/// command's own report).
+pub fn report_moved(moved: &[chainz_core::extract::Moved]) {
+    for m in moved {
+        println!("  moved the secret in {m} (secrets.toml)");
+    }
 }
 
 /// Print a core notice on stderr, `chainz: ` before each line.

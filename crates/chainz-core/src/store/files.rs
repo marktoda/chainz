@@ -128,7 +128,7 @@ impl Drop for WriteLock {
 pub(crate) fn parse_config(text: &str, path: &Path) -> Result<Config> {
     Config::parse(text).map_err(|e| {
         anyhow!(
-            "failed to parse {}: {} (fix it with `chainz config edit`)",
+            "failed to parse {}: {} (fix it with `chainz edit`)",
             path.display(),
             crate::redact::toml_error(&e)
         )

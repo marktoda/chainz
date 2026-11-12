@@ -5,8 +5,9 @@
 //! Hot-path rules:
 //! - `main` checks [`requested`] (one env lookup) before anything else;
 //!   nothing here runs unless the shell asked for completions.
-//! - Completers are attached to a fresh `Opt::command()` only in completion
-//!   mode ([`command`]), so the normal parse builds nothing extra.
+//! - Completers are declared on the arguments in `cli` (`add =
+//!   ArgValueCompleter::new(…)`), so renaming a command or flag keeps its
+//!   completion; they run only in completion mode.
 //! - Completers read `config.toml` (and, for variable names,
 //!   `secrets.toml`) directly: no v1 migration, no validation, no chmod,
 //!   no key unlocking, no network. A missing config completes nothing.
@@ -19,10 +20,8 @@ use chainz_core::labels::LabelIndex;
 use chainz_core::model::Config;
 use chainz_core::resolve::{self, ChainRef};
 use chainz_core::runtime::{ForkEntry, Runtime};
-use clap::{Command, CommandFactory};
-use clap_complete::engine::{
-    ArgValueCompleter, CompletionCandidate, PathCompleter, ValueCompleter,
-};
+use clap::CommandFactory;
+use clap_complete::engine::{CompletionCandidate, PathCompleter, ValueCompleter};
 use clap_complete::env::{CompleteEnv, Shells};
 use std::ffi::OsStr;
 use std::io::Write;
@@ -41,7 +40,7 @@ pub fn run() -> ! {
     std::panic::set_hook(Box::new(|_| {}));
     let ok = std::panic::catch_unwind(|| {
         let cwd = std::env::current_dir().ok();
-        CompleteEnv::with_factory(command)
+        CompleteEnv::with_factory(Opt::command)
             .var(VAR)
             .bin("chainz")
             .try_complete(std::env::args_os(), cwd.as_deref())
@@ -77,55 +76,13 @@ fn completer_path() -> String {
     path.to_string_lossy().into_owned()
 }
 
-/// The CLI with value completers attached (completion mode only).
-fn command() -> Command {
-    annotate(Opt::command(), &mut Vec::new())
-}
-
-fn annotate(cmd: Command, path: &mut Vec<String>) -> Command {
-    let here = path.join(" ");
-    let mut cmd = cmd.mut_args(|arg| match completer_for(&here, arg.get_id().as_str()) {
-        Some(completer) => arg.add(completer),
-        None => arg,
-    });
-    let names: Vec<String> = cmd
-        .get_subcommands()
-        .map(|s| s.get_name().to_string())
-        .collect();
-    for name in names {
-        path.push(name.clone());
-        cmd = cmd.mut_subcommand(&name, |sub| annotate(sub, path));
-        path.pop();
-    }
-    cmd
-}
-
-/// Which completer an argument gets, by subcommand path and argument ID.
-/// New `chain`/`signer` arguments pick theirs up automatically.
-fn completer_for(path: &str, id: &str) -> Option<ArgValueCompleter> {
-    let completer = match (path, id) {
-        // A chainlist ID or name, not a configured chain.
-        ("chain add", "chain") => return None,
-        ("exec" | "shell" | "env", "chain") => ArgValueCompleter::new(context_chains),
-        (_, "chain") => ArgValueCompleter::new(configured_chains),
-        ("exec" | "shell" | "env", "rpc") | ("rpc use" | "rpc rm", "name") => {
-            ArgValueCompleter::new(endpoints)
-        }
-        (_, "signer") | ("signer rm" | "signer migrate", "name") => ArgValueCompleter::new(signers),
-        ("addr rm", "name") => ArgValueCompleter::new(user_labels),
-        ("var get" | "var rm" | "var set", "name") => ArgValueCompleter::new(vars),
-        ("fork stop", "name") => ArgValueCompleter::new(fork_names),
-        ("exec", "command") => ArgValueCompleter::new(exec_words),
-        _ => return None,
-    };
-    Some(completer)
-}
-
 // ---------------------------------------------------------------------------
 // Completers. Each filters by the current word's prefix itself (clap does
 // not filter `ArgValueCompleter` output).
 
-fn context_chains(current: &OsStr) -> Vec<CompletionCandidate> {
+/// `exec`/`shell`/`env`'s chain: configured chains and live forks (and,
+/// after `exec --`, the command's words).
+pub fn context_chains(current: &OsStr) -> Vec<CompletionCandidate> {
     // `exec -- @w`: with no chain typed, clap offers the word to CHAIN.
     if escaped(&preceding()) {
         return exec_words(current);
@@ -133,8 +90,37 @@ fn context_chains(current: &OsStr) -> Vec<CompletionCandidate> {
     chains(current, true)
 }
 
-fn configured_chains(current: &OsStr) -> Vec<CompletionCandidate> {
+/// Configured chains and their aliases.
+pub fn configured_chains(current: &OsStr) -> Vec<CompletionCandidate> {
     chains(current, false)
+}
+
+/// Configured chains, their aliases, and live forks (`--chain` of the
+/// commands that accept a fork).
+pub fn chains_and_forks(current: &OsStr) -> Vec<CompletionCandidate> {
+    chains(current, true)
+}
+
+/// `addr rm --chain`: configured chains, and `*` for the every-chain entry.
+pub fn label_scopes(current: &OsStr) -> Vec<CompletionCandidate> {
+    let mut out = chains(current, false);
+    if current.to_str().is_some_and(|p| "*".starts_with(p)) {
+        out.push(CompletionCandidate::new("*").help(Some("every chain".into())));
+    }
+    out
+}
+
+/// Configured explorers, and the built-in `etherscan`.
+pub fn explorers(current: &OsStr) -> Vec<CompletionCandidate> {
+    let (Some(prefix), Some(config)) = (current.to_str(), load_config()) else {
+        return Vec::new();
+    };
+    let mut out = Candidates::new(prefix);
+    for (name, explorer) in &config.explorers {
+        out.push(name, chainz_core::redact::url(&explorer.api, false));
+    }
+    out.push("etherscan", "built in".to_string());
+    out.done()
 }
 
 fn chains(current: &OsStr, with_forks: bool) -> Vec<CompletionCandidate> {
@@ -160,7 +146,7 @@ fn chains(current: &OsStr, with_forks: bool) -> Vec<CompletionCandidate> {
 
 /// Endpoints of the chain typed earlier on the line, else of the
 /// `$CHAINZ_CHAIN` / default chain.
-fn endpoints(current: &OsStr) -> Vec<CompletionCandidate> {
+pub fn endpoints(current: &OsStr) -> Vec<CompletionCandidate> {
     let (Some(prefix), Some(config)) = (current.to_str(), load_config()) else {
         return Vec::new();
     };
@@ -186,7 +172,7 @@ fn endpoints(current: &OsStr) -> Vec<CompletionCandidate> {
     out.done()
 }
 
-fn signers(current: &OsStr) -> Vec<CompletionCandidate> {
+pub fn signers(current: &OsStr) -> Vec<CompletionCandidate> {
     let (Some(prefix), Some(config)) = (current.to_str(), load_config()) else {
         return Vec::new();
     };
@@ -197,7 +183,7 @@ fn signers(current: &OsStr) -> Vec<CompletionCandidate> {
     out.done()
 }
 
-fn user_labels(current: &OsStr) -> Vec<CompletionCandidate> {
+pub fn user_labels(current: &OsStr) -> Vec<CompletionCandidate> {
     let (Some(prefix), Some(config)) = (current.to_str(), load_config()) else {
         return Vec::new();
     };
@@ -209,7 +195,7 @@ fn user_labels(current: &OsStr) -> Vec<CompletionCandidate> {
     out.done()
 }
 
-fn vars(current: &OsStr) -> Vec<CompletionCandidate> {
+pub fn vars(current: &OsStr) -> Vec<CompletionCandidate> {
     let Some(prefix) = current.to_str() else {
         return Vec::new();
     };
@@ -227,7 +213,7 @@ fn vars(current: &OsStr) -> Vec<CompletionCandidate> {
     out.done()
 }
 
-fn fork_names(current: &OsStr) -> Vec<CompletionCandidate> {
+pub fn fork_names(current: &OsStr) -> Vec<CompletionCandidate> {
     let Some(prefix) = current.to_str() else {
         return Vec::new();
     };
@@ -244,7 +230,7 @@ fn fork_names(current: &OsStr) -> Vec<CompletionCandidate> {
 
 /// A word of `exec`'s command: `@tokens` when it starts with `@`, else
 /// file names.
-fn exec_words(current: &OsStr) -> Vec<CompletionCandidate> {
+pub fn exec_words(current: &OsStr) -> Vec<CompletionCandidate> {
     let words = preceding();
     if let Some(candidates) = bash_colon_split(current, &words) {
         return candidates;

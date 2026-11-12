@@ -1,8 +1,12 @@
 //! `addr …` and `label`: the address book. Names for addresses, per chain
 //! or for every chain, and the reverse-label filter over stdin.
 
-use super::{note_default, open, parse_address, runtime, select_target};
-use crate::cli::AddrCommand;
+use crate::args::parse_address;
+use crate::cli::{
+    AddrAddArgs, AddrCommand, AddrFindArgs, AddrImportArgs, AddrLsArgs, AddrRmArgs, LabelArgs,
+};
+use crate::load::open;
+use crate::select::{note_default, select_target};
 use crate::{ui, view};
 use anyhow::{Context, Result, anyhow, bail};
 use chainz_core::addrbook::{self, Labeler};
@@ -10,6 +14,7 @@ use chainz_core::broadcast::{self, Action, Planned};
 use chainz_core::labels::{ALL_CHAINS, Label, LabelIndex, LabelScope, LabelSource, builtin_tokens};
 use chainz_core::model::Config;
 use chainz_core::resolve::{self, ChainRef, Policy, Source};
+use chainz_core::runtime::Runtime;
 use chainz_core::tx::{Overwrite, SetAddress};
 use chainz_core::{Address, names};
 use serde::Serialize;
@@ -18,34 +23,11 @@ use std::path::PathBuf;
 
 pub fn run(cmd: AddrCommand) -> Result<i32> {
     match cmd {
-        AddrCommand::Add {
-            name,
-            address,
-            chain,
-            all_chains,
-        } => add(&name, &address, chain.as_deref(), all_chains),
-        AddrCommand::Ls {
-            chain,
-            builtin,
-            json,
-        } => ls(chain.as_deref(), builtin, json),
-        AddrCommand::Rm { name, chain } => rm(&name, chain.as_deref()),
-        AddrCommand::Find { address, json } => find(&address, json),
-        AddrCommand::Import {
-            paths,
-            dry_run,
-            prefix,
-            only,
-            force,
-            json,
-        } => {
-            let options = broadcast::Options {
-                prefix: prefix.unwrap_or_default(),
-                only,
-                force,
-            };
-            import(&paths, &options, dry_run, json)
-        }
+        AddrCommand::Add(args) => add(&args),
+        AddrCommand::Ls(args) => ls(&args),
+        AddrCommand::Rm(args) => rm(&args),
+        AddrCommand::Find(args) => find(&args),
+        AddrCommand::Import(args) => import(&args),
     }
 }
 
@@ -71,16 +53,16 @@ fn chain_id(config: &Config, target: &ChainRef) -> Result<u64> {
         .ok_or_else(|| anyhow!("chain '{}' is not configured", target.name()))
 }
 
-fn add(name: &str, address: &str, chain: Option<&str>, all_chains: bool) -> Result<i32> {
+fn add(args: &AddrAddArgs) -> Result<i32> {
     let mut chainz = open()?;
-    let name = label_name(name);
-    let address = parse_address(address, "address")?;
+    let name = label_name(&args.name);
+    let address = parse_address(&args.address, "address")?;
     // Fail on a bad name before asking which chain.
     names::check_label_name(&name, chainz.config().signers.keys().map(String::as_str))?;
-    let scope = if all_chains {
+    let scope = if args.all_chains {
         ALL_CHAINS.to_string()
     } else {
-        match select_target(&chainz, &runtime()?, chain)? {
+        match select_target(&chainz, &Runtime::resolve()?, args.chain.as_deref())? {
             ChainRef::Configured(name) => name,
             // A fork has no config entry; its labels are its parent's.
             ChainRef::Fork(fork) => {
@@ -170,14 +152,15 @@ impl Row {
     }
 }
 
-fn ls(chain: Option<&str>, builtin: bool, json: bool) -> Result<i32> {
+fn ls(args: &AddrLsArgs) -> Result<i32> {
+    let (builtin, json) = (args.builtin, args.json);
     let chainz = open()?;
     let config = chainz.config();
     let index = LabelIndex::new(config);
-    let rows: Vec<Row> = match chain {
+    let rows: Vec<Row> = match &args.chain {
         // What `@name` means on one chain, after shadowing.
         Some(query) => {
-            let target = resolve::resolve(config, Some(&runtime()?), query)?;
+            let target = resolve::resolve(config, Some(&Runtime::resolve()?), query)?;
             index
                 .labels_on(chain_id(config, &target)?)
                 .into_iter()
@@ -223,10 +206,10 @@ fn ls(chain: Option<&str>, builtin: bool, json: bool) -> Result<i32> {
     Ok(0)
 }
 
-fn rm(name: &str, chain: Option<&str>) -> Result<i32> {
+fn rm(args: &AddrRmArgs) -> Result<i32> {
     let mut chainz = open()?;
     let config = chainz.config();
-    let name = label_name(name);
+    let name = label_name(&args.name);
     if !config.addresses.contains_key(&name) {
         if config.signers.contains_key(&name) {
             bail!("@{name} is a signer, not a label; remove it with `chainz signer rm {name}`");
@@ -241,7 +224,7 @@ fn rm(name: &str, chain: Option<&str>) -> Result<i32> {
     }
     // Removal is destructive: an exact name, alias or ID, never a prefix
     // (and never a fork: its labels are its parent's).
-    let scope = match chain {
+    let scope = match args.chain.as_deref() {
         None => None,
         Some(ALL_CHAINS) => Some(ALL_CHAINS.to_string()),
         Some(query) => Some(
@@ -262,10 +245,11 @@ fn rm(name: &str, chain: Option<&str>) -> Result<i32> {
     Ok(0)
 }
 
-fn find(address: &str, json: bool) -> Result<i32> {
+fn find(args: &AddrFindArgs) -> Result<i32> {
+    let json = args.json;
     let chainz = open()?;
     let config = chainz.config();
-    let address = parse_address(address, "address")?;
+    let address = parse_address(&args.address, "address")?;
     let index = LabelIndex::new(config);
     let rows: Vec<Row> = addrbook::find(config, &address)
         .into_iter()
@@ -344,14 +328,11 @@ impl ImportRow {
 
 /// `addr import`: label the contracts in Foundry broadcast output. Every
 /// label is written in one transaction (planned again under the lock).
-fn import(
-    paths: &[PathBuf],
-    options: &broadcast::Options,
-    dry_run: bool,
-    json: bool,
-) -> Result<i32> {
+fn import(args: &AddrImportArgs) -> Result<i32> {
+    let (dry_run, json) = (args.dry_run, args.json);
+    let options = &broadcast::Options::from(args);
     let mut chainz = open()?;
-    let files = broadcast::find_runs(paths)?;
+    let files = broadcast::find_runs(&args.paths)?;
     let mut runs = Vec::new();
     for file in &files {
         runs.extend(broadcast::read(file)?);
@@ -482,22 +463,24 @@ fn import(
 /// `chainz label [--chain C]`: stdin to stdout, addresses rewritten as
 /// `name(0x…)`. With no chain context, only names that hold on every
 /// chain are used.
-pub fn label(chain: Option<String>) -> Result<i32> {
+pub fn label(args: &LabelArgs) -> Result<i32> {
     let chainz = open()?;
     let config = chainz.config();
-    let labeler = match resolve::select(config, Some(&runtime()?), chain.as_deref(), chainz.env())?
-    {
-        Some((target, source)) => {
-            if source == Source::Default {
-                note_default(target.name());
+    let runtime = Runtime::resolve()?;
+    let labeler =
+        match resolve::select(config, Some(&runtime), args.chain.as_deref(), chainz.env())? {
+            Some((target, source)) => {
+                if source == Source::Default {
+                    note_default(target.name());
+                }
+                Labeler::for_chain(config, chain_id(config, &target)?)
             }
-            Labeler::for_chain(config, chain_id(config, &target)?)
-        }
-        None => Labeler::any_chain(config),
-    };
-    match labeler.filter(io::stdin().lock(), io::stdout().lock()) {
-        // The reader went away (`… | chainz label | head`): not an error.
-        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => Ok(0),
-        other => other.map(|()| 0).context("label: I/O error"),
-    }
+            None => Labeler::any_chain(config),
+        };
+    // A reader that went away (`… | chainz label | head`) is not an
+    // error: `main` exits 0 on a broken pipe.
+    labeler
+        .filter(io::stdin().lock(), io::stdout().lock())
+        .context("label: I/O error")?;
+    Ok(0)
 }

@@ -6,6 +6,7 @@ use chainz_core::model::Endpoint;
 use chainz_core::route::Route;
 use chainz_core::{Chainz, paths};
 use chainz_rpc::{HealthStore, Target};
+use std::future::Future;
 
 use crate::ui;
 
@@ -16,6 +17,25 @@ pub fn block_on<F: std::future::Future>(future: F) -> F::Output {
         .build()
         .expect("tokio runtime")
         .block_on(future)
+}
+
+/// Run `futures` concurrently; their outputs in input order. A task that
+/// panicked is an error.
+pub async fn join_indexed<F>(futures: Vec<F>) -> Result<Vec<F::Output>>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    let mut set = tokio::task::JoinSet::new();
+    for (i, f) in futures.into_iter().enumerate() {
+        set.spawn(async move { (i, f.await) });
+    }
+    let mut out: Vec<Option<F::Output>> = (0..set.len()).map(|_| None).collect();
+    while let Some(joined) = set.join_next().await {
+        let (i, v) = joined.map_err(|e| anyhow!("a concurrent task failed: {e}"))?;
+        out[i] = Some(v);
+    }
+    Ok(out.into_iter().flatten().collect())
 }
 
 /// A probe target for an endpoint of chain `chain_name` (ID `chain_id`),

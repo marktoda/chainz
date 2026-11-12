@@ -185,12 +185,34 @@ fn rpc_completes_the_typed_chain_endpoints() {
     assert_set(fish(&sb, &["env", "base", "--rpc", "q"]), &["quicknode"]);
     // No chain typed: the default chain's.
     assert_set(fish(&sb, &["exec", "--rpc", ""]), &["alchemy", "llama"]);
-    // `rpc use` / `rpc rm` take the chain positionally.
+    // `chain set` and `rpc rm` take the chain positionally.
     assert_set(
-        fish(&sb, &["rpc", "use", "base", ""]),
+        fish(&sb, &["chain", "set", "base", "--rpc", ""]),
         &["public", "quicknode"],
     );
+    assert_set(
+        fish(&sb, &["update", "base", "--failover", "p"]),
+        &["public"],
+    );
     assert_set(fish(&sb, &["rpc", "rm", "eth", "l"]), &["llama"]);
+}
+
+#[test]
+fn completers_follow_the_arguments() {
+    let sb = fixture();
+    // Fork-accepting `--chain`s and `edit` get chains; `addr rm --chain`
+    // also offers `*`.
+    assert!(has(&fish(&sb, &["edit", "ba"]), "base"));
+    assert!(has(&fish(&sb, &["label", "--chain", "ba"]), "base"));
+    assert!(has(&fish(&sb, &["addr", "rm", "x", "--chain", ""]), "*"));
+    assert!(has(
+        &fish(&sb, &["chain", "set", "base", "--explorer", ""]),
+        "etherscan"
+    ));
+    assert!(has(
+        &fish(&sb, &["chain", "add", "--signer", ""]),
+        "default"
+    ));
 }
 
 #[test]

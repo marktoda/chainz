@@ -1,100 +1,66 @@
 //! `rpc …`: endpoints, probing, ranking and discovery (via chainz-rpc).
 
-use super::{chain_arg, open};
-use crate::cli::RpcCommand;
+use crate::args::parse_headers;
+use crate::cli::{BenchArgs, DiscoverArgs, RpcAddArgs, RpcCommand, RpcLsArgs, RpcRmArgs};
+use crate::load::open;
 use crate::probe::{self, Depth, Repair, check, probe_urls};
-use crate::prompt::{self, is_tty};
+use crate::prompt::{self, Consent, is_tty};
+use crate::view::EndpointView;
 use crate::{net, ui};
-use anyhow::{Result, anyhow, bail};
-use chainz_core::extract::Moved;
+use anyhow::{Result, bail};
 use chainz_core::model::Endpoint;
-use chainz_core::redact::redact;
+use chainz_core::resolve::{self, Policy};
 use chainz_core::tx::EndpointRole;
 use chainz_core::{Chainz, names};
 use chainz_rpc::chainlist;
-use indexmap::IndexMap;
 use serde::Serialize;
 
 pub fn run(cmd: RpcCommand) -> Result<i32> {
     match cmd {
-        RpcCommand::Ls {
-            chain,
-            json,
-            reveal,
-        } => ls(chain, json, reveal),
-        RpcCommand::Add {
-            chain,
-            url,
-            name,
-            headers,
-            failover,
-            activate,
-            no_check,
-        } => add(&chain, &url, name, &headers, failover, activate, no_check),
-        RpcCommand::Use { chain, name } => use_endpoint(&chain, &name),
-        RpcCommand::Rm { chain, name } => rm(&chain, &name),
-        RpcCommand::Bench { chain, fix, yes } => bench(chain, fix, yes),
-        RpcCommand::Discover {
-            chain,
-            refresh,
-            yes,
-        } => discover(&chain, refresh, yes),
+        RpcCommand::Ls(args) => ls(&args),
+        RpcCommand::Add(args) => add(&args),
+        RpcCommand::Rm(args) => rm(&args),
+        RpcCommand::Bench(args) => bench(&args),
+        RpcCommand::Discover(args) => discover(&args),
     }
 }
 
-fn chains_for(chainz: &Chainz, chain: Option<String>) -> Result<Vec<String>> {
+/// The chains a command covers: the one named, else every chain.
+fn chains_for(chainz: &Chainz, chain: Option<&str>) -> Result<Vec<String>> {
     match chain {
-        Some(q) => Ok(vec![chain_arg(chainz, &q)?]),
+        Some(q) => Ok(vec![
+            resolve::configured(chainz.config(), q, Policy::Prefix)?
+                .0
+                .to_string(),
+        ]),
         None => Ok(chainz.config().chains.keys().cloned().collect()),
     }
 }
 
+/// One `rpc ls` row: the endpoint as every listing shows it, plus its
+/// latest health.
 #[derive(Serialize)]
 struct EndpointRow {
     chain: String,
-    name: String,
-    url: String,
-    /// Header names and values (values redacted unless `--reveal`).
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    headers: Vec<(String, String)>,
-    active: bool,
-    failover: bool,
+    #[serde(flatten)]
+    endpoint: EndpointView,
     latency_ms: Option<u32>,
     head: Option<u64>,
     error: Option<String>,
     tags: Vec<String>,
 }
 
-fn ls(chain: Option<String>, json: bool, reveal: bool) -> Result<i32> {
+fn ls(args: &RpcLsArgs) -> Result<i32> {
     let chainz = open()?;
     let store = net::health_store();
     let mut rows = Vec::new();
-    for name in chains_for(&chainz, chain)? {
+    for name in chains_for(&chainz, args.chain.as_deref())? {
         let c = &chainz.config().chains[&name];
         for (ep, e) in &c.rpcs {
             let latest = store.latest(c.id, ep);
             rows.push(EndpointRow {
                 chain: name.clone(),
-                name: ep.clone(),
-                url: if reveal {
-                    e.url.clone()
-                } else {
-                    redact(&e.url)
-                },
-                headers: e
-                    .headers
-                    .iter()
-                    .map(|(k, v)| {
-                        let v = if reveal {
-                            v.clone()
-                        } else {
-                            "[REDACTED]".into()
-                        };
-                        (k.clone(), v)
-                    })
-                    .collect(),
-                active: c.rpc == *ep,
-                failover: c.failover.contains(ep),
+                endpoint: EndpointView::new(ep, e, c, args.reveal),
                 latency_ms: latest.filter(|s| s.error.is_none()).map(|s| s.latency_ms),
                 head: latest.and_then(|s| s.head),
                 error: latest.and_then(|s| s.error).map(|c| c.to_string()),
@@ -105,7 +71,7 @@ fn ls(chain: Option<String>, json: bool, reveal: bool) -> Result<i32> {
             });
         }
     }
-    if json {
+    if args.json {
         println!("{}", serde_json::to_string_pretty(&rows)?);
         return Ok(0);
     }
@@ -115,92 +81,56 @@ fn ls(chain: Option<String>, json: bool, reveal: bool) -> Result<i32> {
             println!("{}", ui::section(&r.chain));
             current = r.chain.clone();
         }
-        let marker = if r.active {
-            "●"
-        } else if r.failover {
-            "◐"
-        } else {
-            " "
-        };
         let health = match (&r.latency_ms, &r.error) {
             (Some(ms), _) => format!("{ms}ms"),
             (None, Some(e)) => e.clone(),
             _ => "-".into(),
         };
+        let e = &r.endpoint;
         println!(
-            "  {marker} {:<18} {:<8} {} {}",
-            r.name,
+            "  {} {:<18} {:<8} {} {}",
+            e.marker(),
+            e.name,
             health,
-            r.url,
+            e.url,
             ui::dim(&r.tags.join(" "))
         );
-        for (k, v) in &r.headers {
+        for (k, v) in &e.headers {
             println!("      {}", ui::dim(&format!("{k}: {v}")));
         }
     }
     Ok(0)
 }
 
-/// Parse `--header 'name: value'`.
-fn parse_headers(raw: &[String]) -> Result<IndexMap<String, String>> {
-    let mut out = IndexMap::new();
-    for h in raw {
-        let (name, value) = h
-            .split_once(':')
-            .ok_or_else(|| anyhow!("header must be 'name: value' (got a value without ':')"))?;
-        let name = name.trim().to_ascii_lowercase();
-        if name.is_empty() {
-            bail!("header name cannot be empty");
-        }
-        out.insert(name, value.trim().to_string());
-    }
-    Ok(out)
-}
-
-/// Say which secrets moved out of `config.toml`.
-pub(super) fn report_moved(moved: &[Moved]) {
-    for m in moved {
-        println!("  moved the secret in {m} (secrets.toml)");
-    }
-}
-
-fn add(
-    chain: &str,
-    url: &str,
-    name: Option<String>,
-    headers: &[String],
-    failover: bool,
-    activate: bool,
-    no_check: bool,
-) -> Result<i32> {
+fn add(args: &RpcAddArgs) -> Result<i32> {
     let mut chainz = open()?;
-    let chain = chain_arg(&chainz, chain)?;
+    let (chain, c) = resolve::configured(chainz.config(), &args.chain, Policy::Prefix)?;
+    let (chain, c) = (chain.to_string(), c.clone());
     let endpoint = Endpoint {
-        url: url.to_string(),
-        headers: parse_headers(headers)?,
+        url: args.url.clone(),
+        headers: parse_headers(&args.headers)?.into_iter().collect(),
     };
-    let c = &chainz.config().chains[&chain];
-    let ep = match name {
+    let ep = match &args.name {
         Some(n) => {
-            if c.rpcs.contains_key(&n) {
+            if c.rpcs.contains_key(n) {
                 bail!("chain '{chain}' already has an endpoint named '{n}'");
             }
-            n
+            n.clone()
         }
-        None => names::unique_name(&names::endpoint_name_for_url(url), |n| {
+        None => names::unique_name(&names::endpoint_name_for_url(&args.url), |n| {
             c.rpcs.contains_key(n)
         }),
     };
-    if !no_check && !endpoint.is_websocket() {
+    if !args.no_check && !endpoint.is_websocket() {
         check(&chainz, &chain, c.id, &ep, &endpoint)?;
     }
     let moved = chainz.transact(|tx| {
         let mut endpoints = [(ep.clone(), endpoint)];
         let moved = tx.extract_secrets(&chain, &mut endpoints)?;
         let [(_, endpoint)] = &endpoints;
-        let role = if activate {
+        let role = if args.activate {
             EndpointRole::Active
-        } else if failover {
+        } else if args.failover {
             EndpointRole::Failover
         } else {
             EndpointRole::Spare
@@ -210,39 +140,30 @@ fn add(
     })?;
     println!(
         "Added endpoint '{ep}' to '{chain}'{}",
-        if activate { " (active)" } else { "" }
+        if args.activate { " (active)" } else { "" }
     );
-    report_moved(&moved);
+    ui::report_moved(&moved);
     Ok(0)
 }
 
-fn use_endpoint(chain: &str, name: &str) -> Result<i32> {
+fn rm(args: &RpcRmArgs) -> Result<i32> {
     let mut chainz = open()?;
-    let chain = chain_arg(&chainz, chain)?;
-    if !chainz.config().chains[&chain].rpcs.contains_key(name) {
-        bail!("chain '{chain}' has no endpoint '{name}'");
-    }
-    chainz.transact(|tx| tx.set_active(&chain, name))?;
-    println!("'{chain}' now uses '{name}'");
-    Ok(0)
-}
-
-fn rm(chain: &str, name: &str) -> Result<i32> {
-    let mut chainz = open()?;
-    let chain = chain_arg(&chainz, chain)?;
-    if chainz.config().chains[&chain].rpc == name {
+    let (chain, c) = resolve::configured(chainz.config(), &args.chain, Policy::Prefix)?;
+    let name = &args.name;
+    if c.rpc == *name {
         bail!(
-            "'{name}' is the active endpoint of '{chain}'; switch first with `chainz rpc use {chain} <name>`"
+            "'{name}' is the active endpoint of '{chain}'; switch first with `chainz chain set {chain} --rpc <name>`"
         );
     }
+    let chain = chain.to_string();
     chainz.transact(|tx| tx.remove_endpoint(&chain, name))?;
     println!("Removed endpoint '{name}' from '{chain}'");
     Ok(0)
 }
 
-fn bench(chain: Option<String>, fix: bool, yes: bool) -> Result<i32> {
+fn bench(args: &BenchArgs) -> Result<i32> {
     let mut chainz = open()?;
-    let chains = chains_for(&chainz, chain)?;
+    let chains = chains_for(&chainz, args.chain.as_deref())?;
     let mut store = net::health_store();
     let probed = net::block_on(probe::probe_chains(
         &chainz,
@@ -263,7 +184,7 @@ fn bench(chain: Option<String>, fix: bool, yes: bool) -> Result<i32> {
         let Some(repair) = Repair::propose(&p.chain, c, p, &ranking) else {
             continue;
         };
-        if fix {
+        if args.fix {
             repairs.push(repair);
         } else if repair.active != c.rpc {
             println!(
@@ -275,7 +196,7 @@ fn bench(chain: Option<String>, fix: bool, yes: bool) -> Result<i32> {
             );
         }
     }
-    if fix {
+    if args.fix {
         let mut write_failover = false;
         for r in &repairs {
             println!(
@@ -290,16 +211,13 @@ fn bench(chain: Option<String>, fix: bool, yes: bool) -> Result<i32> {
             );
         }
         if repairs.iter().any(|r| !r.failover.is_empty()) {
-            if yes {
-                write_failover = true;
-            } else if is_tty() {
-                write_failover = prompt::confirm("Write the proposed failover lists?", false)?;
-            } else {
-                println!(
-                    "{}",
-                    ui::dim("failover lists not written (pass --yes, or confirm on a TTY)")
-                );
-            }
+            write_failover = prompt::confirm_or_yes(
+                args.yes,
+                "Write the proposed failover lists?",
+                Consent::Proposal {
+                    note: "failover lists not written (pass --yes, or confirm on a TTY)",
+                },
+            )?;
         }
         chainz.transact(|tx| {
             for r in &repairs {
@@ -311,11 +229,11 @@ fn bench(chain: Option<String>, fix: bool, yes: bool) -> Result<i32> {
     Ok(0)
 }
 
-fn discover(chain: &str, refresh: bool, yes: bool) -> Result<i32> {
+fn discover(args: &DiscoverArgs) -> Result<i32> {
     let mut chainz = open()?;
-    let chain = chain_arg(&chainz, chain)?;
-    let c = chainz.config().chains[&chain].clone();
-    let registry = net::block_on(chainlist::fetch_all(&net::cache_dir()?, refresh))?;
+    let (chain, c) = resolve::configured(chainz.config(), &args.chain, Policy::Prefix)?;
+    let (chain, c) = (chain.to_string(), c.clone());
+    let registry = net::block_on(chainlist::fetch_all(&net::cache_dir()?, args.refresh))?;
     if let Some(warning) = &registry.cache_warning {
         eprintln!("{}", ui::warn(warning));
     }
@@ -341,7 +259,7 @@ fn discover(chain: &str, refresh: bool, yes: bool) -> Result<i32> {
     let answered: Vec<usize> = (0..order.len())
         .filter(|&p| probed[order[p]].1.is_ok())
         .collect();
-    let picked = if yes {
+    let picked = if args.yes {
         answered
     } else if is_tty() {
         let defaults: Vec<bool> = (0..order.len()).map(|p| answered.contains(&p)).collect();

@@ -1,44 +1,35 @@
-//! `chain …`, `ls` and `use`.
+//! `chain …`, `ls`, `use` and `update` (`chain set`).
 
-use super::rpc::report_moved;
-use super::{chain_arg, edit_until_saved, open, pick_chain};
-use crate::cli::{ChainCommand, ListArgs};
+mod set;
+
+pub use set::set;
+
+use crate::cli::{ChainAddArgs, ChainCommand, ChainRmArgs, ChainShowArgs, ListArgs, UseArgs};
+use crate::load::open;
 use crate::probe::{check, probe_urls, ranked_urls};
-use crate::prompt::{self, is_tty};
+use crate::prompt::{Ask, is_tty};
+use crate::select::pick_chain;
 use crate::{net, ui, view};
 use anyhow::{Context, Result, anyhow, bail};
-use chainz_core::labels::LabelIndex;
+use chainz_core::Chainz;
+use chainz_core::labels::{LabelIndex, LabelSource};
 use chainz_core::model::{Chain, Endpoint};
-use chainz_core::resolve::Policy;
+use chainz_core::names;
+use chainz_core::resolve::{self, Policy};
 use chainz_core::tx::Attach;
-use chainz_core::{names, resolve};
 use chainz_rpc::ProbeResult;
 use chainz_rpc::chainlist::{self, ChainlistEntry};
 
 pub fn run(cmd: ChainCommand) -> Result<i32> {
     match cmd {
         ChainCommand::Ls(args) => ls(&args),
-        ChainCommand::Add {
-            chain,
-            name,
-            rpcs,
-            signer,
-            no_check,
-            refresh,
-        } => add(chain, name, rpcs, signer, no_check, refresh),
-        ChainCommand::Show {
-            chain,
-            json,
-            reveal,
-        } => show(&chain, json, reveal),
-        ChainCommand::Edit { chain } => edit_chain(&chain),
-        ChainCommand::Rename { chain, new_name } => rename(&chain, &new_name),
-        ChainCommand::Alias {
-            chain,
-            aliases,
-            remove,
-        } => alias(&chain, aliases, remove),
-        ChainCommand::Rm { chain } => rm(&chain),
+        ChainCommand::Add(args) => {
+            let mut chainz = open()?;
+            add(&mut chainz, &args, &mut crate::prompt::Tty)
+        }
+        ChainCommand::Show(args) => show(&args),
+        ChainCommand::Set(args) => set(&args),
+        ChainCommand::Rm(args) => rm(&args),
     }
 }
 
@@ -57,9 +48,9 @@ pub fn ls(args: &ListArgs) -> Result<i32> {
 }
 
 /// `use [CHAIN]`.
-pub fn use_default(chain: Option<String>, clear: bool) -> Result<i32> {
+pub fn use_default(args: &UseArgs) -> Result<i32> {
     let mut chainz = open()?;
-    if clear {
+    if args.clear {
         chainz.transact(|tx| {
             tx.set_default(None);
             Ok(())
@@ -67,8 +58,10 @@ pub fn use_default(chain: Option<String>, clear: bool) -> Result<i32> {
         println!("Default chain cleared");
         return Ok(0);
     }
-    let name = match chain {
-        Some(query) => chain_arg(&chainz, &query)?,
+    let name = match &args.chain {
+        Some(query) => resolve::configured(chainz.config(), query, Policy::Prefix)?
+            .0
+            .to_string(),
         None => pick_chain(&chainz, "Default chain")?,
     };
     chainz.transact(|tx| {
@@ -79,13 +72,12 @@ pub fn use_default(chain: Option<String>, clear: bool) -> Result<i32> {
     Ok(0)
 }
 
-fn show(query: &str, json: bool, reveal: bool) -> Result<i32> {
+fn show(args: &ChainShowArgs) -> Result<i32> {
     let chainz = open()?;
-    let name = chain_arg(&chainz, query)?;
     let config = chainz.config();
-    let chain = &config.chains[&name];
-    let v = view::ChainView::new(config, &name, chain, reveal);
-    if json {
+    let (name, chain) = resolve::configured(config, &args.chain, Policy::Prefix)?;
+    let v = view::ChainView::new(config, name, chain, args.reveal);
+    if args.json {
         println!("{}", serde_json::to_string_pretty(&v)?);
         return Ok(0);
     }
@@ -99,7 +91,7 @@ fn show(query: &str, json: bool, reveal: bool) -> Result<i32> {
     let labels: Vec<String> = index
         .labels_on(chain.id)
         .into_iter()
-        .filter(|l| !matches!(l.source, chainz_core::labels::LabelSource::Signer))
+        .filter(|l| !matches!(l.source, LabelSource::Signer))
         .map(|l| format!("@{}", l.name))
         .collect();
     if !labels.is_empty() {
@@ -112,7 +104,7 @@ fn show(query: &str, json: bool, reveal: bool) -> Result<i32> {
 fn find_in_chainlist<'a>(entries: &'a [ChainlistEntry], query: &str) -> Result<&'a ChainlistEntry> {
     if let Ok(id) = query.parse::<u64>() {
         return entries.iter().find(|e| e.chain_id == id).ok_or_else(|| {
-            anyhow!("chain ID {id} is not on chainlist; pass --name and --rpc to add it by hand")
+            anyhow!("chain ID {id} is not on chainlist; pass --name and --url to add it by hand")
         });
     }
     let q = query.to_ascii_lowercase();
@@ -149,57 +141,98 @@ fn find_in_chainlist<'a>(entries: &'a [ChainlistEntry], query: &str) -> Result<&
     }
 }
 
-fn add(
-    query: Option<String>,
-    name: Option<String>,
-    rpcs: Vec<String>,
-    signer: Option<String>,
-    no_check: bool,
-    refresh: bool,
-) -> Result<i32> {
-    let mut chainz = open()?;
-    let cache = net::cache_dir()?;
-    // Hand-added chains with an explicit ID and RPC need no chainlist.
-    let offline =
-        matches!(query.as_deref().map(str::parse::<u64>), Some(Ok(_))) && !rpcs.is_empty();
-    let entry: Option<ChainlistEntry> = if offline {
-        let id: u64 = query.as_deref().unwrap_or_default().parse()?;
-        chainlist::read_cache(&cache).and_then(|all| all.into_iter().find(|e| e.chain_id == id))
-    } else {
-        let registry = net::block_on(chainlist::fetch_all(&cache, refresh))
-            .context("chainlist is unavailable")?;
-        if let Some(warning) = &registry.cache_warning {
-            eprintln!("{}", ui::warn(warning));
+/// Where `chain add` gets the chain from, decided from the arguments
+/// alone (before any network access).
+enum ChainSource {
+    /// A chain ID with `--url`s: no chainlist needed (its cached entry, if
+    /// any, only names the chain).
+    Offline { id: u64 },
+    /// Look the chain up on chainlist (a picker when no chain is given).
+    Chainlist,
+}
+
+impl ChainSource {
+    fn of(args: &ChainAddArgs) -> Result<Self> {
+        match &args.chain {
+            Some(query) if !args.urls.is_empty() => match query.parse() {
+                Ok(id) => Ok(ChainSource::Offline { id }),
+                Err(_) => Ok(ChainSource::Chainlist),
+            },
+            Some(_) => Ok(ChainSource::Chainlist),
+            None if is_tty() => Ok(ChainSource::Chainlist),
+            None => bail!("usage: chainz chain add <CHAIN_ID|NAME> [--url URL]..."),
         }
-        let all = registry.entries;
-        let entry = match &query {
-            Some(q) => find_in_chainlist(&all, q)?.clone(),
-            None => {
-                if !is_tty() {
-                    bail!("usage: chainz chain add <CHAIN_ID|NAME> [--rpc URL]...");
-                }
-                let items: Vec<String> = all
-                    .iter()
-                    .map(|e| format!("{} ({})", e.name, e.chain_id))
-                    .collect();
-                all[prompt::select("Chain to add", &items, 0)?].clone()
-            }
-        };
-        Some(entry)
+    }
+}
+
+/// The chain `chain add` found.
+enum Found {
+    /// By ID, with its chainlist entry when the cache has one.
+    Offline {
+        id: u64,
+        cached: Option<ChainlistEntry>,
+    },
+    /// On chainlist.
+    Listed(ChainlistEntry),
+}
+
+impl Found {
+    fn id(&self) -> u64 {
+        match self {
+            Found::Offline { id, .. } => *id,
+            Found::Listed(entry) => entry.chain_id,
+        }
+    }
+
+    fn entry(&self) -> Option<&ChainlistEntry> {
+        match self {
+            Found::Offline { cached, .. } => cached.as_ref(),
+            Found::Listed(entry) => Some(entry),
+        }
+    }
+}
+
+/// Look the chain up as `source` says.
+fn find_chain(args: &ChainAddArgs, source: ChainSource, ask: &mut dyn Ask) -> Result<Found> {
+    let cache = net::cache_dir()?;
+    if let ChainSource::Offline { id } = source {
+        let cached = chainlist::read_cache(&cache)
+            .and_then(|all| all.into_iter().find(|e| e.chain_id == id));
+        return Ok(Found::Offline { id, cached });
+    }
+    let registry = net::block_on(chainlist::fetch_all(&cache, args.refresh))
+        .context("chainlist is unavailable")?;
+    if let Some(warning) = &registry.cache_warning {
+        eprintln!("{}", ui::warn(warning));
+    }
+    let all = registry.entries;
+    let entry = match &args.chain {
+        Some(q) => find_in_chainlist(&all, q)?.clone(),
+        None => {
+            let items: Vec<String> = all
+                .iter()
+                .map(|e| format!("{} ({})", e.name, e.chain_id))
+                .collect();
+            all[ask.select("Chain to add", &items, 0)?].clone()
+        }
     };
-    let id = match (&entry, &query) {
-        (Some(e), _) => e.chain_id,
-        (None, Some(q)) => q.parse()?,
-        (None, None) => unreachable!("offline requires an ID"),
-    };
-    let short = name
+    Ok(Found::Listed(entry))
+}
+
+/// `chain add`: find the chain, pick its endpoints, and insert it with the
+/// default signer and explorer attached (unless `--no-signer`).
+pub fn add(chainz: &mut Chainz, args: &ChainAddArgs, ask: &mut dyn Ask) -> Result<i32> {
+    let found = find_chain(args, ChainSource::of(args)?, ask)?;
+    let id = found.id();
+    let short = args
+        .name
         .clone()
         .or_else(|| names::short_name(id).map(str::to_string))
-        .or_else(|| entry.as_ref().map(|e| names::slugify(&e.name)))
+        .or_else(|| found.entry().map(|e| names::slugify(&e.name)))
         .ok_or_else(|| anyhow!("chain {id} has no built-in short name; pass --name"))?;
     chainz
         .config()
-        .check_new_chain(&short, id, signer.as_deref())?;
+        .check_new_chain(&short, id, args.signer.as_deref())?;
 
     let mut endpoints: Vec<(String, Endpoint)> = Vec::new();
     let push = |endpoints: &mut Vec<(String, Endpoint)>, url: &str| {
@@ -208,142 +241,107 @@ fn add(
         });
         endpoints.push((ep, Endpoint::new(url)));
     };
-    if rpcs.is_empty() {
-        let entry = entry.as_ref().expect("online path");
-        // Only URLs that make valid endpoints; websockets are kept but not
-        // probed.
-        let public: Vec<String> = chainlist::public_rpcs(entry)
-            .into_iter()
-            .filter(|u| Endpoint::check_url(u).is_ok())
-            .collect();
-        let http: Vec<String> = public
-            .iter()
-            .filter(|u| Endpoint::new(u.as_str()).is_http())
-            .cloned()
-            .collect();
-        if http.is_empty() {
-            bail!(
-                "chainlist lists no public HTTP RPC for {}; pass --rpc URL",
-                entry.name
+    match &found {
+        Found::Listed(entry) if args.urls.is_empty() => {
+            // Only URLs that make valid endpoints; websockets are kept but
+            // not probed.
+            let public: Vec<String> = chainlist::public_rpcs(entry)
+                .into_iter()
+                .filter(|u| Endpoint::check_url(u).is_ok())
+                .collect();
+            let http: Vec<String> = public
+                .iter()
+                .filter(|u| Endpoint::new(u.as_str()).is_http())
+                .cloned()
+                .collect();
+            if http.is_empty() {
+                bail!(
+                    "chainlist lists no public HTTP RPC for {}; pass --url URL",
+                    entry.name
+                );
+            }
+            eprintln!(
+                "{}",
+                ui::dim(&format!("probing {} public RPCs…", http.len()))
             );
+            let probed = probe_urls(id, &http);
+            let chosen = choose_active(&probed, &entry.name, ask)?;
+            push(&mut endpoints, chosen);
+            for url in public.iter().filter(|u| *u != chosen) {
+                push(&mut endpoints, url);
+            }
         }
-        eprintln!(
-            "{}",
-            ui::dim(&format!("probing {} public RPCs…", http.len()))
-        );
-        let probed = probe_urls(id, &http);
-        let chosen = choose_active(&probed, &entry.name)?;
-        push(&mut endpoints, chosen);
-        for url in public.iter().filter(|u| *u != chosen) {
-            push(&mut endpoints, url);
-        }
-    } else {
-        for url in &rpcs {
-            push(&mut endpoints, url);
-        }
-        let (ep_name, endpoint) = &endpoints[0];
-        if !no_check && !endpoint.is_websocket() {
-            check(&chainz, &short, id, ep_name, endpoint)?;
+        _ => {
+            for url in &args.urls {
+                push(&mut endpoints, url);
+            }
+            let (ep_name, endpoint) = &endpoints[0];
+            if !args.no_check && !endpoint.is_websocket() {
+                check(chainz, &short, id, ep_name, endpoint)?;
+            }
         }
     }
     let active = endpoints[0].0.clone();
 
-    let aliases: Vec<String> = entry
-        .as_ref()
+    let aliases: Vec<String> = found
+        .entry()
         .map(|e| e.name.clone())
         .filter(|n| !n.eq_ignore_ascii_case(&short))
         .into_iter()
         .filter(|alias| resolve::configured(chainz.config(), alias, Policy::Prefix).is_err())
         .collect();
+    let attach = if args.no_signer {
+        Attach::ExplorerOnly
+    } else {
+        Attach::Defaults
+    };
     let count = endpoints.len();
-    let moved = chainz.transact(|tx| {
+    let (moved, attached) = chainz.transact(|tx| {
         let mut rpcs = endpoints;
         let moved = tx.extract_secrets(&short, &mut rpcs)?;
         let new = Chain {
             id,
             aliases,
-            signer,
+            signer: args.signer.clone(),
             explorer: None,
             rpc: active.clone(),
             failover: vec![],
             rpcs: rpcs.into_iter().collect(),
         };
-        tx.insert_chain(&short, &new, Attach::Nothing)?;
-        Ok(moved)
+        let attached = tx.insert_chain(&short, &new, attach)?;
+        Ok((moved, attached))
     })?;
     println!("Added chain '{short}' ({id}) with {count} endpoint(s); active: {active}");
-    report_moved(&moved);
+    if let Some(signer) = &attached.signer {
+        println!("  signer: {signer} (the only signer; --no-signer to skip)");
+    }
+    if let Some(explorer) = &attached.explorer {
+        println!("  explorer: {explorer}");
+    }
+    ui::report_moved(&moved);
     Ok(0)
 }
 
 /// The probed URL to make active: the fastest healthy one, or the user's
 /// pick from the ranked list on a TTY.
-fn choose_active<'a>(probed: &'a [(String, ProbeResult)], chain: &str) -> Result<&'a str> {
+fn choose_active<'a>(
+    probed: &'a [(String, ProbeResult)],
+    chain: &str,
+    ask: &mut dyn Ask,
+) -> Result<&'a str> {
     let (ranking, items) = ranked_urls(probed);
     let Some(best) = ranking.best().filter(|&i| probed[i].1.is_ok()) else {
-        bail!("no public RPC for {chain} answered; pass --rpc URL");
+        bail!("no public RPC for {chain} answered; pass --url URL");
     };
     if !is_tty() {
         return Ok(&probed[best].0);
     }
-    Ok(&probed[ranking.order[prompt::select("Active RPC", &items, 0)?]].0)
+    Ok(&probed[ranking.order[ask.select("Active RPC", &items, 0)?]].0)
 }
 
-fn edit_chain(query: &str) -> Result<i32> {
+fn rm(args: &ChainRmArgs) -> Result<i32> {
     let mut chainz = open()?;
-    let name = chain_arg(&chainz, query)?;
-    let snippet = chainz.chain_snippet(&name)?;
-    let saved = edit_until_saved(&snippet.text, |edited| {
-        chainz.replace_chain_snippet(&snippet, edited)
-    })?;
-    if saved {
-        println!("Updated chain '{name}'");
-    } else {
-        println!("No changes");
-    }
-    Ok(0)
-}
-
-fn rename(query: &str, new: &str) -> Result<i32> {
-    let mut chainz = open()?;
-    let old = chain_arg(&chainz, query)?;
-    chainz.transact(|tx| tx.rename_chain(&old, new))?;
-    println!("Renamed chain '{old}' to '{new}'");
-    Ok(0)
-}
-
-fn alias(query: &str, aliases: Vec<String>, remove: bool) -> Result<i32> {
-    let mut chainz = open()?;
-    let name = chain_arg(&chainz, query)?;
-    let mut current = chainz.config().chains[&name].aliases.clone();
-    if remove {
-        let before = current.len();
-        current.retain(|a| !aliases.iter().any(|r| r.eq_ignore_ascii_case(a)));
-        if current.len() == before {
-            bail!("chain '{name}' has none of those aliases");
-        }
-    } else {
-        for alias in aliases {
-            if !current.iter().any(|a| a.eq_ignore_ascii_case(&alias)) {
-                current.push(alias);
-            }
-        }
-    }
-    chainz.transact(|tx| tx.set_aliases(&name, &current))?;
-    println!(
-        "Aliases for '{name}': {}",
-        if current.is_empty() {
-            "-".into()
-        } else {
-            current.join(", ")
-        }
-    );
-    Ok(0)
-}
-
-fn rm(query: &str) -> Result<i32> {
-    let mut chainz = open()?;
-    let name = resolve::configured(chainz.config(), query, Policy::Exact)?
+    let name = resolve::configured(chainz.config(), &args.chain, Policy::Exact)?
         .0
         .to_string();
     chainz.transact(|tx| tx.remove_chain(&name))?;

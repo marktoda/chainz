@@ -1,6 +1,6 @@
 //! `chainz top`: the live dashboard (`chainz-tui`).
 
-use super::open;
+use crate::load::open;
 use anyhow::Result;
 use chainz_core::runtime::Runtime;
 use chainz_tui::Options;

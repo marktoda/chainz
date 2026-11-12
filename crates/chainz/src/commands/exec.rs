@@ -1,8 +1,9 @@
 //! The hot path: `exec`, `shell`, `env`. Only `chainz-core` APIs: no
 //! async runtime, no sockets, no threads before `execvp`.
 
-use super::{open, runtime, select_target};
-use crate::cli::{ContextArgs, ExecArgs, ShellKind};
+use crate::cli::{ContextArgs, EnvArgs, ExecArgs, ShellKind};
+use crate::load::open;
+use crate::select::select_target;
 use crate::ui;
 use anyhow::Result;
 use chainz_core::Chainz;
@@ -19,10 +20,8 @@ fn context_for(
     expose_key: bool,
 ) -> Result<Context> {
     let opts = ExecOptions {
-        signer: args.signer.clone(),
-        rpc: args.rpc.clone(),
-        direct: args.direct,
         expose_key,
+        ..ExecOptions::from(args)
     };
     let target = select_target(chainz, runtime, args.chain.as_deref())?;
     context::build(chainz, runtime, &target, &opts)
@@ -38,9 +37,9 @@ fn exports(ctx: &Context) -> Result<Exports> {
 }
 
 /// `chainz exec`.
-pub fn exec(args: ExecArgs) -> Result<i32> {
+pub fn exec(args: &ExecArgs) -> Result<i32> {
     let chainz = open()?;
-    let runtime = runtime()?;
+    let runtime = Runtime::resolve()?;
     let mut ctx = context_for(&chainz, &runtime, &args.context, args.expose_key)?;
     let expander = Expander::new(&chainz, &runtime, &ctx, args.context.direct);
     let argv = expander.expand_args(&args.command)?;
@@ -124,12 +123,12 @@ fn explain(ctx: &Context, exports: &Exports, argv: &[context::ExpandedArg]) -> S
 }
 
 /// `chainz shell`: a subshell with the context exported.
-pub fn shell(args: ContextArgs) -> Result<i32> {
+pub fn shell(args: &ContextArgs) -> Result<i32> {
     let chainz = open()?;
-    let runtime = runtime()?;
-    let ctx = context_for(&chainz, &runtime, &args, false)?;
+    let runtime = Runtime::resolve()?;
+    let ctx = context_for(&chainz, &runtime, args, false)?;
     let exports = exports(&ctx)?;
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
+    let shell = user_shell();
     eprintln!(
         "{}",
         ui::item(&format!("entering {} shell — ctrl-d to exit", ctx.chain()))
@@ -152,23 +151,19 @@ pub fn shell(args: ContextArgs) -> Result<i32> {
 }
 
 /// `chainz env`: shell exports for `eval`.
-pub fn env(args: ContextArgs, shell: Option<ShellKind>) -> Result<i32> {
+pub fn env(args: &EnvArgs) -> Result<i32> {
     let chainz = open()?;
-    let runtime = runtime()?;
-    let ctx = context_for(&chainz, &runtime, &args, false)?;
+    let runtime = Runtime::resolve()?;
+    let ctx = context_for(&chainz, &runtime, &args.context, false)?;
     let exports = exports(&ctx)?;
-    let kind = shell.unwrap_or_else(|| {
-        match std::env::var("SHELL")
-            .unwrap_or_default()
-            .rsplit('/')
-            .next()
-            .unwrap_or_default()
-        {
-            "fish" => ShellKind::Fish,
-            "zsh" => ShellKind::Zsh,
-            _ => ShellKind::Bash,
-        }
-    });
+    let kind =
+        args.shell.unwrap_or_else(
+            || match user_shell().rsplit('/').next().unwrap_or_default() {
+                "fish" => ShellKind::Fish,
+                "zsh" => ShellKind::Zsh,
+                _ => ShellKind::Bash,
+            },
+        );
     let mut out = String::new();
     // A key the user exported themselves is theirs: `env` never unsets it.
     for name in exports.unset.iter().filter(|n| **n != RAW_PRIVATE_KEY) {
@@ -187,8 +182,13 @@ pub fn env(args: ContextArgs, shell: Option<ShellKind>) -> Result<i32> {
     Ok(0)
 }
 
+/// The user's shell: `$SHELL`, else `sh`.
+fn user_shell() -> String {
+    std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string())
+}
+
 /// POSIX single-quoting (only when needed).
-pub fn shell_quote(value: &str) -> String {
+fn shell_quote(value: &str) -> String {
     if !value.is_empty()
         && value
             .bytes()

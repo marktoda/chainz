@@ -3,7 +3,6 @@
 //! endpoints rank is `chainz_rpc::health`; this module turns config into
 //! probes, records them, renders ranked lists and proposes repairs.
 
-use std::future::Future;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
@@ -13,7 +12,7 @@ use chainz_core::{Chainz, Tx, names};
 use chainz_rpc::health::{self, EndpointProbe, Health, Ranking};
 use chainz_rpc::{HealthStore, ProbeResult, RpcClient, Target};
 
-use crate::{net, ui};
+use crate::{net, ui, view};
 
 /// Check that `endpoint` answers with chain ID `chain_id`.
 pub fn check(
@@ -148,7 +147,7 @@ pub async fn probe_chains(
         }
         out.push(ChainProbes {
             chain: chain.clone(),
-            probes: join_indexed(futures).await?,
+            probes: net::join_indexed(futures).await?,
         });
     }
     if let Err(e) = health::record(store, out.iter().flat_map(|c| &c.probes)) {
@@ -177,36 +176,6 @@ async fn probe_one(
         endpoint: target.name().to_string(),
         result,
         capabilities,
-    }
-}
-
-/// Run `futures` concurrently; their outputs in input order. A task that
-/// panicked is an error.
-pub async fn join_indexed<F>(futures: Vec<F>) -> Result<Vec<F::Output>>
-where
-    F: Future + Send + 'static,
-    F::Output: Send + 'static,
-{
-    let mut set = tokio::task::JoinSet::new();
-    for (i, f) in futures.into_iter().enumerate() {
-        set.spawn(async move { (i, f.await) });
-    }
-    let mut out: Vec<Option<F::Output>> = (0..set.len()).map(|_| None).collect();
-    while let Some(joined) = set.join_next().await {
-        let (i, v) = joined.map_err(|e| anyhow!("a probe task failed: {e}"))?;
-        out[i] = Some(v);
-    }
-    Ok(out.into_iter().flatten().collect())
-}
-
-/// The marker for an endpoint's role: `●` active, `◐` failover.
-pub fn marker(chain: &Chain, endpoint: &str) -> &'static str {
-    if chain.rpc == endpoint {
-        "●"
-    } else if chain.failover.iter().any(|f| f == endpoint) {
-        "◐"
-    } else {
-        " "
     }
 }
 
@@ -241,7 +210,10 @@ pub fn print_ranked(chain: &Chain, probes: &ChainProbes, ranking: &Ranking, stor
             .unwrap_or_default();
         println!(
             "  {} {:<18} {:>6}ms  {:<10} {}",
-            marker(chain, &p.endpoint),
+            view::marker(
+                chain.rpc == p.endpoint,
+                chain.failover.contains(&p.endpoint)
+            ),
             p.endpoint,
             p.result.latency.as_millis(),
             health_label(&ranking.health[i]),

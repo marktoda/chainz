@@ -1,22 +1,20 @@
-//! `config path|edit|migrate`.
+//! `config path|migrate` (`chainz edit` edits the file).
 
-use super::{edit_until_saved, open_lenient};
-use crate::cli::ConfigCommand;
+use crate::cli::{ConfigCommand, ConfigMigrateArgs, ConfigPathArgs};
 use anyhow::{Context, Result};
 use chainz_core::store::WriteLock;
 use chainz_core::{StorePaths, migrate, paths};
 
 pub fn run(cmd: ConfigCommand) -> Result<i32> {
     match cmd {
-        ConfigCommand::Path { all } => path(all),
-        ConfigCommand::Edit => edit(),
-        ConfigCommand::Migrate { dry_run } => migrate_cmd(dry_run),
+        ConfigCommand::Path(args) => path(&args),
+        ConfigCommand::Migrate(args) => migrate_cmd(&args),
     }
 }
 
-fn path(all: bool) -> Result<i32> {
+fn path(args: &ConfigPathArgs) -> Result<i32> {
     let p = StorePaths::resolve()?;
-    if !all {
+    if !args.all {
         println!("{}", p.config().display());
         return Ok(0);
     }
@@ -31,20 +29,8 @@ fn path(all: bool) -> Result<i32> {
     Ok(0)
 }
 
-fn edit() -> Result<i32> {
-    // Opening first runs any pending v1 migration.
-    let mut chainz = open_lenient()?;
-    let original = chainz.config_text()?;
-    let saved = edit_until_saved(&original, |edited| chainz.replace_text(&original, edited))?;
-    if saved {
-        println!("Saved {}", chainz.paths().config().display());
-    } else {
-        println!("No changes");
-    }
-    Ok(0)
-}
-
-fn migrate_cmd(dry_run: bool) -> Result<i32> {
+fn migrate_cmd(args: &ConfigMigrateArgs) -> Result<i32> {
+    let dry_run = args.dry_run;
     let p = StorePaths::resolve()?;
     if p.config().exists() {
         println!("Already migrated: {}", p.config().display());

@@ -4,7 +4,8 @@
 
 mod tokens;
 
-use super::open_lenient;
+use crate::cli::DoctorArgs;
+use crate::load::open_lenient;
 use crate::probe::{self, Depth, Repair, health_problem};
 use crate::{net, ui};
 use anyhow::Result;
@@ -36,8 +37,9 @@ impl Report {
     }
 }
 
-pub fn run(fix: bool, tokens: bool) -> Result<i32> {
-    if tokens {
+pub fn run(args: &DoctorArgs) -> Result<i32> {
+    let fix = args.fix;
+    if args.tokens {
         return tokens::run();
     }
     let mut chainz = open_lenient()?;
@@ -66,7 +68,7 @@ pub fn run(fix: bool, tokens: bool) -> Result<i32> {
     if !issues.is_empty() {
         // Nothing below is meaningful on an invalid config, and --fix
         // could not write through validation anyway.
-        println!("{}", ui::dim("fix these with `chainz config edit`"));
+        println!("{}", ui::dim("fix these with `chainz edit`"));
         return Ok(1);
     }
     shadowed_tokens(chainz.config(), &report);
