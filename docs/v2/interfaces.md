@@ -130,6 +130,31 @@ impl Labeler {
 `Labeler::name` skips a built-in token that a user label shadows on that
 chain, so a name it returns always resolves back to the same address.
 
+`addr import` reads Foundry broadcast output with `chainz_core::broadcast`:
+
+```rust
+pub fn kebab(contract: &str) -> String;                  // UniversalRouter → universal-router
+pub fn find_runs(paths: &[PathBuf]) -> Result<Vec<PathBuf>>; // files as given; dirs → broadcast/**/run-latest.json
+pub fn read(file: &Path) -> Result<Vec<Run>>;            // one Run per chain (multi-chain runs hold several)
+pub fn parse(text: &str, file: &Path) -> Result<Vec<Run>>;
+pub struct Run { pub file: PathBuf, pub chain_id: u64, pub contracts: Vec<Deployed> }
+pub struct Deployed { pub contract: Option<String>, pub address: Option<Address>, pub problem: Option<String> }
+pub struct Options { pub prefix: String, pub only: Vec<String>, pub force: bool }
+pub enum Action { Add, Unchanged, Overwrite(Address), Skip(String) }
+pub struct Planned { pub file: PathBuf, pub chain_id: u64, pub chain: Option<String>,
+                     pub contract: Option<String>, pub name: Option<String>,
+                     pub address: Option<Address>, pub action: Action }
+pub fn plan(config: &Config, runs: &[Run], options: &Options) -> Vec<Planned>;
+```
+
+`Deployed::problem` covers a failed transaction, a transaction with no receipt
+(when the file has receipts), and a missing name or address. `plan` puts each
+label on `config.chain_by_id(run.chain_id)`. It never uses a fork. It checks
+names with `edit::check_label_name`, drops repeats of the same (chain, name,
+address), and suffixes later different addresses with `names::unique_name`.
+The command plans again inside `transact`, under the lock, and applies every
+`Add`/`Overwrite` with `edit::set_address(…, force = true)`.
+
 ## Upstream (`chainz_rpc::upstream`)
 
 ```rust

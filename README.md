@@ -173,6 +173,7 @@ chainz addr ls --chain base --builtin   # include built-in tokens
 chainz addr find 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
 chainz addr ls --json                    # also `addr find --json`
 cast logs … | chainz label --chain base  # 0x… → usdc(0x…)
+chainz addr import .                     # label contracts from Foundry broadcast/
 ```
 
 Built-in labels cover major tokens
@@ -180,6 +181,28 @@ Built-in labels cover major tokens
 labels take precedence; `chainz doctor` notes each label that shadows a
 built-in token. `chainz doctor --tokens` verifies the built-in registry on
 chain.
+
+`chainz addr import PATH…` labels the contracts a `forge script --broadcast`
+deployed. PATH is a `run-latest.json` (or any run file, named explicitly) or a
+directory: a project's `broadcast/` is searched for `run-latest.json`, skipping
+history files, `dry-run/` and dependencies under `lib/`. Each label goes on the
+configured chain with the run's chain ID (never a fork), named in kebab case
+(`UniversalRouter` → `@universal-router`, `ERC20Mock` → `@erc20-mock`). It
+imports `CREATE`/`CREATE2` transactions and `additionalContracts` whose
+transaction succeeded. It skips, and reports, failed or pending transactions,
+unnamed contracts, invalid or reserved names, and runs on chains you have not
+configured.
+
+```bash
+chainz addr import ~/src/v4-periphery --dry-run    # show the plan, write nothing
+chainz addr import broadcast/ --prefix v4- --only PoolManager,position-manager
+chainz addr import run-latest.json --force --json  # replace labels that differ
+```
+
+A label that already holds the same address is left unchanged. One that holds a
+different address is skipped unless you pass `--force`. When one import gives
+different addresses the same name on a chain, the later ones get `-2`, `-3`,
+and so on. All labels are written in one locked, atomic update.
 
 ## Signers
 
