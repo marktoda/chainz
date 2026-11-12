@@ -26,7 +26,7 @@ pub struct Capabilities {
     /// Serves `trace_block`.
     pub trace_block: Option<bool>,
     /// The largest `eth_getLogs` block range accepted among the ranges
-    /// [`probe`] tries; `None` when unknown or when even the smallest range
+    /// [`probe_capabilities`] tries; `None` when unknown or when even the smallest range
     /// failed.
     pub max_logs_range: Option<u64>,
     /// The URL is `ws://` or `wss://`.

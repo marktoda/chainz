@@ -2,21 +2,11 @@
 //! endpoint, optionally one signer and explorer), its environment table,
 //! and `@token` expansion of arguments.
 //!
-//! **Environment** (exported only when the value exists; every other
-//! contract variable is removed from the child's environment so a value
-//! never leaks in from an enclosing `exec` subshell):
-//!
-//! | Variable | Value |
-//! | --- | --- |
-//! | `ETH_RPC_URL` | gateway URL for the chain, else the active endpoint expanded |
-//! | `ETH_RPC_HEADERS` | `name: value` pairs, direct mode only |
-//! | `CHAIN_ID`, `CHAINZ_CHAIN` | chain ID and short (or fork) name |
-//! | `ETHERSCAN_API_KEY` | the chain's explorer key |
-//! | `VERIFIER_URL`, `VERIFIER_API_KEY` | explorer API URL and key, non-Etherscan explorers only |
-//! | `ETH_FROM`, `WALLET_ADDRESS` | the signer's cached address |
-//! | `ETH_KEYSTORE` | keystore signer path (never on a fork) |
-//! | `RAW_PRIVATE_KEY` | only with `--expose-key`, never on a fork |
-//! | `CHAIN_NAME` | same as `CHAINZ_CHAIN`; v1 name, kept for one release |
+//! The variables exported, and what each holds, are
+//! [`crate::contract`]'s; users read them in the README and `exec --help`.
+//! A variable is exported only when its value exists; every other contract
+//! variable is removed from the child's environment, so a value never
+//! leaks in from an enclosing `exec` subshell.
 
 use crate::address::Address;
 use crate::contract::{

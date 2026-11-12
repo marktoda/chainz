@@ -11,12 +11,13 @@ macOS only.
 ### Upgrading from 0.4
 
 The first run of 2.0 migrates `config.json` into `config.toml` and
-`secrets.toml` and renames the old file to `config.v1.json.bak`. Chains get
-short names (the old names stay as aliases), endpoints are named after
-their host, known URL credentials move into variables, and keyring signers
-need no re-entry; the [README](https://github.com/marktoda/chainz#upgrading-from-04) has the
-details. The old command spellings are gone (each is an unknown command or
-flag, exit 2):
+`secrets.toml` and renames the old file to `config.v1.json.bak`; the
+[README](https://github.com/marktoda/chainz#upgrading-from-04) lists what
+migration does. The old command spellings are gone (each is an unknown command or
+flag, exit 2). "0.4" is the v0.4.0 release; builds of main after it also
+had `--header` and `--clear-headers` on `add`/`update --rpc-url`, which in
+2.0 are `update CHAIN --header H` and `--clear-headers` (2.0 `add` takes no
+headers).
 
 | 0.4 | 2.0 |
 | --- | --- |
@@ -39,15 +40,16 @@ flag, exit 2):
 | `@key` | `exec --expose-key` (exports `RAW_PRIVATE_KEY`) |
 | `shell CHAIN` | `exec CHAIN` with no command |
 | `use` with no chain (a picker) | `use CHAIN`; `use` alone prints the default |
+| `key add NAME --key KEY` | `printf %s "$KEY" \| chainz signer add NAME --stdin` |
 | `key add NAME --type TYPE` | `signer add NAME --backend BACKEND` (`private-key` is `plaintext`, `one-password` is `1password`) |
 | `key list` | `signer ls` |
-| `key remove NAME --force` | `signer rm NAME --unassign` |
+| `key remove NAME [--force]` | `signer rm NAME [--unassign]` |
 | `key migrate` | `signer migrate` |
-| `var get NAME --show` | `var ls NAME --reveal` |
-| `var list --show` | `var ls --reveal` |
+| `var get NAME [--show]` | `var ls NAME [--reveal]` |
+| `var list [--show]` | `var ls [--reveal]` |
 | `var list --json` (values shown) | `var ls --json --reveal` |
 | `var remove NAME` | `var rm NAME` |
-| `completions SHELL > FILE` | `source <(chainz completions SHELL)` at shell startup |
+| `completions SHELL > FILE` | delete the file you generated (0.4's static completions still offer `list`, `key`, …), then `source <(chainz completions SHELL)` at shell startup |
 
 What `exec` exports changed too:
 

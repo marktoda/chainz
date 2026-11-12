@@ -24,6 +24,7 @@ the API of each crate is its rustdoc.
 | `chainz-serve` | the gateway and a fork's pinned proxy |
 | `chainz-tui` | `chainz top` |
 | `chainz` | the CLI: clap, handlers, prompts, output, the fork supervisor |
+| `chainz-testkit` | the shared test harness (`Mock`, …); a dev-dependency only, never published (see CONTRIBUTING) |
 
 Every crate depends on `chainz-os`, and `chainz-tui`'s tests use
 `chainz-serve`'s `testing` feature (so serve publishes before tui).
@@ -36,8 +37,9 @@ expanded) and hand it in. The five library crates are published only so
 
 - **The hot path is offline.** `exec`, `env` and `ls` call only core (and
   `ls` reads the recorded health file). They start no runtime, open no
-  socket and spawn no thread before `execvp`. The crate split enforces it at
-  compile time; `crates/chainz/tests/e2e/hot_path.rs` checks it at run time.
+  socket and spawn no thread before `execvp`. Core can't reach the network
+  (it has no tokio, reqwest or hyper), and the binary's hot path calls only
+  core; `crates/chainz/tests/e2e/hot_path.rs` checks that at run time.
 - **Keys are unlocked only for `--expose-key`.** Everything else (`@wallet`,
   `ETH_FROM`, balances, fork funding, keystore signers) uses the cached
   address.
@@ -45,7 +47,9 @@ expanded) and hand it in. The five library crates are published only so
   gateway log. There is one redaction policy (core), and it fails closed.
   `--reveal` is the only way past it.
 - **No hidden prompts.** Off a terminal chainz never asks; it reports and
-  names the flag to pass.
+  names the flag to pass (exit 2). Password prompts read the terminal
+  itself, so a piped stdin doesn't stop them when one is there. `edit` runs
+  `$EDITOR` wherever it is: a scripted editor is legitimate.
 - **Old names are unknown names.** Removed commands and flags get no hidden
   aliases.
 
@@ -145,18 +149,19 @@ can't hang them. A record never holds params, URLs or bodies.
 
 ## Performance
 
-CI enforces the hot path relative to 0.4 (built from `c964bce`), not in
-absolute time, which would flake: `scripts/perf-gate.sh` fails when the
-median of `exec 1 -- true` or `ls` (17 chains) is over 85% of 0.4's, and the
-strace test fails on any socket or thread. The gateway's `latency` example
+CI enforces the hot path relative to 0.4, not in absolute time, which
+would flake: `scripts/perf-gate.sh` (which holds the ratio; the workflow
+holds the baseline commit) compares the median of `exec 1 -- true` and
+`ls` (17 chains), and the strace test fails on any socket or thread. The gateway's `latency` example
 fails when it adds 1 ms or more to the p50 round trip.
 
 ## Decisions
 
 - **`execvp`, not spawn and wait:** signals, exit codes and TTYs behave as
   if chainz weren't there. This is why Windows is not supported.
-- **A workspace, not one crate:** the compile-time split is what keeps the
-  hot path offline.
+- **A workspace, not one crate:** core, which the hot path calls, cannot
+  link the network stack, so keeping the hot path offline is the binary's
+  job alone (and the strace test's to check).
 - **Exec routes through a running gateway** (`--direct` opts out), so the
   gateway helps without changing any command.
 - **Failover starts empty:** nothing is retried on an endpoint you didn't

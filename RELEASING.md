@@ -6,10 +6,9 @@ passes its tests and package check. All six share the one version in the
 root `Cargo.toml`, and `cargo publish --workspace` uploads them in
 dependency order (see [docs/architecture.md](docs/architecture.md#crates)).
 
-The five library crates (`chainz-os`, `-core`, `-rpc`, `-serve`, `-tui`)
-are published only because `chainz` depends on them. They have no stable
-API: any release may break them, and their version always moves with
-`chainz`'s.
+The five library crates are published only so `cargo install chainz`
+works ([no stable API](docs/architecture.md#crates)); their version always
+moves with `chainz`'s.
 
 ## One-time repository setup
 
@@ -25,7 +24,7 @@ API: any release may break them, and their version always moves with
 2. In `CHANGELOG.md`, replace `Unreleased` with the release date. The
    GitHub release notes are that version's section
    (`scripts/release-notes.sh VERSION` prints them), and the release job
-   fails before publishing when it is missing.
+   fails before publishing when it is missing or its heading has no date.
 3. Set the intended version in the root `Cargo.toml`, in both
    `[workspace.package]` and the five `[workspace.dependencies]` path
    entries, then run `cargo update -w` so `Cargo.lock` records it.

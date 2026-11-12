@@ -1,12 +1,8 @@
-//! Filesystem locations (XDG layout).
-//!
-//! | Path | Holds |
-//! | --- | --- |
-//! | `$XDG_CONFIG_HOME/chainz/config.toml` | chains, endpoints, explorers, signer references, labels |
-//! | `$XDG_CONFIG_HOME/chainz/secrets.toml` | variable values, plaintext/encrypted keys (0600) |
-//! | `$XDG_STATE_HOME/chainz/` | endpoint health history, logs ([`serve_log`], [`fork_log`]) |
-//! | `$XDG_RUNTIME_DIR/chainz/` (else the state dir) | gateway and fork registry |
-//! | `$XDG_CACHE_HOME/chainz/` | chainlist |
+//! Filesystem locations (XDG layout): config and secrets under
+//! `$XDG_CONFIG_HOME/chainz`, health and logs under the state dir, the
+//! gateway and fork registry under `$XDG_RUNTIME_DIR` (else the state dir),
+//! the chainlist under the cache dir. The README's Configuration section
+//! says what each file holds; each function documents its own path.
 //!
 //! Every directory falls back to the XDG default under `$HOME` on all
 //! platforms (v1 used `~/.config` on macOS too, and so does v2).

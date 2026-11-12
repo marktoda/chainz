@@ -946,4 +946,19 @@ mod tests {
             );
         }
     }
+
+    /// The README's exec table is the other documented copy of the
+    /// contract (`CHAIN_NAME`, deprecated, is only in the CHANGELOG).
+    #[test]
+    fn the_readme_names_the_whole_contract() {
+        let readme = include_str!("../../../README.md");
+        for name in chainz_core::contract::CONTRACT_VARS {
+            if name != chainz_core::contract::CHAIN_NAME {
+                assert!(
+                    readme.contains(&format!("`{name}`")),
+                    "README misses {name}"
+                );
+            }
+        }
+    }
 }

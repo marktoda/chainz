@@ -59,6 +59,8 @@ A chain can be named by its short name, an alias, its chain ID, an
 unambiguous prefix or a live fork's name. Well-known long names
 (`ethereum`, `arbitrum`, `optimism`…) find the configured chain with that
 ID, so `arbitrum` means your `arb`. `rm` takes only an exact name or ID.
+With no chain argument, chainz uses `$CHAINZ_CHAIN` (set inside an `exec`
+subshell), then the default from `chainz use`, then asks on a terminal.
 
 ## exec: run a tool with chain context
 
@@ -213,7 +215,8 @@ $ chainz fork stop base-fork        # or Ctrl-C, or --all
 - A fork is a chain name while it runs, by name only: `exec 8453` is always
   the real chain.
 - Anvil reads state through one pinned endpoint: the active one, or
-  `--rpc NAME|URL`. `--block N` needs an archive endpoint.
+  `--rpc NAME|URL`. `--block N` pins the first endpoint that serves
+  historical state (or `--rpc`).
 - Your signer gets ETH by default; `--fund` adds tokens, `--no-fund` skips
   it.
 - A fork shares its parent's chain ID, so a signature made for it would be
@@ -226,9 +229,9 @@ $ chainz fork stop base-fork        # or Ctrl-C, or --all
 | Path | Holds |
 | --- | --- |
 | `$XDG_CONFIG_HOME/chainz/config.toml` | chains, endpoints, explorers, signer references, labels |
-| `$XDG_CONFIG_HOME/chainz/secrets.toml` | variable values and plaintext keys (mode `0600`) |
+| `$XDG_CONFIG_HOME/chainz/secrets.toml` | variable values, plaintext and encrypted keys (mode `0600`) |
 | `$XDG_STATE_HOME/chainz/` | endpoint health, gateway and fork logs |
-| `$XDG_RUNTIME_DIR/chainz/` | the running gateway and forks |
+| `$XDG_RUNTIME_DIR/chainz/` (the state dir when unset, as on macOS) | the running gateway and forks |
 | `$XDG_CACHE_HOME/chainz/` | the chainlist download |
 
 `$XDG_CONFIG_HOME` is `~/.config` when unset. `chainz doctor` lists every
@@ -242,6 +245,10 @@ default = "eth"
 [explorers.etherscan]
 api = "https://api.etherscan.io/v2/api?chainid=${CHAIN_ID}"
 key = "${ETHERSCAN_API_KEY}"
+
+[explorers.blockscout]                  # any other: VERIFIER_URL, VERIFIER_API_KEY
+api = "https://eth.blockscout.com/api"
+key = "${BLOCKSCOUT_KEY}"
 
 [chains.eth]
 id = 1
@@ -265,21 +272,23 @@ base = "0x…"
 
 `${NAME}` resolves from the built-ins (`${CHAIN_ID}`, `${CHAIN}`), then the
 environment, then `secrets.toml` (`chainz var set`). An unresolved name is
-an error. Inside a chainz context (an `exec` subshell, or after
-`eval "$(chainz env …)"`) the variables `exec` exports are not read from
-the environment, so a nested `chainz exec` never inherits the outer chain's
-keys. Writing a URL with a known API key (Infura, Alchemy) or a credential
+an error. A nested `chainz exec` never inherits the outer chain's keys.
+
+Writing a URL with a known API key (Infura, Alchemy) or a credential
 header moves the secret into a variable and says so; `doctor --fix` does
 the same for what is already there.
 
 ## Scripting
 
 - Off a terminal chainz never prompts: it fails and names the flag to pass.
+  (`chainz edit` is the exception: it runs `$EDITOR` wherever it is, so a
+  scripted editor works.)
   Removals (`rm`, `signer rm`, `label rm`, `var rm`) ask on a terminal and
   need `--yes` (`-y`) off one. Password prompts read the terminal itself,
   not stdin, so a piped key (`signer add NAME --stdin`) still gets its
   encryption password asked for when a terminal is there.
-- Every listing takes `--json`.
+- Every listing takes `--json` (`serve log` aside: `serve --log FILE`
+  writes the request records as JSONL).
 - Secrets are masked unless you pass `--reveal`, and only the parts that
   could be secret: `https://mainnet.infura.io/v3/[REDACTED]`.
 - Exit codes: 0 on success; 1 for an error, or a problem the command
@@ -316,17 +325,21 @@ once:
   variables in `secrets.toml`; anything else is reported.
 - Signers keep their backend and address; keyring entries need no
   re-entry. A signer that 0.4 stored without an address is reported, with
-  the `signer migrate` command that caches one.
+  how to cache one.
 - `config.json` is renamed to `config.v1.json.bak` once the new files are
-  written, so you can go back.
+  written. To go back, rename it to `config.json` and reinstall 0.4, which
+  ignores `config.toml`; changes made in 2.0 are not carried back.
 
 Several commands and flags were renamed, and the old spellings are gone.
-The [CHANGELOG](CHANGELOG.md#upgrading-from-04) maps each one.
+The [CHANGELOG](https://github.com/marktoda/chainz/blob/main/CHANGELOG.md#upgrading-from-04) maps each one.
+If you saved 0.4's completions to a file (`chainz completions zsh >
+~/.zfunc/_chainz`), delete it: it completes the old commands and can shadow
+the loader above.
 
 ## Development
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) and
-[docs/architecture.md](docs/architecture.md).
+See [CONTRIBUTING.md](https://github.com/marktoda/chainz/blob/main/CONTRIBUTING.md) and
+[docs/architecture.md](https://github.com/marktoda/chainz/blob/main/docs/architecture.md).
 
 ## License
 

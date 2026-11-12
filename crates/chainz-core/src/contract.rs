@@ -24,7 +24,7 @@ pub const ETH_RPC_URL: &str = "ETH_RPC_URL";
 pub const ETH_RPC_HEADERS: &str = "ETH_RPC_HEADERS";
 /// `CHAIN_ID`: the chain ID (also the built-in `${CHAIN_ID}` variable).
 pub const CHAIN_ID: &str = "CHAIN_ID";
-/// `CHAIN_NAME`: the chain's name.
+/// `CHAIN_NAME`: same as `CHAINZ_CHAIN`, deprecated (the v1 name).
 pub const CHAIN_NAME: &str = "CHAIN_NAME";
 /// `VERIFIER_URL`: a non-Etherscan explorer's API.
 pub const VERIFIER_URL: &str = "VERIFIER_URL";
