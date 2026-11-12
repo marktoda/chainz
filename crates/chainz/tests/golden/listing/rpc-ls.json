@@ -1,0 +1,71 @@
+[
+  {
+    "chain": "eth",
+    "name": "infura",
+    "url": "https://redacted.infura.io/REDACTED",
+    "active": true,
+    "failover": false,
+    "latency_ms": 42,
+    "head": 19000000,
+    "error": null,
+    "tags": [
+      "archive",
+      "trace",
+      "logs:10000"
+    ]
+  },
+  {
+    "chain": "eth",
+    "name": "alchemy",
+    "url": "https://redacted.alchemy.com/REDACTED/${ALCHEMY_KEY}",
+    "active": false,
+    "failover": false,
+    "latency_ms": null,
+    "head": null,
+    "error": null,
+    "tags": []
+  },
+  {
+    "chain": "eth",
+    "name": "gw",
+    "url": "https://redacted.example.invalid/REDACTED",
+    "headers": [
+      [
+        "x-api-key",
+        "[REDACTED]"
+      ],
+      [
+        "x-team",
+        "[REDACTED]"
+      ]
+    ],
+    "active": false,
+    "failover": true,
+    "latency_ms": null,
+    "head": null,
+    "error": "timeout",
+    "tags": []
+  },
+  {
+    "chain": "eth",
+    "name": "llama",
+    "url": "https://redacted.llamarpc.com/",
+    "active": false,
+    "failover": true,
+    "latency_ms": null,
+    "head": null,
+    "error": null,
+    "tags": []
+  },
+  {
+    "chain": "eth",
+    "name": "llama-ws",
+    "url": "wss://redacted.llamarpc.com/",
+    "active": false,
+    "failover": false,
+    "latency_ms": null,
+    "head": null,
+    "error": null,
+    "tags": []
+  }
+]

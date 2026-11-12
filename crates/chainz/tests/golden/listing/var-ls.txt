@@ -1,0 +1,3 @@
+ALCHEMY_KEY              [REDACTED] (20 chars)  chains.eth.rpcs.alchemy
+TEAM                     [REDACTED] (4 chars)  chains.eth.rpcs.gw
+ETHERSCAN_API_KEY        [REDACTED] (16 chars)  explorers.etherscan

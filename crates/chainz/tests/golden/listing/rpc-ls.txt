@@ -1,0 +1,9 @@
+
+eth
+  ● infura             42ms     https://redacted.infura.io/REDACTED archive trace logs:10000
+    alchemy            -        https://redacted.alchemy.com/REDACTED/${ALCHEMY_KEY} 
+  ◐ gw                 timeout  https://redacted.example.invalid/REDACTED 
+      x-api-key: [REDACTED]
+      x-team: [REDACTED]
+  ◐ llama              -        https://redacted.llamarpc.com/ 
+    llama-ws           -        wss://redacted.llamarpc.com/ 

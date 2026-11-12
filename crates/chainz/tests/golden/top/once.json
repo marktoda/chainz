@@ -1,0 +1,228 @@
+{
+  "at": "<volatile>",
+  "gateway": {
+    "running": false,
+    "port": null
+  },
+  "chains": [
+    {
+      "name": "live",
+      "id": 1,
+      "aliases": [
+        "mainnet"
+      ],
+      "rpc": "main",
+      "via_gateway": false,
+      "status": "ok",
+      "head": 1000,
+      "block_timestamp": "<volatile>",
+      "block_age_secs": "<volatile>",
+      "block_time_secs": 12.0,
+      "base_fee_wei": "1000000000",
+      "base_fee_gwei": 1.0,
+      "latency_ms": "<volatile>",
+      "p50_ms": "<volatile>",
+      "lag_blocks": 0,
+      "error": null,
+      "endpoints": [
+        {
+          "name": "main",
+          "url": "http://127.0.0.1:<port>/REDACTED/${RPC_KEY}",
+          "active": true,
+          "websocket": false,
+          "status": "unknown",
+          "tags": [],
+          "latency_ms": null,
+          "p50_ms": null,
+          "head": null,
+          "lag_blocks": null,
+          "error": null,
+          "probed_at_ms": null
+        },
+        {
+          "name": "spare",
+          "url": "http://127.0.0.1:1/REDACTED",
+          "active": false,
+          "websocket": false,
+          "status": "unknown",
+          "tags": [],
+          "latency_ms": null,
+          "p50_ms": null,
+          "head": null,
+          "lag_blocks": null,
+          "error": null,
+          "probed_at_ms": null
+        },
+        {
+          "name": "stream",
+          "url": "wss://redacted.example.org/REDACTED",
+          "active": false,
+          "websocket": true,
+          "status": "websocket",
+          "tags": [
+            "ws"
+          ],
+          "latency_ms": null,
+          "p50_ms": null,
+          "head": null,
+          "lag_blocks": null,
+          "error": null,
+          "probed_at_ms": null
+        }
+      ]
+    },
+    {
+      "name": "dead",
+      "id": 8453,
+      "aliases": [],
+      "rpc": "local",
+      "via_gateway": false,
+      "status": "down",
+      "head": null,
+      "block_timestamp": null,
+      "block_age_secs": null,
+      "block_time_secs": null,
+      "base_fee_wei": null,
+      "base_fee_gwei": null,
+      "latency_ms": null,
+      "p50_ms": null,
+      "lag_blocks": 0,
+      "error": {
+        "class": "connect",
+        "message": "could not connect to endpoint"
+      },
+      "endpoints": [
+        {
+          "name": "local",
+          "url": "http://127.0.0.1:1/",
+          "active": true,
+          "websocket": false,
+          "status": "unknown",
+          "tags": [],
+          "latency_ms": null,
+          "p50_ms": null,
+          "head": null,
+          "lag_blocks": null,
+          "error": null,
+          "probed_at_ms": null
+        }
+      ]
+    }
+  ],
+  "balances": [
+    {
+      "signer": "default",
+      "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+      "chains": [
+        {
+          "chain": "live",
+          "id": 1,
+          "via": "multicall3",
+          "native": {
+            "symbol": "ETH",
+            "decimals": 18,
+            "raw": "1500000000000000000",
+            "formatted": "1.5",
+            "saturated": false
+          },
+          "tokens": [
+            {
+              "name": "dai",
+              "address": "0x6B175474E89094C44Da98b954EedeAC495271d0F",
+              "balance": {
+                "symbol": "DAI",
+                "decimals": 18,
+                "raw": "0",
+                "formatted": "0",
+                "saturated": false
+              }
+            },
+            {
+              "name": "usdc",
+              "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+              "balance": {
+                "symbol": "USDC",
+                "decimals": 6,
+                "raw": "2500000",
+                "formatted": "2.5",
+                "saturated": false
+              }
+            },
+            {
+              "name": "usdt",
+              "address": "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+              "balance": {
+                "symbol": "USDT",
+                "decimals": 6,
+                "raw": "0",
+                "formatted": "0",
+                "saturated": false
+              }
+            },
+            {
+              "name": "wbtc",
+              "address": "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
+              "balance": {
+                "symbol": "WBTC",
+                "decimals": 8,
+                "raw": "0",
+                "formatted": "0",
+                "saturated": false
+              }
+            },
+            {
+              "name": "weth",
+              "address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+              "balance": {
+                "symbol": "WETH",
+                "decimals": 18,
+                "raw": "0",
+                "formatted": "0",
+                "saturated": false
+              }
+            }
+          ],
+          "error": null
+        },
+        {
+          "chain": "dead",
+          "id": 8453,
+          "via": null,
+          "native": null,
+          "tokens": [
+            {
+              "name": "dai",
+              "address": "0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb",
+              "balance": null
+            },
+            {
+              "name": "usdc",
+              "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+              "balance": null
+            },
+            {
+              "name": "usdce",
+              "address": "0xd9aAEc86B65D86f6A7B5B1b0c42FFA531710b6CA",
+              "balance": null
+            },
+            {
+              "name": "usdt",
+              "address": "0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2",
+              "balance": null
+            },
+            {
+              "name": "weth",
+              "address": "0x4200000000000000000000000000000000000006",
+              "balance": null
+            }
+          ],
+          "error": {
+            "class": "connect",
+            "message": "could not connect to endpoint"
+          }
+        }
+      ]
+    }
+  ],
+  "traffic": null
+}

@@ -1,0 +1,23 @@
+[
+  {
+    "name": "ALCHEMY_KEY",
+    "value": "[REDACTED] (20 chars)",
+    "used_by": [
+      "chains.eth.rpcs.alchemy"
+    ]
+  },
+  {
+    "name": "TEAM",
+    "value": "[REDACTED] (4 chars)",
+    "used_by": [
+      "chains.eth.rpcs.gw"
+    ]
+  },
+  {
+    "name": "ETHERSCAN_API_KEY",
+    "value": "[REDACTED] (16 chars)",
+    "used_by": [
+      "explorers.etherscan"
+    ]
+  }
+]

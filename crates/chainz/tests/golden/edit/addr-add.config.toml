@@ -1,0 +1,33 @@
+# My chains. Hand-edited; keep this header.
+version = 2
+default = "eth"
+
+# Mainnet first.
+[chains.eth]
+rpc = "main"   # the one I trust
+id = 1
+aliases = ["mainnet"] # short name
+signer = "default"
+
+# Endpoints, most preferred first.
+[chains.eth.rpcs]
+main = "http://127.0.0.1:1/main"
+backup = "http://127.0.0.1:1/backup" # flaky
+
+[chains.base]
+id = 8453
+rpc = "local"
+rpcs.local = "http://127.0.0.1:1/base"
+
+# Signers go last.
+[signers.default]
+backend = "plaintext"
+address = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+
+# Labels.
+[addresses.router]
+eth = "0x1111111111111111111111111111111111111111" # v2
+base = "0x3333333333333333333333333333333333333333"
+
+[addresses.vault]
+"*" = "0x4444444444444444444444444444444444444444"

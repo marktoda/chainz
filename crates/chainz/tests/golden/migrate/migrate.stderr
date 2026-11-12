@@ -1,0 +1,7 @@
+chainz: migrated 17 chains, 149 endpoints, 3 signers, 4 variables; moved 3 credentials into variables; 5 items need attention
+chainz: wrote <root>/config/chainz/config.toml (v1 config kept as <root>/config/chainz/config.v1.json.bak)
+chainz:   - chain 'eth' endpoint 'quiknode' embeds a credential (path segment); move it into a variable
+chainz:   - chain 'base' endpoint 'quiknode' embeds a credential (path segment); move it into a variable
+chainz:   - chain 'bsc' endpoint 'quiknode' embeds a credential (path segment); move it into a variable
+chainz:   - chain 'polygon' endpoint 'quiknode' embeds a credential (path segment); move it into a variable
+chainz:   - chain 'op' endpoint 'quiknode' embeds a credential (path segment); move it into a variable

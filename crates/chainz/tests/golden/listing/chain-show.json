@@ -1,0 +1,64 @@
+{
+  "name": "eth",
+  "id": 1,
+  "aliases": [
+    "ethereum",
+    "mainnet"
+  ],
+  "rpc": "infura",
+  "rpc_url": "https://redacted.infura.io/REDACTED",
+  "failover": [
+    "llama",
+    "gw"
+  ],
+  "signer": "deployer",
+  "explorer": "etherscan",
+  "default": true,
+  "endpoints": [
+    {
+      "name": "infura",
+      "url": "https://redacted.infura.io/REDACTED",
+      "active": true,
+      "failover": false,
+      "websocket": false
+    },
+    {
+      "name": "alchemy",
+      "url": "https://redacted.alchemy.com/REDACTED/${ALCHEMY_KEY}",
+      "active": false,
+      "failover": false,
+      "websocket": false
+    },
+    {
+      "name": "gw",
+      "url": "https://redacted.example.invalid/REDACTED",
+      "headers": [
+        [
+          "x-api-key",
+          "[REDACTED]"
+        ],
+        [
+          "x-team",
+          "[REDACTED]"
+        ]
+      ],
+      "active": false,
+      "failover": true,
+      "websocket": false
+    },
+    {
+      "name": "llama",
+      "url": "https://redacted.llamarpc.com/",
+      "active": false,
+      "failover": true,
+      "websocket": false
+    },
+    {
+      "name": "llama-ws",
+      "url": "wss://redacted.llamarpc.com/",
+      "active": false,
+      "failover": false,
+      "websocket": true
+    }
+  ]
+}

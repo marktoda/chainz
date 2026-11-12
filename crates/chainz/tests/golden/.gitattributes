@@ -1,0 +1,2 @@
+# Snapshots are compared byte for byte (trailing spaces included).
+* -text -whitespace
