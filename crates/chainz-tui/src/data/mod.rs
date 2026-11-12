@@ -74,8 +74,8 @@ pub struct Tuning {
     /// Gap between the first requests to chains that share a provider, so
     /// start-up is not a burst against one API key.
     pub stagger: Duration,
-    /// `--once`: the wait before retrying a rate-limited request (then
-    /// twice that).
+    /// `--once`: the wait before retrying a rate-limited request
+    /// ([`OnceRetry`]).
     pub once_retry_wait: Duration,
 }
 
@@ -477,9 +477,9 @@ fn provider_slots(plan: &Plan) -> Vec<u32> {
 /// How often `--once` retries a rate-limited request.
 const ONCE_RETRIES: u32 = 2;
 
-/// `--once`'s one chance at a result: a result that asks for another
-/// try gets one after [`Tuning::once_retry_wait`] times the attempt,
-/// [`ONCE_RETRIES`] times at most.
+/// `--once`'s one chance at a result: a rate-limited request is tried
+/// again after [`Tuning::once_retry_wait`] times the attempt (so `wait`,
+/// then twice that), [`ONCE_RETRIES`] times at most.
 struct OnceRetry {
     wait: Duration,
     attempt: u32,
@@ -505,7 +505,7 @@ impl OnceRetry {
 /// One round of everything `--once` reports, sent as the live workers
 /// send theirs: every chain's head and balances, and the gateway's metrics
 /// when one runs. No endpoint probes. A rate-limited request is retried
-/// after [`Tuning::once_retry_wait`], then twice that.
+/// ([`OnceRetry`]).
 pub async fn collect_once(shared: &Arc<Shared>, plan: &Plan) {
     let wait = shared.tuning.once_retry_wait;
     // Reports a gateway it finds before anything read from it.
@@ -524,18 +524,13 @@ pub async fn collect_once(shared: &Arc<Shared>, plan: &Plan) {
         let task = set.spawn(async move {
             let mut poller = heads::Poller::new(shared.clone(), chain.clone(), slot, 0);
             tokio::time::sleep(poller.offset()).await;
-            // A snapshot has one chance: give a rate limit (or a block time
-            // that needed a second look) a moment and try again.
             let mut retry = OnceRetry::new(wait);
             let mut head = poller.step().await;
             while retry
-                .again(match &head {
-                    Update::Head {
-                        result: Err(fault), ..
-                    } => fault.rate_limited,
-                    Update::Head { block_time, .. } => block_time.is_none(),
-                    _ => false,
-                })
+                .again(matches!(
+                    &head,
+                    Update::Head { result: Err(fault), .. } if fault.rate_limited
+                ))
                 .await
             {
                 head = poller.step().await;
