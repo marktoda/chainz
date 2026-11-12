@@ -238,11 +238,9 @@ fn faults_keep_the_retry_after() {
             message: message.into(),
         })
     };
-    // "Limit exceeded" is the code, not a substring of the message.
-    assert!(rpc(-32005, "limit exceeded").rate_limited);
+    // Which errors are rate limits is chainz-rpc's rule; the fault keeps it.
     assert!(fault.rate_limited);
-    assert!(!rpc(-32000, "upstream said -32005 earlier").rate_limited);
-    assert!(!rpc(-320_050, "some other error").rate_limited);
+    assert!(!rpc(-32000, "execution reverted").rate_limited);
 }
 
 #[test]
@@ -815,11 +813,7 @@ async fn traffic_follows_the_gateway_control_socket() {
     assert_eq!(state.gateway.as_ref().unwrap().port, 18545);
 
     // The request stream is subscribed to, and records flow into the feed.
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while server.event_subscribers() == 0 {
-        assert!(std::time::Instant::now() < deadline, "no events subscriber");
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    wait_until("an events subscriber", || server.event_subscribers() > 0).await;
     server.push_event(gw::record(
         1,
         NOW * 1_000,
@@ -1012,15 +1006,19 @@ async fn a_refresh_keeps_the_provider_stagger() {
         .await;
         first.push(chain);
     }
-    // Both pollers are waiting now.
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
+    // A refresh reaches only pollers already waiting, and the test cannot
+    // see when they start to: ask until both have polled again. A later
+    // ask only moves the second poll later, so the check below still holds.
     let asked = std::time::Instant::now();
-    engine.refresh(Refresh::Chains);
-    wait_until("both chains to poll again", || {
-        polls("/one").len() == 2 && polls("/two").len() == 2
-    })
-    .await;
+    let deadline = asked + Duration::from_secs(10);
+    while polls("/one").len() < 2 || polls("/two").len() < 2 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no poll after a refresh"
+        );
+        engine.refresh(Refresh::Chains);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     // The second chain on the provider waits its beat, as at start-up.
     let again = polls("/two")[1];
     assert!(
@@ -1185,8 +1183,10 @@ async fn a_new_plan_restarts_only_the_chains_it_changed() {
         settled(&eth) && settled(&base)
     })
     .await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // That is all a chain sends at start-up: a head, a look-back, a head
+    // and a balance read.
     let (eth_before, base_before) = (eth.hits().len(), base.hits().len());
+    assert_eq!((eth_before, base_before), (4, 4));
 
     // `s` on base: its active endpoint becomes `spare`; eth is untouched.
     let mut moved = first.chains[1].clone();

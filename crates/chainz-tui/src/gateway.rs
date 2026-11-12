@@ -389,11 +389,8 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!((replayed.id, replayed.method.as_str()), (6, "eth_gasPrice"));
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while server.event_subscribers() == 0 {
-            assert!(std::time::Instant::now() < deadline, "no events subscriber");
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
+        crate::data::testing::wait_until("an events subscriber", || server.event_subscribers() > 0)
+            .await;
         server.push_event(record(7, 1_000, "eth_call", "@usdc.balanceOf(@wallet)"));
         server.push_event(failed_record(8, 2_000));
         let first = tokio::time::timeout(Duration::from_secs(5), events.next())

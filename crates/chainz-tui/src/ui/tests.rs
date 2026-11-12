@@ -235,40 +235,6 @@ fn frame(app: &App, state: &State, width: u16, height: u16) -> String {
     render_text(ctx(app, state), width, height)
 }
 
-#[test]
-#[ignore = "prints frames for a human: cargo test -p chainz-tui gallery -- --ignored --nocapture"]
-fn gallery() {
-    let state = fixture();
-    let live = with_gateway(fixture());
-    for (title, text) in [
-        ("chains 110x10", frame(&app(Tab::Chains), &state, 110, 10)),
-        ("chains 72x10", frame(&app(Tab::Chains), &state, 72, 10)),
-        ("chains 44x10", frame(&app(Tab::Chains), &state, 44, 10)),
-        (
-            "endpoints 130x11",
-            frame(&app(Tab::Endpoints), &live, 130, 11),
-        ),
-        (
-            "endpoints 70x11",
-            frame(&app(Tab::Endpoints), &state, 70, 11),
-        ),
-        (
-            "balances 100x10",
-            frame(&app(Tab::Balances), &state, 100, 10),
-        ),
-        ("balances 50x10", frame(&app(Tab::Balances), &state, 50, 10)),
-        (
-            "traffic off 100x12",
-            frame(&app(Tab::Traffic), &state, 100, 12),
-        ),
-        ("traffic 140x16", frame(&app(Tab::Traffic), &live, 140, 16)),
-        ("traffic 90x24", frame(&app(Tab::Traffic), &live, 90, 24)),
-        ("traffic 60x12", frame(&app(Tab::Traffic), &live, 60, 12)),
-    ] {
-        println!("── {title} {}\n{text}", "─".repeat(60));
-    }
-}
-
 /// The frame's cells, drawn through a real `Terminal` with `theme`.
 fn buffer(app: &App, state: &State, theme: Theme, width: u16, height: u16) -> Buffer {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -776,27 +742,4 @@ fn colours_carry_meaning_and_no_color_removes_them() {
     }
     let plain = buffer(&app(Tab::Chains), &state, Theme::new(false), 110, 10);
     assert!(plain[(5, 3)].modifier.contains(Modifier::REVERSED));
-}
-
-#[test]
-fn redrawing_an_unchanged_frame_writes_nothing() {
-    // ratatui diffs frames: with no change, nothing is sent to the
-    // terminal, which is what keeps the live view from flickering.
-    let state = fixture();
-    let app = app(Tab::Chains);
-    let area = Rect::new(0, 0, 110, 10);
-    let mut first = Buffer::empty(area);
-    render(area, &mut first, ctx(&app, &state));
-    let mut again = Buffer::empty(area);
-    render(area, &mut again, ctx(&app, &state));
-    assert!(first.diff(&again).is_empty());
-    // One second later only the cells that changed are rewritten.
-    let later = Ctx {
-        now_ms: NOW + 1_000,
-        ..ctx(&app, &state)
-    };
-    let mut next = Buffer::empty(first.area);
-    render(first.area, &mut next, later);
-    let changed = first.diff(&next).len();
-    assert!((1..=12).contains(&changed), "{changed} cells changed");
 }

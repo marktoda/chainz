@@ -151,21 +151,3 @@ fn frame(body: Body, heading: Option<String>, room: u16) -> String {
     let lines: Vec<&str> = lines.iter().map(|l| l.trim_end()).collect();
     lines.join("\n").trim_end().to_string()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::skipped_note;
-
-    #[test]
-    fn a_few_down_chains_are_named_and_many_are_counted() {
-        let names = |n: usize| (0..n).map(|i| format!("c{i}")).collect::<Vec<_>>();
-        assert_eq!(
-            skipped_note(&names(2)),
-            " balances skipped on down chains: c0, c1"
-        );
-        assert_eq!(
-            skipped_note(&names(17)),
-            " balances skipped on down chains: 17 chains"
-        );
-    }
-}

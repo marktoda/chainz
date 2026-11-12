@@ -492,9 +492,14 @@ mod tests {
         std::fs::remove_file(paths.config()).unwrap();
         std::fs::write(paths.dir().join("config.json"), V1_CONFIG).unwrap();
         dash.reload();
+        // Its wording is chainz-core's: one line, not an error.
         let notice = dash.app.notice.as_ref().expect("a notice");
-        assert!(notice.text.contains("wrote"), "{}", notice.text);
-        assert!(!notice.text.contains('\n'), "{}", notice.text);
+        assert!(!notice.error, "{}", notice.text);
+        assert!(
+            !notice.text.is_empty() && !notice.text.contains('\n'),
+            "{}",
+            notice.text
+        );
         dash.rt.shutdown_background();
     }
 

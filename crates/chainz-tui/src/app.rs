@@ -772,18 +772,19 @@ mod tests {
         // A held key repeats: only the first press reaches the network.
         assert_eq!(press(&mut app, &state, "rrrr"), Action::None);
         let key = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE);
+        let mut now = NOW;
         for (tab, what) in [
             ("2", Refresh::Endpoints),
             ("3", Refresh::Balances),
             ("4", Refresh::Traffic),
         ] {
             press(&mut app, &state, tab);
-            app.last_refresh_ms = 0;
-            assert_eq!(app.on_key(key, &state, NOW), Action::Refresh(what));
+            now += 1_000;
+            assert_eq!(app.on_key(key, &state, now), Action::Refresh(what));
         }
-        assert_eq!(app.on_key(key, &state, NOW + 999), Action::None);
+        assert_eq!(app.on_key(key, &state, now + 999), Action::None);
         assert_eq!(
-            app.on_key(key, &state, NOW + 1_000),
+            app.on_key(key, &state, now + 1_000),
             Action::Refresh(Refresh::Traffic)
         );
     }

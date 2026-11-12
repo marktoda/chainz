@@ -210,7 +210,9 @@ fn slow_is_relative_to_the_other_chains_with_a_floor() {
 }
 
 #[test]
-fn endpoints_lag_past_twenty_blocks_behind_the_best() {
+fn endpoint_statuses_follow_the_health_rule() {
+    // Where the lag threshold sits is chainz-rpc's to test: the heads
+    // here are well inside or well past it.
     let mut state = state();
     let statuses = |state: &State| -> Vec<EndpointStatus> {
         state.chains[0]
@@ -230,15 +232,15 @@ fn endpoints_lag_past_twenty_blocks_behind_the_best() {
     );
     state.apply(probes(&[
         ("a", Some(1_000), None),
-        ("b", Some(980), None),
-        ("c", Some(979), None),
+        ("b", Some(999), None),
+        ("c", Some(900), None),
     ]));
     assert_eq!(
         statuses(&state)[..3],
         [
             EndpointStatus::Ok,
             EndpointStatus::Ok,
-            EndpointStatus::Lagging(21)
+            EndpointStatus::Lagging(100)
         ]
     );
     // A failing endpoint's old head does not set the bar.
