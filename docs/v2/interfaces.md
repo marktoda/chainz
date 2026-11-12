@@ -462,7 +462,7 @@ impl Labeler {
     pub fn for_chain(config: &Config, chain_id: u64) -> Self;
     pub fn any_chain(config: &Config) -> Self;   // "*" labels, signers, names that agree on every chain
     pub fn name(&self, address: &Address) -> Option<&str>;
-    pub fn filter(&self, input: impl BufRead, output: impl Write) -> io::Result<()>; // 0x… → name(0x…)
+    pub fn filter(&self, input: impl BufRead, output: impl Write) -> io::Result<()>; // 0x… → name(0x…), padded topics too
 }
 ```
 

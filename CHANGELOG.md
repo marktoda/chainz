@@ -70,7 +70,9 @@ changed before 2.0.0; they are listed under Removed and Changed.
   `--rpc NAME|URL` pins the upstream (a URL for this fork only, not saved)
   instead of the active endpoint, or with `--block` the first archive one.
 - Address book: `addr add/ls/rm/find`, built-in major-token labels on every
-  configured chain, and `label` to annotate addresses in any output.
+  configured chain, and `label` to annotate addresses in any output,
+  including the left-padded 32-byte address topics `cast logs` prints
+  (`usdc(0x000…a02913)`, the word kept as it came).
   `addr import` labels the contracts in Foundry broadcast output
   (`run-latest.json`) on the chain each run used, with `--dry-run`,
   `--prefix`, `--only`, `--force` and `--json`.

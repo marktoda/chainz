@@ -432,10 +432,12 @@ fn label_rewrites_addresses_for_the_chain() {
         TEST_ADDRESS.to_ascii_lowercase(),
         &ROUTER[2..]
     );
-    let rest = format!(
-        "\nword 0x000000000000000000000000{} other {UNKNOWN}\n",
-        &ROUTER[2..]
-    );
+    // A `cast logs` topic: the left-padded address is labelled, kept as is.
+    let word = format!("0x000000000000000000000000{}", &ROUTER[2..]);
+    let rest = |name: Option<&str>| match name {
+        Some(name) => format!("\nword {name}({word}) other {UNKNOWN}\n"),
+        None => format!("\nword {word} other {UNKNOWN}\n"),
+    };
     let run = |args: &[&str], env: Option<&str>| {
         let mut cmd = sb.cmd();
         if let Some(chain) = env {
@@ -450,14 +452,17 @@ fn label_rewrites_addresses_for_the_chain() {
     };
 
     let on_base = format!(
-        "to myrouter({ROUTER}) from default({TEST_ADDRESS}) token usdc({USDC_BASE}) safe my-safe({SAFE}){rest}"
+        "to myrouter({ROUTER}) from default({TEST_ADDRESS}) token usdc({USDC_BASE}) safe my-safe({SAFE}){}",
+        rest(Some("myrouter"))
     );
     let on_eth = format!(
-        "to pool({ROUTER}) from default({TEST_ADDRESS}) token {USDC_BASE} safe my-safe({SAFE}){rest}"
+        "to pool({ROUTER}) from default({TEST_ADDRESS}) token {USDC_BASE} safe my-safe({SAFE}){}",
+        rest(Some("pool"))
     );
     // No chain: "*" labels, signers, and addresses with one name everywhere.
     let anywhere = format!(
-        "to {ROUTER} from default({TEST_ADDRESS}) token usdc({USDC_BASE}) safe my-safe({SAFE}){rest}"
+        "to {ROUTER} from default({TEST_ADDRESS}) token usdc({USDC_BASE}) safe my-safe({SAFE}){}",
+        rest(None)
     );
     assert_eq!(
         run(&["label", "--chain", "base"], None),

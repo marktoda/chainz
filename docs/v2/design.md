@@ -357,7 +357,7 @@ chainz addr rm myrouter --chain base
 chainz exec base -- cast logs … | chainz label --chain base
 ```
 
-**Reverse labels** come from one index keyed by `(chain_id, address)`, built at load in well under 1 ms. The gateway inspector, the dashboard, `chain show` and `chainz label` all use it. `chainz label` rewrites every 20-byte hex address in stdin to `usdc(0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913)`. It keeps the full checksummed address, so the output stays copy-pasteable.
+**Reverse labels** come from one index keyed by `(chain_id, address)`, built at load in well under 1 ms. The gateway inspector, the dashboard, `chain show` and `chainz label` all use it. `chainz label` rewrites every 20-byte hex address in stdin to `usdc(0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913)`. It keeps the full checksummed address, so the output stays copy-pasteable. A 32-byte word holding a left-padded address (24 zero digits, then the address: how `cast logs` prints indexed address topics) becomes `usdc(0x000000000000000000000000833589fcd6edb6e08f4c7c32d4f71b54bda02913)`, the word kept exactly as it came.
 
 ## Forks: `chainz fork`
 

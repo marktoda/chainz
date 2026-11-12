@@ -236,7 +236,7 @@ chainz addr ls --chain base --builtin   # include built-in tokens
 chainz addr ls --builtin --all          # …on every chain, not just yours
 chainz addr find 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
 chainz addr ls --json                    # also `addr find --json`
-cast logs … | chainz label --chain base  # 0x… → usdc(0x…)
+cast logs … | chainz label --chain base  # 0x… → usdc(0x…), topics too
 chainz addr import .                     # label contracts from Foundry broadcast/
 ```
 

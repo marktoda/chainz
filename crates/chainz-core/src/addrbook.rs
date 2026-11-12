@@ -37,13 +37,16 @@ enum Mode {
     AnyChain(HashMap<Address, String>),
 }
 
-/// Rewrites 20-byte hex addresses in text to `name(0xChecksummedAddress)`.
+/// Rewrites 20-byte hex addresses in text to `name(0xChecksummedAddress)`,
+/// and 32-byte words that hold a left-padded address (`cast logs` topics)
+/// to `name(0x000…word)`, the word kept as it was.
 ///
 /// An address is `0x` followed by exactly 40 hex digits (any case, the
-/// checksum is not checked): the digits must not continue into a longer
-/// hex run, so 32-byte words and transaction hashes are left alone.
-/// Addresses without a label, and everything else (including bytes that
-/// are not UTF-8), pass through unchanged.
+/// checksum is not checked); a padded address is `0x`, 24 zeros and 40
+/// hex digits. The digits must not continue into a longer hex run, so
+/// other words, transaction hashes and calldata are left alone. Addresses
+/// without a label, and everything else (including bytes that are not
+/// UTF-8), pass through unchanged.
 #[derive(Debug)]
 pub struct Labeler {
     index: LabelIndex,
@@ -54,6 +57,10 @@ pub struct Labeler {
 const MAX_LINE: usize = 64 * 1024;
 /// `0x` plus 40 hex digits.
 const ADDRESS_LEN: usize = 42;
+/// `0x` plus 64 hex digits: a 32-byte word, such as an event topic.
+const WORD_LEN: usize = 66;
+/// The zero digits before a left-padded address in a word.
+const PAD_LEN: usize = WORD_LEN - ADDRESS_LEN;
 /// How much already-written input is kept to recognize `name(` in front
 /// of an address at the start of a piece.
 const CONTEXT_LEN: usize = 256;
@@ -134,24 +141,18 @@ impl Labeler {
         let mut at = 0;
         while let Some(found) = find_0x(&text[at..]) {
             let start = at + found;
-            let end = start + ADDRESS_LEN;
             at = start + 2;
             let before = match start {
                 0 => context.last().copied(),
                 _ => Some(text[start - 1]),
             };
-            if before.is_some_and(|b| b.is_ascii_hexdigit())
-                || text.len() < end
-                || text.get(end).is_some_and(|b| is_word_byte(*b))
-            {
+            if before.is_some_and(|b| b.is_ascii_hexdigit()) {
                 continue;
             }
-            let mut bytes = [0u8; 20];
-            if hex::decode_to_slice(&text[start + 2..end], &mut bytes).is_err() {
+            let Some((end, address, padded)) = address_at(text, start) else {
                 continue;
-            }
+            };
             at = end;
-            let address = Address::from_bytes(bytes);
             let Some(name) = self.name(&address) else {
                 continue;
             };
@@ -163,7 +164,10 @@ impl Labeler {
             out.extend_from_slice(&text[copied..start]);
             out.extend_from_slice(name.as_bytes());
             out.push(b'(');
-            out.extend_from_slice(address.to_checksum().as_bytes());
+            match padded {
+                true => out.extend_from_slice(&text[start..end]),
+                false => out.extend_from_slice(address.to_checksum().as_bytes()),
+            }
             out.push(b')');
             copied = end;
         }
@@ -185,7 +189,7 @@ impl Labeler {
         mut output: impl Write,
         max: usize,
     ) -> io::Result<()> {
-        let max = max.max(2 * ADDRESS_LEN);
+        let max = max.max(2 * WORD_LEN);
         let mut pending: Vec<u8> = Vec::new();
         let mut out: Vec<u8> = Vec::new();
         let mut context: Vec<u8> = Vec::new();
@@ -205,8 +209,9 @@ impl Labeler {
                     // After a byte no address can contain.
                     Some(i) => (i + 1, true),
                     // One long hex run: only its tail could still become
-                    // an address, and nothing before the tail can be one.
-                    None => (pending.len() - (ADDRESS_LEN + 1), false),
+                    // an address (or a padded one), and nothing before the
+                    // tail can be one.
+                    None => (pending.len() - (WORD_LEN + 1), false),
                 }
             };
             out.clear();
@@ -240,6 +245,32 @@ fn ends_with_call(context: &[u8], head: &[u8], name: &str) -> bool {
     tail.len() == want
         && tail[want - 1] == b'('
         && tail[..want - 1].eq_ignore_ascii_case(name.as_bytes())
+}
+
+/// The address `0x…` at `start` holds, where it ends, and whether it is a
+/// left-padded word: `0x` and 40 hex digits, or `0x`, 24 zeros and 40 hex
+/// digits, either not followed by another word byte.
+fn address_at(text: &[u8], start: usize) -> Option<(usize, Address, bool)> {
+    let ends_at = |len: usize| {
+        let end = start + len;
+        (text.len() >= end && !text.get(end).is_some_and(|b| is_word_byte(*b))).then_some(end)
+    };
+    let (end, padded) = match ends_at(ADDRESS_LEN) {
+        Some(end) => (end, false),
+        None => {
+            let end = ends_at(WORD_LEN)?;
+            if text[start + 2..start + 2 + PAD_LEN]
+                .iter()
+                .any(|b| *b != b'0')
+            {
+                return None;
+            }
+            (end, true)
+        }
+    };
+    let mut bytes = [0u8; 20];
+    hex::decode_to_slice(&text[end - (ADDRESS_LEN - 2)..end], &mut bytes).ok()?;
+    Some((end, Address::from_bytes(bytes), padded))
 }
 
 fn find_0x(text: &[u8]) -> Option<usize> {
@@ -471,9 +502,12 @@ base = "{USDC_BASE}"
         let l = base();
         let body = &ONE[2..];
         for text in [
-            // 32-byte words, hashes and calldata that contain the address.
-            format!("0x000000000000000000000000{body}"),
+            // Words, hashes and calldata that contain the address (but
+            // not as a left-padded word).
             format!("0x{body}000000000000000000000000"),
+            format!("0x100000000000000000000000{body}"),
+            format!("0x00000000000000000000000{body}"),
+            format!("0x0000000000000000000000000{body}"),
             format!("0x{body}0"),
             format!("0xa9059cbb000000000000000000000000{body}"),
             // 41 and 39 digits.
@@ -509,6 +543,33 @@ base = "{USDC_BASE}"
         assert_eq!(
             rewrite(&l, &format!("0x{body}00 0x0x {ONE}")),
             format!("0x{body}00 0x0x myrouter({ONE})")
+        );
+    }
+
+    #[test]
+    fn left_padded_words_are_labelled_and_kept() {
+        let l = base();
+        let body = ONE[2..].to_ascii_lowercase();
+        let word = format!("0x000000000000000000000000{body}");
+        // A `cast logs` topic: the word stays as it came.
+        assert_eq!(
+            rewrite(&l, &format!("  topics: [0xddf2…, {word}]")),
+            format!("  topics: [0xddf2…, myrouter({word})]")
+        );
+        assert_eq!(rewrite(&l, &word), format!("myrouter({word})"));
+        let once = rewrite(&l, &format!("topic {word}\n"));
+        assert_eq!(rewrite(&l, &once), once, "applied twice");
+        // Unlabelled, or glued to more hex: untouched.
+        let unknown = format!("0x000000000000000000000000{}", &UNKNOWN[2..]);
+        assert_eq!(rewrite(&l, &unknown), unknown);
+        assert_eq!(rewrite(&l, &format!("{word}0")), format!("{word}0"));
+        // Padded words survive pieces cut from one long line.
+        let long = format!("{} {word} end", "z".repeat(300));
+        let mut out = Vec::new();
+        l.filter_bounded(long.as_bytes(), &mut out, 100).unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            format!("{} myrouter({word}) end", "z".repeat(300))
         );
     }
 
