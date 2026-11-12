@@ -14,4 +14,5 @@
  gnosis   12.0000 xDAI                                                    multicall3  5s ago
  polygon   >3.4e38 POL  <0.0001  2.0000  3.0000  4.0000  <0.0001  0.0500  multicall3  5s ago
  celo           0 CELO  <0.0001  1.0000          2.0000           0.0300  multicall3  5s ago
- devnet              –                                                                connect
+
+ balances skipped on down chains: devnet

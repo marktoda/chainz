@@ -217,7 +217,9 @@ fn once_json_matches_the_golden_files() {
 
 /// What `--once` printed before it had its own writer: the live frame,
 /// drawn by ratatui, with the tab bar, the key hints and the selection
-/// marker taken off. The text writer must print exactly this.
+/// marker taken off; the Balances frames drawn without the chains that
+/// are down. The text writer must print exactly this, then its line
+/// naming those chains.
 fn screen_text(state: &State, now_ms: u64) -> String {
     use crate::app::{App, Tab};
     use crate::ui::theme::Theme;
@@ -226,7 +228,7 @@ fn screen_text(state: &State, now_ms: u64) -> String {
     let height = rows.max(6) + 4;
     let mut app = App::default();
     let mut out = String::new();
-    let mut frame = |app: &App| {
+    let mut frame = |app: &App, state: &State| {
         let ctx = crate::ui::Ctx {
             app,
             state,
@@ -246,12 +248,13 @@ fn screen_text(state: &State, now_ms: u64) -> String {
         out.push_str(body.join("\n").replace('▸', " ").trim_end());
         out.push_str("\n\n");
     };
-    frame(&app);
+    frame(&app, state);
     app.tab = Tab::Balances;
-    for (i, signer) in state.signers.iter().enumerate() {
-        if signer.address.is_some() {
+    let (up, _) = crate::once::without_down_chains(state);
+    for (i, signer) in up.signers.iter().enumerate() {
+        if signer.address.is_some() && !up.chains.is_empty() {
             app.signer = i;
-            frame(&app);
+            frame(&app, &up);
         }
     }
     let trimmed = out.trim_end().len();
@@ -263,10 +266,11 @@ fn screen_text(state: &State, now_ms: u64) -> String {
 #[test]
 fn once_text_is_the_screen_without_its_chrome() {
     for (name, state) in states() {
-        assert_eq!(
-            crate::once::text(&state, NOW),
-            screen_text(&state, NOW),
-            "{name}"
-        );
+        let text = crate::once::text(&state, NOW);
+        let text = match text.split_once("\n\n balances skipped") {
+            Some((tables, _)) => format!("{tables}\n"),
+            None => text,
+        };
+        assert_eq!(text, screen_text(&state, NOW), "{name}");
     }
 }

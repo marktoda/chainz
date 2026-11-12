@@ -325,7 +325,7 @@ One `rpc` module gives every feature the same client, the same idea of endpoint 
 
 **Active endpoint.** When a chain's head is read through the gateway, the RPC column, `y`, the Endpoints tab's marker and the JSON snapshot name the endpoint the gateway serves from; otherwise the configured active one. The Endpoints tab adds `(config: X)` when the two differ. Gateway and feed failures and config-reload notices show in the footer (on stderr with `--once`).
 
-The dashboard never unlocks a signer: balances use cached addresses only. It sends at most one request per chain per tick, plus bounded probes, so leaving it open all day stays well inside public RPC limits. Without a TTY, `chainz top --once --json` prints a single snapshot for scripts.
+The dashboard never unlocks a signer: balances use cached addresses only. It sends at most one request per chain per tick, plus bounded probes, so leaving it open all day stays well inside public RPC limits. Without a TTY, `chainz top --once --json` prints a single snapshot for scripts. `--once` as text leaves chains that are down out of the Balances tables and names them in one line (`balances skipped on down chains: …`); the JSON keeps every row.
 
 **Pacing.** Every head poll is a billed request on a metered API key, and several chains usually share one key. So the poll interval has a 3 s floor even on chains with faster blocks, and a 12 s ceiling. After 5 minutes without a keypress every chain drops to the ceiling until the next key. Chains on one provider start 250 ms apart, and a failing endpoint is backed off.
 

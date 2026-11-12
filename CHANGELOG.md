@@ -199,6 +199,11 @@ changed before 2.0.0; they are listed under Removed and Changed.
   column names the active endpoint and adds its host only when the name
   doesn't already say it (`public …base.org`, but `infura`). `--json` is
   unchanged.
+- `top --once` leaves chains that are down (with no balances read) out of
+  each signer's Balances table and names them in one line instead
+  (`balances skipped on down chains: arb`, or a count past three). With no
+  chains it no longer prints an empty Balances table per signer.
+  `--json` is unchanged.
 
 - Writes say what changed: `chain set` and `update` print each change as
   a transition (`active endpoint: alchemy → infura`) with its side effects

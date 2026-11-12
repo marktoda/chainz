@@ -12,7 +12,7 @@ use chainz_rpc::HealthStore;
 
 use crate::app::{App, Tab};
 use crate::data::{self, Event, Shared, Tuning};
-use crate::model::State;
+use crate::model::{State, Status};
 use crate::plan::Plan;
 use crate::snapshot;
 use crate::ui::theme::Theme;
@@ -62,7 +62,9 @@ pub(crate) fn run(
 
 /// The Chains table, then one Balances table per signer with a cached
 /// address, as plain text: the live tabs' bodies without the tab bar, the
-/// key hints, the selection or colour.
+/// key hints, the selection or colour. Chains that are down (with no
+/// balances read) are left out of the Balances tables and named in one
+/// line after them.
 pub(crate) fn text(state: &State, now_ms: u64) -> String {
     // The room a message gets: what the screen would leave under the
     // context line if it were just tall enough for every chain.
@@ -83,22 +85,55 @@ pub(crate) fn text(state: &State, now_ms: u64) -> String {
         room,
     )];
     app.tab = Tab::Balances;
-    for (i, signer) in state.signers.iter().enumerate() {
-        if let Some(address) = signer.address {
+    let (up, down) = without_down_chains(state);
+    let signed = state.signers.iter().any(|s| s.address.is_some());
+    for (i, signer) in up.signers.iter().enumerate() {
+        if let Some(address) = signer.address
+            && !up.chains.is_empty()
+        {
             app.signer = i;
             // The signer chips become one plain heading.
             let heading = format!(" signer {} {}", signer.name, address.to_checksum());
             frames.push(frame(
-                ui::balances::body(ctx(&app, state, now_ms)),
+                ui::balances::body(ctx(&app, &up, now_ms)),
                 Some(heading),
                 room,
             ));
         }
     }
+    if signed && !down.is_empty() {
+        frames.push(skipped_note(&down));
+    }
     let mut out = frames.join("\n\n");
     out.truncate(out.trim_end().len());
     out.push('\n');
     out
+}
+
+/// `state` without the chains that are down and have no balances to
+/// show, and those chains' names: `--once` prints one line for them
+/// instead of a row of `–` per signer.
+pub(crate) fn without_down_chains(state: &State) -> (State, Vec<String>) {
+    let slow = state.slow_threshold();
+    let mut up = state.clone();
+    let mut down = Vec::new();
+    up.chains.retain(|c| {
+        let skip = matches!(c.status(slow), Status::Down(_)) && c.balances.is_none();
+        if skip {
+            down.push(c.info.name.clone());
+        }
+        !skip
+    });
+    (up, down)
+}
+
+/// The line that stands for the balances of the chains that are down.
+fn skipped_note(down: &[String]) -> String {
+    if down.len() <= 3 {
+        format!(" balances skipped on down chains: {}", down.join(", "))
+    } else {
+        format!(" balances skipped on {} down chains", down.len())
+    }
 }
 
 /// One tab's body as text: the context line (or `heading`), then the
@@ -117,4 +152,22 @@ fn frame(body: Body, heading: Option<String>, room: u16) -> String {
     }
     let lines: Vec<&str> = lines.iter().map(|l| l.trim_end()).collect();
     lines.join("\n").trim_end().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::skipped_note;
+
+    #[test]
+    fn a_few_down_chains_are_named_and_many_are_counted() {
+        let names = |n: usize| (0..n).map(|i| format!("c{i}")).collect::<Vec<_>>();
+        assert_eq!(
+            skipped_note(&names(2)),
+            " balances skipped on down chains: c0, c1"
+        );
+        assert_eq!(
+            skipped_note(&names(17)),
+            " balances skipped on 17 down chains"
+        );
+    }
 }
