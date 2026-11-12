@@ -33,9 +33,8 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use chainz_os::now_ms;
 
-/// Runs `chainz exec <chain>` for the `e` key and returns when it exits:
-/// an error, including a shell that did not exit cleanly, is shown in the
-/// dashboard's footer.
+/// Opens a shell for a chain (the `e` key) and returns when it exits; an
+/// error is shown in the dashboard's footer.
 pub type ShellFn = Box<dyn FnMut(&str) -> std::io::Result<()>>;
 
 /// How long to wait for a key before looking at worker updates.
@@ -133,8 +132,8 @@ struct Dashboard {
     chainz: Chainz,
     /// `--reveal`.
     reveal: bool,
-    /// For `e`; taken while the shell runs.
-    shell: Option<ShellFn>,
+    /// For `e`.
+    shell: ShellFn,
     shared: Arc<Shared>,
     events: Receiver<data::Event>,
     rt: tokio::runtime::Runtime,
@@ -153,7 +152,7 @@ impl Dashboard {
         runtime: Runtime,
         store: HealthStore,
         reveal: bool,
-        shell: Option<ShellFn>,
+        shell: ShellFn,
     ) -> Result<Self> {
         let plan = Arc::new(Plan::build(&chainz, reveal));
         let state = State::new(&plan, &store);
@@ -297,12 +296,8 @@ impl Dashboard {
         self.app.notify(text.join(" · "), warning, now_ms());
     }
 
-    /// Hand the terminal to `chainz exec <chain>` and take it back.
+    /// Hand the terminal to a shell for `chain` and take it back.
     fn shell(&mut self, screen: &mut Screen, chain: &str) -> Result<()> {
-        let Some(mut shell) = self.shell.take() else {
-            self.app.notify("no shell available", true, now_ms());
-            return Ok(());
-        };
         // Nothing polls while the dashboard is not on screen.
         self.stop();
         restore();
@@ -315,9 +310,8 @@ impl Dashboard {
                 tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()),
                 tokio::signal::unix::signal(tokio::signal::unix::SignalKind::quit()),
             ];
-            shell(chain)
+            (self.shell)(chain)
         };
-        self.shell = Some(shell);
         screen.resume()?;
         // The shell may have changed the config (`chainz update <chain> --rpc …`).
         self.reload();
@@ -362,7 +356,7 @@ pub(crate) fn run(
     runtime: Runtime,
     store: HealthStore,
     reveal: bool,
-    shell: Option<ShellFn>,
+    shell: ShellFn,
 ) -> Result<i32> {
     let theme = Theme::from_env();
     let mut dash = Dashboard::new(chainz, runtime, store, reveal, shell)?;
@@ -475,7 +469,7 @@ mod tests {
         let chainz = Chainz::open_at(paths.clone(), LoadMode::Strict).unwrap();
         let store = HealthStore::load(dir.path()).unwrap();
         let runtime = Runtime::at(dir.path().join("runtime"));
-        let mut dash = Dashboard::new(chainz, runtime, store, false, None).unwrap();
+        let mut dash = Dashboard::new(chainz, runtime, store, false, Box::new(|_| Ok(()))).unwrap();
         dash.run_engine();
 
         // `e`: the workers stop while the shell has the terminal, and the
@@ -497,7 +491,7 @@ mod tests {
         let chainz = Chainz::open_at(paths.clone(), LoadMode::Strict).unwrap();
         let store = HealthStore::load(dir.path()).unwrap();
         let runtime = Runtime::at(dir.path().join("runtime"));
-        let mut dash = Dashboard::new(chainz, runtime, store, false, None).unwrap();
+        let mut dash = Dashboard::new(chainz, runtime, store, false, Box::new(|_| Ok(()))).unwrap();
 
         // The config is replaced by a v1 one: the reload migrates it.
         std::fs::remove_file(paths.config()).unwrap();

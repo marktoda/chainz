@@ -240,7 +240,7 @@ pub enum Action {
         /// Endpoint name.
         endpoint: String,
     },
-    /// Suspend the dashboard and run `chainz exec <chain>` (a subshell).
+    /// Suspend the dashboard and open a shell for this chain.
     Shell(String),
     /// Put `text` on the clipboard; `what` names it in the footer.
     Copy {

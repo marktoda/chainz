@@ -60,8 +60,8 @@ pub struct Options {
 pub enum Mode {
     /// The interactive dashboard.
     Live {
-        /// How to open a shell for a chain; without it, `e` is unavailable.
-        shell: Option<ShellFn>,
+        /// How to open a shell for a chain (`e`).
+        shell: ShellFn,
     },
     /// Poll every chain once, print, and exit.
     Once {

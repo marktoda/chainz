@@ -9,8 +9,6 @@ use chainz_tui::{Mode, Options};
 
 /// `e` in the dashboard: `chainz exec <chain>` (a subshell), as the user
 /// would run it.
-/// A shell that does not exit cleanly is an error, so the dashboard says
-/// so instead of "back from `<chain>`".
 fn shell(chain: &str) -> std::io::Result<()> {
     let status = std::process::Command::new(std::env::current_exe()?)
         .args(["exec", chain])
@@ -18,12 +16,12 @@ fn shell(chain: &str) -> std::io::Result<()> {
     exited(status)
 }
 
+/// Any exit status is a shell the user left: an interactive shell exits
+/// with the status of the last command run in it. Only a shell killed by
+/// a signal is an error.
 fn exited(status: std::process::ExitStatus) -> std::io::Result<()> {
     match status.code() {
-        Some(0) => Ok(()),
-        Some(code) => Err(std::io::Error::other(format!(
-            "`chainz exec` exited with status {code}"
-        ))),
+        Some(_) => Ok(()),
         None => Err(std::io::Error::other(format!(
             "`chainz exec` was stopped by a signal ({status})"
         ))),
@@ -41,7 +39,7 @@ pub fn run(args: &TopArgs) -> Result<i32> {
         }
     } else {
         Mode::Live {
-            shell: Some(Box::new(shell)),
+            shell: Box::new(shell),
         }
     };
     let options = Options {
@@ -58,10 +56,10 @@ mod tests {
     use std::process::ExitStatus;
 
     #[test]
-    fn a_shell_that_fails_is_reported() {
+    fn only_a_shell_killed_by_a_signal_is_reported() {
         assert!(exited(ExitStatus::from_raw(0)).is_ok());
-        let failed = exited(ExitStatus::from_raw(2 << 8)).unwrap_err();
-        assert_eq!(failed.to_string(), "`chainz exec` exited with status 2");
+        // `false; exit`: the last command's status, not a failure.
+        assert!(exited(ExitStatus::from_raw(1 << 8)).is_ok());
         // Killed by SIGKILL: no exit code.
         let killed = exited(ExitStatus::from_raw(9)).unwrap_err();
         assert!(killed.to_string().contains("signal"), "{killed}");
