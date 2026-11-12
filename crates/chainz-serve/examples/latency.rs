@@ -31,7 +31,7 @@ async fn main() {
     let rig = Rig::start(&eth_config("a", &[], &[("a", upstream.url())])).await;
     let client = RpcClient::new();
     let direct = Target::new(1, "direct", &upstream.url(), &[]).unwrap();
-    let gateway = Target::new(1, "gateway", &rig.gateway().url("eth", None), &[]).unwrap();
+    let gateway = Target::new(1, "gateway", &rig.gateway().addr().url("eth", None), &[]).unwrap();
     let params = json!([{"to": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
         "data": "0x70a08231000000000000000000000000f39Fd6e51aad88F6F4ce6aB8827279cffFb92266"}, "latest"]);
 

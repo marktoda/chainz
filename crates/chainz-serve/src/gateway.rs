@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::future::Future;
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use bytes::Bytes;
 use chainz_core::StorePaths;
-use chainz_core::runtime::{Runtime, ServeInfo, ServeLock};
+use chainz_core::runtime::{DEFAULT_PORT, GatewayAddr, LOOPBACK, Runtime, ServeInfo, ServeLock};
 use chainz_rpc::control::{
     ChainStatus, EVENTS_PATH, EventsOptions, METRICS_PATH, RELOAD_PATH, RequestRecord, STATUS_PATH,
     SocketPath, Status,
@@ -40,8 +40,6 @@ use crate::router::{Reply, Router};
 use crate::state::Snapshot;
 use chainz_sys::{FileStamp, now_secs};
 
-/// The default gateway port (8545 stays free for anvil).
-pub const DEFAULT_PORT: u16 = 18545;
 /// Largest request body accepted.
 const MAX_REQUEST_BODY: usize = 32 * 1024 * 1024;
 /// A chain with no request for this many seconds is idle: its pool is
@@ -111,8 +109,8 @@ struct Shared {
     router: Router,
     paths: StorePaths,
     state_dir: Option<PathBuf>,
-    token: String,
-    port: u16,
+    /// Port and token: the gateway's URLs.
+    addr: GatewayAddr,
     started: Instant,
     /// Human-readable notices (reloads, warnings) for the foreground UI.
     notices: broadcast::Sender<String>,
@@ -164,7 +162,7 @@ impl Shared {
         Status {
             version: env!("CARGO_PKG_VERSION").to_string(),
             pid: std::process::id(),
-            port: self.port,
+            port: self.addr.port,
             uptime_secs: self.started.elapsed().as_secs(),
             chains: snapshot
                 .chains
@@ -196,7 +194,7 @@ pub struct Gateway {
 impl std::fmt::Debug for Gateway {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Gateway")
-            .field("port", &self.shared.port)
+            .field("port", &self.shared.addr.port)
             .finish_non_exhaustive()
     }
 }
@@ -224,7 +222,7 @@ impl Gateway {
         let snapshot = Snapshot::load(&config.paths, config.state_dir.as_deref(), None)?;
         let warnings = snapshot.warnings.clone();
 
-        let address = SocketAddr::from((Ipv4Addr::LOCALHOST, config.port));
+        let address = SocketAddr::from((LOOPBACK, config.port));
         let tcp = TcpListener::bind(address)
             .await
             .with_context(|| format!("can't listen on {address}"))?;
@@ -257,8 +255,10 @@ impl Gateway {
             router: Router::new(snapshot, config.upstream, inspector, config.timeout),
             paths: config.paths,
             state_dir: config.state_dir,
-            token: auth::new_token(),
-            port,
+            addr: GatewayAddr {
+                port,
+                token: auth::new_token(),
+            },
             started: Instant::now(),
             notices,
             reloading: tokio::sync::Mutex::new(()),
@@ -270,7 +270,7 @@ impl Gateway {
         let info = ServeInfo {
             pid: std::process::id(),
             port,
-            token: shared.token.clone(),
+            token: shared.addr.token.clone(),
             started_at: now_secs(),
             version: env!("CARGO_PKG_VERSION").to_string(),
         };
@@ -333,20 +333,12 @@ impl Gateway {
 
     /// The loopback port.
     pub fn port(&self) -> u16 {
-        self.shared.port
+        self.shared.addr.port
     }
 
-    /// The URL for a chain, optionally pinned to an endpoint. Contains the
-    /// auth token: treat as secret.
-    pub fn url(&self, chain: &str, endpoint: Option<&str>) -> String {
-        let base = format!(
-            "http://127.0.0.1:{}/{}/{chain}",
-            self.shared.port, self.shared.token
-        );
-        match endpoint {
-            Some(endpoint) => format!("{base}/{endpoint}"),
-            None => base,
-        }
+    /// Port and token: the gateway's URLs. The token is a secret.
+    pub fn addr(&self) -> &GatewayAddr {
+        &self.shared.addr
     }
 
     /// The current status, as the control API reports it.
@@ -420,7 +412,7 @@ impl Drop for Gateway {
 /// One proxied request: auth, then routing. No CORS headers are ever sent.
 async fn proxy(shared: &Shared, request: Request<Incoming>) -> Response<BoxBody> {
     let host = request.headers().get(HOST).and_then(|h| h.to_str().ok());
-    if !auth::host_allowed(host, shared.port) {
+    if !auth::host_allowed(host, shared.addr.port) {
         return plain(StatusCode::FORBIDDEN, "forbidden\n");
     }
     if request.method() != Method::POST {
@@ -437,16 +429,13 @@ async fn proxy(shared: &Shared, request: Request<Incoming>) -> Response<BoxBody>
         );
     }
     let path = request.uri().path().to_string();
-    let mut segments = path.strip_prefix('/').unwrap_or(&path).split('/');
-    let (Some(token), Some(chain_ref), pin, None) = (
-        segments.next(),
-        segments.next(),
-        segments.next().filter(|pin| !pin.is_empty()),
-        segments.next(),
-    ) else {
+    let Some(path) = GatewayAddr::parse_path(&path) else {
         return plain(StatusCode::FORBIDDEN, "forbidden\n");
     };
-    if !auth::token_matches(token, &shared.token) {
+    let (Some(chain_ref), pin) = (path.chain, path.endpoint) else {
+        return plain(StatusCode::FORBIDDEN, "forbidden\n");
+    };
+    if !auth::token_matches(path.token, &shared.addr.token) {
         return plain(StatusCode::FORBIDDEN, "forbidden\n");
     }
     let snapshot = shared.router.snapshot();

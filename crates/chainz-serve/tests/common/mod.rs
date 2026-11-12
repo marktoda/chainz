@@ -407,11 +407,7 @@ impl Rig {
 
     /// The path part of the gateway URL for `chain`.
     pub fn path(&self, chain: &str, endpoint: Option<&str>) -> String {
-        let url = self.gateway().url(chain, endpoint);
-        url.split_once(&format!(":{}", self.port))
-            .unwrap()
-            .1
-            .to_string()
+        self.gateway().addr().path(Some(chain), endpoint)
     }
 
     pub fn host(&self) -> String {

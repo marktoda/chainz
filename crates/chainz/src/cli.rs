@@ -214,7 +214,7 @@ pub struct ListArgs {
 #[derive(Debug, Args)]
 pub struct ServeArgs {
     /// Port on 127.0.0.1
-    #[arg(long, default_value_t = 18545)]
+    #[arg(long, default_value_t = chainz_core::runtime::DEFAULT_PORT)]
     pub port: u16,
     /// Run in the background
     #[arg(long)]

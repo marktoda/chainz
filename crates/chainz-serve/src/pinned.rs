@@ -12,11 +12,12 @@
 //! CORS headers.
 
 use std::io;
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
+use chainz_core::runtime::{GatewayAddr, LOOPBACK};
 use chainz_rpc::{ErrorClass, RetryPolicy, RpcError, Target, Upstream};
 use http_body_util::{BodyExt, Limited};
 use hyper::body::Incoming;
@@ -37,8 +38,7 @@ const DRAIN: Duration = Duration::from_secs(5);
 /// A running pinned proxy. [`shutdown`](Self::shutdown) stops it cleanly;
 /// dropping it stops it at once.
 pub struct PinnedProxy {
-    port: u16,
-    token: String,
+    addr: GatewayAddr,
     stop: watch::Sender<bool>,
     task: Option<JoinHandle<()>>,
 }
@@ -46,7 +46,7 @@ pub struct PinnedProxy {
 impl std::fmt::Debug for PinnedProxy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PinnedProxy")
-            .field("port", &self.port)
+            .field("port", &self.addr.port)
             .finish_non_exhaustive()
     }
 }
@@ -55,8 +55,7 @@ struct State {
     upstream: Arc<dyn Upstream>,
     target: Target,
     policy: RetryPolicy,
-    token: String,
-    port: u16,
+    addr: GatewayAddr,
 }
 
 impl PinnedProxy {
@@ -68,15 +67,16 @@ impl PinnedProxy {
         target: Target,
         policy: RetryPolicy,
     ) -> io::Result<PinnedProxy> {
-        let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).await?;
-        let port = listener.local_addr()?.port();
-        let token = auth::new_token();
+        let listener = TcpListener::bind(SocketAddr::from((LOOPBACK, 0))).await?;
+        let addr = GatewayAddr {
+            port: listener.local_addr()?.port(),
+            token: auth::new_token(),
+        };
         let state = Arc::new(State {
             upstream,
             target,
             policy,
-            token: token.clone(),
-            port,
+            addr: addr.clone(),
         });
         let (stop, stopped) = watch::channel(false);
         let handler = move |request| {
@@ -85,8 +85,7 @@ impl PinnedProxy {
         };
         let task = tokio::spawn(http::serve_tcp(listener, handler, stopped, DRAIN));
         Ok(PinnedProxy {
-            port,
-            token,
+            addr,
             stop,
             task: Some(task),
         })
@@ -95,12 +94,12 @@ impl PinnedProxy {
     /// The URL to hand out (for example to `anvil --fork-url`). Contains
     /// the token: treat it as a secret from other local users.
     pub fn url(&self) -> String {
-        format!("http://127.0.0.1:{}/{}", self.port, self.token)
+        self.addr.base_url()
     }
 
     /// The loopback port.
     pub fn port(&self) -> u16 {
-        self.port
+        self.addr.port
     }
 
     /// Stop accepting, let in-flight requests finish (up to 5 s), and wait
@@ -125,9 +124,12 @@ impl Drop for PinnedProxy {
 /// One request: auth, then forwarding.
 async fn handle(state: &State, request: Request<Incoming>) -> Response<BoxBody> {
     let host = request.headers().get(HOST).and_then(|h| h.to_str().ok());
-    let path = request.uri().path();
-    let token = path.strip_prefix('/').unwrap_or(path).trim_end_matches('/');
-    if !auth::host_allowed(host, state.port) || !auth::token_matches(token, &state.token) {
+    // Only `/<token>`: a chain or endpoint segment means nothing here.
+    let token = GatewayAddr::parse_path(request.uri().path())
+        .filter(|path| path.chain.is_none())
+        .map(|path| path.token);
+    let authorized = token.is_some_and(|token| auth::token_matches(token, &state.addr.token));
+    if !auth::host_allowed(host, state.addr.port) || !authorized {
         return plain(StatusCode::FORBIDDEN, "forbidden\n");
     }
     if request.method() != Method::POST {

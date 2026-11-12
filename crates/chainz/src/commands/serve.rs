@@ -9,7 +9,7 @@ use crate::cli::{ServeArgs, ServeCommand};
 use crate::{net, sys, ui, view};
 use anyhow::{Context, Result, bail};
 use chainz_core::paths;
-use chainz_core::runtime::{Runtime, ServeInfo};
+use chainz_core::runtime::{LOOPBACK, Runtime, ServeInfo};
 use chainz_rpc::control::{
     ControlClient, EVENTS_BUFFER, EventsOptions, MetricsRow, RecordStatus, RequestRecord, Status,
 };
@@ -127,7 +127,7 @@ fn detach(args: &ServeArgs) -> Result<i32> {
             println!(
                 "{}",
                 ui::success(&format!(
-                    "chainz serve: running on 127.0.0.1:{} (pid {})",
+                    "chainz serve: running on {LOOPBACK}:{} (pid {})",
                     info.port, info.pid
                 ))
             );
@@ -267,7 +267,7 @@ fn render_status(status: &Status, minute: &[MetricsRow]) -> String {
     let mut out = String::new();
     let _ = writeln!(
         out,
-        "chainz serve: running on 127.0.0.1:{} (pid {}, v{}, up {})",
+        "chainz serve: running on {LOOPBACK}:{} (pid {}, v{}, up {})",
         status.port,
         status.pid,
         status.version,

@@ -10,7 +10,7 @@ use chainz_core::Chainz;
 use chainz_core::fmt::{group, short_address};
 use chainz_core::model::{Chain, Config};
 use chainz_core::names::{self, RESERVED_FORK_NAMES};
-use chainz_core::runtime::{ForkRecord, Runtime};
+use chainz_core::runtime::{ForkRecord, LOOPBACK, Runtime, loopback_url};
 use chainz_rpc::{HttpUpstream, RetryPolicy, RpcClient, Target};
 use chainz_serve::PinnedProxy;
 use std::fs::File;
@@ -75,7 +75,7 @@ fn first_free_port(start: u16, mut busy: impl FnMut(u16) -> bool) -> Option<u16>
 
 /// Whether something already listens on the loopback port.
 fn port_busy(port: u16) -> bool {
-    TcpListener::bind(("127.0.0.1", port)).is_err()
+    TcpListener::bind((LOOPBACK, port)).is_err()
 }
 
 /// Who and what to fund. `--no-fund` and a chain without a signer address
@@ -131,8 +131,7 @@ fn summary_line(record: &ForkRecord, block: u64) -> String {
 }
 
 pub(super) fn anvil_target(chain_id: u64, port: u16) -> Result<Target> {
-    Target::new(chain_id, "anvil", &format!("http://127.0.0.1:{port}"), &[])
-        .map_err(|e| anyhow!("{e}"))
+    Target::new(chain_id, "anvil", &loopback_url(port), &[]).map_err(|e| anyhow!("{e}"))
 }
 
 pub fn start(args: ForkArgs) -> Result<i32> {
@@ -489,7 +488,7 @@ async fn wait_ready(
 ) -> Result<Option<ExitStatus>> {
     let client = RpcClient::with_timeout(Duration::from_secs(2));
     let target = anvil_target(chain_id, port)?;
-    let listening = format!("Listening on 127.0.0.1:{port}");
+    let listening = format!("Listening on {LOOPBACK}:{port}");
     let deadline = Instant::now() + READY_TIMEOUT;
     let mut first_answer: Option<Instant> = None;
     loop {

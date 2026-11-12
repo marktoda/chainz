@@ -205,7 +205,7 @@ impl Shared {
         };
         // The gateway does not route websocket endpoints.
         if let Some(info) = self.serve_info().filter(|_| !active.websocket) {
-            let url = info.chain_url(&chain.name, None);
+            let url = info.addr().url(&chain.name, None);
             let target =
                 Target::new(chain.id, "gateway", &url, &[]).map_err(|e| invalid(e.to_string()));
             return (target, true);

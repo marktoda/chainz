@@ -18,7 +18,103 @@ use crate::paths;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::io;
+use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
+
+/// The address every chainz server binds and hands out (IPv4 only).
+pub const LOOPBACK: Ipv4Addr = Ipv4Addr::LOCALHOST;
+
+/// The gateway's default port (8545 stays free for anvil).
+pub const DEFAULT_PORT: u16 = 18545;
+
+/// `http://127.0.0.1:<port>`: a loopback server with no token (anvil).
+pub fn loopback_url(port: u16) -> String {
+    format!("http://{LOOPBACK}:{port}")
+}
+
+/// Where a tokenised loopback server (the gateway; a fork's pinned proxy)
+/// listens, and the one place its URLs are formatted and parsed:
+/// `http://127.0.0.1:<port>/<token>[/<chain>[/<endpoint>]]`.
+#[derive(Clone, PartialEq, Eq)]
+pub struct GatewayAddr {
+    /// Loopback TCP port.
+    pub port: u16,
+    /// The auth token: the first URL path segment.
+    pub token: String,
+}
+
+impl fmt::Debug for GatewayAddr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GatewayAddr")
+            .field("port", &self.port)
+            .field("token", &"[REDACTED]")
+            .finish()
+    }
+}
+
+/// A request path on a tokenised loopback server, split by
+/// [`GatewayAddr::parse_path`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AddrPath<'a> {
+    /// The first segment, to compare with the server's token.
+    pub token: &'a str,
+    /// The chain reference, if the path has one.
+    pub chain: Option<&'a str>,
+    /// The pinned endpoint, if the path has one.
+    pub endpoint: Option<&'a str>,
+}
+
+impl GatewayAddr {
+    /// `/<token>`, then `/<chain>` and `/<endpoint>` when given.
+    pub fn path(&self, chain: Option<&str>, endpoint: Option<&str>) -> String {
+        let mut path = format!("/{}", self.token);
+        for segment in [chain, endpoint].into_iter().flatten() {
+            path.push('/');
+            path.push_str(segment);
+        }
+        path
+    }
+
+    /// `http://127.0.0.1:<port>/<token>`: the base URL (a pinned proxy's
+    /// whole URL). Contains the token: treat it as a secret.
+    pub fn base_url(&self) -> String {
+        format!("{}{}", loopback_url(self.port), self.path(None, None))
+    }
+
+    /// `http://127.0.0.1:<port>/<token>/<chain>[/<endpoint>]`. Contains the
+    /// token: treat it as a secret.
+    pub fn url(&self, chain: &str, endpoint: Option<&str>) -> String {
+        format!(
+            "{}{}",
+            loopback_url(self.port),
+            self.path(Some(chain), endpoint)
+        )
+    }
+
+    /// Split a request path, `/<token>[/<chain>[/<endpoint>]]` with at most
+    /// one trailing `/`. `None` for any other shape: no token, an empty
+    /// segment, or more segments.
+    pub fn parse_path(path: &str) -> Option<AddrPath<'_>> {
+        let path = path.strip_prefix('/')?;
+        let path = path.strip_suffix('/').unwrap_or(path);
+        let mut segments = path.split('/');
+        let token = segments.next().filter(|s| !s.is_empty())?;
+        let mut next = || match segments.next() {
+            Some("") => Err(()),
+            other => Ok(other),
+        };
+        let chain = next().ok()?;
+        let endpoint = next().ok()?;
+        if next().ok()?.is_some() {
+            return None;
+        }
+        Some(AddrPath {
+            token,
+            chain,
+            endpoint,
+        })
+    }
+}
 
 /// Handle on the runtime directory. Construction touches nothing on disk.
 #[derive(Debug, Clone)]
@@ -54,14 +150,11 @@ impl fmt::Debug for ServeInfo {
 }
 
 impl ServeInfo {
-    /// `http://127.0.0.1:<port>/<token>/<chain>[/<endpoint>]`.
-    pub fn chain_url(&self, chain: &str, endpoint: Option<&str>) -> String {
-        match endpoint {
-            Some(endpoint) => format!(
-                "http://127.0.0.1:{}/{}/{chain}/{endpoint}",
-                self.port, self.token
-            ),
-            None => format!("http://127.0.0.1:{}/{}/{chain}", self.port, self.token),
+    /// The gateway's address: its URLs.
+    pub fn addr(&self) -> GatewayAddr {
+        GatewayAddr {
+            port: self.port,
+            token: self.token.clone(),
         }
     }
 }
@@ -89,7 +182,7 @@ pub struct ForkRecord {
 impl ForkRecord {
     /// The fork's JSON-RPC URL.
     pub fn rpc_url(&self) -> String {
-        format!("http://127.0.0.1:{}", self.port)
+        loopback_url(self.port)
     }
 }
 
@@ -194,7 +287,7 @@ impl Runtime {
             return None;
         }
         let info = self.read_serve_info().ok().flatten()?;
-        Some(info.chain_url(chain, endpoint))
+        Some(info.addr().url(chain, endpoint))
     }
 
     /// Every fork record (unparseable files are skipped).
@@ -298,6 +391,48 @@ mod tests {
         drop(lock);
         assert!(!rt.serve_running());
         assert_eq!(rt.gateway_url("base", None), None);
+    }
+
+    #[test]
+    fn gateway_addresses_format_and_parse() {
+        let addr = GatewayAddr {
+            port: 18545,
+            token: "tok".into(),
+        };
+        assert_eq!(addr.base_url(), "http://127.0.0.1:18545/tok");
+        assert_eq!(addr.url("base", None), "http://127.0.0.1:18545/tok/base");
+        assert_eq!(
+            addr.url("base", Some("llama")),
+            "http://127.0.0.1:18545/tok/base/llama"
+        );
+        assert_eq!(addr.path(Some("base"), None), "/tok/base");
+        assert!(!format!("{addr:?}").contains("tok\""));
+
+        let parse = |p| GatewayAddr::parse_path(p).map(|a| (a.token, a.chain, a.endpoint));
+        assert_eq!(parse("/tok"), Some(("tok", None, None)));
+        assert_eq!(parse("/tok/"), Some(("tok", None, None)));
+        assert_eq!(parse("/tok/base"), Some(("tok", Some("base"), None)));
+        assert_eq!(parse("/tok/base/"), Some(("tok", Some("base"), None)));
+        assert_eq!(
+            parse("/tok/base/llama/"),
+            Some(("tok", Some("base"), Some("llama")))
+        );
+        for bad in [
+            "",
+            "/",
+            "//",
+            "tok",
+            "/tok//",
+            "//base",
+            "/tok//llama",
+            "/a/b/c/d",
+        ] {
+            assert_eq!(parse(bad), None, "{bad:?}");
+        }
+        // Every URL we format parses back.
+        let url = addr.url("base", Some("llama"));
+        let path = url.strip_prefix("http://127.0.0.1:18545").unwrap();
+        assert_eq!(parse(path), Some(("tok", Some("base"), Some("llama"))));
     }
 
     #[test]

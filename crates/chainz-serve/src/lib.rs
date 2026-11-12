@@ -34,7 +34,7 @@ use chainz_core::runtime::Runtime;
 use chainz_core::{StorePaths, paths};
 use tokio::signal::unix::{SignalKind, signal};
 
-pub use gateway::{DEFAULT_PORT, Gateway, GatewayConfig};
+pub use gateway::{Gateway, GatewayConfig};
 pub use metrics::Summary;
 pub use pinned::PinnedProxy;
 
@@ -83,7 +83,8 @@ async fn foreground(config: GatewayConfig) -> Result<()> {
 
     let status = gateway.status();
     say(&format!(
-        "listening on http://127.0.0.1:{} ({} chains, pid {})",
+        "listening on http://{}:{} ({} chains, pid {})",
+        chainz_core::runtime::LOOPBACK,
         gateway.port(),
         status.chains.len(),
         status.pid

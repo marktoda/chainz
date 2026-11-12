@@ -128,7 +128,7 @@ pub fn route(
 ) -> Result<(Target, &'static str)> {
     match gateway(runtime) {
         Some(info) => {
-            let url = info.chain_url(parent, Some(endpoint));
+            let url = info.addr().url(parent, Some(endpoint));
             let target = Target::new(chain_id, endpoint, &url, &[])
                 .map_err(|e| anyhow!("gateway URL: {e}"))?;
             Ok((target, "gateway"))
