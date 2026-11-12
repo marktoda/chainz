@@ -30,8 +30,8 @@ use tokio::sync::{Notify, watch};
 use tokio::task::{JoinHandle, JoinSet};
 
 use crate::gateway::GatewayLink;
-use crate::model::{Fault, GatewayInfo, Probe, Update};
-use crate::plan::{ChainPlan, Plan};
+use crate::model::{Fault, GatewayInfo, Probe, Refresh, Update};
+use crate::plan::{ChainPlan, Plan, Source};
 use chainz_sys::now_ms;
 
 /// Every interval and deadline the workers use; tests shrink them.
@@ -207,14 +207,19 @@ impl Shared {
         };
         if let Some(info) = self
             .serve_info()
-            .filter(|_| route::uses_gateway(active.websocket, false))
+            .filter(|_| route::uses_gateway(active.info.websocket, false))
         {
-            let route = Route::via_gateway(&info, &chain.name, chain.id, "gateway", false);
+            let route =
+                Route::via_gateway(&info, &chain.info.name, chain.info.id, "gateway", false);
             let target = Target::new(route.chain_id, &route.endpoint, &route.url, &route.headers)
                 .map_err(|e| invalid(e.to_string()));
             return (target, true);
         }
-        (active.target.clone().map_err(invalid), false)
+        let target = active
+            .target
+            .clone()
+            .ok_or_else(|| invalid(active.info.invalid.clone().unwrap_or_default()));
+        (target, false)
     }
 }
 
@@ -227,26 +232,13 @@ struct Signals {
     traffic: Notify,
 }
 
-/// Which worker a refresh is for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Refresh {
-    /// Poll every chain head now.
-    Chains,
-    /// Probe the focused chain's endpoints now.
-    Endpoints,
-    /// Read every balance now.
-    Balances,
-    /// Poll the gateway's metrics now.
-    Traffic,
-}
-
 /// The running workers. Dropping it stops them.
 #[derive(Debug)]
 pub struct Engine {
     handle: Handle,
     shared: Arc<Shared>,
-    /// Each chain's head poller, by name, with the plan it polls.
-    pollers: HashMap<String, (ChainPlan, JoinHandle<()>)>,
+    /// Each chain's head poller, by name, with the source it polls.
+    pollers: HashMap<String, (Source, JoinHandle<()>)>,
     /// The probe, balance and watch workers.
     tasks: Vec<JoinHandle<()>>,
     plan: watch::Sender<Arc<Plan>>,
@@ -297,9 +289,10 @@ impl Engine {
     fn start_pollers(&mut self, plan: &Arc<Plan>) {
         let mut running = std::mem::take(&mut self.pollers);
         for (chain, slot) in plan.chains.iter().zip(provider_slots(plan)) {
-            if let Some((old, task)) = running.remove(&chain.name) {
-                if same_source(&old, chain) {
-                    self.pollers.insert(chain.name.clone(), (old, task));
+            let name = &chain.info.name;
+            if let Some((source, task)) = running.remove(name) {
+                if source == chain.source {
+                    self.pollers.insert(name.clone(), (source, task));
                     continue;
                 }
                 task.abort();
@@ -307,8 +300,7 @@ impl Engine {
             let poller = heads::Poller::patient(self.shared.clone(), chain.clone());
             let offset = self.shared.tuning.stagger * slot;
             let task = self.handle.spawn(poller.run(offset, self.signals.clone()));
-            self.pollers
-                .insert(chain.name.clone(), (chain.clone(), task));
+            self.pollers.insert(name.clone(), (chain.source, task));
         }
         for (_, task) in running.into_values() {
             task.abort();
@@ -344,31 +336,12 @@ impl Drop for Engine {
     }
 }
 
-/// Whether two plans of a chain read it the same way: same name, ID and
-/// active endpoint (URL and headers as resolved). A poller or a balance
-/// read for one is good for the other.
-fn same_source(a: &ChainPlan, b: &ChainPlan) -> bool {
-    let same_target = match (a.active_endpoint(), b.active_endpoint()) {
-        (None, None) => true,
-        (Some(a), Some(b)) => {
-            a.websocket == b.websocket
-                && match (&a.target, &b.target) {
-                    (Ok(a), Ok(b)) => a.url() == b.url() && a.headers() == b.headers(),
-                    (Err(a), Err(b)) => a == b,
-                    _ => false,
-                }
-        }
-        _ => false,
-    };
-    a.name == b.name && a.id == b.id && same_target
-}
-
 /// For each chain, how many earlier chains use the same provider
 /// ([`names::provider_of`] the active endpoint). Chains on one provider
 /// usually share one API key and one rate limit.
 fn provider_slots(plan: &Plan) -> Vec<u32> {
     let provider = |chain: &ChainPlan| -> Option<String> {
-        let target = chain.active_endpoint()?.target.as_ref().ok()?;
+        let target = chain.active_endpoint()?.target.as_ref()?;
         names::provider_of(target.url().as_str())
     };
     let mut seen: HashMap<String, u32> = HashMap::new();
@@ -401,7 +374,7 @@ pub async fn collect_once(shared: &Arc<Shared>, plan: &Plan) -> Vec<Update> {
     let mut names = HashMap::new();
     for (chain, slot) in plan.chains.iter().zip(provider_slots(plan)) {
         let (shared, chain, holders) = (shared.clone(), chain.clone(), holders.clone());
-        let name = chain.name.clone();
+        let name = (chain.info.name.clone(), chain.source);
         // Per chain the requests go one after another, and chains on one
         // provider start a beat apart.
         let task = set.spawn(async move {
@@ -453,19 +426,20 @@ pub async fn collect_once(shared: &Arc<Shared>, plan: &Plan) -> Vec<Update> {
 /// as a failed head, and the other chains' results are kept.
 async fn gather(
     mut set: JoinSet<Vec<Update>>,
-    names: &HashMap<tokio::task::Id, String>,
+    names: &HashMap<tokio::task::Id, (String, Source)>,
 ) -> Vec<Update> {
     let mut updates = Vec::new();
     while let Some(joined) = set.join_next().await {
         match joined {
             Ok(chain_updates) => updates.extend(chain_updates),
             Err(error) => {
-                let Some(chain) = names.get(&error.id()) else {
+                let Some((chain, source)) = names.get(&error.id()) else {
                     continue;
                 };
                 let fault = Fault::new(ErrorClass::Invalid, format!("internal error: {error}"));
                 updates.push(Update::Head {
                     chain: chain.clone(),
+                    source: *source,
                     at_ms: now_ms(),
                     via_gateway: false,
                     result: Err(fault),
@@ -506,7 +480,7 @@ async fn probe_loop(
             }
             continue;
         };
-        let wait = last.get(&chain.name).map_or(Duration::ZERO, |at| {
+        let wait = last.get(&chain.info.name).map_or(Duration::ZERO, |at| {
             (*at + shared.tuning.probe_every).saturating_duration_since(Instant::now())
         });
         tokio::select! {
@@ -516,7 +490,7 @@ async fn probe_loop(
                 if !shared.idle() {
                     probe_chain(&shared, chain).await;
                 }
-                last.insert(chain.name.clone(), Instant::now());
+                last.insert(chain.info.name.clone(), Instant::now());
             }
             changed = focus.changed() => {
                 if changed.is_err() {
@@ -529,7 +503,7 @@ async fn probe_loop(
                 }
             }
             () = signals.endpoints.notified() => {
-                last.remove(&chain.name);
+                last.remove(&chain.info.name);
             }
         }
     }
@@ -541,10 +515,10 @@ async fn probe_chain(shared: &Arc<Shared>, chain: &ChainPlan) {
     let (names, targets): (Vec<&str>, Vec<Target>) = chain
         .endpoints
         .iter()
-        .filter(|e| !e.websocket)
-        .filter_map(|e| Some((e.name.as_str(), e.target.clone().ok()?)))
+        .filter(|e| !e.info.websocket)
+        .filter_map(|e| Some((e.info.name.as_str(), e.target.clone()?)))
         .unzip();
-    let mut probes = probe_all(&shared.client, targets, chain.id);
+    let mut probes = probe_all(&shared.client, targets, chain.info.id);
     let mut results = Vec::with_capacity(names.len());
     let snapshot = {
         let mut pending = Vec::with_capacity(names.len());
@@ -553,7 +527,11 @@ async fn probe_chain(shared: &Arc<Shared>, chain: &ChainPlan) {
         }
         let mut store = shared.store.lock().unwrap_or_else(|e| e.into_inner());
         for (index, result) in pending {
-            store.record(chain.id, names[index], HealthSample::from_probe(&result));
+            store.record(
+                chain.info.id,
+                names[index],
+                HealthSample::from_probe(&result),
+            );
             results.push((
                 names[index].to_string(),
                 Probe {
@@ -568,7 +546,8 @@ async fn probe_chain(shared: &Arc<Shared>, chain: &ChainPlan) {
     // Saving merges under a file lock; keep it off the async workers.
     tokio::task::spawn_blocking(move || snapshot.save());
     shared.send(Update::Probes {
-        chain: chain.name.clone(),
+        chain: chain.info.name.clone(),
+        source: chain.source,
         at_ms: now_ms(),
         results,
     });

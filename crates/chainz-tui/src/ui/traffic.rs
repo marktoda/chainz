@@ -8,19 +8,12 @@ use super::grid::{Cell, Col, Grid};
 use super::{Ctx, context_line, empty, split_context};
 use crate::fmt;
 use crate::model::{TrafficRow, TrafficWindow};
+use crate::view;
 
 /// At this width the feed and the tables sit side by side.
 const WIDE: u16 = 110;
 /// Width of the side tables in the wide layout.
 const SIDE: u16 = 50;
-
-fn window_label(secs: u64) -> String {
-    if secs.is_multiple_of(60) {
-        format!("{}m", secs / 60)
-    } else {
-        format!("{secs}s")
-    }
-}
 
 /// A titled table in `area`; rows beyond the height are cut.
 fn section(area: Rect, buf: &mut Buffer, ctx: Ctx, title: String, grid: &Grid) {
@@ -132,14 +125,11 @@ fn endpoints_grid(ctx: Ctx, rows: &[TrafficRow]) -> Grid {
 fn summary(ctx: Ctx, window: Option<&TrafficWindow>) -> Vec<Vec<Span<'static>>> {
     let t = ctx.theme;
     let mut parts = vec![vec![
-        Span::styled(
-            format!("{:.1}", ctx.state.feed_rate(ctx.now_ms, 10)),
-            t.text(),
-        ),
+        Span::styled(format!("{:.1}", ctx.state.feed_rate(ctx.now_ms)), t.text()),
         Span::styled(" req/s", t.dim()),
     ]];
     if let Some(w) = window {
-        let per = window_label(w.window_secs);
+        let per = fmt::window(w.window_secs);
         parts.push(vec![
             Span::styled(fmt::group(w.requests), t.text()),
             Span::styled(format!(" req/{per}"), t.dim()),
@@ -203,16 +193,16 @@ pub(super) fn render(area: Rect, buf: &mut Buffer, ctx: Ctx) {
         empty(body, buf, lines);
         return;
     };
-    let window = traffic.windows.first();
+    let window = view::traffic_window(traffic);
     let mut parts = summary(ctx, window);
     if let Some(error) = &state.traffic_error {
         // First, so a narrow terminal cannot cut the warning off.
         parts.insert(0, vec![Span::styled(format!("stale: {error}"), t.bad())]);
     }
-    context_line(top, buf, t, parts);
+    buf.set_line(top.x, top.y, &context_line(top.width, t, parts), top.width);
 
     let per = window.map_or_else(String::new, |w| {
-        format!(" · {}", window_label(w.window_secs))
+        format!(" · {}", fmt::window(w.window_secs))
     });
     let no_rows: &[TrafficRow] = &[];
     let methods = methods_grid(ctx, window.map_or(no_rows, |w| &w.methods));

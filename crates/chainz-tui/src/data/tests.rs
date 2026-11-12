@@ -562,7 +562,10 @@ async fn balance_errors_are_reported_without_hammering() {
 
     // An endpoint whose variables do not resolve never sends anything.
     let mut invalid = chain("eth", 1, &[("a", "http://127.0.0.1:1")]);
-    invalid.endpoints[0].target = Err("variable ${INFURA_KEY} is not set".into());
+    invalidate(
+        &mut invalid.endpoints[0],
+        "variable ${INFURA_KEY} is not set",
+    );
     let fault = read_sheet(&shared, &plan(vec![invalid])).await.unwrap_err();
     assert_eq!(fault.class, ErrorClass::Invalid);
     assert!(fault.message.contains("INFURA_KEY"));
@@ -655,6 +658,7 @@ async fn endpoints_are_probed_only_while_focused_and_lag_is_classified() {
         "the websocket endpoint is listed, not probed"
     );
     state.apply(Update::Probes {
+        source: Source::named(&chain_name),
         chain: chain_name,
         at_ms: NOW * 1_000,
         results,
@@ -816,7 +820,7 @@ async fn traffic_follows_the_gateway_control_socket() {
     .await;
     assert_eq!(state.feed[0].summary, "@usdc.balanceOf(@wallet)");
     assert_eq!(state.feed[1].error.as_deref(), Some("rate_limited"));
-    assert_eq!(state.feed_rate(NOW * 1_000 + 600, 10), 0.2);
+    assert_eq!(state.feed_rate(NOW * 1_000 + 600), 0.2);
 
     // Metrics are polled: a change shows up, and `r` asks at once.
     let mut busier = gw::metrics();
@@ -1037,12 +1041,13 @@ async fn once_keeps_every_chain_when_one_task_dies() {
             } else {
                 vec![Update::Balances {
                     chain: name.into(),
+                    source: Source::named(name),
                     at_ms: 0,
                     result: Err(Fault::new(ErrorClass::Http, "fine")),
                 }]
             }
         });
-        names.insert(task.id(), name.to_string());
+        names.insert(task.id(), (name.to_string(), Source::named(name)));
     }
     let updates = gather(set, &names).await;
     let mut seen: Vec<(String, &str)> = updates
@@ -1150,7 +1155,8 @@ async fn a_new_plan_restarts_only_the_chains_it_changed() {
 
     // `s` on base: its active endpoint becomes `spare`; eth is untouched.
     let mut moved = first.chains[1].clone();
-    moved.active = "spare".into();
+    moved.info.active = "spare".into();
+    moved.source = Source::fresh();
     let second = plan(vec![first.chains[0].clone(), moved]);
     engine.replan(&second);
     wait_until("base read from spare", || {

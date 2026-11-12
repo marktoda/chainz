@@ -6,8 +6,7 @@ use std::cell::Cell;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use crate::data::Refresh;
-use crate::model::{ChainState, State};
+use crate::model::{ChainState, Refresh, State};
 
 /// The four tabs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,6 +38,55 @@ impl Tab {
     fn index(self) -> usize {
         Tab::ALL.iter().position(|t| *t == self).unwrap_or(0)
     }
+
+    /// The key hints the footer shows on this tab, most useful first; the
+    /// last one (quit) is always shown. Each names a binding of
+    /// [`App::on_key`] on this tab.
+    pub fn hints(self) -> &'static [(&'static str, &'static str)] {
+        match self {
+            Tab::Chains => &[
+                ("enter", "endpoints"),
+                ("b", "balances"),
+                ("r", "refresh"),
+                ("s", "set rpc"),
+                ("e", "exec shell"),
+                ("/", "filter"),
+                ("y", "copy url"),
+                ("q", "quit"),
+            ],
+            Tab::Endpoints => &[
+                ("s", "set active"),
+                ("h/l", "chain"),
+                ("r", "probe now"),
+                ("y", "copy url"),
+                ("e", "exec shell"),
+                ("esc", "back"),
+                ("q", "quit"),
+            ],
+            Tab::Balances => &[
+                ("h/l", "signer"),
+                ("r", "refresh"),
+                ("y", "copy address"),
+                ("/", "filter"),
+                ("e", "exec shell"),
+                ("q", "quit"),
+            ],
+            Tab::Traffic => &[("r", "refresh"), (TAB_KEYS, "tabs"), ("q", "quit")],
+        }
+    }
+}
+
+/// The number keys that pick a tab, as the footer names them.
+const TAB_KEYS: &str = "1-4";
+const _: () = assert!(Tab::ALL.len() == 4, "TAB_KEYS names one key per tab");
+
+/// A table that remembers its scroll position between frames.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollSlot {
+    /// The chain list (Chains and Balances).
+    Chains,
+    /// The endpoint list.
+    Endpoints,
 }
 
 /// A transient line in the footer.
@@ -101,9 +149,9 @@ pub struct App {
     pub filtering: bool,
     /// The footer notice.
     pub notice: Option<Notice>,
-    /// First visible row of the chain list and of the endpoint list.
-    pub scroll: [Cell<usize>; 2],
-    pub(crate) last_refresh_ms: u64,
+    /// First visible row of each [`ScrollSlot`], kept by the renderer.
+    scroll: [Cell<usize>; 2],
+    last_refresh_ms: u64,
 }
 
 impl Default for App {
@@ -123,6 +171,11 @@ impl Default for App {
 }
 
 impl App {
+    /// Where the table in `slot` keeps its first visible row.
+    pub fn scroll(&self, slot: ScrollSlot) -> &Cell<usize> {
+        &self.scroll[slot as usize]
+    }
+
     /// The chains the filter lets through, in config order.
     pub fn visible<'a>(&self, state: &'a State) -> Vec<&'a ChainState> {
         let needle = self.filter.to_lowercase();
@@ -131,9 +184,9 @@ impl App {
             .iter()
             .filter(|c| {
                 needle.is_empty()
-                    || c.plan.name.to_lowercase().contains(&needle)
-                    || c.plan.id.to_string().contains(&needle)
-                    || c.plan
+                    || c.info.name.to_lowercase().contains(&needle)
+                    || c.info.id.to_string().contains(&needle)
+                    || c.info
                         .aliases
                         .iter()
                         .any(|a| a.to_lowercase().contains(&needle))
@@ -146,7 +199,7 @@ impl App {
         let visible = self.visible(state);
         self.chain
             .as_deref()
-            .and_then(|name| visible.iter().position(|c| c.plan.name == name))
+            .and_then(|name| visible.iter().position(|c| c.info.name == name))
             .unwrap_or(0)
     }
 
@@ -159,7 +212,7 @@ impl App {
     /// the Endpoints tab is on screen.
     pub fn focus(&self, state: &State) -> Option<String> {
         (self.tab == Tab::Endpoints)
-            .then(|| self.selected(state).map(|c| c.plan.name.clone()))
+            .then(|| self.selected(state).map(|c| c.info.name.clone()))
             .flatten()
     }
 
@@ -184,11 +237,11 @@ impl App {
     fn select_chain(&mut self, state: &State, index: usize) {
         let visible = self.visible(state);
         if let Some(chain) = visible.get(index.min(visible.len().saturating_sub(1))) {
-            if self.chain.as_deref() != Some(chain.plan.name.as_str()) {
+            if self.chain.as_deref() != Some(chain.info.name.as_str()) {
                 self.endpoint = active_index(chain);
-                self.scroll[1].set(0);
+                self.scroll(ScrollSlot::Endpoints).set(0);
             }
-            self.chain = Some(chain.plan.name.clone());
+            self.chain = Some(chain.info.name.clone());
         }
     }
 
@@ -266,7 +319,7 @@ impl App {
                 KeyCode::Char(c) if !c.is_control() => self.filter.push(c),
                 _ => {}
             }
-            self.scroll[0].set(0);
+            self.scroll(ScrollSlot::Chains).set(0);
             return Action::None;
         }
         match key.code {
@@ -278,11 +331,20 @@ impl App {
                     self.tab = Tab::Chains;
                 }
             }
-            KeyCode::Char(c @ '1'..='4') => {
-                self.open(Tab::ALL[c as usize - '1' as usize], state);
+            KeyCode::Char(c @ '1'..='9') => {
+                let n = c as usize - '1' as usize;
+                if let Some(tab) = Tab::ALL.get(n) {
+                    self.open(*tab, state);
+                }
             }
-            KeyCode::Tab => self.open(Tab::ALL[(self.tab.index() + 1) % 4], state),
-            KeyCode::BackTab => self.open(Tab::ALL[(self.tab.index() + 3) % 4], state),
+            KeyCode::Tab => {
+                let next = (self.tab.index() + 1) % Tab::ALL.len();
+                self.open(Tab::ALL[next], state);
+            }
+            KeyCode::BackTab => {
+                let previous = (self.tab.index() + Tab::ALL.len() - 1) % Tab::ALL.len();
+                self.open(Tab::ALL[previous], state);
+            }
             KeyCode::Char('b') => self.open(Tab::Balances, state),
             KeyCode::Char('j') | KeyCode::Down => self.step(state, 1),
             KeyCode::Char('k') | KeyCode::Up => self.step(state, -1),
@@ -300,7 +362,7 @@ impl App {
             KeyCode::Char('s') => return self.set_rpc(state, now_ms),
             KeyCode::Char('e') if self.tab != Tab::Traffic => {
                 if let Some(chain) = self.selected(state) {
-                    return Action::Shell(chain.plan.name.clone());
+                    return Action::Shell(chain.info.name.clone());
                 }
             }
             KeyCode::Char('y') => return self.copy(state),
@@ -337,12 +399,12 @@ impl App {
                     return Action::None;
                 };
                 if endpoint.active {
-                    let text = format!("'{}' is already the active RPC", endpoint.name);
+                    let text = format!("'{}' is already the active RPC", endpoint.info.name);
                     self.notify(text, false, now_ms);
                 } else {
                     return Action::SetActive {
-                        chain: chain.plan.name.clone(),
-                        endpoint: endpoint.name.clone(),
+                        chain: chain.info.name.clone(),
+                        endpoint: endpoint.info.name.clone(),
                     };
                 }
             }
@@ -372,8 +434,8 @@ impl App {
         };
         match (chain, endpoint) {
             (Some(chain), Some(endpoint)) => Action::Copy {
-                text: endpoint.url.clone(),
-                what: format!("{}.{} URL", chain.plan.name, endpoint.name),
+                text: endpoint.info.url.clone(),
+                what: format!("{}.{} URL", chain.info.name, endpoint.info.name),
             },
             _ => Action::None,
         }
@@ -405,8 +467,8 @@ mod tests {
                 ("publicnode", "https://ethereum-rpc.publicnode.com"),
             ],
         );
-        eth.aliases = vec!["mainnet".into()];
-        eth.active = "llama".into();
+        eth.info.aliases = vec!["mainnet".into()];
+        eth.info.active = "llama".into();
         let plan = plan(vec![
             eth,
             chain("base", 8453, &[("infura", "https://base.example.org")]),
@@ -432,7 +494,7 @@ mod tests {
     }
 
     fn selected(app: &App, state: &State) -> String {
-        app.selected(state).unwrap().plan.name.clone()
+        app.selected(state).unwrap().info.name.clone()
     }
 
     #[test]

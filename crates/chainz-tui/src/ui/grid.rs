@@ -186,6 +186,21 @@ impl Grid {
         Line::from(spans)
     }
 
+    /// The header and every row, unstyled and unselected, for a width of
+    /// `available` cells: the table as plain text lines.
+    pub fn plain_lines(&self, available: u16) -> Vec<Line<'static>> {
+        let widths = self.widths(available);
+        let header: Vec<Cell> = self
+            .cols
+            .iter()
+            .map(|c| Cell::new(c.title.clone(), Style::new()))
+            .collect();
+        std::iter::once(&header)
+            .chain(&self.rows)
+            .map(|cells| self.line(&widths, cells, Span::raw(" ")))
+            .collect()
+    }
+
     /// Draw the header and as many rows as fit. `selected` highlights a
     /// row; `scroll` remembers the first visible row between frames.
     ///

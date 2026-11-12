@@ -113,8 +113,10 @@ fn registry_state() -> State {
     let plan = registry_plan();
     let mut state = State::new(&plan, &HealthStore::empty());
     let ether = 1_000_000_000_000_000_000u128;
+    let source = |chain: &str| plan.chain(chain).unwrap().source;
     let head = |chain: &str, number: u64, ms: u32| Update::Head {
         chain: chain.into(),
+        source: source(chain),
         at_ms: NOW,
         via_gateway: false,
         result: Ok(Head {
@@ -127,6 +129,7 @@ fn registry_state() -> State {
     };
     let sheet = |chain: &str, native: u128, tokens: usize| Update::Balances {
         chain: chain.into(),
+        source: source(chain),
         at_ms: NOW - 5_000,
         result: Ok(Sheet {
             via: Via::Multicall3,
@@ -148,6 +151,7 @@ fn registry_state() -> State {
     }
     state.apply(Update::Head {
         chain: "devnet".into(),
+        source: source("devnet"),
         at_ms: NOW,
         via_gateway: false,
         result: Err(Fault::new(
@@ -156,7 +160,7 @@ fn registry_state() -> State {
         )),
         block_time: None,
     });
-    let tokens = |chain: &str| plan.chain(chain).unwrap().tokens.len();
+    let tokens = |chain: &str| plan.chain(chain).unwrap().info.tokens.len();
     for (chain, native) in [
         ("eth", ether / 4),
         ("base", ether * 3),
@@ -168,6 +172,7 @@ fn registry_state() -> State {
     }
     state.apply(Update::Balances {
         chain: "devnet".into(),
+        source: source("devnet"),
         at_ms: NOW,
         result: Err(Fault::new(
             ErrorClass::Connect,
@@ -197,7 +202,7 @@ fn states() -> Vec<(&'static str, State)> {
 #[test]
 fn once_text_matches_the_golden_files() {
     for (name, state) in states() {
-        golden(&format!("once/{name}.txt"), &crate::once_text(&state, NOW));
+        golden(&format!("once/{name}.txt"), &crate::once::text(&state, NOW));
     }
 }
 
@@ -207,5 +212,61 @@ fn once_json_matches_the_golden_files() {
         let snapshot = crate::snapshot::Snapshot::new(&state, NOW);
         let json = serde_json::to_string_pretty(&snapshot).unwrap() + "\n";
         golden(&format!("once/{name}.json"), &json);
+    }
+}
+
+/// What `--once` printed before it had its own writer: the live frame,
+/// drawn by ratatui, with the tab bar, the key hints and the selection
+/// marker taken off. The text writer must print exactly this.
+fn screen_text(state: &State, now_ms: u64) -> String {
+    use crate::app::{App, Tab};
+    use crate::ui::theme::Theme;
+    const WIDTH: u16 = 120;
+    let rows = u16::try_from(state.chains.len()).unwrap_or(u16::MAX - 8);
+    let height = rows.max(6) + 4;
+    let mut app = App::default();
+    let mut out = String::new();
+    let mut frame = |app: &App| {
+        let ctx = crate::ui::Ctx {
+            app,
+            state,
+            theme: Theme::new(false),
+            now_ms,
+        };
+        let text = crate::ui::render_text(ctx, WIDTH, height);
+        let lines: Vec<&str> = text.lines().collect();
+        let mut body = lines[1..lines.len() - 1].to_vec();
+        let heading = state.signers.get(app.signer).and_then(|s| {
+            let address = s.address?.to_checksum();
+            (app.tab == Tab::Balances).then(|| format!(" signer {} {address}", s.name))
+        });
+        if let Some(heading) = &heading {
+            body[0] = heading;
+        }
+        out.push_str(body.join("\n").replace('▸', " ").trim_end());
+        out.push_str("\n\n");
+    };
+    frame(&app);
+    app.tab = Tab::Balances;
+    for (i, signer) in state.signers.iter().enumerate() {
+        if signer.address.is_some() {
+            app.signer = i;
+            frame(&app);
+        }
+    }
+    let trimmed = out.trim_end().len();
+    out.truncate(trimmed);
+    out.push('\n');
+    out
+}
+
+#[test]
+fn once_text_is_the_screen_without_its_chrome() {
+    for (name, state) in states() {
+        assert_eq!(
+            crate::once::text(&state, NOW),
+            screen_text(&state, NOW),
+            "{name}"
+        );
     }
 }

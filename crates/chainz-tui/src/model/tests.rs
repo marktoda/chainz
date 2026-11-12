@@ -3,6 +3,7 @@
 use super::status::{SLOW_FLOOR_MS, lag_blocks};
 use super::*;
 use crate::data::testing::{chain, plan};
+use crate::plan::Source;
 use chainz_rpc::{ErrorClass, HealthStore};
 
 const NOW: u64 = 1_700_000_000_000;
@@ -72,6 +73,7 @@ fn state() -> State {
 fn polled(chain: &str, number: u64, latency_ms: u32) -> Update {
     Update::Head {
         chain: chain.into(),
+        source: Source::named(chain),
         at_ms: NOW,
         via_gateway: false,
         result: Ok(Head {
@@ -85,6 +87,7 @@ fn polled(chain: &str, number: u64, latency_ms: u32) -> Update {
 fn failed(chain: &str, class: ErrorClass) -> Update {
     Update::Head {
         chain: chain.into(),
+        source: Source::named(chain),
         at_ms: NOW,
         via_gateway: false,
         result: Err(Fault::new(class, "failed")),
@@ -95,6 +98,7 @@ fn failed(chain: &str, class: ErrorClass) -> Update {
 fn probes(results: &[(&str, Option<u64>, Option<ErrorClass>)]) -> Update {
     Update::Probes {
         chain: "eth".into(),
+        source: Source::named("eth"),
         at_ms: NOW,
         results: results
             .iter()
@@ -250,8 +254,14 @@ fn old_probes_are_not_compared_with_new_ones() {
     let statuses = |state: &State| state.chains[0].endpoint_statuses()[..3].to_vec();
     // Yesterday, `a` was probed far behind where the chain is today.
     let at = |at_ms: u64, results| match probes(results) {
-        Update::Probes { chain, results, .. } => Update::Probes {
+        Update::Probes {
             chain,
+            source,
+            results,
+            ..
+        } => Update::Probes {
+            chain,
+            source,
             at_ms,
             results,
         },
@@ -291,11 +301,22 @@ fn a_reloaded_plan_keeps_what_is_still_true() {
     state.apply(Update::Gateway(Some(GatewayInfo { port: 18545 })));
 
     // `eth` switches to endpoint b; `arb` is removed; `op` is new.
-    let mut eth = state.chains[0].plan.clone();
-    eth.active = "b".into();
+    let mut eth = chain(
+        "eth",
+        1,
+        &[
+            ("a", "http://127.0.0.1:1"),
+            ("b", "http://127.0.0.1:2"),
+            ("c", "http://127.0.0.1:3"),
+            ("d", "ws://127.0.0.1:4"),
+        ],
+    );
+    eth.info.active = "b".into();
+    // A plan reading from another endpoint is a new source.
+    eth.source = Source::fresh();
     let next = plan(vec![
         eth,
-        state.chains[1].plan.clone(),
+        chain("base", 8453, &[("a", "http://127.0.0.1:5")]),
         chain("op", 10, &[("a", "http://127.0.0.1:7")]),
     ]);
     let store = HealthStore::empty();
@@ -304,7 +325,7 @@ fn a_reloaded_plan_keeps_what_is_still_true() {
     let names: Vec<&str> = rebuilt
         .chains
         .iter()
-        .map(|c| c.plan.name.as_str())
+        .map(|c| c.info.name.as_str())
         .collect();
     assert_eq!(names, ["eth", "base", "op"]);
     // The head came from the old endpoint: it is not b's.
@@ -363,6 +384,6 @@ fn feed_is_capped_and_its_rate_counts_the_recent_window() {
     state.feed.pop_back();
     // 25 requests a second, over the last 10 s.
     let newest = state.feed.back().unwrap().at_ms;
-    assert_eq!(state.feed_rate(newest, 10), 25.1);
-    assert_eq!(state.feed_rate(newest + 60_000, 10), 0.0);
+    assert_eq!(state.feed_rate(newest), 25.1);
+    assert_eq!(state.feed_rate(newest + 60_000), 0.0);
 }

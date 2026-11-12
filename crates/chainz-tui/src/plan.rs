@@ -2,8 +2,9 @@
 //! with every `${VAR}` already expanded into a [`Target`].
 //!
 //! Built on the UI thread from a [`Chainz`] (which is not `Sync`) and handed
-//! to the workers. Display strings are redacted here, once, so no renderer
-//! can leak a raw URL.
+//! to the workers. Display strings are redacted here, once, and the state
+//! and the renderers get only the `*Info` parts, so no renderer can leak a
+//! raw URL.
 
 use chainz_core::Address;
 use chainz_core::Chainz;
@@ -12,6 +13,7 @@ use chainz_core::model::Endpoint;
 use chainz_core::redact;
 use chainz_core::route::Route;
 use chainz_rpc::Target;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Everything the workers and the renderer need to know about the config.
 #[derive(Debug, Clone, Default)]
@@ -22,9 +24,46 @@ pub struct Plan {
     pub signers: Vec<SignerPlan>,
 }
 
-/// One configured chain.
+/// One configured chain: what is shown about it, and how to reach it.
 #[derive(Debug, Clone)]
 pub struct ChainPlan {
+    /// What the dashboard shows about it.
+    pub info: ChainInfo,
+    /// Endpoints in config order.
+    pub endpoints: Vec<EndpointPlan>,
+    /// Where it reads from, as an identity: two plans of a chain with the
+    /// same source read it the same way (same name, ID and active
+    /// endpoint, URL and headers as resolved), so a poller, a balance
+    /// read or a head for one is good for the other. Workers stamp their
+    /// updates with it; the state drops updates from another source.
+    pub source: Source,
+}
+
+/// A chain's source identity; see [`ChainPlan::source`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Source(u64);
+
+impl Source {
+    /// A fixture's source, the same for every chain of this name.
+    #[cfg(test)]
+    pub(crate) fn named(name: impl AsRef<str>) -> Self {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        name.as_ref().hash(&mut hasher);
+        Source(hasher.finish() | 1 << 63)
+    }
+
+    /// A source no other plan has.
+    pub fn fresh() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        Source(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+/// What the dashboard shows about a chain: display data only, never a
+/// target or an expanded URL.
+#[derive(Debug, Clone)]
+pub struct ChainInfo {
     /// Short name.
     pub name: String,
     /// Chain ID.
@@ -33,8 +72,6 @@ pub struct ChainPlan {
     pub aliases: Vec<String>,
     /// Name of the active endpoint.
     pub active: String,
-    /// Endpoints in config order.
-    pub endpoints: Vec<EndpointPlan>,
     /// Built-in tokens on this chain, by label name.
     pub tokens: Vec<TokenPlan>,
     /// Symbol of the native currency.
@@ -42,15 +79,54 @@ pub struct ChainPlan {
 }
 
 impl ChainPlan {
+    /// The plan of a chain, with a fresh [`Source`].
+    pub fn new(info: ChainInfo, endpoints: Vec<EndpointPlan>) -> Self {
+        ChainPlan {
+            info,
+            endpoints,
+            source: Source::fresh(),
+        }
+    }
+
     /// The active endpoint.
     pub fn active_endpoint(&self) -> Option<&EndpointPlan> {
-        self.endpoints.iter().find(|e| e.name == self.active)
+        self.endpoints
+            .iter()
+            .find(|e| e.info.name == self.info.active)
+    }
+
+    /// Whether `other` reads this chain the same way (see
+    /// [`ChainPlan::source`]).
+    fn same_source(&self, other: &ChainPlan) -> bool {
+        let same_endpoint = match (self.active_endpoint(), other.active_endpoint()) {
+            (None, None) => true,
+            (Some(a), Some(b)) => {
+                a.info.websocket == b.info.websocket
+                    && a.info.invalid == b.info.invalid
+                    && match (&a.target, &b.target) {
+                        (Some(a), Some(b)) => a.url() == b.url() && a.headers() == b.headers(),
+                        (None, None) => true,
+                        _ => false,
+                    }
+            }
+            _ => false,
+        };
+        self.info.name == other.info.name && self.info.id == other.info.id && same_endpoint
     }
 }
 
 /// One endpoint of a chain.
 #[derive(Debug, Clone)]
 pub struct EndpointPlan {
+    /// What the dashboard shows about it.
+    pub info: EndpointInfo,
+    /// The resolved target; `None` when `info.invalid` says why not.
+    pub target: Option<Target>,
+}
+
+/// What the dashboard shows about an endpoint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EndpointInfo {
     /// Endpoint name.
     pub name: String,
     /// The URL as it may be shown and copied: redacted unless `--reveal`,
@@ -58,8 +134,9 @@ pub struct EndpointPlan {
     pub url: String,
     /// `ws://` or `wss://`: listed, never probed.
     pub websocket: bool,
-    /// The resolved target, or why it could not be built (never a URL).
-    pub target: Result<Target, String>,
+    /// Why it cannot be used, when its config does not resolve (never a
+    /// URL).
+    pub invalid: Option<String>,
 }
 
 impl EndpointPlan {
@@ -80,10 +157,13 @@ impl EndpointPlan {
                     .map_err(|e| e.to_string())
             });
         EndpointPlan {
-            name: name.to_string(),
-            url: redact::url(&endpoint.url, reveal),
-            websocket: endpoint.is_websocket(),
-            target,
+            info: EndpointInfo {
+                name: name.to_string(),
+                url: redact::url(&endpoint.url, reveal),
+                websocket: endpoint.is_websocket(),
+                invalid: target.as_ref().err().cloned(),
+            },
+            target: target.ok(),
         }
     }
 }
@@ -137,15 +217,15 @@ impl Plan {
                         address: t.address,
                     })
                     .collect();
-                ChainPlan {
+                let info = ChainInfo {
                     name: name.clone(),
                     id: chain.id,
                     aliases: chain.aliases.clone(),
                     active: chain.rpc.clone(),
-                    endpoints,
                     native_symbol: native_symbol(chain.id),
                     tokens,
-                }
+                };
+                ChainPlan::new(info, endpoints)
             })
             .collect();
         let signers = config
@@ -159,9 +239,21 @@ impl Plan {
         Plan { chains, signers }
     }
 
+    /// Take over `previous`'s source for every chain that reads the same
+    /// way in both, so its pollers, balances and state carry over.
+    pub fn inherit(&mut self, previous: &Plan) {
+        for chain in &mut self.chains {
+            if let Some(old) = previous.chain(&chain.info.name)
+                && old.same_source(chain)
+            {
+                chain.source = old.source;
+            }
+        }
+    }
+
     /// The chain named `name`.
     pub fn chain(&self, name: &str) -> Option<&ChainPlan> {
-        self.chains.iter().find(|c| c.name == name)
+        self.chains.iter().find(|c| c.info.name == name)
     }
 
     /// Signers that have a cached address.
@@ -177,7 +269,7 @@ impl Plan {
     /// else by name.
     pub fn token_names(&self) -> Vec<String> {
         let mut names: Vec<String> = Vec::new();
-        for token in self.chains.iter().flat_map(|c| &c.tokens) {
+        for token in self.chains.iter().flat_map(|c| &c.info.tokens) {
             if !names.contains(&token.name) {
                 names.push(token.name.clone());
             }

@@ -10,21 +10,19 @@ use super::push_capped;
 use super::status::{SLOW_FACTOR, SLOW_FLOOR_MS, lag_blocks, median};
 use super::traffic::{FEED_CAP, FeedItem, TrafficSnapshot};
 use super::update::{Fault, GatewayInfo, Head, Sheet, Update};
-use crate::plan::{ChainPlan, Plan, SignerPlan};
+use crate::plan::{ChainInfo, ChainPlan, EndpointInfo, Plan, SignerPlan, Source};
+
+/// The span the Traffic tab's request rate is measured over.
+pub const FEED_RATE_SECS: u64 = 10;
 
 /// One endpoint's live state.
 #[derive(Debug, Clone)]
 pub struct EndpointState {
-    /// Endpoint name.
-    pub name: String,
-    /// Displayable URL (redacted unless `--reveal`).
-    pub url: String,
+    /// Name, displayable URL (redacted unless `--reveal`), websocket, and
+    /// why it cannot be used.
+    pub info: EndpointInfo,
     /// Whether it is the chain's active endpoint.
     pub active: bool,
-    /// `ws://` or `wss://`.
-    pub websocket: bool,
-    /// Why it cannot be used, when its config does not resolve.
-    pub invalid: Option<String>,
     /// Cached capability tags.
     pub tags: Vec<String>,
     /// Probe history, oldest first: the health store's plus this session's.
@@ -50,8 +48,11 @@ impl EndpointState {
 /// One chain's live state.
 #[derive(Debug, Clone)]
 pub struct ChainState {
-    /// Its plan.
-    pub plan: ChainPlan,
+    /// What is shown about it.
+    pub info: ChainInfo,
+    /// Where its head and balances are read from; updates from another
+    /// source are dropped.
+    pub source: Source,
     /// The last head read successfully.
     pub head: Option<Head>,
     /// When the last poll finished, unix milliseconds.
@@ -82,26 +83,24 @@ pub struct ChainState {
 
 impl ChainState {
     fn new(plan: &ChainPlan, store: &HealthStore) -> Self {
+        let id = plan.info.id;
         let endpoints: Vec<EndpointState> = plan
             .endpoints
             .iter()
             .map(|e| EndpointState {
-                name: e.name.clone(),
-                url: e.url.clone(),
-                active: e.name == plan.active,
-                websocket: e.websocket,
-                invalid: e.target.as_ref().err().cloned(),
+                info: e.info.clone(),
+                active: e.info.name == plan.info.active,
                 tags: store
-                    .capabilities(plan.id, &e.name)
+                    .capabilities(id, &e.info.name)
                     .map(|c| c.tags())
                     .unwrap_or_else(|| {
-                        if e.websocket {
+                        if e.info.websocket {
                             vec!["ws".to_string()]
                         } else {
                             Vec::new()
                         }
                     }),
-                samples: store.samples(plan.id, &e.name).into(),
+                samples: store.samples(id, &e.info.name).into(),
                 live: false,
                 message: None,
             })
@@ -117,7 +116,8 @@ impl ChainState {
             })
             .unwrap_or_default();
         ChainState {
-            plan: plan.clone(),
+            info: plan.info.clone(),
+            source: plan.source,
             head: None,
             polled_at_ms: None,
             fault: None,
@@ -197,21 +197,23 @@ impl State {
     }
 
     /// A state for a reloaded `plan` that keeps what is still true of the
-    /// old one, so a config change does not blank the screen.
+    /// old one, so a config change does not blank the screen. What was read
+    /// from the chain's source (head, latency, lag) is kept only where the
+    /// source is the same ([`Plan::inherit`]).
     pub fn rebuilt(&self, plan: &Plan, store: &HealthStore) -> Self {
         let mut next = State::new(plan, store);
         for chain in &mut next.chains {
             let Some(old) = self
                 .chains
                 .iter()
-                .find(|c| c.plan.name == chain.plan.name && c.plan.id == chain.plan.id)
+                .find(|c| c.info.name == chain.info.name && c.info.id == chain.info.id)
             else {
                 continue;
             };
             chain.block_time = old.block_time;
             chain.balances = old.balances.clone();
             chain.balances_at_ms = old.balances_at_ms;
-            if old.plan.active == chain.plan.active {
+            if old.source == chain.source {
                 chain.head = old.head.clone();
                 chain.polled_at_ms = old.polled_at_ms;
                 chain.fault = old.fault.clone();
@@ -221,7 +223,11 @@ impl State {
             }
             chain.probed_at_ms = old.probed_at_ms;
             for endpoint in &mut chain.endpoints {
-                if let Some(previous) = old.endpoints.iter().find(|e| e.name == endpoint.name) {
+                if let Some(previous) = old
+                    .endpoints
+                    .iter()
+                    .find(|e| e.info.name == endpoint.info.name)
+                {
                     endpoint.samples = previous.samples.clone();
                     endpoint.live = previous.live;
                     endpoint.message = previous.message.clone();
@@ -243,11 +249,19 @@ impl State {
         })
     }
 
-    /// Requests per second over the last `window_secs` of the feed.
-    pub fn feed_rate(&self, now_ms: u64, window_secs: u64) -> f64 {
-        let since = now_ms.saturating_sub(window_secs * 1_000);
+    /// Requests per second over the last [`FEED_RATE_SECS`] of the feed.
+    pub fn feed_rate(&self, now_ms: u64) -> f64 {
+        let since = now_ms.saturating_sub(FEED_RATE_SECS * 1_000);
         let recent = self.feed.iter().rev().take_while(|r| r.at_ms >= since);
-        recent.count() as f64 / window_secs.max(1) as f64
+        recent.count() as f64 / FEED_RATE_SECS as f64
+    }
+
+    /// The chain named `name`, if it still reads from `source`: what was
+    /// read from another source (an endpoint since replaced) is dropped.
+    fn chain_from(&mut self, name: &str, source: Source) -> Option<&mut ChainState> {
+        self.chains
+            .iter_mut()
+            .find(|c| c.info.name == name && c.source == source)
     }
 
     /// Fold one worker message into the state.
@@ -255,6 +269,7 @@ impl State {
         match update {
             Update::Head {
                 chain,
+                source,
                 at_ms,
                 via_gateway,
                 result,
@@ -266,7 +281,7 @@ impl State {
                         .find(|c| c.chain == chain)
                         .and_then(|c| c.head)
                 });
-                let Some(c) = self.chains.iter_mut().find(|c| c.plan.name == chain) else {
+                let Some(c) = self.chain_from(&chain, source) else {
                     return;
                 };
                 c.polled_at_ms = Some(at_ms);
@@ -290,15 +305,16 @@ impl State {
             }
             Update::Probes {
                 chain,
+                source,
                 at_ms,
                 results,
             } => {
-                let Some(c) = self.chains.iter_mut().find(|c| c.plan.name == chain) else {
+                let Some(c) = self.chain_from(&chain, source) else {
                     return;
                 };
                 c.probed_at_ms = Some(at_ms);
                 for (name, probe) in results {
-                    let Some(e) = c.endpoints.iter_mut().find(|e| e.name == name) else {
+                    let Some(e) = c.endpoints.iter_mut().find(|e| e.info.name == name) else {
                         continue;
                     };
                     e.live = true;
@@ -314,10 +330,11 @@ impl State {
             }
             Update::Balances {
                 chain,
+                source,
                 at_ms,
                 result,
             } => {
-                let Some(c) = self.chains.iter_mut().find(|c| c.plan.name == chain) else {
+                let Some(c) = self.chain_from(&chain, source) else {
                     return;
                 };
                 c.balances_at_ms = Some(at_ms);

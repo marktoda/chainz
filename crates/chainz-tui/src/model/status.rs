@@ -123,10 +123,10 @@ impl ChainState {
             .map(|(e, sample)| {
                 // In step with `observed`: one health per current sample.
                 let health = sample.and_then(|_| health.next());
-                if e.invalid.is_some() {
+                if e.info.invalid.is_some() {
                     return (EndpointStatus::Invalid, None);
                 }
-                if e.websocket {
+                if e.info.websocket {
                     return (EndpointStatus::Websocket, None);
                 }
                 let (Some(sample), Some(health)) = (sample, health) else {

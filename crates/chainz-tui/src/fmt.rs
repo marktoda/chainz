@@ -25,6 +25,15 @@ pub fn block_time(secs: f64) -> String {
     }
 }
 
+/// A window length: `1m`, `15m`, `90s`.
+pub fn window(secs: u64) -> String {
+    if secs.is_multiple_of(60) {
+        format!("{}m", secs / 60)
+    } else {
+        format!("{secs}s")
+    }
+}
+
 /// A latency: `48ms`, `1.2s`.
 pub fn latency(ms: u32) -> String {
     if ms < 1_000 {

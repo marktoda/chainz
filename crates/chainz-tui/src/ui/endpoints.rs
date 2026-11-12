@@ -1,20 +1,22 @@
 //! Tab 2: the selected chain's endpoints.
 
-use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 
 use super::grid::{Cell, Col, Grid};
-use super::{Ctx, context_line, empty, scroll_hint, split_context};
+use super::{Body, Content, Ctx};
+use crate::app::ScrollSlot;
 use crate::fmt;
 use crate::model::EndpointStatus;
+use crate::view;
 
-pub(super) fn render(area: Rect, buf: &mut Buffer, ctx: Ctx) {
-    let (top, body) = split_context(area);
+/// The Endpoints tab: the selected chain's endpoints with their health.
+pub(super) fn body(ctx: Ctx) -> Body {
     let t = ctx.theme;
     let Some(chain) = ctx.app.selected(ctx.state) else {
-        empty(body, buf, vec![Line::styled("No chain selected.", t.dim())]);
-        return;
+        return Body {
+            context: None,
+            content: Content::Message(vec![Line::styled("No chain selected.", t.dim())]),
+        };
     };
 
     let probed = match chain.probed_at_ms {
@@ -30,31 +32,29 @@ pub(super) fn render(area: Rect, buf: &mut Buffer, ctx: Ctx) {
         }
         None => Span::styled("probing…", t.warn()),
     };
-    context_line(
-        top,
-        buf,
-        t,
+    let context = vec![
         vec![
-            vec![
-                Span::styled(chain.plan.name.clone(), t.accent()),
-                Span::styled(format!(" ({})", chain.plan.id), t.dim()),
-            ],
-            vec![Span::styled(
-                format!("{} endpoints", chain.endpoints.len()),
-                t.dim(),
-            )],
-            vec![
-                Span::styled("active ", t.dim()),
-                Span::styled(chain.plan.active.clone(), t.text()),
-            ],
-            vec![probed],
+            Span::styled(chain.info.name.clone(), t.accent()),
+            Span::styled(format!(" ({})", chain.info.id), t.dim()),
         ],
-    );
+        vec![Span::styled(
+            format!("{} endpoints", chain.endpoints.len()),
+            t.dim(),
+        )],
+        vec![
+            Span::styled("active ", t.dim()),
+            Span::styled(chain.info.active.clone(), t.text()),
+        ],
+        vec![probed],
+    ];
 
-    let statuses = chain.endpoint_statuses();
-    let any_error = statuses
-        .iter()
-        .any(|(s, _)| matches!(s, EndpointStatus::Failing(_) | EndpointStatus::Invalid));
+    let rows = view::endpoint_rows(chain);
+    let any_error = rows.iter().any(|r| {
+        matches!(
+            r.status,
+            EndpointStatus::Failing(_) | EndpointStatus::Invalid
+        )
+    });
     let mut cols = vec![
         Col::new("ENDPOINT").max(18),
         Col::new("STATUS"),
@@ -71,17 +71,18 @@ pub(super) fn render(area: Rect, buf: &mut Buffer, ctx: Ctx) {
     let mut grid = Grid::new(cols);
 
     let blank = || Cell::new("–", t.faint());
-    for (endpoint, (status, lag)) in chain.endpoints.iter().zip(&statuses) {
+    for r in &rows {
+        let endpoint = r.endpoint;
         // Cached figures from an earlier run are shown, but dimmed.
         let fresh = if endpoint.live { t.text() } else { t.dim() };
-        let sample = endpoint.latest();
+        let name = endpoint.info.name.clone();
         let mut row = vec![
             if endpoint.active {
-                Cell::new("● ", t.accent()).then(endpoint.name.clone(), t.text())
+                Cell::new("● ", t.accent()).then(name, t.text())
             } else {
-                Cell::new("  ", t.text()).then(endpoint.name.clone(), t.text())
+                Cell::new("  ", t.text()).then(name, t.text())
             },
-            match status {
+            match r.status {
                 EndpointStatus::Unknown => Cell::new("…", t.faint()),
                 EndpointStatus::Ok => Cell::new("ok", t.ok()),
                 EndpointStatus::Lagging(_) => Cell::new("lagging", t.lag()),
@@ -89,20 +90,18 @@ pub(super) fn render(area: Rect, buf: &mut Buffer, ctx: Ctx) {
                 EndpointStatus::Websocket => Cell::new("ws", t.dim()),
                 EndpointStatus::Invalid => Cell::new("invalid", t.bad()),
             },
-            sample
-                .filter(|s| s.error.is_none())
-                .map_or_else(blank, |s| Cell::new(fmt::latency(s.latency_ms), fresh)),
-            endpoint
-                .p50()
+            r.latency_ms
+                .map_or_else(blank, |ms| Cell::new(fmt::latency(ms), fresh)),
+            r.p50_ms
                 .map_or_else(blank, |ms| Cell::new(fmt::latency(ms), t.dim())),
-            sample
+            r.latest
                 .and_then(|s| s.head)
                 .map_or_else(blank, |head| Cell::new(fmt::group(head), fresh)),
-            match lag {
+            match r.lag {
                 Some(0) => Cell::new("0", t.dim()),
                 Some(n) => Cell::new(
-                    fmt::group(*n),
-                    if matches!(status, EndpointStatus::Lagging(_)) {
+                    fmt::group(n),
+                    if matches!(r.status, EndpointStatus::Lagging(_)) {
                         t.lag()
                     } else {
                         t.text()
@@ -112,7 +111,7 @@ pub(super) fn render(area: Rect, buf: &mut Buffer, ctx: Ctx) {
             },
         ];
         if any_error {
-            row.push(match status {
+            row.push(match r.status {
                 EndpointStatus::Failing(class) => Cell::new(
                     match &endpoint.message {
                         Some(message) => message.clone(),
@@ -120,20 +119,31 @@ pub(super) fn render(area: Rect, buf: &mut Buffer, ctx: Ctx) {
                     },
                     t.bad(),
                 ),
-                EndpointStatus::Invalid => {
-                    Cell::new(endpoint.invalid.clone().unwrap_or_default(), t.bad())
-                }
+                EndpointStatus::Invalid => Cell::new(
+                    endpoint
+                        .info
+                        .invalid
+                        .clone()
+                        .unwrap_or_else(|| "invalid".into()),
+                    t.bad(),
+                ),
                 _ => Cell::empty(),
             });
         }
         row.push(Cell::new(endpoint.tags.join(" "), t.dim()));
-        row.push(Cell::new(endpoint.url.clone(), t.faint()));
+        row.push(Cell::new(endpoint.info.url.clone(), t.faint()));
         grid.rows.push(row);
     }
     let selected = ctx
         .app
         .endpoint
         .min(chain.endpoints.len().saturating_sub(1));
-    let shown = grid.render(body, buf, t, Some(selected), Some(&ctx.app.scroll[1]));
-    scroll_hint(top, buf, t, shown, chain.endpoints.len());
+    Body {
+        context: Some(context),
+        content: Content::Table {
+            grid,
+            selected: Some(selected),
+            scroll: ScrollSlot::Endpoints,
+        },
+    }
 }

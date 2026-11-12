@@ -1,9 +1,13 @@
 //! Rendering. Pure functions from ([`App`], [`State`], a clock) to a
 //! ratatui buffer: no I/O and no wall-clock reads, so every frame is
 //! reproducible in a test.
+//!
+//! The Chains, Endpoints and Balances tabs describe what they show as a
+//! [`Body`] (built from [`crate::view`] rows); [`render`] draws it, and
+//! `--once` prints the same body as plain text.
 
-mod balances;
-mod chains;
+pub(crate) mod balances;
+pub(crate) mod chains;
 mod endpoints;
 pub mod grid;
 #[cfg(test)]
@@ -12,14 +16,12 @@ pub mod theme;
 mod traffic;
 
 use ratatui::Frame;
-use ratatui::Terminal;
-use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget, Wrap};
 
-use crate::app::{App, Tab};
+use crate::app::{App, ScrollSlot, Tab};
 use crate::fmt;
 use crate::model::State;
 use theme::Theme;
@@ -71,27 +73,67 @@ pub fn render(area: Rect, buf: &mut Buffer, ctx: Ctx) {
     title_bar(row(0), buf, ctx);
     let body = Rect::new(area.x, area.y + 1, area.width, area.height - 2);
     match ctx.app.tab {
-        Tab::Chains => chains::render(body, buf, ctx),
-        Tab::Endpoints => endpoints::render(body, buf, ctx),
-        Tab::Balances => balances::render(body, buf, ctx),
+        Tab::Chains => draw_body(body, buf, ctx, chains::body(ctx)),
+        Tab::Endpoints => draw_body(body, buf, ctx, endpoints::body(ctx)),
+        Tab::Balances => draw_body(body, buf, ctx, balances::body(ctx)),
         Tab::Traffic => traffic::render(body, buf, ctx),
     }
     footer(row(area.height - 1), buf, ctx);
 }
 
-/// Render one frame off-screen and return it as text, one line per row,
-/// trailing blanks trimmed. Used by `--once` and by the tests.
-pub fn render_text(ctx: Ctx, width: u16, height: u16) -> String {
-    let mut terminal =
-        Terminal::new(TestBackend::new(width, height)).expect("a test backend cannot fail");
-    terminal
-        .draw(|frame| draw(frame, ctx))
-        .expect("a test backend cannot fail");
-    buffer_text(terminal.backend().buffer())
+/// What a tab shows under the title bar.
+pub struct Body {
+    /// The one-line summary (`a · b · c`), if the tab has one.
+    pub context: Option<Vec<Vec<Span<'static>>>>,
+    /// The rest.
+    pub content: Content,
 }
 
-/// A buffer's symbols as lines of text.
-pub fn buffer_text(buf: &Buffer) -> String {
+/// The main part of a [`Body`].
+pub enum Content {
+    /// A centred message: nothing to show, and why.
+    Message(Vec<Line<'static>>),
+    /// A table.
+    Table {
+        /// The rows.
+        grid: Grid,
+        /// The highlighted row.
+        selected: Option<usize>,
+        /// Where the table remembers its scroll position.
+        scroll: ScrollSlot,
+    },
+}
+
+use grid::Grid;
+
+fn draw_body(area: Rect, buf: &mut Buffer, ctx: Ctx, body: Body) {
+    let (top, rest) = split_context(area);
+    let t = ctx.theme;
+    if let Some(parts) = body.context {
+        buf.set_line(top.x, top.y, &context_line(top.width, t, parts), top.width);
+    }
+    match body.content {
+        Content::Message(lines) => empty(rest, buf, lines),
+        Content::Table {
+            grid,
+            selected,
+            scroll,
+        } => {
+            let shown = grid.render(rest, buf, t, selected, Some(ctx.app.scroll(scroll)));
+            scroll_hint(top, buf, t, shown, grid.rows.len());
+        }
+    }
+}
+
+/// Render one frame off-screen and return it as text, one line per row,
+/// trailing blanks trimmed.
+#[cfg(test)]
+pub fn render_text(ctx: Ctx, width: u16, height: u16) -> String {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+    terminal.draw(|frame| draw(frame, ctx)).unwrap();
+    let buf = terminal.backend().buffer();
     let area = buf.area;
     let mut out = String::new();
     for y in area.y..area.bottom() {
@@ -206,36 +248,7 @@ fn footer(area: Rect, buf: &mut Buffer, ctx: Ctx) {
         ]);
         buf.set_line(area.x, area.y, &prompt, room);
     } else {
-        let hints: &[(&str, &str)] = match app.tab {
-            Tab::Chains => &[
-                ("enter", "endpoints"),
-                ("b", "balances"),
-                ("r", "refresh"),
-                ("s", "set rpc"),
-                ("e", "exec shell"),
-                ("/", "filter"),
-                ("y", "copy url"),
-                ("q", "quit"),
-            ],
-            Tab::Endpoints => &[
-                ("s", "set active"),
-                ("h/l", "chain"),
-                ("r", "probe now"),
-                ("y", "copy url"),
-                ("e", "exec shell"),
-                ("esc", "back"),
-                ("q", "quit"),
-            ],
-            Tab::Balances => &[
-                ("h/l", "signer"),
-                ("r", "refresh"),
-                ("y", "copy address"),
-                ("/", "filter"),
-                ("e", "exec shell"),
-                ("q", "quit"),
-            ],
-            Tab::Traffic => &[("r", "refresh"), ("1-4", "tabs"), ("q", "quit")],
-        };
+        let hints = app.tab.hints();
         // Keep the last hint (quit) and as many of the others as fit.
         let width_of = |hints: &[&(&str, &str)]| -> u16 {
             let cells: usize = hints.iter().map(|(k, v)| k.len() + v.len() + 4).sum();
@@ -263,22 +276,22 @@ fn footer(area: Rect, buf: &mut Buffer, ctx: Ctx) {
 }
 
 /// The one-line summary under the title bar: `a · b · c`, keeping only
-/// the leading parts that fit whole.
-fn context_line(area: Rect, buf: &mut Buffer, theme: Theme, parts: Vec<Vec<Span<'static>>>) {
+/// the leading parts that fit whole in `width`.
+pub fn context_line(width: u16, theme: Theme, parts: Vec<Vec<Span<'static>>>) -> Line<'static> {
     let mut line = vec![Span::raw(" ")];
     let mut used = 1;
     for (i, part) in parts.into_iter().enumerate() {
-        let width = line_width(&part) + if i > 0 { 3 } else { 0 };
-        if i > 0 && used + width > area.width {
+        let part_width = line_width(&part) + if i > 0 { 3 } else { 0 };
+        if i > 0 && used + part_width > width {
             break;
         }
         if i > 0 {
             line.push(Span::styled(" · ", theme.faint()));
         }
         line.extend(part);
-        used += width;
+        used += part_width;
     }
-    buf.set_line(area.x, area.y, &Line::from(line), area.width);
+    Line::from(line)
 }
 
 /// Say which rows are on screen when the table is longer than the

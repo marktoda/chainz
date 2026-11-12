@@ -196,19 +196,20 @@ impl Dashboard {
         }
     }
 
-    /// Stop the workers and forget what they still had queued.
+    /// Stop the workers.
     fn stop(&mut self) {
         self.engine = None;
         self.focus_sent = None;
-        while self.updates.try_recv().is_ok() {}
     }
 
     /// Move the workers to the config as it is now: a running engine
     /// restarts only what changed; a stopped one starts.
     fn start(&mut self) {
-        // What is queued may come from a chain's previous endpoint.
-        while self.updates.try_recv().is_ok() {}
-        self.plan = Arc::new(Plan::build(&self.chainz, self.options.reveal));
+        // A chain that reads from where it did keeps its source, so what its
+        // workers still have queued applies; the state drops the rest.
+        let mut plan = Plan::build(&self.chainz, self.options.reveal);
+        plan.inherit(&self.plan);
+        self.plan = Arc::new(plan);
         self.state = self.state.rebuilt(&self.plan, &self.shared.store());
         match &mut self.engine {
             Some(engine) => engine.replan(&self.plan),

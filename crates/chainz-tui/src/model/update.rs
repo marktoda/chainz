@@ -5,6 +5,7 @@ use std::time::Duration;
 use chainz_rpc::{ErrorClass, RpcError};
 
 use super::traffic::{FeedItem, TrafficSnapshot};
+use crate::plan::Source;
 
 /// A failed request: its class and a message that is safe to show.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,8 +80,7 @@ pub struct Probe {
 }
 
 /// How a balance sheet was read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Via {
     /// One Multicall3 `aggregate3` call.
     Multicall3,
@@ -122,6 +122,8 @@ pub enum Update {
     Head {
         /// Chain name.
         chain: String,
+        /// The source it was read from.
+        source: Source,
         /// When, unix milliseconds.
         at_ms: u64,
         /// Whether the request went through the gateway.
@@ -135,6 +137,8 @@ pub enum Update {
     Probes {
         /// Chain name.
         chain: String,
+        /// The plan's source for the chain when the round started.
+        source: Source,
         /// When, unix milliseconds.
         at_ms: u64,
         /// Endpoint name and outcome, for every probed endpoint.
@@ -144,6 +148,8 @@ pub enum Update {
     Balances {
         /// Chain name.
         chain: String,
+        /// The source they were read from.
+        source: Source,
         /// When, unix milliseconds.
         at_ms: u64,
         /// The outcome.
@@ -157,4 +163,17 @@ pub enum Update {
     Feed(FeedItem),
     /// `config.toml` changed on disk.
     ConfigChanged,
+}
+
+/// Which worker a refresh is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refresh {
+    /// Poll every chain head now.
+    Chains,
+    /// Probe the focused chain's endpoints now.
+    Endpoints,
+    /// Read every balance now.
+    Balances,
+    /// Poll the gateway's metrics now.
+    Traffic,
 }

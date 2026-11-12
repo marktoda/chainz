@@ -1,25 +1,42 @@
 //! Tab 3: one signer's native and token balances on every chain.
 
-use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 
 use super::grid::{Cell, Col, Grid};
-use super::{Ctx, context_line, empty, scroll_hint, split_context};
-use chainz_core::labels::NATIVE_DECIMALS;
-
+use super::theme::Theme;
+use super::{Body, Content, Ctx};
+use crate::app::ScrollSlot;
 use crate::fmt;
 use crate::model::Via;
+use crate::view::{self, Balance};
 
-pub(super) fn render(area: Rect, buf: &mut Buffer, ctx: Ctx) {
-    let (top, body) = split_context(area);
+/// One balance cell; the symbol only where `with_symbol`.
+fn balance_cell(balance: Balance, with_symbol: bool, t: Theme) -> Cell {
+    match balance {
+        Balance::Pending => Cell::new("…", t.faint()),
+        Balance::Unread => Cell::new("–", t.faint()),
+        Balance::Failed => Cell::new("?", t.warn()),
+        Balance::Read(amount) => {
+            let style = if amount.raw == 0 { t.faint() } else { t.text() };
+            let cell = Cell::new(fmt::units(amount.raw, amount.decimals), style);
+            if with_symbol {
+                cell.then(format!(" {}", amount.symbol), t.faint())
+            } else {
+                cell
+            }
+        }
+    }
+}
+
+/// The Balances tab: the signers as chips, then the shown signer's
+/// balances on every visible chain.
+pub(crate) fn body(ctx: Ctx) -> Body {
     let t = ctx.theme;
     let state = ctx.state;
     if state.signers.iter().all(|s| s.address.is_none()) {
-        empty(
-            body,
-            buf,
-            vec![
+        return Body {
+            context: None,
+            content: Content::Message(vec![
                 Line::styled("No signer has a cached address.", t.text()),
                 Line::raw(""),
                 Line::from(vec![
@@ -27,9 +44,8 @@ pub(super) fn render(area: Rect, buf: &mut Buffer, ctx: Ctx) {
                     Span::styled("chainz signer add default", t.accent()),
                 ]),
                 Line::styled("Balances never unlock a key.", t.dim()),
-            ],
-        );
-        return;
+            ]),
+        };
     }
     let shown = ctx.app.signer.min(state.signers.len() - 1);
     let signer = &state.signers[shown];
@@ -49,18 +65,17 @@ pub(super) fn render(area: Rect, buf: &mut Buffer, ctx: Ctx) {
         }
         chips.push(Span::raw("   "));
     }
-    context_line(top, buf, t, vec![chips]);
+    let message = |text: String| Body {
+        context: Some(vec![chips.clone()]),
+        content: Content::Message(vec![Line::styled(text, t.dim())]),
+    };
 
     if signer.address.is_none() {
-        let text = format!("Signer '{}' has no cached address.", signer.name);
-        empty(body, buf, vec![Line::styled(text, t.dim())]);
-        return;
+        return message(format!("Signer '{}' has no cached address.", signer.name));
     }
     let visible = ctx.app.visible(state);
     if visible.is_empty() {
-        let text = format!("No chain matches /{}", ctx.app.filter);
-        empty(body, buf, vec![Line::styled(text, t.dim())]);
-        return;
+        return message(format!("No chain matches /{}", ctx.app.filter));
     }
 
     let mut cols = vec![Col::new("CHAIN").max(14), Col::new("NATIVE").right()];
@@ -73,60 +88,25 @@ pub(super) fn render(area: Rect, buf: &mut Buffer, ctx: Ctx) {
     cols.push(Col::new("UPDATED").max(16).drop(u8::MAX - 1));
     let mut grid = Grid::new(cols);
 
-    let amount = |raw: Option<u128>, decimals: u8, symbol: Option<&str>| match raw {
-        None => Cell::new("?", t.warn()),
-        Some(raw) => {
-            let style = if raw == 0 { t.faint() } else { t.text() };
-            let cell = Cell::new(fmt::units(raw, decimals), style);
-            match symbol {
-                Some(symbol) => cell.then(format!(" {symbol}"), t.faint()),
-                None => cell,
-            }
-        }
-    };
-    for chain in &visible {
-        let holding = chain
-            .balances
-            .as_ref()
-            .and_then(|sheet| sheet.holders.iter().find(|h| h.signer == signer.name));
-        let pending = || {
-            Cell::new(
-                if chain.balance_fault.is_some() {
-                    "–"
-                } else {
-                    "…"
-                },
-                t.faint(),
-            )
-        };
-        let mut row = vec![Cell::new(chain.plan.name.clone(), t.text())];
-        row.push(match holding {
-            Some(h) => amount(h.native, NATIVE_DECIMALS, Some(chain.plan.native_symbol)),
-            None => pending(),
-        });
+    for row in view::balance_rows(signer, visible.iter().copied()) {
+        let chain = row.chain;
+        let mut cells = vec![
+            Cell::new(chain.info.name.clone(), t.text()),
+            balance_cell(row.native, true, t),
+        ];
         for name in &state.token_names {
-            let index = chain
-                .plan
-                .tokens
-                .iter()
-                .position(|token| &token.name == name);
-            row.push(match (index, holding) {
+            cells.push(match row.token(name) {
                 // The token does not exist on this chain.
-                (None, _) => Cell::empty(),
-                (Some(i), Some(h)) => amount(
-                    h.tokens.get(i).copied().flatten(),
-                    chain.plan.tokens[i].decimals,
-                    None,
-                ),
-                (Some(_), None) => pending(),
+                None => Cell::empty(),
+                Some(balance) => balance_cell(balance, false, t),
             });
         }
-        row.push(match chain.balances.as_ref().map(|sheet| sheet.via) {
+        cells.push(match row.via {
             Some(Via::Multicall3) => Cell::new("multicall", t.dim()),
             Some(Via::Batch) => Cell::new("batch", t.dim()),
             None => Cell::empty(),
         });
-        row.push(match (&chain.balance_fault, chain.balances_at_ms) {
+        cells.push(match (&chain.balance_fault, chain.balances_at_ms) {
             (Some(fault), _) => Cell::new(fault.class.to_string(), t.bad()),
             (None, Some(at)) => Cell::new(
                 format!("{} ago", fmt::age(ctx.now_ms.saturating_sub(at) / 1_000)),
@@ -134,14 +114,14 @@ pub(super) fn render(area: Rect, buf: &mut Buffer, ctx: Ctx) {
             ),
             (None, None) => Cell::new("…", t.faint()),
         });
-        grid.rows.push(row);
+        grid.rows.push(cells);
     }
-    let shown = grid.render(
-        body,
-        buf,
-        t,
-        Some(ctx.app.chain_index(state)),
-        Some(&ctx.app.scroll[0]),
-    );
-    scroll_hint(top, buf, t, shown, visible.len());
+    Body {
+        context: Some(vec![chips]),
+        content: Content::Table {
+            grid,
+            selected: Some(ctx.app.chain_index(state)),
+            scroll: ScrollSlot::Chains,
+        },
+    }
 }

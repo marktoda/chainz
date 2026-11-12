@@ -197,7 +197,7 @@ impl Poller {
     /// whether the look-back block was read) carries over: an engine
     /// restart does not cost another look-back request.
     pub(super) fn new(shared: Arc<Shared>, chain: ChainPlan) -> Self {
-        let learned = shared.lock_learned().get(&chain.id).cloned();
+        let learned = shared.lock_learned().get(&chain.info.id).cloned();
         let (clock, anchor_tries) = learned.unwrap_or((BlockClock::default(), 3));
         Poller {
             shared,
@@ -273,9 +273,10 @@ impl Poller {
         self.retry_after = result.as_ref().err().and_then(|f| f.retry_after);
         self.shared
             .lock_learned()
-            .insert(self.chain.id, (self.clock.clone(), self.anchor_tries));
+            .insert(self.chain.info.id, (self.clock.clone(), self.anchor_tries));
         Update::Head {
-            chain: self.chain.name.clone(),
+            chain: self.chain.info.name.clone(),
+            source: self.chain.source,
             at_ms: now_ms(),
             via_gateway,
             result,

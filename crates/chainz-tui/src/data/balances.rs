@@ -14,7 +14,7 @@ use tokio::sync::watch;
 use tokio::task::JoinSet;
 use tokio::time::Instant;
 
-use super::{Shared, Signals, provider_slots, same_source};
+use super::{Shared, Signals, provider_slots};
 use crate::model::{Fault, Holding, Sheet, Update, Via};
 use crate::plan::{ChainPlan, Plan};
 use chainz_sys::now_ms;
@@ -66,8 +66,12 @@ fn changed_chains(previous: &Plan, next: &Plan) -> Option<HashSet<String>> {
     let changed = next
         .chains
         .iter()
-        .filter(|c| !previous.chain(&c.name).is_some_and(|p| same_source(p, c)))
-        .map(|c| c.name.clone())
+        .filter(|c| {
+            !previous
+                .chain(&c.info.name)
+                .is_some_and(|p| p.source == c.source)
+        })
+        .map(|c| c.info.name.clone())
         .collect();
     Some(changed)
 }
@@ -80,7 +84,7 @@ async fn read_round(shared: &Arc<Shared>, plan: &Plan, only: Option<&HashSet<Str
     }
     let mut round = JoinSet::new();
     for (chain, slot) in plan.chains.iter().zip(provider_slots(plan)) {
-        if only.is_some_and(|only| !only.contains(&chain.name)) {
+        if only.is_some_and(|only| !only.contains(&chain.info.name)) {
             continue;
         }
         let shared = shared.clone();
@@ -110,7 +114,8 @@ pub(super) async fn read_update(
             .map_err(|e| Fault::from(&e)),
     };
     Update::Balances {
-        chain: chain.name,
+        source: chain.source,
+        chain: chain.info.name,
         at_ms: now_ms(),
         result,
     }
@@ -124,7 +129,7 @@ async fn read(
 ) -> Result<Sheet, RpcError> {
     let known_absent = || {
         let known = shared.multicall.lock().unwrap_or_else(|e| e.into_inner());
-        known.get(&chain.id) == Some(&false)
+        known.get(&chain.info.id) == Some(&false)
     };
     if !known_absent() {
         match multicall(shared, chain, target, holders).await {
@@ -133,7 +138,7 @@ async fn read(
             // remember it, so later rounds go straight to the batch.
             Ok(None) => {
                 let mut known = shared.multicall.lock().unwrap_or_else(|e| e.into_inner());
-                known.insert(chain.id, false);
+                known.insert(chain.info.id, false);
             }
             // An endpoint that is unreachable or rate limiting will not
             // answer the batch either; do not hit it twice.
@@ -156,14 +161,14 @@ async fn multicall(
     target: &Target,
     holders: &[(String, Address)],
 ) -> Result<Option<Vec<Option<u128>>>, RpcError> {
-    let mut calls = Vec::with_capacity(holders.len() * (1 + chain.tokens.len()));
+    let mut calls = Vec::with_capacity(holders.len() * (1 + chain.info.tokens.len()));
     for (_, holder) in holders {
         let holder = holder.as_bytes();
         calls.push((
             abi::MULTICALL3,
             abi::call_with_address(abi::GET_ETH_BALANCE, holder),
         ));
-        for token in &chain.tokens {
+        for token in &chain.info.tokens {
             let call = abi::call_with_address(abi::BALANCE_OF, holder);
             calls.push((*token.address.as_bytes(), call));
         }
@@ -192,7 +197,7 @@ async fn batch(
     let mut calls: Vec<(&str, Value)> = Vec::new();
     for (_, holder) in holders {
         calls.push(("eth_getBalance", json!([holder.to_lower_hex(), "latest"])));
-        for token in &chain.tokens {
+        for token in &chain.info.tokens {
             let call = json!({
                 "to": token.address.to_lower_hex(),
                 "data": chainz_rpc::hex::encode(&abi::call_with_address(abi::BALANCE_OF, holder.as_bytes())),
@@ -231,7 +236,7 @@ fn sheet(
     holders: &[(String, Address)],
     values: Vec<Option<u128>>,
 ) -> Sheet {
-    let stride = 1 + chain.tokens.len();
+    let stride = 1 + chain.info.tokens.len();
     Sheet {
         via,
         holders: holders

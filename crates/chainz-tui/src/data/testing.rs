@@ -16,7 +16,7 @@ use tokio::task::JoinHandle;
 
 use super::{Shared, Tuning};
 use crate::model::Update;
-use crate::plan::{ChainPlan, EndpointPlan, Plan, SignerPlan, TokenPlan};
+use crate::plan::{ChainInfo, ChainPlan, EndpointPlan, Plan, SignerPlan, Source, TokenPlan};
 
 /// What the mock answers to one HTTP request.
 pub(crate) enum Reply {
@@ -249,6 +249,12 @@ pub(crate) fn endpoint(chain_id: u64, name: &str, url: &str) -> EndpointPlan {
     EndpointPlan::new(name, &endpoint, Ok(route), false)
 }
 
+/// Make `endpoint` one whose config does not resolve, for `why`.
+pub(crate) fn invalidate(endpoint: &mut EndpointPlan, why: &str) {
+    endpoint.target = None;
+    endpoint.info.invalid = Some(why.into());
+}
+
 /// A chain plan whose first endpoint is active, with WETH and USDC.
 pub(crate) fn chain(name: &str, id: u64, endpoints: &[(&str, &str)]) -> ChainPlan {
     let token = |name: &str, symbol: &str, decimals, at: &str| TokenPlan {
@@ -257,20 +263,24 @@ pub(crate) fn chain(name: &str, id: u64, endpoints: &[(&str, &str)]) -> ChainPla
         decimals,
         address: address(at),
     };
-    ChainPlan {
+    let info = ChainInfo {
         name: name.into(),
         id,
         aliases: Vec::new(),
         active: endpoints[0].0.into(),
-        endpoints: endpoints
-            .iter()
-            .map(|(ep, url)| endpoint(id, ep, url))
-            .collect(),
         tokens: vec![
             token("usdc", "USDC", 6, USDC),
             token("weth", "WETH", 18, WETH),
         ],
         native_symbol: "ETH",
+    };
+    let endpoints = endpoints
+        .iter()
+        .map(|(ep, url)| endpoint(id, ep, url))
+        .collect();
+    ChainPlan {
+        source: Source::named(name),
+        ..ChainPlan::new(info, endpoints)
     }
 }
 

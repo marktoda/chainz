@@ -1,15 +1,21 @@
 //! `chainz top`: the live terminal dashboard.
 //!
-//! Layers, each ignorant of the ones after it:
+//! Modules, from what changes least to what changes most:
 //!
-//! - `plan`: the config resolved into owned, thread-safe targets;
-//! - `data`: background workers that poll, probe and read balances;
-//! - `gateway`: the one adapter over the control protocol;
-//! - `model`: the state the workers' updates fold into, and its
+//! - `plan`: the config resolved into owned, thread-safe targets, and the
+//!   display data (`*Info`) the rest of the crate sees;
+//! - `model`: the shared vocabulary: what workers report ([`model::Update`],
+//!   [`model::Refresh`]), the state it folds into, and the
 //!   classification rules;
+//! - `gateway`: the one adapter over the control protocol, into model
+//!   types;
+//! - `data`: background workers that poll, probe, read balances and watch
+//!   the gateway and the config, reporting model updates;
+//! - `view`: the state as each tab's rows, every figure derived once;
 //! - `app`: selection, tabs and key bindings;
-//! - `ui`: pure rendering of (app, state, clock) into a buffer;
-//! - `snapshot`: the `--once --json` document;
+//! - `ui`: pure rendering of (app, view, clock) into a buffer;
+//! - `snapshot` and `once`: the `--once` JSON document and text tables,
+//!   from the same view;
 //! - `term`: the terminal and the event loop.
 //!
 //! The UI thread never touches the network: it reads keys, folds updates
@@ -24,25 +30,19 @@ pub(crate) mod gateway;
 #[cfg(test)]
 mod golden;
 pub(crate) mod model;
+mod once;
 pub(crate) mod plan;
 pub(crate) mod snapshot;
 mod term;
 pub(crate) mod ui;
+pub(crate) mod view;
 
 use std::io::IsTerminal;
-use std::sync::Arc;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use chainz_core::Chainz;
 use chainz_core::runtime::Runtime;
 use chainz_rpc::HealthStore;
-
-use crate::app::{App, Tab};
-use crate::data::{Shared, Tuning};
-use crate::model::State;
-use crate::plan::Plan;
-use crate::ui::theme::Theme;
-use chainz_sys::now_ms;
 
 /// Runs `chainz shell <chain>` for the `e` key and returns when it exits:
 /// an error, including a shell that did not exit cleanly, is shown in the
@@ -67,7 +67,7 @@ pub fn run(chainz: Chainz, runtime: Runtime, options: Options) -> Result<i32> {
         bail!("`--json` needs `--once`: chainz top --once --json");
     }
     if options.once {
-        return once(&chainz, runtime, &options);
+        return once::run(&chainz, runtime, &options);
     }
     if !std::io::stdout().is_terminal() || !std::io::stdin().is_terminal() {
         bail!("`chainz top` needs a terminal; in a script use `chainz top --once --json`");
@@ -81,78 +81,4 @@ fn load_store() -> HealthStore {
         Ok(dir) => HealthStore::load(&dir).unwrap_or_else(|_| HealthStore::new(&dir)),
         Err(_) => HealthStore::empty(),
     }
-}
-
-/// `--once`: poll every chain once and print the result.
-fn once(chainz: &Chainz, runtime: Runtime, options: &Options) -> Result<i32> {
-    let plan = Arc::new(Plan::build(chainz, options.reveal));
-    let store = load_store();
-    let mut state = State::new(&plan, &store);
-    let (updates, _unused) = std::sync::mpsc::channel();
-    let shared = Shared::new(
-        store,
-        runtime,
-        chainz.paths().config().to_path_buf(),
-        Tuning::default(),
-        updates,
-    );
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .context("failed to start the async runtime")?;
-    for update in rt.block_on(data::collect_once(&shared, &plan)) {
-        state.apply(update);
-    }
-    let now = now_ms();
-    if options.json {
-        let snapshot = snapshot::Snapshot::new(&state, now);
-        println!("{}", serde_json::to_string_pretty(&snapshot)?);
-    } else {
-        print!("{}", once_text(&state, now));
-    }
-    Ok(0)
-}
-
-/// The Chains table, then one Balances table per signer, as plain text.
-fn once_text(state: &State, now_ms: u64) -> String {
-    const WIDTH: u16 = 120;
-    let rows = u16::try_from(state.chains.len()).unwrap_or(u16::MAX - 8);
-    // Title bar, context line, header, rows, footer; an empty state needs room.
-    let height = rows.max(6) + 4;
-    let mut app = App::default();
-    let mut out = String::new();
-    let mut frame = |app: &App| {
-        let ctx = ui::Ctx {
-            app,
-            state,
-            theme: Theme::new(false),
-            now_ms,
-        };
-        let text = ui::render_text(ctx, WIDTH, height);
-        // Drop the tab bar and the key hints: they are for the live view.
-        // In Balances the signer chips become one plain heading.
-        let lines: Vec<&str> = text.lines().collect();
-        let mut body = lines[1..lines.len() - 1].to_vec();
-        let heading = state.signers.get(app.signer).and_then(|s| {
-            let address = s.address?.to_checksum();
-            (app.tab == Tab::Balances).then(|| format!(" signer {} {address}", s.name))
-        });
-        if let Some(heading) = &heading {
-            body[0] = heading;
-        }
-        out.push_str(body.join("\n").replace('▸', " ").trim_end());
-        out.push_str("\n\n");
-    };
-    frame(&app);
-    app.tab = Tab::Balances;
-    for (i, signer) in state.signers.iter().enumerate() {
-        if signer.address.is_some() {
-            app.signer = i;
-            frame(&app);
-        }
-    }
-    let trimmed = out.trim_end().len();
-    out.truncate(trimmed);
-    out.push('\n');
-    out
 }

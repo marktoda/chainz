@@ -9,10 +9,10 @@ use ratatui::style::{Color, Modifier};
 
 use super::*;
 use crate::app::{App, Tab};
-use crate::data::testing::{chain, plan};
+use crate::data::testing::{chain, invalidate, plan};
 use crate::gateway::testing as gw;
 use crate::model::{Fault, GatewayInfo, Head, Holding, Probe, Sheet, State, Update, Via};
-use crate::plan::Plan;
+use crate::plan::{Plan, Source};
 
 /// The frame clock: unix milliseconds.
 pub(crate) const NOW: u64 = 1_700_000_000_000;
@@ -41,12 +41,12 @@ fn fixture_plan() -> std::sync::Arc<Plan> {
         ],
     );
     let mut eth = eth;
-    eth.aliases = vec!["ethereum".into(), "mainnet".into()];
-    eth.endpoints[5].target = Err("variable ${EXAMPLE_KEY} is not set".into());
+    eth.info.aliases = vec!["ethereum".into(), "mainnet".into()];
+    invalidate(&mut eth.endpoints[5], "variable ${EXAMPLE_KEY} is not set");
     let mut zora = chain("zora", 7777777, &[("uniswap", "https://zora.example.org")]);
-    zora.tokens.remove(0); // no usdc on zora
+    zora.info.tokens.remove(0); // no usdc on zora
     let mut polygon = chain("polygon", 137, &[("infura", "https://polygon.example.org")]);
-    polygon.native_symbol = "POL";
+    polygon.info.native_symbol = "POL";
     plan(vec![
         eth,
         chain("base", 8453, &[("infura", "https://base.example.org")]),
@@ -60,6 +60,7 @@ fn fixture_plan() -> std::sync::Arc<Plan> {
 fn head(chain: &str, number: u64, age_secs: u64, block_time: f64, fee: u128, ms: u32) -> Update {
     Update::Head {
         chain: chain.into(),
+        source: Source::named(chain),
         at_ms: NOW,
         via_gateway: false,
         result: Ok(Head {
@@ -100,6 +101,7 @@ pub(crate) fn fixture() -> State {
         // eth: its endpoints probed, one of them ahead of nobody.
         Update::Probes {
             chain: "eth".into(),
+            source: Source::named("eth"),
             at_ms: NOW - 3_000,
             results: vec![
                 ("infura".into(), probe(48, Some(23_481_220), None)),
@@ -125,6 +127,7 @@ pub(crate) fn fixture() -> State {
         // uni: three blocks behind what a peer reported.
         Update::Probes {
             chain: "uni".into(),
+            source: Source::named("uni"),
             at_ms: NOW - 9_000,
             results: vec![("infura".into(), probe(55, Some(31_770_016), None))],
         },
@@ -137,6 +140,7 @@ pub(crate) fn fixture() -> State {
         head("arb", 284_000_117, 62, 0.25, 10_000_000, 80),
         Update::Head {
             chain: "arb".into(),
+            source: Source::named("arb"),
             at_ms: NOW,
             via_gateway: false,
             result: Err(Fault::new(ErrorClass::Timeout, "request timed out")),
@@ -145,6 +149,7 @@ pub(crate) fn fixture() -> State {
         // polygon: not polled yet.
         Update::Balances {
             chain: "eth".into(),
+            source: Source::named("eth"),
             at_ms: NOW - 12_000,
             result: Ok(sheet(
                 Via::Multicall3,
@@ -154,6 +159,7 @@ pub(crate) fn fixture() -> State {
         },
         Update::Balances {
             chain: "base".into(),
+            source: Source::named("base"),
             at_ms: NOW - 12_000,
             result: Ok(sheet(
                 Via::Multicall3,
@@ -163,11 +169,13 @@ pub(crate) fn fixture() -> State {
         },
         Update::Balances {
             chain: "uni".into(),
+            source: Source::named("uni"),
             at_ms: NOW - 11_000,
             result: Ok(sheet(Via::Batch, (0, 0, 0), (1, 5, 0))),
         },
         Update::Balances {
             chain: "zora".into(),
+            source: Source::named("zora"),
             at_ms: NOW - 11_000,
             result: Ok(Sheet {
                 via: Via::Batch,
@@ -180,6 +188,7 @@ pub(crate) fn fixture() -> State {
         },
         Update::Balances {
             chain: "arb".into(),
+            source: Source::named("arb"),
             at_ms: NOW - 2_000,
             result: Err(Fault::new(ErrorClass::Timeout, "request timed out")),
         },
@@ -200,10 +209,9 @@ pub(crate) fn with_gateway(mut state: State) -> State {
 }
 
 fn app(tab: Tab) -> App {
-    App {
-        tab,
-        ..App::default()
-    }
+    let mut app = App::default();
+    app.tab = tab;
+    app
 }
 
 fn ctx<'a>(app: &'a App, state: &'a State) -> Ctx<'a> {

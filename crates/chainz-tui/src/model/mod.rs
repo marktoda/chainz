@@ -13,10 +13,10 @@ mod update;
 
 use std::collections::VecDeque;
 
-pub use state::{ChainState, State};
+pub use state::{ChainState, EndpointState, State};
 pub use status::{EndpointStatus, Status};
 pub use traffic::{FEED_CAP, FeedItem, GatewayChain, TrafficRow, TrafficSnapshot, TrafficWindow};
-pub use update::{Fault, GatewayInfo, Head, Holding, Probe, Sheet, Update, Via};
+pub use update::{Fault, GatewayInfo, Head, Holding, Probe, Refresh, Sheet, Update, Via};
 
 fn push_capped<T>(queue: &mut VecDeque<T>, item: T, cap: usize) {
     queue.push_back(item);

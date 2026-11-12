@@ -4,7 +4,7 @@
 pub const FEED_CAP: usize = 500;
 
 /// The gateway's view of one chain.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GatewayChain {
     /// Chain name.
     pub chain: String,
@@ -15,7 +15,7 @@ pub struct GatewayChain {
 }
 
 /// Totals for one method or one endpoint within a metrics window.
-#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TrafficRow {
     /// Method name, or `chain/endpoint`.
     pub name: String,
@@ -34,7 +34,7 @@ pub struct TrafficRow {
 }
 
 /// One metrics window, aggregated two ways.
-#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TrafficWindow {
     /// Window length.
     pub window_secs: u64,
@@ -55,7 +55,7 @@ pub struct TrafficWindow {
 }
 
 /// Gateway status plus metrics at one instant.
-#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TrafficSnapshot {
     /// Gateway version.
     pub version: String,
