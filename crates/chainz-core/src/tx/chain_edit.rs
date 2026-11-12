@@ -205,6 +205,43 @@ pub struct Attached {
     /// Why `[explorers.etherscan]`, though configured, was not attached
     /// ([`Explorer::etherscan_gap`]).
     pub explorer_skipped: Option<String>,
+    /// Why no signer was attached though some exist: `2 signers to choose
+    /// from: a, b`.
+    pub signer_skipped: Option<String>,
+}
+
+/// The chains with no explorer, split by whether the built-in `etherscan`
+/// [covers](Explorer::etherscan_covers) them: what
+/// [`Tx::attach_explorer_where_missing`] attaches it to, and skips.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MissingExplorers {
+    /// Chains `etherscan` covers, in config order.
+    pub covered: Vec<String>,
+    /// Chains it does not, in config order.
+    pub skipped: Vec<String>,
+}
+
+impl MissingExplorers {
+    /// The chains in `config` with no explorer.
+    pub fn of(config: &crate::model::Config) -> Self {
+        let mut missing = Self::default();
+        for (name, chain) in config.chains.iter().filter(|(_, c)| c.explorer.is_none()) {
+            match Explorer::etherscan_covers(chain.id) {
+                true => missing.covered.push(name.clone()),
+                false => missing.skipped.push(name.clone()),
+            }
+        }
+        missing
+    }
+}
+
+/// What [`Tx::attach_explorer_where_missing`] did.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExplorersAttached {
+    /// The chains (and the ones skipped), as before the attach.
+    pub chains: MissingExplorers,
+    /// The variable holding the key (`secrets.toml`).
+    pub api_key_var: Option<String>,
 }
 
 const ETHERSCAN: &str = Explorer::ETHERSCAN;
@@ -217,12 +254,22 @@ impl Tx {
         config.check_new_chain(name, chain.id, chain.signer.as_deref())?;
         let mut chain = chain.clone();
         let mut attached = Attached::default();
-        if attach == Attach::Defaults
-            && chain.signer.is_none()
-            && let [only] = config.signers.keys().collect::<Vec<_>>()[..]
-        {
-            chain.signer = Some(only.clone());
-            attached.signer = Some(only.clone());
+        if attach == Attach::Defaults && chain.signer.is_none() {
+            let signers: Vec<&str> = config.signers.keys().map(String::as_str).collect();
+            match signers[..] {
+                [] => {}
+                [only] => {
+                    chain.signer = Some(only.to_string());
+                    attached.signer = Some(only.to_string());
+                }
+                _ => {
+                    attached.signer_skipped = Some(format!(
+                        "{} signers to choose from: {}",
+                        signers.len(),
+                        signers.join(", ")
+                    ));
+                }
+            }
         }
         if attach != Attach::Nothing
             && chain.explorer.is_none()
@@ -260,6 +307,31 @@ impl Tx {
             })?;
         }
         Ok(bare)
+    }
+
+    /// Attach the built-in `etherscan` explorer (created if missing) to
+    /// every chain with none that it covers, storing `key` once, in a
+    /// variable. Chains it does not cover are skipped.
+    pub fn attach_explorer_where_missing(
+        &mut self,
+        key: Zeroizing<String>,
+    ) -> Result<ExplorersAttached> {
+        let chains = MissingExplorers::of(&self.config()?);
+        let mut key = Some(key);
+        let mut api_key_var = None;
+        for name in &chains.covered {
+            let edit = ChainEdit {
+                explorer: Some(Some(ETHERSCAN.to_string())),
+                api_key: key.take(),
+                ..ChainEdit::default()
+            };
+            let report = self.edit_chain(name, &edit)?;
+            api_key_var = api_key_var.or(report.api_key_var);
+        }
+        Ok(ExplorersAttached {
+            chains,
+            api_key_var,
+        })
     }
 
     /// Apply `edit` to chain `name`: endpoint and headers first, then

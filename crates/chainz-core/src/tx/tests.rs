@@ -641,6 +641,58 @@ fn the_builtin_explorer_attaches_only_where_etherscan_covers_the_chain() {
 }
 
 #[test]
+fn several_signers_attach_none_and_say_why() {
+    let mut tx = tx(&format!(
+        "{DOC}{SIGNER}[signers.ops]\nbackend = \"keyring\"\n"
+    ));
+    let base = Chain {
+        id: 8453,
+        aliases: vec![],
+        signer: None,
+        explorer: None,
+        rpc: "a".into(),
+        failover: vec![],
+        rpcs: IndexMap::from([("a".to_string(), Endpoint::new("https://base.example"))]),
+    };
+    let attached = tx.insert_chain("base", &base, Attach::Defaults).unwrap();
+    assert_eq!(attached.signer, None);
+    assert_eq!(
+        attached.signer_skipped.as_deref(),
+        Some("2 signers to choose from: deployer, ops")
+    );
+    // Not asked to attach one: no reason either.
+    let mut op = base.clone();
+    op.id = 10;
+    let attached = tx.insert_chain("op", &op, Attach::ExplorerOnly).unwrap();
+    assert_eq!(attached.signer_skipped, None);
+}
+
+#[test]
+fn etherscan_attaches_where_missing_and_covered_with_one_key() {
+    let mut tx = tx(&format!(
+        "{DOC}[chains.base]\nid = 8453\nexplorer = \"blockscout\"\nrpc = \"a\"\nrpcs = {{ a = \"https://base.example\" }}\n[chains.op]\nid = 10\nrpc = \"a\"\nrpcs = {{ a = \"https://op.example\" }}\n[chains.local]\nid = 31337\nrpc = \"a\"\nrpcs = {{ a = \"http://127.0.0.1:8545\" }}\n[explorers.blockscout]\napi = \"https://blockscout.example/api\"\n"
+    ));
+    let before = MissingExplorers::of(&tx.config().unwrap());
+    assert_eq!(before.covered, ["eth", "op"]);
+    assert_eq!(before.skipped, ["local"], "etherscan doesn't cover 31337");
+    let attached = tx
+        .attach_explorer_where_missing(zeroize::Zeroizing::new("KEY".into()))
+        .unwrap();
+    assert_eq!(attached.chains, before);
+    let var = attached.api_key_var.unwrap();
+    assert_eq!(tx.secrets().unwrap().vars[&var], "KEY");
+    let config = tx.config().unwrap();
+    for (name, explorer) in [
+        ("eth", Some("etherscan")),
+        ("op", Some("etherscan")),
+        ("base", Some("blockscout")),
+        ("local", None),
+    ] {
+        assert_eq!(config.chains[name].explorer.as_deref(), explorer, "{name}");
+    }
+}
+
+#[test]
 fn endpoints_from_urls_are_checked_named_and_matched_one_way() {
     let mut doc = tx(DOC);
     // Named after the host, unique among the chain's endpoints.

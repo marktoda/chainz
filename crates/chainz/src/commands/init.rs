@@ -15,7 +15,7 @@ use anyhow::Result;
 use chainz_core::Chainz;
 use chainz_core::model::{Backend, Config, Explorer};
 use chainz_core::signer::{KeyBackend, SystemKeyBackend};
-use chainz_core::tx::ChainEdit;
+use chainz_core::tx::MissingExplorers;
 use zeroize::Zeroizing;
 
 /// `chainz` with no command: the quick start until a chain exists, then
@@ -162,27 +162,13 @@ fn add_signer(chainz: &mut Chainz, backend: &dyn KeyBackend, ask: &mut dyn Ask) 
     }
 }
 
-/// The chains with no explorer, split into those Etherscan covers (which
-/// get it) and those it does not (which are skipped).
-fn without_explorer(config: &Config) -> (Vec<String>, Vec<String>) {
-    config
-        .chains
-        .iter()
-        .filter(|(_, c)| c.explorer.is_none())
-        .map(|(name, c)| (name.clone(), Explorer::etherscan_covers(c.id)))
-        .fold((vec![], vec![]), |(mut covered, mut not), (name, yes)| {
-            match yes {
-                true => covered.push(name),
-                false => not.push(name),
-            }
-            (covered, not)
-        })
-}
-
 /// The Etherscan API key to store, if the user gives one. Asked only when
 /// some chain Etherscan covers has no explorer.
 fn etherscan_key(config: &Config, ask: &mut dyn Ask) -> Result<Option<Zeroizing<String>>> {
-    let (covered, not) = without_explorer(config);
+    let MissingExplorers {
+        covered,
+        skipped: not,
+    } = MissingExplorers::of(config);
     if !not.is_empty() {
         println!(
             "{}",
@@ -210,36 +196,13 @@ fn etherscan_key(config: &Config, ask: &mut dyn Ask) -> Result<Option<Zeroizing<
     Ok((!key.trim().is_empty()).then(|| Zeroizing::new(key.trim().to_string())))
 }
 
-/// The patches that attach `etherscan` (with `key`) to every chain that
-/// has no explorer and that Etherscan covers. The key is stored once, with
-/// the first.
-fn etherscan_edits(config: &Config, key: Zeroizing<String>) -> Vec<(String, ChainEdit)> {
-    let mut key = Some(key);
-    without_explorer(config)
-        .0
-        .into_iter()
-        .map(|name| {
-            let edit = ChainEdit {
-                explorer: Some(Some(Explorer::ETHERSCAN.to_string())),
-                api_key: key.take(),
-                ..ChainEdit::default()
-            };
-            (name, edit)
-        })
-        .collect()
-}
-
 fn set_etherscan(chainz: &mut Chainz, key: Zeroizing<String>) -> Result<()> {
-    let edits = etherscan_edits(chainz.config(), key);
-    let reports = chainz.transact(|tx| {
-        edits
-            .iter()
-            .map(|(name, edit)| tx.edit_chain(name, edit))
-            .collect::<Result<Vec<_>>>()
-    })?;
-    let chains: Vec<&str> = reports.iter().map(|r| r.chain.as_str()).collect();
-    println!("Attached etherscan to {}", chains.join(", "));
-    if let Some(var) = reports.iter().find_map(|r| r.api_key_var.as_deref()) {
+    let attached = chainz.transact(|tx| tx.attach_explorer_where_missing(key))?;
+    println!(
+        "Attached etherscan to {}",
+        attached.chains.covered.join(", ")
+    );
+    if let Some(var) = &attached.api_key_var {
         println!("  the key is in ${{{var}}} (secrets.toml)");
     }
     Ok(())
@@ -302,23 +265,11 @@ api = "https://blockscout.example/api"
     }
 
     #[test]
-    fn etherscan_goes_on_covered_chains_without_an_explorer_with_one_key() {
+    fn the_etherscan_key_is_asked_once_and_trimmed() {
         let config = config("");
         let mut script = Script::new([Yes(true), Text(" KEY ")]);
         let key = etherscan_key(&config, &mut script).unwrap().unwrap();
         assert_eq!(key.as_str(), "KEY");
-        let edits = etherscan_edits(&config, key);
-        let names: Vec<&str> = edits.iter().map(|(n, _)| n.as_str()).collect();
-        assert_eq!(
-            names,
-            ["eth", "op"],
-            "not local: etherscan doesn't cover 31337"
-        );
-        assert!(edits[0].1.api_key.is_some());
-        assert!(edits[1].1.api_key.is_none());
-        for (_, edit) in &edits {
-            assert_eq!(edit.explorer, Some(Some(Explorer::ETHERSCAN.to_string())));
-        }
         // Declined, or an empty key: nothing.
         assert!(
             etherscan_key(&config, &mut Script::new([Yes(false)]))

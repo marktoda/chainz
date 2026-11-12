@@ -361,16 +361,8 @@ pub fn add(chainz: &mut Chainz, args: &AddArgs, ask: &mut dyn Ask) -> Result<i32
         println!("  explorer: none ({gap})");
     }
     ui::report_moved(&moved);
-    let signers: Vec<&str> = chainz.config().signers.keys().map(String::as_str).collect();
-    if attach == Attach::Defaults && args.signer.is_none() && signers.len() > 1 {
-        super::signer::warn_signerless(
-            std::slice::from_ref(&short),
-            &format!(
-                "{} signers to choose from: {}",
-                signers.len(),
-                signers.join(", ")
-            ),
-        );
+    if let Some(why) = &attached.signer_skipped {
+        super::signer::warn_signerless(std::slice::from_ref(&short), why);
     }
     Ok(0)
 }
