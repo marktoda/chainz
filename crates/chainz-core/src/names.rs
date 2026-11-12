@@ -263,6 +263,14 @@ pub fn check_signer_name(name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The label name a user typed: `usdc` from `usdc`, `@usdc` or `USDC`.
+pub fn label_name(input: &str) -> String {
+    input
+        .strip_prefix('@')
+        .unwrap_or(input)
+        .to_ascii_lowercase()
+}
+
 /// Why `name` cannot be a label, if it cannot. `signers` are the
 /// configured signer names (signers are labels automatically). The one
 /// definition of the label-name rules, shared by validation.
@@ -444,6 +452,13 @@ fn levenshtein(a: &str, b: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn label_names_drop_the_at_and_case() {
+        for input in ["usdc", "@usdc", "@USDC", "Usdc"] {
+            assert_eq!(label_name(input), "usdc", "{input}");
+        }
+    }
 
     #[test]
     fn endpoint_names_follow_the_host() {

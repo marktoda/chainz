@@ -401,6 +401,30 @@ impl LabelIndex {
             .filter(|winner| (winner.source, winner.address) != (label.source, label.address))
     }
 
+    /// The built-in tokens that label `name` (lowercase), holding
+    /// `address` on `scope`, hides: on its chain the token of that name at
+    /// another address (a per-chain label always wins there), and for an
+    /// every-chain label each such token on a chain where the label wins.
+    /// Works for a label not yet written when `scope` is one chain (what
+    /// an import previews).
+    pub fn shadows(
+        &self,
+        name: &str,
+        scope: LabelScope,
+        address: &Address,
+    ) -> Vec<&'static BuiltinToken> {
+        builtin_tokens()
+            .iter()
+            .filter(|t| t.name == name && t.address != *address)
+            .filter(|t| match scope {
+                LabelScope::Chain(chain_id) => t.chain_id == chain_id,
+                LabelScope::AllChains => self
+                    .resolve(name, t.chain_id)
+                    .is_ok_and(|w| w.source != LabelSource::Token && w.address == *address),
+            })
+            .collect()
+    }
+
     /// Every built-in token another label hides at a different address on
     /// the token's chain, with the label that wins.
     pub fn shadowed_tokens(&self) -> impl Iterator<Item = (&'static BuiltinToken, Label)> + '_ {
@@ -591,6 +615,45 @@ eth = "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf"
         // labelled `usdc` there: `@usdc` names another address.
         let hidden = builtin_token(1, "usdc").unwrap().address;
         assert!(index.reverse(1, &hidden).is_none_or(|l| l.name != "usdc"));
+    }
+
+    #[test]
+    fn a_label_shadows_the_token_of_its_name_where_it_wins() {
+        let index = LabelIndex::new(&config());
+        let eth_usdc = builtin_token(1, "usdc").unwrap();
+        let mine = "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf"
+            .parse()
+            .unwrap();
+        // Per chain: the token of that name on that chain, whatever the
+        // config holds (an import previews labels not yet written).
+        assert_eq!(
+            index.shadows("usdc", LabelScope::Chain(1), &mine),
+            [eth_usdc]
+        );
+        assert!(
+            index
+                .shadows("usdc", LabelScope::Chain(1), &eth_usdc.address)
+                .is_empty()
+        );
+        assert!(
+            index
+                .shadows("myrouter", LabelScope::Chain(1), &mine)
+                .is_empty()
+        );
+        // Every chain: only where the label is the winner (`usdc` on eth
+        // is the user's per-chain entry, at `mine`).
+        let base_usdc = builtin_token(8453, "usdc").unwrap();
+        let mut all = config();
+        all.addresses
+            .get_mut("usdc")
+            .unwrap()
+            .insert("*".into(), mine.to_string());
+        let index = LabelIndex::new(&all);
+        let shadowed = index.shadows("usdc", LabelScope::AllChains, &mine);
+        assert!(
+            shadowed.contains(&eth_usdc) && shadowed.contains(&base_usdc),
+            "{shadowed:?}"
+        );
     }
 
     #[test]

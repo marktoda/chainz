@@ -933,6 +933,27 @@ fn chain_changes_cover_every_field() {
 }
 
 #[test]
+fn header_arguments_split_at_the_first_colon() {
+    let parse = ChainEdit::parse_header;
+    assert_eq!(
+        parse(" X-Key : a:b ").unwrap(),
+        ("x-key".to_string(), "a:b".to_string())
+    );
+    assert!(
+        parse("no colon")
+            .unwrap_err()
+            .to_string()
+            .contains("'name: value'")
+    );
+    assert!(
+        parse(" : v")
+            .unwrap_err()
+            .to_string()
+            .contains("cannot be empty")
+    );
+}
+
+#[test]
 fn add_rpc_arguments_name_an_endpoint_or_stay_a_url() {
     let parse = ChainEdit::parse_add_rpc;
     assert_eq!(

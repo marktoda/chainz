@@ -132,6 +132,19 @@ impl ChainEdit {
         Ok(Some(RpcChoice::New(ep_name, endpoint)))
     }
 
+    /// One `--header 'name: value'` argument: the name lowercased, both
+    /// trimmed. (The name's characters are checked when the edit applies.)
+    pub fn parse_header(arg: &str) -> Result<(String, String)> {
+        let (name, value) = arg
+            .split_once(':')
+            .ok_or_else(|| anyhow!("header must be 'name: value' (got a value without ':')"))?;
+        let name = name.trim().to_ascii_lowercase();
+        if name.is_empty() {
+            bail!("header name cannot be empty");
+        }
+        Ok((name, value.trim().to_string()))
+    }
+
     /// `--add-rpc`'s argument: `NAME=URL`, or a bare URL (named from its
     /// host). Only text before the first `=` that holds no `:` or `/` is a
     /// name, so a URL with `=` in its query stays whole.
