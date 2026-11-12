@@ -128,7 +128,7 @@ pub fn parse_config(text: &str, path: &Path) -> Result<Config> {
         anyhow!(
             "failed to parse {}: {} (fix it with `chainz config edit`)",
             path.display(),
-            redact_toml_error(&e)
+            crate::redact::toml_error(&e)
         )
     })
 }
@@ -160,19 +160,4 @@ pub(crate) fn read(
         },
     };
     read.with_context(|| format!("failed to read {}", path.display()))
-}
-
-/// TOML parse errors quote the offending line, which may hold a secret
-/// (an inline credential, a variable value): keep only message and position.
-pub(crate) fn redact_toml_error(error: &toml::de::Error) -> String {
-    redact_parse_error(error.message(), error.span())
-}
-
-/// [`redact_toml_error`] for any TOML error's message and span (the
-/// `toml_edit` parser errors quote the source line too).
-pub(crate) fn redact_parse_error(message: &str, span: Option<std::ops::Range<usize>>) -> String {
-    match span {
-        Some(span) => format!("{message} (at byte {})", span.start),
-        None => message.to_string(),
-    }
 }

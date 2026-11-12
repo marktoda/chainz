@@ -439,7 +439,7 @@ impl Signer {
 
 impl Config {
     /// Parse `config.toml` text. Errors quote the source line; show them
-    /// through [`crate::store::redact_toml_error`].
+    /// through [`crate::redact::toml_error`].
     pub fn parse(text: &str) -> Result<Self, toml::de::Error> {
         toml::from_str(text)
     }

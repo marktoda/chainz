@@ -67,6 +67,51 @@ pub(crate) fn unescape_braces(text: &str) -> String {
     text.replace("%7B", "{").replace("%7D", "}")
 }
 
+/// Find a literal Infura or Alchemy key in `url`: returns the text before
+/// and after the key, the base variable name, and the key.
+pub(crate) fn known_key(url: &str) -> Option<(&str, &str, &'static str, &str)> {
+    let (marker, base) = if host_has_label(url, "infura") {
+        ("/v3/", "INFURA_KEY")
+    } else if host_has_label(url, "alchemy") {
+        ("/v2/", "ALCHEMY_KEY")
+    } else {
+        return None;
+    };
+    let start = url.find(marker)? + marker.len();
+    let rest = &url[start..];
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let key = &rest[..end];
+    if key.len() < 8
+        || !key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
+        return None;
+    }
+    Some((&url[..start], &rest[end..], base, key))
+}
+
+/// Query parameter names that carry a credential.
+const CREDENTIAL_PARAMS: [&str; 6] = ["key", "token", "secret", "auth", "password", "apikey"];
+
+/// Whether query parameter `name` names a credential (`apikey`, `token`…).
+pub(crate) fn is_credential_param(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    CREDENTIAL_PARAMS.iter().any(|k| name.contains(k))
+}
+
+/// Whether `text` looks like a credential: 16 or more `[A-Za-z0-9_-]`
+/// characters mixing letters and digits, with no template.
+pub(crate) fn is_credential_shaped(text: &str) -> bool {
+    text.len() >= 16
+        && !crate::template::has_templates(text)
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        && text.bytes().any(|b| b.is_ascii_digit())
+        && text.bytes().any(|b| b.is_ascii_alphabetic())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

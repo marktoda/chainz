@@ -31,7 +31,7 @@ use crate::extract::{self, VarTable};
 use crate::model::{Backend, Chain, Endpoint, Explorer, Signer};
 use crate::names;
 use crate::secrets::{BUILTIN_VARS, SignerSecret};
-use crate::store::WriteLock;
+use crate::store::files::{WriteLock, new_config_text, parse_config};
 use crate::template;
 use crate::tx::Tx;
 use anyhow::{Context, Result, anyhow};
@@ -298,7 +298,7 @@ pub fn plan(v1_json: &str) -> Result<Plan> {
     let chains = migrate_chains(&v1.chains, &rename, &signer_names, &mut vars, &mut summary);
 
     let mut tx = Tx::parse(
-        &crate::store::new_config_text(
+        &new_config_text(
             "# chainz configuration (v2), migrated from the v1 config.json.\n# Secrets live in secrets.toml; reference them as ${NAME}.\n",
         ),
         Path::new("config.toml"),
@@ -336,11 +336,11 @@ pub fn plan(v1_json: &str) -> Result<Plan> {
     let (config_toml, secrets_toml) = tx.texts();
     // The result must load and validate like any hand-written config. Every
     // entry that could fail was skipped above, so a failure here is a bug.
-    let parsed = crate::store::parse_config(&config_toml, Path::new("config.toml"))?;
+    let parsed = parse_config(&config_toml, Path::new("config.toml"))?;
     let parsed_secrets = crate::secrets::Secrets::parse(&secrets_toml).map_err(|e| {
         anyhow!(
             "migrated secrets do not parse: {}",
-            crate::store::redact_toml_error(&e)
+            crate::redact::toml_error(&e)
         )
     })?;
     crate::validate::validate(&parsed, Some(&parsed_secrets))

@@ -1,9 +1,8 @@
 //! Credential-safe presentation of endpoint URLs and header values.
 //!
 //! The display policy is [`url`] and [`header`]: `${VAR}` templates, hosts
-//! and ordinary paths print verbatim, only credential-shaped parts (the
-//! shapes [`crate::extract`] detects) are masked as [`REDACTED`], and
-//! anything unparseable fails closed. `reveal` prints the value as stored.
+//! and ordinary paths print verbatim, only credential-shaped parts are
+//! masked as [`REDACTED`], and anything unparseable fails closed. `reveal` prints the value as stored.
 //!
 //! [`redact`] (every literal part masked) and [`summarize`] (a terse
 //! host label) are the stricter views kept for `Debug` output and compact
@@ -11,6 +10,21 @@
 
 use crate::template;
 use crate::urls::{self, is_local_host as is_local, registrable_domain as public_domain};
+
+/// TOML parse errors quote the offending line, which may hold a secret
+/// (an inline credential, a variable value): keep only message and position.
+pub(crate) fn toml_error(error: &toml::de::Error) -> String {
+    parse_error(error.message(), error.span())
+}
+
+/// [`toml_error`] for any TOML error's message and span (the
+/// `toml_edit` parser errors quote the source line too).
+pub(crate) fn parse_error(message: &str, span: Option<std::ops::Range<usize>>) -> String {
+    match span {
+        Some(span) => format!("{message} (at byte {})", span.start),
+        None => message.to_string(),
+    }
+}
 
 /// What replaces a masked value.
 pub const REDACTED: &str = "[REDACTED]";
@@ -43,7 +57,7 @@ pub fn url(value: &str, reveal: bool) -> String {
     if let Some(port) = parsed.port() {
         out.push_str(&format!(":{port}"));
     }
-    let known_key = crate::extract::extract_known_key(value).map(|(_, _, _, key)| key);
+    let known_key = urls::known_key(value).map(|(_, _, _, key)| key);
     let path = urls::unescape_braces(parsed.path());
     let segments: Vec<&str> = path
         .split('/')
@@ -64,7 +78,7 @@ pub fn url(value: &str, reveal: bool) -> String {
                 Some((name, value))
                     if !template::has_templates(value)
                         && !value.is_empty()
-                        && (crate::extract::is_credential_param(name) || is_secret_text(value)) =>
+                        && (urls::is_credential_param(name) || is_secret_text(value)) =>
                 {
                     format!("{name}={REDACTED}")
                 }
@@ -129,7 +143,7 @@ fn is_plain_word(word: &str) -> bool {
 
 /// Literal text that is credential-shaped (templates never are).
 fn is_secret_text(text: &str) -> bool {
-    crate::extract::is_credential_shaped(text)
+    urls::is_credential_shaped(text)
 }
 
 /// Preserve useful public URL structure while removing credential-bearing

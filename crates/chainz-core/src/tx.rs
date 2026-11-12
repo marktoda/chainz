@@ -16,8 +16,8 @@ use crate::extract::{self, Moved, VarTable};
 use crate::labels::{ALL_CHAINS, scope_phrase};
 use crate::model::{Chain, Config, Endpoint, Explorer, Signer};
 use crate::names;
+use crate::redact;
 use crate::secrets::{Secrets, SignerSecret};
-use crate::store::{redact_parse_error, redact_toml_error};
 use anyhow::{Result, anyhow, bail};
 use serde::Serialize;
 use std::path::Path;
@@ -101,13 +101,13 @@ impl Tx {
     /// The typed view of the config as edited so far.
     pub fn config(&self) -> Result<Config> {
         Config::parse(&self.config.to_string())
-            .map_err(|e| anyhow!("edited config does not parse: {}", redact_toml_error(&e)))
+            .map_err(|e| anyhow!("edited config does not parse: {}", redact::toml_error(&e)))
     }
 
     /// The typed view of the secrets as edited so far.
     pub fn secrets(&self) -> Result<Secrets> {
         Secrets::parse(&self.secrets.to_string())
-            .map_err(|e| anyhow!("edited secrets do not parse: {}", redact_toml_error(&e)))
+            .map_err(|e| anyhow!("edited secrets do not parse: {}", redact::toml_error(&e)))
     }
 
     // ------------------------------------------------------------ chains
@@ -595,7 +595,7 @@ fn parse_document(text: &str, path: &Path) -> Result<DocumentMut> {
         anyhow!(
             "failed to parse {}: {}",
             path.display(),
-            redact_parse_error(e.message(), e.span())
+            redact::parse_error(e.message(), e.span())
         )
     })
 }

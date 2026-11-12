@@ -5,7 +5,7 @@
 //! What moves:
 //!
 //! - a literal Infura `/v3/<key>` or Alchemy `/v2/<key>` key in an
-//!   endpoint URL ([`extract_known_key`]);
+//!   endpoint URL;
 //! - a literal header value that looks like a credential (16 or more
 //!   characters), or that `ETH_RPC_HEADERS` cannot carry (a comma or line
 //!   break), see [`header_needs_extraction`];
@@ -144,57 +144,12 @@ pub fn is_literal(value: &str) -> bool {
     template::references(value).map_or(true, |names| names.is_empty())
 }
 
-/// Find a literal Infura or Alchemy key in `url`: returns the text before
-/// and after the key, the base variable name, and the key.
-pub fn extract_known_key(url: &str) -> Option<(&str, &str, &'static str, &str)> {
-    let (marker, base) = if crate::urls::host_has_label(url, "infura") {
-        ("/v3/", "INFURA_KEY")
-    } else if crate::urls::host_has_label(url, "alchemy") {
-        ("/v2/", "ALCHEMY_KEY")
-    } else {
-        return None;
-    };
-    let start = url.find(marker)? + marker.len();
-    let rest = &url[start..];
-    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-    let key = &rest[..end];
-    if key.len() < 8
-        || !key
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-    {
-        return None;
-    }
-    Some((&url[..start], &rest[end..], base, key))
-}
-
-/// Query parameter names that carry a credential.
-const CREDENTIAL_PARAMS: [&str; 6] = ["key", "token", "secret", "auth", "password", "apikey"];
-
-/// Whether query parameter `name` names a credential (`apikey`, `token`…).
-pub(crate) fn is_credential_param(name: &str) -> bool {
-    let name = name.to_ascii_lowercase();
-    CREDENTIAL_PARAMS.iter().any(|k| name.contains(k))
-}
-
-/// Whether `text` looks like a credential: 16 or more `[A-Za-z0-9_-]`
-/// characters mixing letters and digits, with no template.
-pub(crate) fn is_credential_shaped(text: &str) -> bool {
-    text.len() >= 16
-        && !template::has_templates(text)
-        && text
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-        && text.bytes().any(|b| b.is_ascii_digit())
-        && text.bytes().any(|b| b.is_ascii_alphabetic())
-}
-
 /// A literal credential in `url` that extraction cannot move (only a
 /// person can): user info, a key-like query value, or a long mixed
 /// alphanumeric path segment. A known Infura/Alchemy key is not one
 /// ([`extract_endpoint`] moves it). The kind found, if any.
 pub fn manual_credential(url: &str) -> Option<&'static str> {
-    if extract_known_key(url).is_some() {
+    if crate::urls::known_key(url).is_some() {
         return None;
     }
     let parsed = url::Url::parse(url).ok()?;
@@ -202,12 +157,15 @@ pub fn manual_credential(url: &str) -> Option<&'static str> {
         return Some("user info");
     }
     for (name, value) in parsed.query_pairs() {
-        if !template::has_templates(&value) && !value.is_empty() && is_credential_param(&name) {
+        if !template::has_templates(&value)
+            && !value.is_empty()
+            && crate::urls::is_credential_param(&name)
+        {
             return Some("query parameter");
         }
     }
     let decoded = crate::urls::unescape_braces(parsed.path());
-    if decoded.split('/').any(is_credential_shaped) {
+    if decoded.split('/').any(crate::urls::is_credential_shaped) {
         return Some("path segment");
     }
     None
@@ -287,7 +245,7 @@ pub fn extract_endpoint(
     vars: &mut VarTable,
 ) -> Vec<Moved> {
     let mut moved = Vec::new();
-    if let Some((before, after, base, key)) = extract_known_key(&endpoint.url) {
+    if let Some((before, after, base, key)) = crate::urls::known_key(&endpoint.url) {
         let var = vars.intern(base, key);
         endpoint.url = format!("{before}${{{var}}}{after}");
         moved.push(Moved {

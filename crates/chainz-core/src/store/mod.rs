@@ -11,10 +11,9 @@
 //! - **v1 migration** runs under the same lock with a re-check, the first
 //!   time a v1 `config.json` exists and `config.toml` does not.
 
-mod files;
+pub(crate) mod files;
 
 pub use files::{StorePaths, WriteLock, parse_config};
-pub(crate) use files::{new_config_text, redact_parse_error, redact_toml_error};
 
 use crate::contract::Env;
 use crate::migrate::{self, Summary};
@@ -238,7 +237,7 @@ impl Chainz {
                 anyhow!(
                     "failed to parse {}: {}",
                     path.display(),
-                    redact_toml_error(&e)
+                    crate::redact::toml_error(&e)
                 )
             })?,
         };
@@ -349,7 +348,7 @@ impl Chainz {
         let secrets = Secrets::parse(&secrets_text).map_err(|e| {
             anyhow!(
                 "refusing to write invalid secrets: {}",
-                redact_toml_error(&e)
+                crate::redact::toml_error(&e)
             )
         })?;
         validate::validate(&config, Some(&secrets))
