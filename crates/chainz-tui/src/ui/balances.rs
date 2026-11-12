@@ -8,7 +8,6 @@ use super::theme::Theme;
 use super::{Body, Content, Ctx};
 use crate::app::ScrollSlot;
 use crate::fmt;
-use crate::model::Via;
 use crate::view::{self, Balance};
 
 /// One balance cell; the symbol only where `with_symbol`.
@@ -108,8 +107,7 @@ pub(crate) fn body(ctx: Ctx) -> Body {
             });
         }
         cells.push(match row.via {
-            Some(Via::Multicall3) => Cell::new("multicall", t.dim()),
-            Some(Via::Batch) => Cell::new("batch", t.dim()),
+            Some(via) => Cell::new(via.word(), t.dim()),
             None => Cell::empty(),
         });
         cells.push(match (&chain.balance_fault, chain.balances_at_ms) {

@@ -250,10 +250,7 @@ fn balances(state: &State) -> Vec<SignerBalances> {
                 .map(|row| ChainBalances {
                     chain: row.chain.info.name.clone(),
                     id: row.chain.info.id,
-                    via: row.via.map(|via| match via {
-                        Via::Multicall3 => "multicall3",
-                        Via::Batch => "batch",
-                    }),
+                    via: row.via.map(Via::word),
                     native: row.native.amount().map(amount),
                     tokens: row
                         .tokens

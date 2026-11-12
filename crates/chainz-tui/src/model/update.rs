@@ -107,6 +107,16 @@ pub enum Via {
     Batch,
 }
 
+impl Via {
+    /// The stable lowercase word, on screen and in JSON.
+    pub fn word(self) -> &'static str {
+        match self {
+            Via::Multicall3 => "multicall3",
+            Via::Batch => "batch",
+        }
+    }
+}
+
 /// One signer's balances on one chain.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Holding {

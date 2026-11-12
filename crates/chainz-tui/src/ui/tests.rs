@@ -517,13 +517,13 @@ fn balances_tab_formats_with_token_decimals() {
         r"
  chainz top ─ [1] Chains  [2] Endpoints  [3] Balances  [4] Traffic                       serve: off
  signer ▸default 0x7E5F…5Bdf    funder 0x2B5A…D6cF    cold no address
- CHAIN        NATIVE   @weth        @usdc  VIA        UPDATED
-▸eth      1.2345 ETH       0  12,345.6789  multicall  12s ago
- base     0.5000 ETH  0.1250     250.0000  multicall  12s ago
- uni           0 ETH       0            0  batch      11s ago
- zora     0.0010 ETH       ?               batch      11s ago
- arb               –       –            –             timeout
- polygon           …       …            …             …
+ CHAIN        NATIVE   @weth        @usdc  VIA         UPDATED
+▸eth      1.2345 ETH       0  12,345.6789  multicall3  12s ago
+ base     0.5000 ETH  0.1250     250.0000  multicall3  12s ago
+ uni           0 ETH       0            0  batch       11s ago
+ zora     0.0010 ETH       ?               batch       11s ago
+ arb               –       –            –              timeout
+ polygon           …       …            …              …
  h/l: signer  r: refresh  y: copy address  /: filter  e: exec shell  q: quit
 ",
     );
