@@ -18,7 +18,7 @@ use chainz_core::labels::{
 use chainz_core::model::Config;
 use chainz_core::resolve::{self, ChainRef, Policy, Source};
 use chainz_core::runtime::Runtime;
-use chainz_core::tx::{Overwrite, SetAddress};
+use chainz_core::tx::SetAddress;
 use chainz_core::{Address, names};
 use serde::Serialize;
 use std::io;
@@ -97,10 +97,9 @@ fn add(args: &LabelAddArgs) -> Result<i32> {
         }
     };
     let on = scope_phrase(&scope);
-    // Overwrite::Refuse: core refuses a label that holds another address
-    // here, under the lock, and says how to change it.
-    let outcome =
-        chainz.transact(|tx| tx.set_address(&name, &scope, &address, Overwrite::Refuse))?;
+    // Core refuses a label that holds another address here, under the
+    // lock, and says how to change it.
+    let outcome = chainz.transact(|tx| tx.set_address(&name, &scope, &address))?;
     match outcome {
         SetAddress::Unchanged => println!("@{name} is already {address} {on}"),
         SetAddress::Added | SetAddress::Replaced(_) => println!("Added @{name} {on}: {address}"),

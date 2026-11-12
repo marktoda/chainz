@@ -263,13 +263,11 @@ fn set_address_per_chain_and_all_chains() {
     // Lowercase input is stored checksummed; the name is lowercased.
     let lower = addr(&A2.to_ascii_lowercase());
     assert_eq!(
-        tx.set_address("Router", "base", &lower, Overwrite::Refuse)
-            .unwrap(),
+        tx.set_address("Router", "base", &lower).unwrap(),
         SetAddress::Added
     );
     assert_eq!(
-        tx.set_address("my-safe", ALL_CHAINS, &addr(A1), Overwrite::Refuse)
-            .unwrap(),
+        tx.set_address("my-safe", ALL_CHAINS, &addr(A1)).unwrap(),
         SetAddress::Added
     );
     let out = text(&tx);
@@ -287,9 +285,7 @@ fn set_address_per_chain_and_all_chains() {
 
     // A first label creates the table.
     let mut fresh = self::tx(&DOC[..DOC.find("[addresses").unwrap()]);
-    fresh
-        .set_address("x", "eth", &addr(A1), Overwrite::Refuse)
-        .unwrap();
+    fresh.set_address("x", "eth", &addr(A1)).unwrap();
     assert!(
         text(&fresh).contains(&format!("[addresses.x]\neth = \"{A1}\"")),
         "{}",
@@ -298,19 +294,16 @@ fn set_address_per_chain_and_all_chains() {
 }
 
 #[test]
-fn set_address_refuses_to_overwrite_unless_told_to() {
+fn set_address_refuses_to_overwrite_and_write_address_replaces() {
     let mut tx = tx(LABELS);
     let before = text(&tx);
     // Same address: nothing to do.
     assert_eq!(
-        tx.set_address("router", "eth", &addr(A1), Overwrite::Refuse)
-            .unwrap(),
+        tx.set_address("router", "eth", &addr(A1)).unwrap(),
         SetAddress::Unchanged
     );
     assert_eq!(text(&tx), before);
-    let err = tx
-        .set_address("router", "eth", &addr(A2), Overwrite::Refuse)
-        .unwrap_err();
+    let err = tx.set_address("router", "eth", &addr(A2)).unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.contains(&format!("@router is already {A1} on eth"))
@@ -319,8 +312,12 @@ fn set_address_refuses_to_overwrite_unless_told_to() {
     );
     assert_eq!(text(&tx), before);
     assert_eq!(
-        tx.set_address("router", "eth", &addr(A2), Overwrite::Replace)
-            .unwrap(),
+        tx.write_address(&crate::broadcast::AddressWrite {
+            name: "router".into(),
+            chain: "eth".into(),
+            address: addr(A2),
+        })
+        .unwrap(),
         SetAddress::Replaced(addr(A1))
     );
     let out = text(&tx);
@@ -329,11 +326,8 @@ fn set_address_refuses_to_overwrite_unless_told_to() {
         "{out}"
     );
     // The "*" entry is a separate scope from a chain entry.
-    tx.set_address("router", ALL_CHAINS, &addr(A1), Overwrite::Refuse)
-        .unwrap();
-    let err = tx
-        .set_address("router", ALL_CHAINS, &addr(A2), Overwrite::Refuse)
-        .unwrap_err();
+    tx.set_address("router", ALL_CHAINS, &addr(A1)).unwrap();
+    let err = tx.set_address("router", ALL_CHAINS, &addr(A2)).unwrap_err();
     assert!(err.to_string().contains("on every chain"), "{err}");
 }
 
@@ -342,7 +336,11 @@ fn set_address_rejects_reserved_names_signers_and_unknown_chains() {
     let mut tx = tx(LABELS);
     let before = text(&tx);
     let set = |tx: &mut Tx, name: &str, scope: &str| {
-        tx.set_address(name, scope, &addr(A1), Overwrite::Replace)
+        tx.write_address(&crate::broadcast::AddressWrite {
+            name: name.into(),
+            chain: scope.into(),
+            address: addr(A1),
+        })
     };
     for name in names::context_tokens() {
         let err = set(&mut tx, name, "eth").unwrap_err();
@@ -366,20 +364,16 @@ fn set_address_rejects_reserved_names_signers_and_unknown_chains() {
     }
     assert_eq!(text(&tx), before);
     // Built-in token names may be shadowed.
-    tx.set_address("usdc", "eth", &addr(A1), Overwrite::Refuse)
-        .unwrap();
+    tx.set_address("usdc", "eth", &addr(A1)).unwrap();
     valid(&tx);
 }
 
 #[test]
 fn remove_address_one_entry_or_the_whole_label() {
     let mut tx = tx(LABELS);
-    tx.set_address("router", "base", &addr(A2), Overwrite::Refuse)
-        .unwrap();
-    tx.set_address("router", ALL_CHAINS, &addr(A2), Overwrite::Refuse)
-        .unwrap();
-    tx.set_address("other", "base", &addr(A2), Overwrite::Refuse)
-        .unwrap();
+    tx.set_address("router", "base", &addr(A2)).unwrap();
+    tx.set_address("router", ALL_CHAINS, &addr(A2)).unwrap();
+    tx.set_address("other", "base", &addr(A2)).unwrap();
 
     assert!(tx.remove_address("ghost", None).is_err());
     let err = tx.remove_address("other", Some("eth")).unwrap_err();

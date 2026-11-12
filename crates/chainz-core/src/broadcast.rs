@@ -21,6 +21,7 @@ use crate::address::Address;
 use crate::model::Config;
 use crate::names;
 use crate::names::check_label_name;
+use crate::tx::Held;
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -441,24 +442,19 @@ pub fn plan(config: &Config, runs: &[Run], options: &Options) -> Vec<Planned> {
             on_chain.insert(name.clone());
             names.push((address, name.clone()));
             entry.name = Some(name.clone());
-            let existing = config.addresses.get(&name).and_then(|e| e.get(chain));
+            let held = Held::of(config, &name, chain, &address);
             let write = || AddressWrite {
                 name: name.clone(),
                 chain: chain.clone(),
                 address,
             };
-            entry.action = match existing {
-                None => Action::Add(write()),
-                Some(held) => match held.parse::<Address>() {
-                    Ok(held) if held == address => Action::Unchanged,
-                    Ok(held) if options.force => Action::Overwrite(write(), held),
-                    Ok(held) => Action::Skip(format!(
-                        "@{name} is already {held} on {chain} (--force replaces it)"
-                    )),
-                    Err(_) => Action::Skip(format!(
-                        "@{name} holds an invalid address on {chain}; fix it with `chainz edit`"
-                    )),
-                },
+            let conflict = held.conflict(&name, chain).unwrap_or_default();
+            entry.action = match held {
+                Held::Nothing => Action::Add(write()),
+                Held::Same => Action::Unchanged,
+                Held::Other(held) if options.force => Action::Overwrite(write(), held),
+                Held::Other(_) => Action::Skip(format!("{conflict} (--force replaces it)")),
+                Held::Invalid => Action::Skip(format!("{conflict}; fix it with `chainz edit`")),
             };
             out.push(entry);
         }

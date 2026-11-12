@@ -34,24 +34,58 @@ pub struct Tx {
     secrets: DocumentMut,
 }
 
-/// What [`Tx::set_address`] did.
+/// What [`Tx::set_address`] or [`Tx::write_address`] did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SetAddress {
     /// A new entry was written.
     Added,
     /// The entry already held this address; nothing changed.
     Unchanged,
-    /// An existing entry was overwritten (only with [`Overwrite::Replace`]).
+    /// An existing entry was overwritten (only by [`Tx::write_address`]).
     Replaced(Address),
 }
 
-/// What [`Tx::set_address`] does with an entry that holds another address.
+/// What a label entry holds where a write of an address would go: the one
+/// decision behind `label add` ([`Tx::set_address`]) and `label import`
+/// ([`plan`](crate::broadcast::plan)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Overwrite {
-    /// Refuse: the user removes the old entry first (`label add`).
-    Refuse,
-    /// Replace it (`label import`, which re-imports newer deployments).
-    Replace,
+pub(crate) enum Held {
+    /// No entry: the write adds one.
+    Nothing,
+    /// This very address: the write changes nothing.
+    Same,
+    /// Another address.
+    Other(Address),
+    /// A value that is not an address.
+    Invalid,
+}
+
+impl Held {
+    /// What label `name` (lowercase) holds on `scope` (a chain name or
+    /// [`ALL_CHAINS`]), compared with `address`.
+    pub(crate) fn of(config: &Config, name: &str, scope: &str, address: &Address) -> Held {
+        let stored = config
+            .addresses
+            .get(name)
+            .and_then(|entry| entry.get(scope));
+        match stored.map(|stored| stored.parse::<Address>()) {
+            None => Held::Nothing,
+            Some(Ok(held)) if held == *address => Held::Same,
+            Some(Ok(held)) => Held::Other(held),
+            Some(Err(_)) => Held::Invalid,
+        }
+    }
+
+    /// Why writing over it needs care, worded once (callers add how):
+    /// `None` when it adds or changes nothing.
+    pub(crate) fn conflict(self, name: &str, scope: &str) -> Option<String> {
+        let on = scope_phrase(scope);
+        match self {
+            Held::Nothing | Held::Same => None,
+            Held::Other(held) => Some(format!("@{name} is already {held} {on}")),
+            Held::Invalid => Some(format!("@{name} holds an invalid address {on}")),
+        }
+    }
 }
 
 /// The role of an endpoint added with [`Tx::add_endpoint_url`].
@@ -497,13 +531,29 @@ impl Tx {
 
     /// Write `[addresses.NAME]` `scope = "0x…"` (checksummed). `scope` is a
     /// configured chain's name or [`ALL_CHAINS`]. The name is lowercased
-    /// and must be a valid, unreserved label name.
+    /// and must be a valid, unreserved label name. Refuses to replace
+    /// another address: the user removes the old entry first.
     pub fn set_address(
         &mut self,
         name: &str,
         scope: &str,
         address: &Address,
-        overwrite: Overwrite,
+    ) -> Result<SetAddress> {
+        self.put_address(name, scope, address, false)
+    }
+
+    /// Apply a label write an import planned (it already decided the
+    /// write may replace what the label held).
+    pub fn write_address(&mut self, write: &crate::broadcast::AddressWrite) -> Result<SetAddress> {
+        self.put_address(&write.name, &write.chain, &write.address, true)
+    }
+
+    fn put_address(
+        &mut self,
+        name: &str,
+        scope: &str,
+        address: &Address,
+        replace: bool,
     ) -> Result<SetAddress> {
         let name = name.to_ascii_lowercase();
         let config = self.config()?;
@@ -511,23 +561,15 @@ impl Tx {
         if scope != ALL_CHAINS && !config.chains.contains_key(scope) {
             bail!("chain '{scope}' not found");
         }
-        let previous = config
-            .addresses
-            .get(&name)
-            .and_then(|entry| entry.get(scope))
-            .map(|stored| stored.parse::<Address>().ok());
-        let outcome = match previous {
-            None => SetAddress::Added,
+        let held = Held::of(&config, &name, scope, address);
+        if !replace && let Some(conflict) = held.conflict(&name, scope) {
+            bail!("{conflict}; to change it, first run `chainz label rm {name} --chain '{scope}'`");
+        }
+        let outcome = match held {
+            Held::Nothing | Held::Invalid => SetAddress::Added,
             // Rewritten below all the same, which normalizes it to the checksum.
-            Some(Some(old)) if old == *address => SetAddress::Unchanged,
-            Some(old) if overwrite == Overwrite::Refuse => {
-                let on = scope_phrase(scope);
-                let held = old.map_or_else(|| "an invalid value".to_string(), |a| a.to_checksum());
-                bail!(
-                    "@{name} is already {held} {on}; to change it, first run `chainz label rm {name} --chain '{scope}'`"
-                );
-            }
-            Some(old) => old.map_or(SetAddress::Added, SetAddress::Replaced),
+            Held::Same => SetAddress::Unchanged,
+            Held::Other(old) => SetAddress::Replaced(old),
         };
         let addresses = implicit_table(&mut self.config, "addresses")?;
         if !addresses.contains_key(&name) {
@@ -539,17 +581,6 @@ impl Tx {
             .ok_or_else(|| anyhow!("`addresses.{name}` must be a table"))?;
         put_value(entry, scope, Value::from(address.to_checksum()));
         Ok(outcome)
-    }
-
-    /// Apply a label write an import planned (it already decided the
-    /// write may replace what the label held).
-    pub fn write_address(&mut self, write: &crate::broadcast::AddressWrite) -> Result<SetAddress> {
-        self.set_address(
-            &write.name,
-            &write.chain,
-            &write.address,
-            Overwrite::Replace,
-        )
     }
 
     /// Remove a label: one entry (`scope` is a chain name or
