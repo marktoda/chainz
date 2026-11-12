@@ -91,10 +91,12 @@ jobs:
       - name: Checkout sources
         uses: actions/checkout@v4
 
-      - name: Checkout v1 (main)
+      # v1 is pinned to its last commit (c964bce, PR #14): main is v2 since
+      # v2.0.0, and the v0.4.0 tag predates c964bce.
+      - name: Checkout v1 (c964bce, last v1 commit)
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: c964bceb3cc028b342459418902a17cc853a8836
           path: v1
 
       - name: Install stable toolchain
