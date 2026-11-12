@@ -56,8 +56,7 @@ pub const CONTRACT_VARS: [&str; 12] = [
 ];
 
 /// Where environment variables are read: the process environment, or a
-/// fixed lookup in tests. Reading is lazy (one `getenv` per lookup, as
-/// before the seam existed).
+/// fixed lookup in tests. Reading is lazy: one `getenv` per lookup.
 #[derive(Clone, Copy)]
 pub struct Env {
     get: fn(&str) -> Option<String>,

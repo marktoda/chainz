@@ -4,13 +4,7 @@
 //! re-scanned, so a value containing `${…}` is inserted literally. An
 //! unresolved `${NAME}` is an error; it is never passed through.
 //!
-//! Lookup order (see `secrets::VarResolver`): the built-ins
-//! `${CHAIN_ID}` and `${CHAIN}` first, then the process environment, then
-//! `secrets.toml`. Built-ins come first because chainz itself exports
-//! `CHAIN_ID` into child shells; letting the environment win would make a
-//! nested `chainz exec eth` inside a `chainz exec base` subshell build base's URLs.
-//! Likewise, inside a chainz context (`CHAINZ_CHAIN` set) the environment
-//! is skipped for the exec contract's own variables.
+//! Where names are looked up, and in what order, is `secrets::VarResolver`.
 
 use std::borrow::Cow;
 

@@ -149,12 +149,16 @@ pub fn check_var_name(name: &str) -> anyhow::Result<()> {
 /// Resolves `${NAME}` for one context: built-ins, then the environment,
 /// then `secrets.toml` (loaded lazily, only when the environment misses).
 ///
-/// Inside a chainz context (`CHAINZ_CHAIN` is set: an `exec` subshell, `eval
-/// "$(chainz env …)"`, or a tool `exec` started) the environment is not
-/// consulted for the exec contract's own variables
+/// Built-ins come first because chainz itself exports `CHAIN_ID` into child
+/// shells: if the environment won, a nested `chainz exec eth` inside a
+/// `chainz exec base` subshell would build base's URLs. For the same
+/// reason, inside a chainz context (`CHAINZ_CHAIN` is set: an `exec`
+/// subshell, `eval "$(chainz env …)"`, or a tool `exec` started) the
+/// environment is not consulted for the exec contract's own variables
 /// ([`CONTRACT_VARS`](crate::contract::CONTRACT_VARS)): there they hold the
-/// enclosing chain's values, so a nested `chainz exec eth` inside `chainz
-/// shell celo` must not send celo's `ETHERSCAN_API_KEY` to Etherscan.
+/// enclosing chain's values, so a nested `chainz exec eth` inside a `chainz
+/// exec celo` subshell must not send celo's `ETHERSCAN_API_KEY` to
+/// Etherscan.
 pub(crate) struct VarResolver<'a> {
     builtins: Builtins<'a>,
     secrets: Box<dyn Fn() -> anyhow::Result<&'a Secrets> + 'a>,

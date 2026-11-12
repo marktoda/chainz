@@ -102,9 +102,10 @@ impl std::fmt::Debug for Chainz {
 /// How strictly to load.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoadMode {
-    /// Validate invariants (every command except doctor).
+    /// Validate invariants (every command except `doctor` and `edit`).
     Strict,
-    /// Parse only, so `doctor` can report invariant violations.
+    /// Parse only, so `doctor` can report invariant violations and `edit`
+    /// can open a config that has some.
     Lenient,
     /// Parse only, and change nothing on disk: no v1 migration, no
     /// permission tightening (shell completion, see [`Chainz::peek`]).

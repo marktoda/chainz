@@ -6,9 +6,9 @@
 //!
 //! - a literal Infura `/v3/<key>` or Alchemy `/v2/<key>` key in an
 //!   endpoint URL;
-//! - a literal header value that looks like a credential (16 or more
-//!   characters), or that `ETH_RPC_HEADERS` cannot carry (a comma or line
-//!   break), see `header_needs_extraction`;
+//! - a literal header value that looks like a credential (long enough,
+//!   see `urls::CREDENTIAL_MIN_LEN`), or that `ETH_RPC_HEADERS` cannot
+//!   carry (a comma or line break), see `header_needs_extraction`;
 //! - a literal explorer key.
 //!
 //! What cannot move automatically, [`manual_credential`] finds: user info,
@@ -163,7 +163,7 @@ pub fn manual_credential(url: &str) -> Option<&'static str> {
 }
 
 /// Whether a header value should move into a variable: it is literal and
-/// either long enough to be a credential (16+ characters) or holds a comma
+/// either long enough to be a credential (`CREDENTIAL_MIN_LEN`) or holds a comma
 /// or line break, which `config.toml` may not hold literally.
 pub(crate) fn header_needs_extraction(value: &str) -> bool {
     !value.is_empty()

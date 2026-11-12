@@ -3,12 +3,12 @@
 //! Which chain a command means, first match wins:
 //! 1. the explicit argument;
 //! 2. `$CHAINZ_CHAIN` (set by an `exec` subshell and `chainz env`);
-//! 3. `default` in config (callers print `chainz: <name> (default)`);
+//! 3. `default` in config (callers say they used it);
 //! 4. otherwise the caller opens a picker on a TTY, or fails.
 //!
 //! Within a reference: an exact chain ID, an exact name or alias
 //! (case-insensitive), then a well-known long name as an implicit alias
-//! (an implicit alias: `arbitrum` finds the chain with ID 42161), then a
+//! (`arbitrum` finds the chain with ID 42161), then a
 //! live fork's exact name, then an unambiguous prefix of a name or alias. Configured chains come first: a fork never
 //! shadows one, and a dead fork never resolves. Each command matches under one [`Policy`]; destructive commands
 //! use [`Policy::Exact`]: name or ID only.

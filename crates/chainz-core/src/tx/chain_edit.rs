@@ -49,17 +49,6 @@ pub struct ChainEdit {
     pub remove_aliases: Vec<String>,
 }
 
-impl EditReport {
-    /// Whether the edit changed nothing (a no-op: every value was already
-    /// set).
-    pub fn is_empty(&self) -> bool {
-        self.changes.is_empty()
-            && self.added_endpoints.is_empty()
-            && self.created_explorer.is_none()
-            && self.moved.is_empty()
-    }
-}
-
 impl ChainEdit {
     /// Whether the patch changes nothing.
     pub fn is_empty(&self) -> bool {
@@ -250,6 +239,17 @@ pub struct EditReport {
     pub warnings: Vec<String>,
     /// The chain's name after the edit.
     pub chain: String,
+}
+
+impl EditReport {
+    /// Whether the edit changed nothing (a no-op: every value was already
+    /// set).
+    pub fn is_empty(&self) -> bool {
+        self.changes.is_empty()
+            && self.added_endpoints.is_empty()
+            && self.created_explorer.is_none()
+            && self.moved.is_empty()
+    }
 }
 
 /// What [`Tx::insert_chain`] attaches to a new chain that names none.

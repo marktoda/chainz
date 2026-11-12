@@ -6,8 +6,8 @@ use crate::model::Config;
 use crate::names;
 use anyhow::{Result, bail};
 
-/// Names a fork may not take: the `chainz fork` subcommands and their
-/// aliases (a bin test keeps the two lists equal).
+/// Names a fork may not take: the `chainz fork` subcommands (a bin test
+/// keeps the two lists equal).
 pub const RESERVED_FORK_NAMES: [&str; 2] = ["ls", "stop"];
 
 /// Chains anvil can't fork: `(chain ID, display name)`.
