@@ -1642,6 +1642,7 @@ fn chain_set_applies_every_flag_in_one_write() {
             "--alias",
             "l1",
         ])
+        .env("TEAM", "team-1")
         .assert()
         .success()
         .get_output()

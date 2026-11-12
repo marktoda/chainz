@@ -1,3 +1,3 @@
- NAME  ID    RPC                                             SIGNER    EXPLORER
-*eth   1     infura https://mainnet.infura.io/v3/[REDACTED]  deployer  etherscan
- base  8453  public https://mainnet.base.org/                default   -
+ NAME  ID    RPC                          SIGNER    EXPLORER
+*eth   1     infura https://…infura.io/…  deployer  etherscan
+ base  8453  public https://…base.org     default   -
