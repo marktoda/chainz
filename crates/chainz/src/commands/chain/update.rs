@@ -21,7 +21,7 @@ pub fn update(args: &UpdateArgs) -> Result<i32> {
     let command: &[&str] = &["update"];
     let mut chainz = open()?;
     // Usage and the chain first: stdin is read only for a valid command.
-    let mut flags = build_edit(args, parse_headers(&args.headers)?, None);
+    let mut flags = build_edit(args, parse_headers(&args.headers)?);
     let menu_wanted = flags.is_empty() && !args.api_key_stdin && args.api_key.is_none();
     if !Tty.is_interactive() && (args.chain.is_none() || menu_wanted) {
         return Err(usage_error(
@@ -75,11 +75,7 @@ fn api_key(args: &UpdateArgs) -> Result<Option<Zeroizing<String>>> {
 
 /// The patch the flags ask for (empty when there are none), once the
 /// header and key values are read.
-fn build_edit(
-    args: &UpdateArgs,
-    headers: Vec<(String, String)>,
-    api_key: Option<Zeroizing<String>>,
-) -> ChainEdit {
+fn build_edit(args: &UpdateArgs, headers: Vec<(String, String)>) -> ChainEdit {
     let either = |set: &Option<String>, clear: bool| match (set, clear) {
         (Some(value), _) => Some(Some(value.clone())),
         (None, true) => Some(None),
@@ -102,7 +98,7 @@ fn build_edit(
             (true, false) => None,
         },
         explorer: either(&args.explorer, args.no_explorer),
-        api_key,
+        api_key: None,
         name: args.name.clone(),
         add_aliases: args.aliases.clone(),
         remove_aliases: args.rm_aliases.clone(),
@@ -604,7 +600,7 @@ path = "/o"
             ..UpdateArgs::default()
         };
         let headers = vec![("x-team".to_string(), "${TEAM}".to_string())];
-        let edit = build_edit(&args, headers.clone(), None);
+        let edit = build_edit(&args, headers.clone());
         assert_eq!(edit.signer, Some(Some("ops".to_string())));
         assert_eq!(edit.rpc.as_deref(), Some("infura"));
         assert_eq!(edit.failover, Some(vec!["llama".to_string()]));
@@ -615,14 +611,14 @@ path = "/o"
         assert_eq!(edit.add_aliases, ["l1"]);
         assert_eq!(edit.remove_aliases, ["mainnet"]);
 
-        let none = build_edit(&UpdateArgs::default(), Vec::new(), None);
+        let none = build_edit(&UpdateArgs::default(), Vec::new());
         assert!(none.is_empty());
         let clear = UpdateArgs {
             no_signer: true,
             no_failover: true,
             ..UpdateArgs::default()
         };
-        let edit = build_edit(&clear, Vec::new(), None);
+        let edit = build_edit(&clear, Vec::new());
         assert_eq!(edit.signer, Some(None));
         assert_eq!(edit.failover, Some(Vec::new()));
     }

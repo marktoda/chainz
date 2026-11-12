@@ -262,8 +262,8 @@ impl Explorer {
     }
 
     /// Whether Etherscan's v2 API covers `chain_id` ([`ETHERSCAN_CHAIN_IDS`]).
-    /// The one rule for attaching the built-in explorer by default: `chain
-    /// add` and `init` attach it only where it is covered, and `update
+    /// The one rule for attaching the built-in explorer by default: `add`
+    /// and `init` attach it only where it is covered, and `update
     /// --explorer etherscan` elsewhere warns ([`Explorer::etherscan_gap`]).
     pub fn etherscan_covers(chain_id: u64) -> bool {
         ETHERSCAN_CHAIN_IDS.binary_search(&chain_id).is_ok()
@@ -689,8 +689,8 @@ impl Chain {
     /// What changed from `old` to `new` (one chain, before and after a
     /// write), one line per change, in a fixed order: chain ID, aliases,
     /// endpoints, active endpoint, failover, signer, explorer. Empty when
-    /// nothing did. The one way writes describe a chain change (`chain
-    /// set`, `edit CHAIN`). Never shows a URL or header value.
+    /// nothing did. The one way writes describe a chain change
+    /// (`update`, `edit CHAIN`). Never shows a URL or header value.
     pub fn changes(old: &Chain, new: &Chain) -> Vec<String> {
         let mut out = Vec::new();
         if old.id != new.id {
