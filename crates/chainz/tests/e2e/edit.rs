@@ -23,7 +23,7 @@ fn edit_validates_before_saving() {
     sb.cmd()
         .env(
             "EDITOR",
-            "sed -i s/rpc\\ =\\ \\\"local\\\"/rpc\\ =\\ \\\"nope\\\"/",
+            "sed -i.bak s/rpc\\ =\\ \\\"local\\\"/rpc\\ =\\ \\\"nope\\\"/",
         )
         .args(["edit"])
         .assert()
@@ -31,7 +31,7 @@ fn edit_validates_before_saving() {
         .stderr(predicate::str::contains("nope"));
     assert_eq!(sb.config(), before);
     sb.cmd()
-        .env("EDITOR", "sed -i s/id\\ =\\ 1$/id\\ =\\ 5/")
+        .env("EDITOR", "sed -i.bak s/id\\ =\\ 1$/id\\ =\\ 5/")
         .args(["edit"])
         .assert()
         .success();
@@ -44,7 +44,7 @@ fn edit_chain_replaces_one_chain() {
     sb.seed(&[("eth", 1), ("base", 8453)]);
     // A chain ID change is named in the report.
     sb.cmd()
-        .env("EDITOR", "sed -i s/id\\ =\\ 8453/id\\ =\\ 84532/")
+        .env("EDITOR", "sed -i.bak s/id\\ =\\ 8453/id\\ =\\ 84532/")
         .args(["edit", "ba"])
         .assert()
         .success()
