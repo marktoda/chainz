@@ -88,27 +88,8 @@ pub fn add(
                 .path
                 .clone()
                 .ok_or_else(|| usage_error(&["signer", "add"], "a keystore signer needs --path"))?;
-            let derived = match signer::keystore_address(&paths::expand_tilde(&path)) {
-                Ok(derived) => Some(derived),
-                Err(e) => {
-                    if address.is_none() {
-                        eprintln!(
-                            "{}",
-                            ui::warn(&format!(
-                                "no cached address for '{name}' ({e:#}); @wallet and ETH_FROM need one: pass --address"
-                            ))
-                        );
-                    }
-                    None
-                }
-            };
-            let address = match (address, derived) {
-                (Some(given), Some(derived)) if given != derived => {
-                    bail!("--address does not match the keystore's address {derived}")
-                }
-                (given, derived) => given.or(derived),
-            };
-            Provision::reference(Signer::keystore(path, address))
+            let address = signer::keystore_signer_address(&paths::expand_tilde(&path), address)?;
+            Provision::reference(Signer::keystore(path, Some(address)))
         }
         Backend::OnePassword => {
             let (vault, item) = match (args.vault.clone(), args.item.clone()) {

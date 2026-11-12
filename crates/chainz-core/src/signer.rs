@@ -481,19 +481,49 @@ pub(crate) fn decrypt(secret: &SignerSecret, password: &str) -> Result<Zeroizing
     Ok(Zeroizing::new(String::from_utf8(plaintext)?))
 }
 
-/// Read the address field of a Foundry keystore file without decrypting it.
-pub fn keystore_address(path: &std::path::Path) -> Result<Address> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read keystore {}", path.display()))?;
-    let json: serde_json::Value = serde_json::from_str(&text).context("keystore is not JSON")?;
-    let raw = json
-        .get("address")
-        .and_then(|a| a.as_str())
-        .ok_or_else(|| anyhow!("keystore has no address field; pass --address"))?;
+/// Read the address field of a Foundry keystore file without decrypting
+/// it: `None` when it has none (`cast wallet new` writes none). A missing
+/// or unreadable file, or one that is not a keystore, is an error.
+pub fn keystore_address(path: &std::path::Path) -> Result<Option<Address>> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            bail!("keystore not found: {}", path.display())
+        }
+        Err(e) => {
+            return Err(e).with_context(|| format!("failed to read keystore {}", path.display()));
+        }
+    };
+    let json: serde_json::Value = serde_json::from_str(&text)
+        .with_context(|| format!("keystore {} is not JSON", path.display()))?;
+    if !json.is_object() {
+        bail!("keystore {} is not a keystore", path.display());
+    }
+    let Some(raw) = json.get("address").and_then(|a| a.as_str()) else {
+        return Ok(None);
+    };
     let hex = raw.strip_prefix("0x").unwrap_or(raw).to_ascii_lowercase();
     format!("0x{hex}")
         .parse()
+        .map(Some)
         .map_err(|_| anyhow!("keystore address is malformed"))
+}
+
+/// The address to cache for a keystore signer at `path` (`given` is
+/// `--address`): the keystore's own, which `given` must match, else
+/// `given`. A keystore with no address field and no `--address` is an
+/// error that says how to get it; chainz never decrypts a keystore.
+pub fn keystore_signer_address(path: &std::path::Path, given: Option<Address>) -> Result<Address> {
+    match (keystore_address(path)?, given) {
+        (Some(found), Some(given)) if found != given => {
+            bail!("--address does not match the keystore's address {found}")
+        }
+        (Some(found), _) | (None, Some(found)) => Ok(found),
+        (None, None) => bail!(
+            "keystore {path} has no address field (`cast wallet new` writes none), and chainz never decrypts it; pass --address \"$(cast wallet address --keystore {path})\"",
+            path = path.display()
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -547,6 +577,46 @@ mod tests {
         assert_eq!(key.as_str(), KEY);
         b.prompts.borrow_mut().push("wrong".into());
         assert!(unlock(&b, &b, "cold", &p.signer, &secrets).is_err());
+    }
+
+    #[test]
+    fn keystore_addresses_come_from_the_file_or_address() {
+        let dir = tempfile::tempdir().unwrap();
+        let with = dir.path().join("with.json");
+        std::fs::write(
+            &with,
+            r#"{"address":"7e5f4552091a69125d5dfcb7b8c2659029395bdf"}"#,
+        )
+        .unwrap();
+        let without = dir.path().join("without.json");
+        std::fs::write(&without, r#"{"crypto":{}}"#).unwrap();
+        let addr: Address = ADDR.parse().unwrap();
+        let other: Address = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
+            .parse()
+            .unwrap();
+
+        assert_eq!(keystore_signer_address(&with, None).unwrap(), addr);
+        assert_eq!(keystore_signer_address(&with, Some(addr)).unwrap(), addr);
+        let err = keystore_signer_address(&with, Some(other)).unwrap_err();
+        assert!(err.to_string().contains("does not match"), "{err}");
+
+        assert_eq!(
+            keystore_signer_address(&without, Some(other)).unwrap(),
+            other
+        );
+        let err = keystore_signer_address(&without, None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("no address field") && err.contains("cast wallet address --keystore"),
+            "{err}"
+        );
+
+        let missing = dir.path().join("missing.json");
+        let err = keystore_signer_address(&missing, Some(addr)).unwrap_err();
+        assert!(err.to_string().starts_with("keystore not found: "), "{err}");
+        std::fs::write(&missing, "[]").unwrap();
+        assert!(keystore_signer_address(&missing, Some(addr)).is_err());
     }
 
     #[test]

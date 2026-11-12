@@ -275,6 +275,11 @@ Chainz needs a signer's address often and its key almost never. Only
 | `keystore` | a Foundry keystore file, unlocked by cast or forge |
 | `plaintext` | `secrets.toml`, explicit opt-in |
 
+A `keystore` signer (`--path`) caches the keystore's `address` field;
+chainz never decrypts it. Foundry's own keystores (`cast wallet new`) have
+none, so pass `--address "$(cast wallet address --keystore PATH)"`. A path
+that doesn't exist is refused.
+
 `chainz signer migrate` moves plaintext keys into safe storage
 (`--all` for every plaintext signer; a failure doesn't stop the rest).
 `chainz signer rm` deletes the key material too, so it asks first; off a

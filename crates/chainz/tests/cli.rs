@@ -1399,6 +1399,49 @@ fn rpc_discover_lists_off_a_tty_and_yes_adds_the_live_ones() {
     );
 }
 
+/// A keystore path that doesn't exist, or a keystore with no address
+/// field and no `--address` (`cast wallet new` writes none), adds nothing.
+#[test]
+fn keystore_signers_need_a_file_and_an_address() {
+    let sb = Sandbox::new();
+    sb.seed(&[("eth", 1)]);
+    let before = sb.config();
+    let missing = sb.home().join("nope.json");
+    let out = sb
+        .process()
+        .args([
+            "signer",
+            "add",
+            "ks",
+            "--backend",
+            "keystore",
+            "--address",
+            TEST_ADDRESS_2,
+            "--path",
+        ])
+        .arg(&missing)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("keystore not found"),
+        "{}",
+        stderr(&out)
+    );
+    let out = sb
+        .process()
+        .args(["signer", "add", "ks", "--path"])
+        .arg(keystore_file(&sb))
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err = stderr(&out);
+    assert!(err.contains("has no address field"), "{err}");
+    assert_eq!(err.matches("--address").count(), 1, "{err}");
+    assert!(err.contains("cast wallet address --keystore"), "{err}");
+    assert_eq!(sb.config(), before);
+}
+
 /// An (empty) keystore file in the sandbox.
 fn keystore_file(sb: &Sandbox) -> std::path::PathBuf {
     let path = sb.home().join("ks.json");

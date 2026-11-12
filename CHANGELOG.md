@@ -186,6 +186,11 @@ changed before 2.0.0; they are listed under Removed and Changed.
 
 ### Fixed
 
+- `signer add --backend keystore` refuses a `--path` that doesn't exist, and
+  a keystore with no address field (as `cast wallet new` writes) without
+  `--address`, saying how to get it (`cast wallet address --keystore
+  PATH`). It used to add a signer with no cached address, or none at all
+  that could work.
 - `chain add NAME --url URL` downloaded chainlist to resolve the name. With
   `--url` the chain is now a chain ID or a built-in short name (`arb`,
   `base`…), resolved offline; another name is a usage error asking for the
