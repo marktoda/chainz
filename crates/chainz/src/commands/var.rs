@@ -6,7 +6,7 @@ use crate::prompt::{self, StdinTrim, read_stdin_secret};
 use crate::ui;
 use anyhow::{Result, bail};
 use chainz_core::model::Config;
-use chainz_core::secrets::BUILTIN_VARS;
+use chainz_core::secrets::check_var_name;
 use chainz_core::signer::Prompter;
 use chainz_core::template;
 use serde::Serialize;
@@ -21,30 +21,13 @@ pub fn run(cmd: VarCommand) -> Result<i32> {
     }
 }
 
-fn check_name(name: &str) -> Result<()> {
-    if !template::is_valid_name(name) {
-        bail!("variable name '{name}' must match [A-Za-z_][A-Za-z0-9_]*");
-    }
-    if BUILTIN_VARS.contains(&name) {
-        bail!("'{name}' is built in (the chain being run); pick another name");
-    }
-    Ok(())
-}
-
 /// Where `${name}` is referenced in config (chain/endpoint/explorer paths).
 fn references(config: &Config, name: &str) -> Vec<String> {
-    let uses = |s: &str| template::references(s).is_ok_and(|r| r.contains(&name));
-    let mut out = Vec::new();
-    for (chain, c) in &config.chains {
-        for (ep, e) in &c.rpcs {
-            if uses(&e.url) || e.headers.values().any(|v| uses(v)) {
-                out.push(format!("chains.{chain}.rpcs.{ep}"));
-            }
-        }
-    }
-    for (n, e) in &config.explorers {
-        if uses(&e.api) || e.key.as_deref().is_some_and(uses) {
-            out.push(format!("explorers.{n}"));
+    let mut out: Vec<String> = Vec::new();
+    for (path, value) in config.templated_fields() {
+        if out.last() != Some(&path) && template::references(value).is_ok_and(|r| r.contains(&name))
+        {
+            out.push(path);
         }
     }
     out
@@ -56,7 +39,7 @@ fn masked(value: &str) -> String {
 }
 
 fn set(name: &str, value: Option<String>, stdin: bool) -> Result<i32> {
-    check_name(name)?;
+    check_var_name(name)?;
     let value = match value {
         Some(v) => {
             prompt::warn_secret_argument("a variable value", "--stdin or the prompt");

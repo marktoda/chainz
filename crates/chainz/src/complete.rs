@@ -16,7 +16,6 @@ use crate::cli::Opt;
 use chainz_core::Chainz;
 use chainz_core::labels::{LabelIndex, LabelSource};
 use chainz_core::model::Config;
-use chainz_core::names::CONTEXT_TOKENS;
 use chainz_core::resolve::{self, ChainRef};
 use chainz_core::runtime::{ForkRecord, Runtime};
 use clap::{Command, CommandFactory};
@@ -266,7 +265,7 @@ fn tokens(word: &str, words: &[String]) -> Vec<CompletionCandidate> {
         return out.done();
     }
     let mut out = Candidates::new(word);
-    for token in CONTEXT_TOKENS {
+    for token in chainz_core::names::context_tokens() {
         out.push(&format!("@{token}"), format!("context: {token}"));
     }
     out.push("@@", "a literal @".to_string());

@@ -17,7 +17,7 @@
 //! `_3`… on collision. A value some variable already holds reuses that
 //! variable.
 
-use crate::model::{Config, Endpoint};
+use crate::model::{Config, ETHERSCAN_API_KEY, Endpoint, Explorer};
 use crate::template;
 use indexmap::IndexMap;
 use std::collections::HashMap;
@@ -113,43 +113,23 @@ impl fmt::Debug for VarTable {
 }
 
 /// `base`, or `base_2`, `base_3`… — the first name `taken` rejects.
-pub fn unique_var_name(base: &str, taken: impl Fn(&str) -> bool) -> String {
-    if !taken(base) {
-        return base.to_string();
-    }
-    (2..)
-        .map(|n| format!("{base}_{n}"))
-        .find(|candidate| !taken(candidate))
-        .expect("an unused suffix exists")
+pub(crate) fn unique_var_name(base: &str, taken: impl Fn(&str) -> bool) -> String {
+    crate::names::unique_with(base, '_', taken)
 }
 
-/// A variable name built from `parts`: uppercased, joined with `_`, every
-/// character outside `[A-Z0-9_]` replaced by `_`, and a leading `_` if it
-/// would start with a digit (or be empty).
-pub fn var_base(parts: &[&str]) -> String {
-    let mut out: String = parts
-        .join("_")
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c.to_ascii_uppercase()
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    if out.is_empty() || out.starts_with(|c: char| c.is_ascii_digit()) {
-        out.insert(0, '_');
-    }
-    out
+/// A variable name built from `parts`: uppercased, joined with `_`, then
+/// [cleaned](template::clean_name).
+pub(crate) fn var_base(parts: &[&str]) -> String {
+    template::clean_name(&parts.join("_").to_ascii_uppercase())
 }
 
-/// The variable name for explorer `explorer`'s key.
-pub fn explorer_key_var(explorer: &str) -> String {
-    if explorer == "etherscan" {
-        "ETHERSCAN_API_KEY".to_string()
+/// The variable name for explorer `name`'s key: [`ETHERSCAN_API_KEY`] for
+/// an Etherscan explorer, else `<NAME>_API_KEY`.
+pub(crate) fn explorer_key_var(name: &str, explorer: &Explorer) -> String {
+    if explorer.is_etherscan() {
+        ETHERSCAN_API_KEY.to_string()
     } else {
-        var_base(&[explorer, "API_KEY"])
+        var_base(&[name, "API_KEY"])
     }
 }
 
@@ -162,12 +142,9 @@ pub fn is_literal(value: &str) -> bool {
 /// Find a literal Infura or Alchemy key in `url`: returns the text before
 /// and after the key, the base variable name, and the key.
 pub fn extract_known_key(url: &str) -> Option<(&str, &str, &'static str, &str)> {
-    let parsed = url::Url::parse(url).ok()?;
-    let host = parsed.host_str()?.to_ascii_lowercase();
-    let labels: Vec<&str> = host.split('.').collect();
-    let (marker, base) = if labels.contains(&"infura") {
+    let (marker, base) = if crate::urls::host_has_label(url, "infura") {
         ("/v3/", "INFURA_KEY")
-    } else if labels.contains(&"alchemy") {
+    } else if crate::urls::host_has_label(url, "alchemy") {
         ("/v2/", "ALCHEMY_KEY")
     } else {
         return None;
@@ -192,7 +169,7 @@ pub fn extract_known_key(url: &str) -> Option<(&str, &str, &'static str, &str)> 
 pub fn header_needs_extraction(value: &str) -> bool {
     !value.is_empty()
         && is_literal(value)
-        && (value.len() >= 16 || value.contains([',', '\r', '\n']))
+        && (value.len() >= 16 || crate::model::header_value_problem(value).is_some())
 }
 
 /// Where an extracted secret was.
@@ -290,16 +267,24 @@ pub fn extract_endpoint(
     moved
 }
 
-/// Move a literal explorer key into a variable: the `${VAR}` that replaces
-/// it, or `None` if `key` is empty or already a template.
-pub fn extract_explorer_key(explorer: &str, key: &str, vars: &mut VarTable) -> Option<String> {
+/// Move `explorer`'s literal key into a variable, rewriting the key in
+/// place to reference it. Returns the variable's name, or `None` if the key
+/// is missing, empty or already a template.
+pub(crate) fn extract_explorer_key(
+    name: &str,
+    explorer: &mut Explorer,
+    vars: &mut VarTable,
+) -> Option<String> {
+    let key = explorer.key.as_mut()?;
     if key.trim().is_empty() || !is_literal(key) {
         return None;
     }
-    Some(format!(
-        "${{{}}}",
-        vars.intern(&explorer_key_var(explorer), key)
-    ))
+    let var = vars.intern(&explorer_key_var(name, explorer), explorer.key.as_deref()?);
+    if let Some(key) = explorer.key.as_mut() {
+        key.zeroize();
+        *key = format!("${{{var}}}");
+    }
+    Some(var)
 }
 
 /// Every literal secret in a config and where it goes, computed without
@@ -361,17 +346,17 @@ pub fn plan_secret_extraction(config: &Config, existing: &IndexMap<String, Strin
         }
     }
     for (name, explorer) in &config.explorers {
-        if let Some(key) = explorer.key.as_deref()
-            && let Some(new) = extract_explorer_key(name, key, &mut vars)
+        let mut new = explorer.clone();
+        if let Some(var) = extract_explorer_key(name, &mut new, &mut vars)
+            && let Some(key) = new.key.take()
         {
-            let var = new[2..new.len() - 1].to_string();
             moved.push(Moved {
                 location: Location::ExplorerKey {
                     explorer: name.clone(),
                 },
                 var,
             });
-            explorer_keys.push((name.clone(), new));
+            explorer_keys.push((name.clone(), key));
         }
     }
     SecretPlan {
@@ -478,8 +463,15 @@ plain = "https://mainnet.base.org"
     fn names_and_literals() {
         assert_eq!(var_base(&["uni-gw", "x-api-key"]), "UNI_GW_X_API_KEY");
         assert_eq!(var_base(&["1rpc", "auth"]), "_1RPC_AUTH");
-        assert_eq!(explorer_key_var("etherscan"), "ETHERSCAN_API_KEY");
-        assert_eq!(explorer_key_var("blockscout"), "BLOCKSCOUT_API_KEY");
+        let etherscan = Explorer::etherscan();
+        let mut other = Explorer::etherscan();
+        other.api = "https://blockscout.example/api".into();
+        assert_eq!(
+            explorer_key_var("etherscan", &etherscan),
+            "ETHERSCAN_API_KEY"
+        );
+        assert_eq!(explorer_key_var("scan", &etherscan), "ETHERSCAN_API_KEY");
+        assert_eq!(explorer_key_var("blockscout", &other), "BLOCKSCOUT_API_KEY");
         assert_eq!(unique_var_name("K", |n| n == "K" || n == "K_2"), "K_3");
         assert!(is_literal("abc") && is_literal("a${b") && !is_literal("${A}"));
         assert!(header_needs_extraction("Bearer 0123456789abcdef"));

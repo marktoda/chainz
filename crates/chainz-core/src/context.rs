@@ -22,7 +22,7 @@ use crate::address::Address;
 use crate::grammar::{self, Piece};
 use crate::labels::{LabelError, LabelIndex};
 use crate::model::{Backend, Chain, Config};
-use crate::names::{self, CONTEXT_TOKENS, DEPRECATED_TOKENS};
+use crate::names::{self, Token};
 use crate::redact::redact;
 use crate::resolve::{self, ChainRef};
 use crate::runtime::{ForkRecord, Runtime};
@@ -366,9 +366,9 @@ impl Context {
         if !self.rpc.via_gateway && !self.rpc.headers.is_empty() {
             let mut pairs = Vec::with_capacity(self.rpc.headers.len());
             for (name, value) in &self.rpc.headers {
-                if value.contains([',', '\r', '\n']) {
+                if let Some(problem) = crate::model::header_value_problem(value) {
                     bail!(
-                        "RPC header '{name}' expands to a value with a comma or line break, which cannot be exported via ETH_RPC_HEADERS"
+                        "RPC header '{name}' expands to a value with {problem}, which cannot be exported via ETH_RPC_HEADERS"
                     );
                 }
                 pairs.push(format!("{name}: {value}"));
@@ -383,7 +383,7 @@ impl Context {
                 eprintln!("chainz: warning: not exporting the explorer key: {error}");
             }
             if let Some(key) = &explorer.key {
-                push("ETHERSCAN_API_KEY", key.clone(), true);
+                push(crate::model::ETHERSCAN_API_KEY, key.clone(), true);
             }
             if !explorer.etherscan {
                 // The API URL may carry a key (`?apikey=`).
@@ -574,7 +574,7 @@ impl<'a> Expander<'a> {
     }
 
     fn known_names(&self) -> Vec<&str> {
-        let mut names: Vec<&str> = CONTEXT_TOKENS.to_vec();
+        let mut names: Vec<&str> = names::context_tokens().collect();
         names.extend(self.chainz.config().signers.keys().map(String::as_str));
         names.extend(self.labels().names());
         names
@@ -588,17 +588,15 @@ impl<'a> Expander<'a> {
     /// Resolve `name` (on the qualified chain if given). `Ok(None)` means
     /// unknown name; errors are known names that cannot be produced.
     fn token(&self, name: &str, chain: Option<&str>) -> Result<Option<Value>> {
-        if name == "key" {
-            bail!("@key was removed in v2: pass --expose-key and read $RAW_PRIVATE_KEY instead");
-        }
-        let canonical = match DEPRECATED_TOKENS.iter().find(|(old, _)| *old == name) {
-            Some((old, new)) => {
-                self.warn(format!("@{old} is deprecated; use @{new}"));
-                *new
+        let canonical = match names::token(name) {
+            Some(Token::Removed(hint)) => bail!("@{name} was removed in v2: {hint}"),
+            Some(Token::Deprecated(new)) => {
+                self.warn(format!("@{name} is deprecated; use @{new}"));
+                new
             }
-            None => name,
+            Some(Token::Context) | None => name,
         };
-        let is_context = CONTEXT_TOKENS.contains(&canonical);
+        let is_context = names::token(canonical) == Some(Token::Context);
         let is_signer = self.chainz.config().signers.contains_key(canonical);
         if !is_context && !is_signer && !self.labels().contains(canonical) {
             return Ok(None);

@@ -207,11 +207,11 @@ fn add(
         // probed.
         let public: Vec<String> = chainlist::public_rpcs(entry)
             .into_iter()
-            .filter(|u| chainz_rpc::Target::new(id, "x", u, &[]).is_ok())
+            .filter(|u| Endpoint::check_url(u).is_ok())
             .collect();
         let http: Vec<String> = public
             .iter()
-            .filter(|u| u.starts_with("http"))
+            .filter(|u| Endpoint::new(u.as_str()).is_http())
             .cloned()
             .collect();
         if http.is_empty() {

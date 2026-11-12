@@ -492,7 +492,9 @@ fn discover(chain: &str, refresh: bool, yes: bool) -> Result<i32> {
         .collect();
     let fresh: Vec<String> = chainlist::public_rpcs(&entry)
         .into_iter()
-        .filter(|u| u.starts_with("http") && !known.contains(&u.trim_end_matches('/')))
+        .filter(|u| {
+            Endpoint::new(u.as_str()).is_http() && !known.contains(&u.trim_end_matches('/'))
+        })
         .collect();
     if fresh.is_empty() {
         println!("Every public chainlist RPC for '{chain}' is already configured");

@@ -62,6 +62,52 @@ pub struct Chain {
     pub rpcs: IndexMap<String, Endpoint>,
 }
 
+/// The variable forge and chainz both read an Etherscan key from: chainz
+/// exports the chain's explorer key under this name, and an Etherscan
+/// explorer's key is stored in a variable of the same name. The two
+/// coincide on purpose, so `${ETHERSCAN_API_KEY}` from the environment and
+/// from `secrets.toml` mean the same key.
+pub const ETHERSCAN_API_KEY: &str = "ETHERSCAN_API_KEY";
+
+/// Whether `name` is a legal HTTP header name (RFC 9110 token characters).
+pub fn is_header_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b))
+}
+
+/// Why a header value cannot be exported via `ETH_RPC_HEADERS` (one line of
+/// comma-separated `name: value` pairs). The gateway sends a comma fine;
+/// a line break is never a valid header value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeaderValueProblem {
+    /// `\r` or `\n`.
+    LineBreak,
+    /// `,`.
+    Comma,
+}
+
+impl fmt::Display for HeaderValueProblem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            HeaderValueProblem::LineBreak => "a line break",
+            HeaderValueProblem::Comma => "a comma",
+        })
+    }
+}
+
+/// Why `value` cannot be exported via `ETH_RPC_HEADERS`, if it cannot.
+pub fn header_value_problem(value: &str) -> Option<HeaderValueProblem> {
+    if value.contains(['\r', '\n']) {
+        Some(HeaderValueProblem::LineBreak)
+    } else if value.contains(',') {
+        Some(HeaderValueProblem::Comma)
+    } else {
+        None
+    }
+}
+
 /// A named RPC endpoint: a URL plus optional headers scoped to that URL.
 /// Written as a plain string when it has no headers, else an inline table.
 #[derive(Clone, PartialEq, Eq, Deserialize)]
@@ -125,8 +171,29 @@ impl Endpoint {
     /// `ws://` or `wss://`: usable with `exec --direct`, never routed by the
     /// gateway.
     pub fn is_websocket(&self) -> bool {
-        let lower = self.url.trim_start().to_ascii_lowercase();
-        lower.starts_with("ws://") || lower.starts_with("wss://")
+        crate::urls::is_websocket(&self.url)
+    }
+
+    /// `http://` or `https://`: the only endpoints chainz can probe.
+    pub fn is_http(&self) -> bool {
+        crate::urls::is_http(&self.url)
+    }
+
+    /// Why `url` cannot be an endpoint URL, if it cannot: it must be
+    /// non-empty, free of whitespace, well-formed `${NAME}` templates, and
+    /// (with templates blanked) an `http(s)://` or `ws(s)://` URL with a
+    /// host. Never echoes the URL.
+    pub fn check_url(url: &str) -> anyhow::Result<()> {
+        if url.trim().is_empty() || url.chars().any(char::is_whitespace) {
+            anyhow::bail!("the endpoint URL is empty or malformed");
+        }
+        crate::template::references(url)?;
+        let parsed = url::Url::parse(&crate::template::blanked(url))
+            .map_err(|e| anyhow::anyhow!("the endpoint URL is not a valid URL ({e})"))?;
+        if !matches!(parsed.scheme(), "http" | "https" | "ws" | "wss") || parsed.host().is_none() {
+            anyhow::bail!("the endpoint URL must be an http(s):// or ws(s):// URL with a host");
+        }
+        Ok(())
     }
 }
 
@@ -157,10 +224,18 @@ impl Explorer {
     /// Etherscan-family explorers are left to forge's built-in Etherscan v2
     /// handling: exec exports only `ETHERSCAN_API_KEY` for them.
     pub fn is_etherscan(&self) -> bool {
-        url::Url::parse(&self.api.replace("${", "").replace('}', ""))
-            .ok()
-            .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
-            .is_some_and(|host| host.split('.').any(|label| label == "etherscan"))
+        crate::urls::host_has_label(&crate::template::blanked(&self.api), "etherscan")
+    }
+
+    /// The built-in `[explorers.etherscan]`: Etherscan's v2 multichain API
+    /// (the same URL v1 migration writes) with the key in
+    /// `${ETHERSCAN_API_KEY}`.
+    pub fn etherscan() -> Self {
+        Self {
+            api: "https://api.etherscan.io/v2/api?chainid=${CHAIN_ID}".to_string(),
+            key: Some(format!("${{{ETHERSCAN_API_KEY}}}")),
+            url: None,
+        }
     }
 }
 
@@ -382,6 +457,26 @@ impl Config {
             version: CONFIG_VERSION,
             ..Self::default()
         }
+    }
+
+    /// Every value that may hold `${NAME}` templates, with the record it
+    /// belongs to (`chains.<chain>.rpcs.<endpoint>` or
+    /// `explorers.<explorer>`), in file order: endpoint URLs and header
+    /// values, then explorer API URLs and keys.
+    pub fn templated_fields(&self) -> impl Iterator<Item = (String, &str)> {
+        let endpoints = self.chains.iter().flat_map(|(chain, c)| {
+            c.rpcs.iter().flat_map(move |(ep, e)| {
+                std::iter::once(e.url.as_str())
+                    .chain(e.headers.values().map(String::as_str))
+                    .map(move |value| (format!("chains.{chain}.rpcs.{ep}"), value))
+            })
+        });
+        let explorers = self.explorers.iter().flat_map(|(name, e)| {
+            std::iter::once(e.api.as_str())
+                .chain(e.key.as_deref())
+                .map(move |value| (format!("explorers.{name}"), value))
+        });
+        endpoints.chain(explorers)
     }
 
     /// The chain named exactly `name` (primary name, case-sensitive key).

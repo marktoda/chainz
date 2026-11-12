@@ -4,7 +4,7 @@
 //! choose between a detailed redaction and a compact summary; neither view
 //! exposes credentials embedded in user info, paths, queries, or fragments.
 
-use std::net::IpAddr;
+use crate::urls::{self, is_local_host as is_local, registrable_domain as public_domain};
 
 /// Preserve useful public URL structure while removing credential-bearing
 /// values. Malformed input fails closed.
@@ -36,7 +36,7 @@ pub fn redact(input: &str) -> String {
         }
     }
     if url.path() != "/" && !url.path().is_empty() {
-        let readable_path = url.path().replace("%7B", "{").replace("%7D", "}");
+        let readable_path = urls::unescape_braces(url.path());
         let templates = variable_templates(&readable_path);
         let redacted_path = if templates.is_empty() {
             "/REDACTED".to_string()
@@ -50,7 +50,7 @@ pub fn redact(input: &str) -> String {
     }
     // url::Url percent-encodes braces, but variable names are safe public
     // metadata and keeping ${NAME} intact makes redacted output actionable.
-    url.to_string().replace("%7B", "{").replace("%7D", "}")
+    urls::unescape_braces(url.as_str())
 }
 
 /// Produce the terse endpoint label used by compact human listings.
@@ -62,7 +62,7 @@ pub fn summarize(value: &str) -> String {
         return "<redacted endpoint>".to_string();
     };
 
-    let bare_host = host.trim_start_matches('[').trim_end_matches(']');
+    let bare_host = urls::bare(host);
     let display_host = if is_local(host) {
         if bare_host.contains(':') {
             format!("[{bare_host}]")
@@ -92,19 +92,6 @@ pub fn summarize(value: &str) -> String {
     let suffix = if has_details { "/…" } else { "" };
 
     format!("{}://{}{}{}", url.scheme(), display_host, port, suffix)
-}
-
-fn public_domain(host: &str) -> Option<&str> {
-    let mut labels = host.rsplitn(3, '.');
-    let suffix = labels.next()?;
-    let domain = labels.next()?;
-    let start = host.len().checked_sub(domain.len() + suffix.len() + 1)?;
-    Some(&host[start..])
-}
-
-fn is_local(host: &str) -> bool {
-    let bare_host = host.trim_start_matches('[').trim_end_matches(']');
-    bare_host.eq_ignore_ascii_case("localhost") || bare_host.parse::<IpAddr>().is_ok()
 }
 
 fn variable_templates(input: &str) -> Vec<String> {

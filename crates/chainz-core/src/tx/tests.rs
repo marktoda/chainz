@@ -330,7 +330,7 @@ fn set_address_rejects_reserved_names_signers_and_unknown_chains() {
     let set = |tx: &mut Tx, name: &str, scope: &str| {
         tx.set_address(name, scope, &addr(A1), Overwrite::Replace)
     };
-    for name in names::CONTEXT_TOKENS {
+    for name in names::context_tokens() {
         let err = set(&mut tx, name, "eth").unwrap_err();
         assert!(err.to_string().contains("context token"), "{name}: {err}");
     }

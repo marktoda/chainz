@@ -32,6 +32,37 @@ pub fn is_valid_name(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
+/// A valid variable name made from `text`: every character outside
+/// `[A-Za-z0-9_]` becomes `_`, and a leading `_` is added when it would be
+/// empty or start with a digit.
+pub fn clean_name(text: &str) -> String {
+    let mut out: String = text
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if out.is_empty() || out.starts_with(|c: char| c.is_ascii_digit()) {
+        out.insert(0, '_');
+    }
+    out
+}
+
+/// `input` with every `${…}` replaced by `x`: its shape without the
+/// values, for structural checks (is it a URL, what is its host).
+pub(crate) fn blanked(input: &str) -> String {
+    spans(input)
+        .map(|span| match span {
+            Span::Text(text) => text,
+            Span::Var(_) | Span::Unterminated(_) => "x",
+        })
+        .collect()
+}
+
 /// Whether `input` contains any `${` template.
 pub fn has_templates(input: &str) -> bool {
     input.contains("${")

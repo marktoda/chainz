@@ -1,22 +1,48 @@
 //! Naming rules: chain short names, endpoint names, label names, and the
 //! built-in short-name table used by `chain add` and v1 migration.
 
-/// Context tokens. Labels may not use these names.
-pub const CONTEXT_TOKENS: [&str; 6] = [
-    "rpc",
-    "chainid",
-    "chain",
-    "wallet",
-    "explorer",
-    "explorer_key",
+/// What a name in the token grammar's own vocabulary means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Token {
+    /// A context token (`@rpc`, `@wallet`…).
+    Context,
+    /// A v1 token kept for one release as an alias of this context token.
+    Deprecated(&'static str),
+    /// A removed token; the hint says what replaces it.
+    Removed(&'static str),
+}
+
+/// The token grammar's own names: context tokens, deprecated v1 tokens and
+/// removed ones. Labels and signers may not use any of them. The one table
+/// expansion, naming rules and completion read.
+pub const TOKENS: [(&str, Token); 10] = [
+    ("rpc", Token::Context),
+    ("chainid", Token::Context),
+    ("chain", Token::Context),
+    ("wallet", Token::Context),
+    ("explorer", Token::Context),
+    ("explorer_key", Token::Context),
+    ("chainname", Token::Deprecated("chain")),
+    ("verification_url", Token::Deprecated("explorer")),
+    ("verifier_api_key", Token::Deprecated("explorer_key")),
+    (
+        "key",
+        Token::Removed("pass --expose-key and read $RAW_PRIVATE_KEY instead"),
+    ),
 ];
 
-/// v1 token names kept as deprecated aliases for one release.
-pub const DEPRECATED_TOKENS: [(&str, &str); 3] = [
-    ("chainname", "chain"),
-    ("verification_url", "explorer"),
-    ("verifier_api_key", "explorer_key"),
-];
+/// What `name` means in the token grammar, if it is one of its names.
+pub fn token(name: &str) -> Option<Token> {
+    TOKENS.iter().find(|(n, _)| *n == name).map(|(_, t)| *t)
+}
+
+/// The context token names, in table order.
+pub fn context_tokens() -> impl Iterator<Item = &'static str> {
+    TOKENS
+        .iter()
+        .filter(|(_, t)| *t == Token::Context)
+        .map(|(n, _)| *n)
+}
 
 /// Names a fork may not take (they are `chainz fork` subcommands).
 pub const RESERVED_FORK_NAMES: [&str; 3] = ["ls", "list", "stop"];
@@ -67,10 +93,16 @@ pub fn short_name(chain_id: u64) -> Option<&'static str> {
         .map(|(_, name)| *name)
 }
 
-/// Whether `name` is a valid chain or endpoint name:
-/// `[a-z0-9][a-z0-9_-]*`, and not all digits (digits mean a chain ID).
+/// Whether `text` reads as a chain ID: all digits. Numbers always mean
+/// chain IDs, so no chain name or alias may be one.
+pub fn is_chain_id_like(text: &str) -> bool {
+    text.parse::<u64>().is_ok() || (!text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Whether `name` is a valid chain name: `[a-z0-9][a-z0-9_-]*`, and not
+/// [all digits](is_chain_id_like).
 pub fn is_valid_chain_name(name: &str) -> bool {
-    is_name(name) && !name.bytes().all(|b| b.is_ascii_digit())
+    is_name(name) && !is_chain_id_like(name)
 }
 
 /// Why `name` cannot be a chain name, if it cannot (see
@@ -82,29 +114,26 @@ pub fn check_chain_name(name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Whether `name` is a valid endpoint name: `[a-z0-9][a-z0-9_-]*`.
-pub fn is_valid_endpoint_name(name: &str) -> bool {
+/// Whether `name` is a valid endpoint or explorer name: `[a-z0-9][a-z0-9_-]*`.
+pub(crate) fn is_valid_endpoint_name(name: &str) -> bool {
     is_name(name)
 }
 
 /// Whether `name` is a valid label name: `[a-z0-9_-]+`, lowercase only
 /// (the token grammar matches names case-insensitively, so stored names
 /// are lowercase).
-pub fn is_valid_label_name(name: &str) -> bool {
+fn is_valid_label_name(name: &str) -> bool {
     !name.is_empty()
         && name
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
 }
 
-/// Whether `name` is taken by the token grammar itself: a context token,
-/// a deprecated v1 token, or the removed `@key`. Labels and signers may
-/// not use these names, since they would be shadowed by (or shadow) the
-/// token.
-pub fn is_reserved_token(name: &str) -> bool {
-    CONTEXT_TOKENS.contains(&name)
-        || DEPRECATED_TOKENS.iter().any(|(n, _)| *n == name)
-        || name == "key"
+/// Whether `name` is taken by the token grammar itself (see [`TOKENS`]).
+/// Labels and signers may not use these names, since they would be
+/// shadowed by (or shadow) the token.
+pub(crate) fn is_reserved_token(name: &str) -> bool {
+    token(name).is_some()
 }
 
 /// Why `name` cannot be a signer name, if it cannot: signer names match
@@ -141,11 +170,6 @@ pub fn check_label_name<'a>(
     Ok(())
 }
 
-/// The token-name alphabet, matched case-insensitively.
-pub fn is_token_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
-}
-
 fn is_name(name: &str) -> bool {
     let bytes = name.as_bytes();
     !bytes.is_empty()
@@ -168,54 +192,94 @@ pub fn slugify(input: &str) -> String {
     while out.ends_with('-') {
         out.pop();
     }
-    if out.is_empty() || out.bytes().all(|b| b.is_ascii_digit()) {
+    if out.is_empty() || is_chain_id_like(&out) {
         out.insert_str(0, "chain-");
     }
     out
 }
 
-/// Endpoint name derived from a URL's host: the registrable label
-/// (`mainnet.infura.io` → `infura`, `eth.llamarpc.com` → `llamarpc`),
-/// `local` for localhost and IPs, plus `-ws` for websocket URLs.
+/// What an endpoint's URL names it after.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UrlName {
+    /// The host's registrable label, slugified (`mainnet.infura.io` → `infura`).
+    Host(String),
+    /// `localhost` or an IP address.
+    Local,
+    /// No usable host (unparseable, or a template in the host).
+    Unknown,
+}
+
+impl UrlName {
+    /// The name of `url`'s host.
+    pub fn of(url: &str) -> Self {
+        match crate::urls::host(url) {
+            Some(host) if crate::urls::is_local_host(&host) => UrlName::Local,
+            Some(host) => UrlName::Host(slugify(crate::urls::domain_label(&host).unwrap_or("rpc"))),
+            None => UrlName::Unknown,
+        }
+    }
+
+    /// The host name, if there is a real one.
+    pub fn host(&self) -> Option<&str> {
+        match self {
+            UrlName::Host(name) => Some(name),
+            UrlName::Local | UrlName::Unknown => None,
+        }
+    }
+}
+
+/// Endpoint name derived from a URL: its [host name](UrlName), `local` for
+/// localhost and IPs, `rpc` without a usable host, plus `-ws` for
+/// websocket URLs.
 pub fn endpoint_name_for_url(url: &str) -> String {
-    let base = url::Url::parse(url)
-        .ok()
-        .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
-        .map(|host| {
-            let bare = host
-                .trim_start_matches('[')
-                .trim_end_matches(']')
-                .to_string();
-            if bare == "localhost" || bare.parse::<std::net::IpAddr>().is_ok() {
-                "local".to_string()
-            } else {
-                let labels: Vec<&str> = bare.split('.').filter(|l| !l.is_empty()).collect();
-                let label = match labels.len() {
-                    0 => "rpc",
-                    1 => labels[0],
-                    n => labels[n - 2],
-                };
-                slugify(label)
-            }
-        })
-        .unwrap_or_else(|| "rpc".to_string());
-    let lower = url.trim_start().to_ascii_lowercase();
-    if lower.starts_with("ws://") || lower.starts_with("wss://") {
+    let base = match UrlName::of(url) {
+        UrlName::Host(name) => name,
+        UrlName::Local => "local".to_string(),
+        UrlName::Unknown => "rpc".to_string(),
+    };
+    if crate::urls::is_websocket(url) {
         format!("{base}-ws")
     } else {
         base
     }
 }
 
-/// `base`, or `base-2`, `base-3`… — the first name `taken` rejects.
-pub fn unique_name(base: &str, taken: impl Fn(&str) -> bool) -> String {
+/// The provider an endpoint URL points at, for grouping endpoints that
+/// share an API key and rate limit: the host's registrable domain
+/// (`eth-mainnet.g.alchemy.com` → `alchemy.com`), or `host:port` for
+/// localhost, IPs and single-label hosts (each local node is its own
+/// provider). `None` without a usable host.
+pub fn provider_of(url: &str) -> Option<String> {
+    let parsed = url::Url::parse(url).ok()?;
+    let host = crate::urls::bare(parsed.host_str()?).to_ascii_lowercase();
+    match crate::urls::registrable_domain(&host) {
+        Some(domain) if !crate::urls::is_local_host(&host) => Some(domain.to_string()),
+        _ => Some(format!(
+            "{host}:{}",
+            parsed.port_or_known_default().unwrap_or(0)
+        )),
+    }
+}
+
+/// `base`, or `base{sep}2`, `base{sep}3`… — the first name `taken`
+/// rejects. Names use `-`, variables `_`.
+pub fn unique_with(base: &str, sep: char, taken: impl Fn(&str) -> bool) -> String {
     if !taken(base) {
         return base.to_string();
     }
-    (2..)
-        .map(|n| format!("{base}-{n}"))
-        .find(|candidate| !taken(candidate))
-        .expect("an unused suffix exists")
+    let mut n = 2u64;
+    loop {
+        let candidate = format!("{base}{sep}{n}");
+        if !taken(&candidate) {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
+/// `base`, or `base-2`, `base-3`… — the first name `taken` rejects.
+pub fn unique_name(base: &str, taken: impl Fn(&str) -> bool) -> String {
+    unique_with(base, '-', taken)
 }
 
 /// The closest name to `query` by edit distance, if reasonably close.
@@ -263,6 +327,15 @@ mod tests {
             "cloudflare-eth"
         );
         assert_eq!(endpoint_name_for_url("not a url"), "rpc");
+        assert_eq!(
+            provider_of("https://eth-mainnet.g.alchemy.com/v2/x").as_deref(),
+            Some("alchemy.com")
+        );
+        assert_eq!(
+            provider_of("http://127.0.0.1:8545").as_deref(),
+            Some("127.0.0.1:8545")
+        );
+        assert_eq!(provider_of("not a url"), None);
     }
 
     #[test]

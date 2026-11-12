@@ -16,7 +16,7 @@ use crate::extract::{self, Moved, VarTable};
 use crate::labels::{ALL_CHAINS, scope_phrase};
 use crate::model::{Chain, Config, Endpoint, Explorer, Signer};
 use crate::names;
-use crate::secrets::{BUILTIN_VARS, Secrets, SignerSecret};
+use crate::secrets::{Secrets, SignerSecret};
 use crate::store::{redact_parse_error, redact_toml_error};
 use anyhow::{Result, anyhow, bail};
 use serde::Serialize;
@@ -517,12 +517,7 @@ impl Tx {
 
     /// Set a variable in `secrets.toml`.
     pub fn set_var(&mut self, name: &str, v: &str) -> Result<()> {
-        if !crate::template::is_valid_name(name) {
-            bail!("variable name '{name}' must match [A-Za-z_][A-Za-z0-9_]*");
-        }
-        if BUILTIN_VARS.contains(&name) {
-            bail!("'{name}' is a built-in and cannot be set");
-        }
+        crate::secrets::check_var_name(name)?;
         let vars = implicit_table(&mut self.secrets, "vars")?;
         vars.set_implicit(false);
         vars.insert(name, value(v));

@@ -410,7 +410,7 @@ mod tests {
         chainz.transact(|tx| tx.set_var("K", "value")).unwrap();
         assert!(paths.secrets().exists() && paths.config().exists());
         use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(&paths.secrets())
+        let mode = std::fs::metadata(paths.secrets())
             .unwrap()
             .permissions()
             .mode();
@@ -419,7 +419,7 @@ mod tests {
         assert_eq!(reloaded.secrets().unwrap().vars["K"], "value");
 
         // An invalid edit writes nothing.
-        let before = std::fs::read_to_string(&paths.config()).unwrap();
+        let before = std::fs::read_to_string(paths.config()).unwrap();
         let err = chainz
             .transact(|tx| {
                 tx.set_default(Some("ghost"));
@@ -427,7 +427,7 @@ mod tests {
             })
             .unwrap_err();
         assert!(format!("{err:#}").contains("ghost"), "{err:#}");
-        assert_eq!(std::fs::read_to_string(&paths.config()).unwrap(), before);
+        assert_eq!(std::fs::read_to_string(paths.config()).unwrap(), before);
     }
 
     #[test]
@@ -435,11 +435,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = StorePaths::in_dir(dir.path().to_path_buf());
         std::fs::write(
-            &paths.config(),
+            paths.config(),
             "version = 2\n[chains.eth]\nid = 1\nrpc = \"gw\"\nrpcs.gw = { url = \"https://gw.example/${CHAIN}/${CHAIN_ID}\", headers = { x-key = \"${STORE_TEST_GW}\" } }\nrpcs.bad = \"https://x.example/${STORE_TEST_UNSET}\"\n",
         )
         .unwrap();
-        std::fs::write(&paths.secrets(), "[vars]\nSTORE_TEST_GW = \"gw-secret\"\n").unwrap();
+        std::fs::write(paths.secrets(), "[vars]\nSTORE_TEST_GW = \"gw-secret\"\n").unwrap();
         let chainz = Chainz::open_at(paths, LoadMode::Strict).unwrap();
         let chain = &chainz.config().chains["eth"];
         let gw = chainz
@@ -462,13 +462,13 @@ mod tests {
     fn loose_permissions_are_tightened_on_read() {
         let dir = tempfile::tempdir().unwrap();
         let paths = StorePaths::in_dir(dir.path().to_path_buf());
-        std::fs::write(&paths.config(), new_config()).unwrap();
+        std::fs::write(paths.config(), new_config()).unwrap();
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&paths.config(), std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::set_permissions(paths.config(), std::fs::Permissions::from_mode(0o644)).unwrap();
         let chainz = Chainz::open_at(paths.clone(), LoadMode::Strict).unwrap();
         // Tightened quietly (only a failed chmod is worth a notice).
         assert!(chainz.take_notices().is_empty());
-        let mode = std::fs::metadata(&paths.config())
+        let mode = std::fs::metadata(paths.config())
             .unwrap()
             .permissions()
             .mode();
@@ -509,11 +509,11 @@ mod tests {
     fn transaction_parse_errors_do_not_echo_the_source_line() {
         let dir = tempfile::tempdir().unwrap();
         let paths = StorePaths::in_dir(dir.path().to_path_buf());
-        std::fs::write(&paths.config(), new_config()).unwrap();
+        std::fs::write(paths.config(), new_config()).unwrap();
         let mut chainz = Chainz::open_at(paths.clone(), LoadMode::Strict).unwrap();
         // Broken by hand after loading: transact re-reads and re-parses.
         std::fs::write(
-            &paths.config(),
+            paths.config(),
             "version = 2\nx = \"https://rpc.example/v3/super-secret-key\" trailing\n",
         )
         .unwrap();
@@ -521,8 +521,8 @@ mod tests {
         assert!(!err.contains("super-secret-key"), "{err}");
         assert!(err.contains("config.toml"), "{err}");
 
-        std::fs::write(&paths.config(), new_config()).unwrap();
-        std::fs::write(&paths.secrets(), "K = \"super-secret-var\" trailing\n").unwrap();
+        std::fs::write(paths.config(), new_config()).unwrap();
+        std::fs::write(paths.secrets(), "K = \"super-secret-var\" trailing\n").unwrap();
         let err = format!("{:#}", chainz.transact(|_| Ok(())).unwrap_err());
         assert!(!err.contains("super-secret-var"), "{err}");
     }
@@ -531,9 +531,9 @@ mod tests {
     fn secrets_parse_errors_do_not_echo_values() {
         let dir = tempfile::tempdir().unwrap();
         let paths = StorePaths::in_dir(dir.path().to_path_buf());
-        std::fs::write(&paths.config(), new_config()).unwrap();
+        std::fs::write(paths.config(), new_config()).unwrap();
         std::fs::write(
-            &paths.secrets(),
+            paths.secrets(),
             "[vars]\nK = \"super-secret-value\" trailing\n",
         )
         .unwrap();

@@ -123,8 +123,24 @@ pub struct Builtins<'a> {
     pub chain: Option<&'a str>,
 }
 
+/// `${CHAIN_ID}`: the chain's ID.
+pub const CHAIN_ID_VAR: &str = "CHAIN_ID";
+/// `${CHAIN}`: the chain's short name.
+pub const CHAIN_VAR: &str = "CHAIN";
 /// Names that always resolve from the chain context.
-pub const BUILTIN_VARS: [&str; 2] = ["CHAIN_ID", "CHAIN"];
+pub const BUILTIN_VARS: [&str; 2] = [CHAIN_ID_VAR, CHAIN_VAR];
+
+/// Why `name` cannot be a variable in `secrets.toml`, if it cannot: it must
+/// be a valid template name and not a built-in.
+pub fn check_var_name(name: &str) -> anyhow::Result<()> {
+    if !crate::template::is_valid_name(name) {
+        anyhow::bail!("variable name '{name}' must match [A-Za-z_][A-Za-z0-9_]*");
+    }
+    if BUILTIN_VARS.contains(&name) {
+        anyhow::bail!("'{name}' is built in (the chain being run); pick another name");
+    }
+    Ok(())
+}
 
 /// Resolves `${NAME}` for one context: built-ins, then the environment,
 /// then `secrets.toml` (loaded lazily, only when the environment misses).
@@ -160,18 +176,15 @@ impl<'a> VarResolver<'a> {
 
     /// Look up one name.
     pub fn lookup(&self, name: &str) -> anyhow::Result<Option<Cow<'a, str>>> {
-        match name {
-            "CHAIN_ID" => {
-                if let Some(id) = self.builtins.chain_id {
-                    return Ok(Some(Cow::Owned(id.to_string())));
-                }
-            }
-            "CHAIN" => {
-                if let Some(chain) = self.builtins.chain {
-                    return Ok(Some(Cow::Borrowed(chain)));
-                }
-            }
-            _ => {}
+        if name == CHAIN_ID_VAR
+            && let Some(id) = self.builtins.chain_id
+        {
+            return Ok(Some(Cow::Owned(id.to_string())));
+        }
+        if name == CHAIN_VAR
+            && let Some(chain) = self.builtins.chain
+        {
+            return Ok(Some(Cow::Borrowed(chain)));
         }
         let shadowed =
             crate::context::CONTRACT_VARS.contains(&name) && (self.env)("CHAINZ_CHAIN").is_some();

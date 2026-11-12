@@ -25,6 +25,7 @@ pub mod signer;
 pub mod store;
 pub mod template;
 pub mod tx;
+mod urls;
 pub mod validate;
 
 pub use address::Address;

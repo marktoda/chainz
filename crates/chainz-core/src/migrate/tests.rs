@@ -174,8 +174,8 @@ fn config_toml_holds_no_extracted_secret() {
 fn migration_writes_once_in_order_and_backs_up_v1() {
     let dir = tempfile::tempdir().unwrap();
     let paths = StorePaths::in_dir(dir.path().join("chainz"));
-    std::fs::create_dir_all(&paths.dir()).unwrap();
-    std::fs::write(&paths.v1_config(), FIXTURE).unwrap();
+    std::fs::create_dir_all(paths.dir()).unwrap();
+    std::fs::write(paths.v1_config(), FIXTURE).unwrap();
 
     let handles: Vec<_> = (0..8)
         .map(|_| {
@@ -209,7 +209,7 @@ fn migration_writes_once_in_order_and_backs_up_v1() {
 fn open_auto_migrates() {
     let dir = tempfile::tempdir().unwrap();
     let paths = StorePaths::in_dir(dir.path().to_path_buf());
-    std::fs::write(&paths.v1_config(), FIXTURE).unwrap();
+    std::fs::write(paths.v1_config(), FIXTURE).unwrap();
     let chainz = Chainz::open_at(paths.clone(), LoadMode::Strict).unwrap();
     assert!(chainz.exists());
     assert_eq!(chainz.config().chains.len(), 17);

@@ -3,9 +3,9 @@
 //! but never echo a URL, header value or secret.
 
 use crate::address::Address;
-use crate::model::{Backend, CONFIG_VERSION, Config, Need};
+use crate::model::{self, Backend, CONFIG_VERSION, Config, Need};
 use crate::names;
-use crate::secrets::{BUILTIN_VARS, Secrets};
+use crate::secrets::Secrets;
 use crate::template;
 use std::collections::HashMap;
 
@@ -40,10 +40,8 @@ pub fn issues(config: &Config, secrets: Option<&Secrets>) -> Vec<String> {
     let mut taken: HashMap<String, String> = HashMap::new();
     let mut ids: HashMap<u64, &str> = HashMap::new();
     for (name, chain) in &config.chains {
-        if !names::is_valid_chain_name(name) {
-            err(format!(
-                "chain name '{name}' must match [a-z0-9][a-z0-9_-]* and not be all digits"
-            ));
+        if let Err(e) = names::check_chain_name(name) {
+            err(e.to_string());
         }
         if let Some(other) = ids.insert(chain.id, name) {
             err(format!(
@@ -56,7 +54,7 @@ pub fn issues(config: &Config, secrets: Option<&Secrets>) -> Vec<String> {
                 err(format!("chain '{name}' has an empty or invalid alias"));
                 continue;
             }
-            if n.parse::<u64>().is_ok() {
+            if names::is_chain_id_like(n) {
                 err(format!(
                     "chain '{name}' alias '{n}' is a number; numbers mean chain IDs"
                 ));
@@ -113,21 +111,22 @@ pub fn issues(config: &Config, secrets: Option<&Secrets>) -> Vec<String> {
                 err(format!("chain '{name}' endpoint '{ep_name}': {e}"));
             }
             for (header, value) in &endpoint.headers {
-                if header.is_empty() || !header.bytes().all(is_header_name_byte) {
+                if !model::is_header_name(header) {
                     err(format!(
                         "chain '{name}' endpoint '{ep_name}' has an invalid header name '{header}'"
                     ));
                 }
-                if value.contains(['\r', '\n']) {
-                    err(format!(
-                        "chain '{name}' endpoint '{ep_name}' header '{header}' contains a line break"
-                    ));
-                }
-                if value.contains(',') && !template::has_templates(value) {
-                    err(format!(
-                        "chain '{name}' endpoint '{ep_name}' header '{header}' contains a comma, \
+                // A line break may not be stored at all; a comma only in a
+                // literal (a template's value is checked when exported).
+                match model::header_value_problem(value) {
+                    Some(problem @ model::HeaderValueProblem::LineBreak) => err(format!(
+                        "chain '{name}' endpoint '{ep_name}' header '{header}' contains {problem}"
+                    )),
+                    Some(problem) if !template::has_templates(value) => err(format!(
+                        "chain '{name}' endpoint '{ep_name}' header '{header}' contains {problem}, \
                          which cannot be exported via ETH_RPC_HEADERS"
-                    ));
+                    )),
+                    _ => {}
                 }
                 if let Err(e) = template::references(value) {
                     err(format!(
@@ -225,13 +224,8 @@ pub fn issues(config: &Config, secrets: Option<&Secrets>) -> Vec<String> {
 
     if let Some(secrets) = secrets {
         for name in secrets.vars.keys() {
-            if !template::is_valid_name(name) {
-                err(format!(
-                    "variable name '{name}' must match [A-Za-z_][A-Za-z0-9_]*"
-                ));
-            }
-            if BUILTIN_VARS.contains(&name.as_str()) {
-                err(format!("variable name '{name}' is reserved for a built-in"));
+            if let Err(e) = crate::secrets::check_var_name(name) {
+                err(e.to_string());
             }
         }
     }
@@ -244,11 +238,6 @@ pub fn validate(config: &Config, secrets: Option<&Secrets>) -> anyhow::Result<()
         None => Ok(()),
         Some(first) => Err(anyhow::anyhow!(first)),
     }
-}
-
-/// RFC 9110 token characters, the legal alphabet for HTTP header names.
-pub(crate) fn is_header_name_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte)
 }
 
 #[cfg(test)]

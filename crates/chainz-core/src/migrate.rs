@@ -241,7 +241,7 @@ pub fn inline_credential(url: &str) -> Option<&'static str> {
             return Some("query parameter");
         }
     }
-    let decoded = parsed.path().replace("%7B", "{").replace("%7D", "}");
+    let decoded = crate::urls::unescape_braces(parsed.path());
     for segment in decoded.split('/') {
         if segment.len() >= 16
             && !template::has_templates(segment)
@@ -289,19 +289,7 @@ fn var_renames(vars: &BTreeMap<String, String>) -> HashMap<String, String> {
     let mut taken: HashSet<String> = vars.keys().filter(|n| keep(n)).cloned().collect();
     let mut renames = HashMap::new();
     for name in vars.keys().filter(|n| !keep(n)) {
-        let mut clean: String = name
-            .chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() || c == '_' {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .collect();
-        if clean.is_empty() || clean.starts_with(|c: char| c.is_ascii_digit()) {
-            clean.insert(0, '_');
-        }
+        let mut clean = template::clean_name(name);
         if BUILTIN_VARS.contains(&clean.as_str()) {
             clean.push_str("_VAR");
         }
@@ -328,7 +316,7 @@ pub fn plan(v1_json: &str) -> Result<Plan> {
     // is rewritten in one pass, so renames never chain.
     let renames = var_renames(&v1.variables);
     let rename = |text: &str| template::rename_vars(text, &renames);
-    let mut vars = VarTable::new();
+    let mut vars = VarTable::default();
     for (name, value) in &v1.variables {
         let new = renames.get(name).unwrap_or(name);
         if new != name {
@@ -583,7 +571,8 @@ fn migrate_chains(
             let base = names::short_name(chain.chain_id)
                 .map(str::to_string)
                 .unwrap_or_else(|| names::slugify(&chain.name));
-            let name = names::unique_name(&base, |n| used.contains(n) || n.parse::<u64>().is_ok());
+            let name =
+                names::unique_name(&base, |n| used.contains(n) || names::is_chain_id_like(n));
             used.insert(name.clone());
             plans[i].name = name;
         }
@@ -679,7 +668,7 @@ fn migrate_chains(
             let alias = raw.trim();
             if alias.is_empty()
                 || alias.eq_ignore_ascii_case(&plan.name)
-                || alias.parse::<u64>().is_ok()
+                || names::is_chain_id_like(alias)
                 || aliases.iter().any(|a| a.eq_ignore_ascii_case(alias))
             {
                 continue;
@@ -773,7 +762,7 @@ fn migrate_endpoints(
         for (header, value) in headers {
             let mut value = rename(value);
             let at = format!("chain '{name}' endpoint '{ep_name}' header '{header}'");
-            if header.is_empty() || !header.bytes().all(crate::validate::is_header_name_byte) {
+            if !crate::model::is_header_name(header) {
                 let kept = if value.is_empty() || !extract::is_literal(&value) {
                     String::new()
                 } else {
@@ -800,7 +789,7 @@ fn migrate_endpoints(
                 ));
                 continue;
             }
-            if value.contains([',', '\r', '\n']) {
+            if crate::model::header_value_problem(&value).is_some() {
                 unexportable.push(at);
             }
             endpoint.headers.insert(header.to_string(), value);
@@ -886,27 +875,21 @@ fn migrate_explorer(
     if let Some(existing) = groups.get(&group) {
         return Some(existing.clone());
     }
-    let host = names::endpoint_name_for_url(&group.0);
-    let host = host.trim_end_matches("-ws");
+    let host = names::UrlName::of(&group.0);
     let exp_name = names::unique_name(
-        if host == "rpc" || host == "local" {
-            "explorer"
-        } else {
-            host
+        match host.host() {
+            Some(host) if host != "rpc" && host != "local" => host,
+            _ => "explorer",
         },
         |n| explorers.contains_key(n),
     );
-    let key_ref = group.1.as_deref().map(|k| {
-        extract::extract_explorer_key(&exp_name, k, vars).unwrap_or_else(|| k.to_string())
-    });
-    explorers.insert(
-        exp_name.clone(),
-        Explorer {
-            api: group.0.clone(),
-            key: key_ref,
-            url: None,
-        },
-    );
+    let mut explorer = Explorer {
+        api: group.0.clone(),
+        key: group.1.clone(),
+        url: None,
+    };
+    extract::extract_explorer_key(&exp_name, &mut explorer, vars);
+    explorers.insert(exp_name.clone(), explorer);
     groups.insert(group, exp_name.clone());
     Some(exp_name)
 }

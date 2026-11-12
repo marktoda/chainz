@@ -15,7 +15,10 @@
 //! caller (an argument that is entirely one unknown token is an error, an
 //! unknown token inside a longer argument passes through unchanged).
 
-use crate::names::is_token_byte;
+/// The token-name alphabet, matched case-insensitively.
+fn is_token_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
+}
 
 /// One `@name[:chain]` occurrence.
 #[derive(Debug, Clone, PartialEq, Eq)]
