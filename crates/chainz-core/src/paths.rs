@@ -1,4 +1,4 @@
-//! Filesystem locations (XDG layout; see the design's "File layout").
+//! Filesystem locations (XDG layout).
 //!
 //! | Path | Holds |
 //! | --- | --- |

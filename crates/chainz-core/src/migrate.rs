@@ -1,5 +1,4 @@
-//! One-time migration from the v1 `config.json` (see the design's
-//! "Migration from v1", steps 1–7).
+//! One-time migration from the 0.4 `config.json`.
 //!
 //! 1. Runs under the config write lock and re-checks that `config.toml` is
 //!    still absent, so parallel `exec`s migrate exactly once.

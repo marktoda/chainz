@@ -3,7 +3,7 @@
 //! [`Update`]s over a channel. Nothing here draws, and the UI thread never
 //! waits on anything here.
 //!
-//! Traffic budget, per the design: one head request per chain per tick
+//! Traffic budget: one head request per chain per tick
 //! (paced by block time), one balance request per chain every 30 s, and
 //! probes only for the chain whose endpoints are on screen, and only while
 //! someone is pressing keys.

@@ -421,8 +421,7 @@ cargo test --workspace
 scripts/perf-gate.sh V1_BIN V2_BIN
 ```
 
-The design is in [`docs/v2/design.md`](docs/v2/design.md); crate interfaces
-are in [`docs/v2/interfaces.md`](docs/v2/interfaces.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/architecture.md](docs/architecture.md).
 
 ## License
 

@@ -2,8 +2,7 @@
 
 ## 2.0.0 - Unreleased
 
-A ground-up rewrite as a local multichain workbench. The design is in
-`docs/v2/design.md` and the crate contracts in `docs/v2/interfaces.md`.
+A ground-up rewrite as a local multichain workbench.
 Builds of `main` before the release had a few commands and flags that
 changed before 2.0.0; they are listed under Removed and Changed.
 

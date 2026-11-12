@@ -6,7 +6,7 @@
 //! cargo run --release -p chainz-serve --example latency [-- ROUNDS]
 //! ```
 //!
-//! The budget (docs/v2/design.md) is under 1 ms of added p50 latency.
+//! The budget (docs/architecture.md, Performance) is under 1 ms of added p50 latency.
 
 use std::time::Duration;
 use std::time::Instant;
