@@ -185,7 +185,7 @@ impl Tx {
 
     /// Rename a chain key in place, updating `default` and label scopes.
     /// An alias equal to the new name is dropped (the name answers already).
-    pub fn rename_chain(&mut self, old: &str, new: &str) -> Result<()> {
+    pub(crate) fn rename_chain(&mut self, old: &str, new: &str) -> Result<()> {
         names::check_chain_name(new)?;
         let doc = &mut self.config;
         let chains = doc.get_mut("chains").and_then(Item::as_table_like_mut);
@@ -213,7 +213,7 @@ impl Tx {
     }
 
     /// Replace a chain's aliases.
-    pub fn set_aliases(&mut self, chain: &str, aliases: &[String]) -> Result<()> {
+    pub(crate) fn set_aliases(&mut self, chain: &str, aliases: &[String]) -> Result<()> {
         self.update_chain(chain, |c| {
             c.aliases = aliases.to_vec();
             Ok(())
@@ -405,7 +405,7 @@ impl Tx {
     // --------------------------------------------------------- explorers
 
     /// Write `[explorers.NAME]`, merging into an existing record.
-    pub fn set_explorer(&mut self, name: &str, explorer: &Explorer) -> Result<()> {
+    pub(crate) fn set_explorer(&mut self, name: &str, explorer: &Explorer) -> Result<()> {
         let config = self.config()?;
         let old = config.explorers.get(name);
         let explorers = implicit_table(&mut self.config, "explorers")?;

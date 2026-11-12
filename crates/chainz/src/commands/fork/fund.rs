@@ -11,7 +11,7 @@ use chainz_rpc::{BlockId, RpcClient, Target};
 use serde_json::{Value, json};
 
 /// Native units given to the signer.
-pub const NATIVE_AMOUNT: &str = "1000";
+const NATIVE_AMOUNT: &str = "1000";
 
 /// One `name=amount` pair, resolved before anvil starts.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,7 +51,7 @@ pub struct FundReport {
 }
 
 /// Split `usdc=10000,weth=5` into `(name, amount)` pairs.
-pub fn parse_spec(spec: &str) -> Result<Vec<(String, String)>> {
+fn parse_spec(spec: &str) -> Result<Vec<(String, String)>> {
     let mut pairs = Vec::new();
     for part in spec.split(',').map(str::trim).filter(|p| !p.is_empty()) {
         let (name, amount) = part.split_once('=').ok_or_else(|| {
