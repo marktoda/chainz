@@ -1,390 +1,333 @@
 # Chainz
 
-A CLI tool for managing EVM chain configurations
+A local multichain workbench for EVM development. Chainz keeps one source of
+truth for your chains, endpoints, signers and addresses, and hands that
+context to the tools you already use:
 
-## Features
+```bash
+chainz exec base -- cast balance @wallet
+chainz exec arb  -- forge script Deploy --broadcast
+chainz exec 1    -- bun tools/cli/rl.ts quote
+```
 
-- Interactive chain discovery and configuration (backed by [chainlist](https://chainid.network), cached locally)
-- Short chain names with aliases and prefix matching (`chainz exec eth`)
-- RPC health checking (`chainz doctor`, with `--fix` failover to healthy RPCs)
-- Safe-by-default private key management (OS keyring, encrypted, 1Password, explicit plaintext)
-- Multiple RPC support per chain and a configurable default chain
-- Per-RPC custom HTTP headers (`--header`) for gateways that authenticate
-  outside the URL
-- RPC-only chain configurations when signing is not needed
-- Environment variable interpolation
-- Command execution with chain-specific variable expansion
-- Shell completions and `--json` output for scripting
+Around that hot path sit three optional surfaces: a local RPC gateway
+(`serve`), a live dashboard (`top`), and disposable anvil forks (`fork`).
 
-## Installation
+> **Upgrading from 0.x?** v2 migrates `config.json` automatically on first
+> run. See [Migrating from v1](#migrating-from-v1).
 
-Requires Rust 1.90+.
+## Install
+
+Requires Rust 1.90+. Linux and macOS.
 
 ```bash
 cargo install chainz --locked
 ```
 
-To install the latest development version instead:
+Forks need [Foundry](https://getfoundry.sh)'s `anvil` on `PATH`.
+
+### Completions
+
+Completions are dynamic: the shell asks chainz as you type, so chain names
+and aliases, live forks, endpoints (of the chain on the line), signers,
+labels, variables and `exec`'s `@tokens` (`@usdc`, `@usdc:arb`) come from
+your current config. Load the loader at shell startup:
 
 ```bash
-git clone https://github.com/marktoda/chainz.git
-cd chainz
-cargo install --path .
+source <(chainz completions zsh)     # ~/.zshrc, after compinit
+source <(chainz completions bash)    # ~/.bashrc
+chainz completions fish | source     # ~/.config/fish/config.fish
 ```
 
-## Quick Start
+Elvish (`eval (chainz completions elvish | slurp)`) and PowerShell
+(`chainz completions powershell | Out-String | Invoke-Expression`) work too.
+Generate the loader at startup rather than saving it, so it follows upgrades.
+Completing never migrates, writes or unlocks anything.
+
+## The five nouns
+
+| Noun | What it is | Commands |
+| --- | --- | --- |
+| **Chain** | A network you work on, with a short name (`eth`, `base`, `arb`) and aliases | `chain ls/add/show/edit/rename/alias/rm`, `use` |
+| **Endpoint** | A named RPC URL on a chain; one is active, some may be failover | `rpc ls/add/use/rm/bench/discover` |
+| **Signer** | A reference to key material plus its cached address | `signer add/ls/rm/migrate` |
+| **Address** | A label for a contract or wallet, per chain or everywhere | `addr add/ls/rm/find`, `label` |
+| **Runtime** | Live processes chainz started: the gateway and forks | `serve`, `fork`, `top` |
+
+Chain references accept a name, an alias, a chain ID, an unambiguous prefix,
+or a live fork name. Destructive commands (`chain rm`) take only an exact
+name or ID.
+
+## Quick start
 
 ```bash
-# Initialize with interactive wizard
-chainz init
+chainz chain add 8453                 # from chainlist; becomes `base`
+chainz rpc add base https://base-mainnet.infura.io/v3/'${INFURA_KEY}' --use
+printf %s "$KEY" | chainz var set INFURA_KEY --stdin
+chainz signer add default             # stored in the OS keyring
+chainz use base                       # default chain for `exec -- …`
 
-# Add a new chain
-chainz add
-
-# List configured chains
-chainz list
-
-# Inspect one chain in detail
-chainz show ethereum
-
-# Removal requires an exact primary name or chain ID
-chainz remove ethereum
-
-# Execute a command for a given chain (prefix matching works)
-chainz exec eth -- cast block-number
-21532741
-
-# Set a default chain, then omit it
-chainz use ethereum
+chainz ls
 chainz exec -- cast block-number
-
-# Check config and RPC health; switch dead RPCs to healthy ones
-chainz doctor --fix
-
-# Open a subshell with chain environment (prompt shows the chain)
-chainz shell ethereum
-
-# Install shell completions (zsh example)
-chainz completions zsh > ~/.zfunc/_chainz
+chainz doctor
 ```
 
-## Usage
+## exec: run a tool with chain context
 
-### Adding Chains
+`chainz exec CHAIN -- CMD…` resolves the chain, exports its context,
+rewrites `@tokens` in the arguments, and then **replaces itself** with the
+command (`execvp`). Signals, exit codes and TTYs behave exactly as if you had
+run the command directly. Chainz overhead is about 3 ms.
 
-Chainz provides an interactive wizard for adding chains:
+**Environment**
+
+| Variable | Value |
+| --- | --- |
+| `ETH_RPC_URL` | the active endpoint, or the gateway URL while `serve` runs |
+| `ETH_RPC_HEADERS` | endpoint headers (direct connections only) |
+| `CHAIN_ID`, `CHAINZ_CHAIN` | chain ID and short name |
+| `ETHERSCAN_API_KEY` | the chain's explorer key |
+| `VERIFIER_URL`, `VERIFIER_API_KEY` | for non-Etherscan explorers |
+| `ETH_FROM`, `WALLET_ADDRESS` | the signer's cached address |
+| `ETH_KEYSTORE` | Foundry keystore path, for keystore signers |
+| `RAW_PRIVATE_KEY` | only with `--expose-key` |
+
+**Tokens**
+
+| Token | Expands to |
+| --- | --- |
+| `@rpc`, `@chainid`, `@chain` | endpoint URL, chain ID, short name |
+| `@wallet`, `@funder` | the chain's signer address, or a named signer's |
+| `@explorer`, `@explorer_key` | verifier URL and key |
+| `@usdc`, `@myrouter` | an address-book label on this chain |
+| `@usdc:arb` | a label on another chain |
+| `@@` | a literal `@` |
+
+An unknown token is an error with a suggestion (`@udsc` → did you mean
+`@usdc`?), never passed through. `--explain` prints the context, exported
+names and rewritten argv without running anything (with `--expose-key` it
+shows `RAW_PRIVATE_KEY` redacted and never unlocks the key).
+
+Exit codes follow the shell: the command's own status, 127 when the command
+does not exist, 126 when it can't be executed, and 130 when you interrupt a
+chainz prompt.
 
 ```bash
-> chainz add
-Chain Selection
-══════════════════════════════════════════════════════
-? Type to search and select a chain
-> ethereum (1)
-  optimism (10)
-  arbitrum (42161)
-  polygon (137)
-  ...
-
-RPC Configuration
-══════════════════════════════════════════════════════
-Testing RPCs...
-13 of 18 RPCs healthy
-? Select an RPC
-> RPC 1 · https://…alchemy.com/… (120ms)
-  RPC 2 · https://…llamarpc.com (184ms)
-
-Key Configuration
-══════════════════════════════════════════════════════
-? Select a key
-> default (0x123...789)
-  deployer (0xabc...def)
-  Add new key
-
-Chain added: ethereum (ChainId: 1)
+chainz exec base -- cast call @usdc 'balanceOf(address)(uint256)' @wallet
+chainz exec eth --signer funder -- cast send @wallet --value 1ether
+chainz exec op --rpc llama -- cast block-number
+eval "$(chainz env base)"             # export into the current shell
+chainz shell base                     # or open a subshell
 ```
 
-### Managing Chains
-
-`list` is a compact index; the active RPC is redacted so credential-bearing
-URLs are safe to display. The `*` marks the default chain:
+## serve: local RPC gateway
 
 ```bash
-> chainz list
-  CHAIN      ID  RPC                             KEY
-* ethereum    1  https://…llamarpc.com           default
-  optimism   10  https://…optimism.io            —
-* default chain
+chainz serve            # foreground, with a live summary line
+chainz serve --detach   # background; `serve status`, `serve stop`
+chainz serve log -f --chain base --method eth_call
 ```
 
-Use `show` for one chain's details, or `list --verbose` for all details.
-Both support the explicit `--show-secrets` escape hatch:
+An opt-in loopback proxy on `127.0.0.1:18545`. While it runs, `exec` routes
+through it automatically (`--direct` bypasses it). It gives you:
+
+- **Failover you approve.** The active endpoint is tried first. Reads retry
+  only on the endpoints in the chain's `failover = [...]` list. Transactions
+  are never retried or sent elsewhere.
+- **Rate-limit smoothing.** Adaptive per-endpoint token buckets, and
+  `Retry-After` honoured on the same endpoint for short waits.
+- **An inspector.** Every request is recorded, with addresses shown as labels
+  (`eth_call → @usdc.balanceOf`). `--log FILE` appends JSONL.
+- **Metrics.** Request counts, errors, p50 and p95 latency, 429s and
+  failovers per chain, endpoint and method.
+
+Each start mints a random token; URLs look like
+`http://127.0.0.1:18545/<token>/base`. Endpoint secrets and headers stay
+inside the gateway. Config edits are picked up live.
+
+## top: live dashboard
 
 ```bash
-chainz show ethereum
-chainz show ethereum --json
-chainz list --verbose
+chainz top             # interactive
+chainz top --once      # one snapshot; add --json for scripts
 ```
 
-Update interactively, or target a chain and make a direct change:
+One row per chain: head block, block age and time, gas price, active endpoint
+and latency, recent health, and your signer's balances. When the gateway
+runs, a traffic pane streams its requests. Live forks appear as rows marked
+`fork`.
+
+## fork: disposable anvil forks
 
 ```bash
-> chainz update
-? Select chain to update
-? What would you like to update?
-> RPC URL
-  Key
-  Verification
-  Rename
-  Save and finish
+$ chainz fork base --fund usdc=10000,weth=5
+base-fork  http://127.0.0.1:8601  block 38,112,904  chain 8453
 
-> chainz update ethereum --name eth --no-key
-> chainz update eth --rpc-url https://eth.llamarpc.com
+$ chainz exec base-fork -- cast send @usdc 'transfer(address,uint256)' @myrouter 1e6 --unlocked
+$ chainz fork ls
+$ chainz fork stop base-fork        # or Ctrl-C, or --all
 ```
 
-Chains may omit a key entirely. This is useful for read-only RPC commands;
-`@wallet`, `@key`, and `--expose-key` fail with a clear message until a key is
-attached.
+- The fork is a chain name while it runs, and only by name: `exec 8453`
+  always means the real chain.
+- Anvil reads state through a proxy pinned to one endpoint (and through the
+  gateway when it runs). `--block N` requires an archive-capable endpoint.
+- Your signer is funded with ETH by default; `--fund` adds tokens,
+  `--no-fund` skips it.
+- A fork shares its parent's chain ID, so chainz refuses `--expose-key` on
+  forks: sign with `--unlocked`. Use `--chain-id N` if you need real
+  signatures.
+- Anvil dies with its supervisor, even on SIGKILL (Linux).
+- `fork ls --json` lists forks with their URL and block height. A
+  foreground fork stopped by Ctrl-C exits 130; by `fork stop` or SIGTERM,
+  143.
 
-### Custom RPC headers
-
-Some RPC endpoints (internal gateways, private proxies) authenticate with a
-custom HTTP header instead of a URL-embedded key:
+## Address book
 
 ```bash
-# Store the secret once
-chainz var set GW_SECRET --stdin
-
-# Attach the header to a specific RPC URL
-chainz update ethereum \
-  --rpc-url https://gateway.example.com/rpc/1 \
-  --header 'x-internal-service-secret: ${GW_SECRET}'
+chainz addr add myrouter 0x… --chain base
+chainz addr add my-safe 0x… --all-chains
+chainz addr ls --chain base --builtin   # include built-in tokens
+chainz addr find 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
+chainz addr ls --json                    # also `addr find --json`
+cast logs … | chainz label --chain base  # 0x… → usdc(0x…)
+chainz addr import .                     # label contracts from Foundry broadcast/
 ```
 
-Headers are scoped to their URL — fallback RPCs on the same chain never
-receive them. `chainz doctor` sends them when probing, and `exec`/`shell`
-export them as `ETH_RPC_HEADERS`, which foundry's `cast` and `forge` pick up
-automatically. Header values are redacted in `list`/`show` output unless
-`--show-secrets` is passed.
+Built-in labels cover major tokens
+(`weth`, `usdc`, `usdce`, `usdt`, `wbtc`, `dai`) where they exist. Your own
+labels take precedence; `chainz doctor` notes each label that shadows a
+built-in token. `chainz doctor --tokens` verifies the built-in registry on
+chain.
 
-### Executing Commands
-
-Execute commands with chain-specific variables expanded. Chains can be
-referenced by name, alias, unambiguous prefix, or chain ID:
+`chainz addr import PATH…` labels the contracts a `forge script --broadcast`
+deployed. PATH is a `run-latest.json` (or any run file, named explicitly) or a
+directory: a project's `broadcast/` is searched for `run-latest.json`, skipping
+history files, `dry-run/` and dependencies under `lib/`. Each label goes on the
+configured chain with the run's chain ID (never a fork), named in kebab case
+(`UniversalRouter` → `@universal-router`, `ERC20Mock` → `@erc20-mock`). It
+imports `CREATE`/`CREATE2` transactions and `additionalContracts` whose
+transaction succeeded. It skips, and reports, failed or pending transactions,
+unnamed contracts, invalid or reserved names, and runs on chains you have not
+configured.
 
 ```bash
-> chainz exec 1 -- cast block-number
-21532741
-
-> chainz exec eth -- cast balance @wallet
-1.5 ETH
-
-> chainz exec 10 -- forge script Deploy
+chainz addr import ~/src/v4-periphery --dry-run    # show the plan, write nothing
+chainz addr import broadcast/ --prefix v4- --only PoolManager,position-manager
+chainz addr import run-latest.json --force --json  # replace labels that differ
 ```
 
-Set a default chain to omit the chain argument entirely:
+A label that already holds the same address is left unchanged. One that holds a
+different address is skipped unless you pass `--force`. When one import gives
+different addresses the same name on a chain, the later ones get `-2`, `-3`,
+and so on. All labels are written in one locked, atomic update.
 
-```bash
-> chainz use ethereum
-Default chain set to 'ethereum'
-> chainz exec -- cast block-number
-21532741
-```
+## Signers
 
-Available expansions:
-- `@wallet` — Wallet address
-- `@rpc` — RPC URL
-- `@chainid` — Chain ID
-- `@chainname` — Chain name
-- `@verification_url` — Block explorer API URL
-- `@verifier_api_key` — Block explorer API key
-- `@key` — Private key
+Chainz needs a signer's address often and its key almost never. Only
+`--expose-key` unlocks a key; everything else uses the cached address.
 
-`@key` is deprecated and planned for removal at 1.0 because it exposes the
-private key in child process arguments. Prefer env-only exposure when a tool
-accepts environment variables:
+| Backend | Key lives in |
+| --- | --- |
+| `keyring` (default) | the OS keyring |
+| `encrypted` | `secrets.toml`, password-encrypted |
+| `1password` | a 1Password item (`--vault`, `--item`) |
+| `keystore` | a Foundry keystore file, unlocked by cast or forge |
+| `plaintext` | `secrets.toml`, explicit opt-in |
 
-```bash
-chainz exec ethereum --expose-key -- sh -c 'PRIVATE_KEY="$RAW_PRIVATE_KEY" forge script Deploy'
-```
-
-Chainz resolves a key once and injects only what was requested: using
-`@wallet` does not put `RAW_PRIVATE_KEY` in the child environment. If a shell
-expands `$RAW_PRIVATE_KEY` into a downstream command argument, that downstream
-argument can still be visible to other processes.
-
-Override the key for a single command:
-
-```bash
-> chainz exec ethereum -k deployer -- forge script Deploy
-```
-
-### Chain Shells
-
-`chainz shell [chain]` opens your `$SHELL` with the chain's environment
-(`ETH_RPC_URL`, `CHAIN_ID`, `CHAIN_NAME`, `VERIFIER_*`, `CHAINZ_CHAIN`) —
-private keys are never injected. Shells that honor an inherited `PS1` get
-a `(⛓ ethereum)` prefix, but interactive shells often reset `PS1` from rc
-files, so this isn't reliable everywhere. For a prompt that always works
-(zsh, starship, or a customized bash), key off `CHAINZ_CHAIN` instead, e.g.:
-
-```toml
-# starship.toml
-[env_var.CHAINZ_CHAIN]
-format = "\\(⛓ $env_value\\) "
-```
-
-### Managing Keys
-
-Add and manage private keys. Without `--type`, Chainz uses the OS keyring when
-available and otherwise uses password-encrypted storage. Plaintext requires an
-explicit `--type private-key`:
-
-```bash
-> chainz key add deployer
-Enter private key: ****
-Added key 'deployer'
-
-> chainz key list
-Stored keys:
-- default (0x123...789, keyring)
-- deployer (0xabc...def, encrypted)
-```
-
-Read key material from stdin in scripts so it does not enter shell history or
-process listings:
-
-```bash
-> printf '%s\n' "$PRIVATE_KEY" | chainz key add ci-key --stdin
-Added key 'ci-key'
-```
-
-On a headless machine without an OS keyring, the safe encrypted fallback needs
-an interactive password prompt and exits clearly instead of hanging. Scripts
-that deliberately accept plaintext storage can opt in explicitly:
-
-```bash
-printf '%s\n' "$PRIVATE_KEY" | chainz key add ci-key --stdin --type private-key
-```
-
-Migrate one key, or every plaintext key, into safe storage:
-
-```bash
-chainz key migrate default
-chainz key migrate --all --to encrypted
-```
-
-Removing an attached key is blocked by default. Use `--force` to detach it
-from every referencing chain before removal.
-
-### Health Checks
-
-`chainz doctor` checks key storage, key references, and RPC connectivity for
-every chain (concurrently). With `--fix`, any dead selected RPC is switched to
-a healthy alternative from that chain's RPC list. Exits nonzero when failures
-are found, so it can gate scripts. Interactive RPC tests and `doctor` probes
-time out after 4 seconds per endpoint; results stream in live and pickers
-list healthy endpoints fastest-first:
-
-```bash
-> chainz doctor --fix
-Configuration
-  ✓ configuration invariants hold
-
-Keys
-  ⚠ 'default' is stored as a plaintext private key — migrate with `chainz key migrate default`
-
-Key references
-  ✓ all chains reference existing keys
-
-RPC health
-  ✓ ethereum (https://eth.llamarpc.com)
-  ✗ optimism (https://dead.example.com)
-
-Fixing RPCs
-  ✓ optimism: switched to https://mainnet.optimism.io
-```
-
-### Scripting
-
-`list`, `show`, and `key list` support `--json`. Credential-bearing URLs are redacted
-and key material is never included by default. `list --show-secrets` is the
-explicit escape hatch for trusted interactive use:
-
-```bash
-> chainz list --json | jq '.[].name'
-> chainz show ethereum --json | jq '.selected_rpc'
-> chainz key list --json | jq '.[] | {name, address}'
-```
-
-### Custom Variables
-
-Set and use custom variables for RPC URL interpolation. Stdin avoids placing
-values in shell history; values are redacted from ordinary output:
-
-```bash
-> printf '%s\n' "$ALCHEMY_KEY" | chainz var set ALCHEMY_KEY --stdin
-> printf '%s\n' "$ETHERSCAN_KEY" | chainz var set ETHERSCAN_KEY --stdin
-
-> chainz var list
-Variables:
-  ALCHEMY_KEY = [REDACTED]
-  ETHERSCAN_KEY = [REDACTED]
-
-> chainz var get ALCHEMY_KEY --show
-ALCHEMY_KEY = abc123
-```
-
-`chainz var list --json` is an explicitly revealing machine-readable form;
-use it only in trusted scripting contexts.
+`chainz signer migrate` moves plaintext keys into safe storage
+(`--all` for every plaintext signer; a failure doesn't stop the rest).
+`chainz signer rm` deletes the key material too, so it asks first; off a
+terminal pass `--yes`. Pass keys and variable values on stdin (`--stdin`):
+a secret given as an argument works but warns, since it lands in shell
+history and `ps`.
 
 ## Configuration
 
-### Config File
+One hand-editable TOML file plus a separate secrets file:
 
-Configs are stored at `$XDG_CONFIG_HOME/chainz/config.json` (defaulting to
-`~/.config/chainz/config.json`) with owner-only permissions (`0600`), since
-the file can contain private keys. A legacy `~/.chainz.json` is migrated to
-the new location automatically on first run.
+| Path | Holds |
+| --- | --- |
+| `~/.config/chainz/config.toml` | chains, endpoints, explorers, signer references, labels |
+| `~/.config/chainz/secrets.toml` | variable values and plaintext keys (mode `0600`) |
+| `$XDG_STATE_HOME/chainz/` | endpoint health history, gateway and fork logs |
+| `$XDG_RUNTIME_DIR/chainz/` | gateway and fork discovery files |
 
-```json
-{
-  "chains": [
-    {
-      "name": "ethereum",
-      "aliases": ["Ethereum Mainnet"],
-      "chain_id": 1,
-      "rpc_urls": [
-        "https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",
-        "https://eth.llamarpc.com"
-      ],
-      "selected_rpc": "https://eth.llamarpc.com",
-      "verification_api_key": "abc123",
-      "key_name": "default"
-    }
-  ],
-  "variables": {
-    "ALCHEMY_KEY": "def456"
-  },
-  "keys": {
-    "default": {
-      "address": "0x0123456789abcdef0123456789abcdef01234567",
-      "type": "EncryptedKey",
-      "value": "<base64>",
-      "nonce": "<base64>",
-      "salt": "<base64>",
-      "version": 1,
-      "kdf_memory_kib": 19456,
-      "kdf_iterations": 2,
-      "kdf_parallelism": 1
-    }
-  },
-  "default_chain": "ethereum"
-}
+```toml
+version = 2
+default = "eth"
+
+[explorers.etherscan]
+api = "https://api.etherscan.io/v2/api?chainid=${CHAIN_ID}"
+key = "${ETHERSCAN_API_KEY}"
+
+[chains.eth]
+id = 1
+aliases = ["ethereum", "mainnet"]
+signer = "default"
+explorer = "etherscan"
+rpc = "infura"
+failover = ["llama"]
+[chains.eth.rpcs]
+infura = "https://mainnet.infura.io/v3/${INFURA_KEY}"
+gw = { url = "https://gw.example.org/rpc/1", headers = { x-secret = "${GW_SECRET}" } }
+llama = "https://eth.llamarpc.com"
+
+[signers.default]
+backend = "keyring"
+address = "0x…"
+
+[addresses.myrouter]
+base = "0x…"
 ```
 
-The chainlist used by `chainz add` is cached at `~/.cache/chainz/chains.json`
-for 24 hours; pass `--refresh` to `add`/`update` to force a re-download.
+`${NAME}` resolves from the environment, then `secrets.toml`, then built-ins
+(`${CHAIN_ID}`, `${CHAIN}`). An unresolved reference is an error.
+`chainz config edit` and `chainz chain edit eth` validate on save.
+`chainz doctor` flags literal credentials in URLs, and `doctor --fix` moves
+them into variables. `chain add --rpc` and `rpc add` do the same as they
+write a URL with a known key (Infura, Alchemy) or a credential header, and
+say what they moved.
+
+Commands that change several things at once take `--yes` to skip the
+question (`rpc bench --fix --yes` also writes the proposed failover lists;
+`rpc discover --yes` adds every endpoint that answered). Off a terminal
+they never prompt: they report and tell you which flag to pass. Listing
+commands take `--json` (`ls`, `rpc ls`, `signer ls`, `var ls`, `addr ls`,
+`addr find`, `fork ls`, `serve status`).
+
+## Migrating from v1
+
+The first time v2 runs and finds `config.json` without `config.toml`, it
+migrates once, under a lock:
+
+- Long chainlist names become short names (`eth`, `op`, `arb`, `uni`, …); the
+  old names stay as aliases, so `chainz exec "OP Mainnet"` still works.
+- Every endpoint is kept and named after its host. `failover` starts empty.
+- Known URL credentials (Infura, Alchemy) and verifier keys move into
+  variables in `secrets.toml`. Anything else is reported.
+- Signers keep their backend and address; keyring entries need no re-entry.
+- `config.json` is renamed to `config.v1.json.bak` only after both new files
+  are written.
+
+Preview first with `chainz config migrate --dry-run`. The v1 names
+`CHAIN_NAME`, `@chainname`, `@verification_url` and `@verifier_api_key` keep
+working for one release, with a warning. `@key` is gone; use `--expose-key`.
+The v1 command spellings still work: `list` and `remove` (for `ls` and
+`rm`), `key …` (for `signer …`), `--type private-key`/`one-password`, and
+`var get --show`.
+
+## Development
+
+```bash
+nix develop                      # toolchain, Foundry, hyperfine, strace
+cargo test --workspace
+scripts/perf-gate.sh V1_BIN V2_BIN
+```
+
+The design is in [`docs/v2/design.md`](docs/v2/design.md); crate interfaces
+are in [`docs/v2/interfaces.md`](docs/v2/interfaces.md).
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT

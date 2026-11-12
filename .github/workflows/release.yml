@@ -49,14 +49,19 @@ jobs:
             exit 1
           }
 
+      - name: Install strace (exec structural test)
+        run: sudo apt-get update && sudo apt-get install -y strace
+
       - name: Verify release candidate
-        run: cargo test --locked --all-targets
+        # Fork tests skip here: this job holds the publish token, so it
+        # installs no extra third-party actions. CI on main runs them.
+        run: cargo test --locked --workspace --all-targets
 
       - name: Verify package contents
-        run: cargo package --locked
+        run: cargo package --locked --workspace
 
       - name: Publish to crates.io
-        run: cargo publish --locked
+        run: cargo publish --locked --workspace
 
   github-release:
     name: Create GitHub release

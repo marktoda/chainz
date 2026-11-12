@@ -1,0 +1,25 @@
+[package]
+name = "chainz-rpc"
+description = "JSON-RPC client, endpoint probes, ranking and the Upstream trait for chainz"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+bytes.workspace = true
+url.workspace = true
+tempfile.workspace = true
+
+[features]
+# `control::MockControlServer`, for tests of control clients.
+mock = []
+
+[dev-dependencies]
+chainz-rpc = { path = ".", features = ["mock"] }

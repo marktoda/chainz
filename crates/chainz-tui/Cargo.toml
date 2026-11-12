@@ -1,0 +1,22 @@
+[package]
+name = "chainz-tui"
+description = "chainz top: the live dashboard of chains, endpoints, balances and gateway traffic"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chainz-core.workspace = true
+chainz-rpc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["signal"] }
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
+unicode-width = "0.2"
+
+[dev-dependencies]
+chainz-rpc = { workspace = true, features = ["mock"] }
+tempfile.workspace = true

@@ -15,7 +15,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # v2 supports Linux and macOS only.
+        os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout sources
@@ -24,11 +25,20 @@ jobs:
       - name: Install stable toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install strace (exec structural test)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y strace
+
+      - name: Install Foundry (anvil, for fork tests)
+        uses: foundry-rs/foundry-toolchain@dba66c27052e63476d886f22216e119ba7e615bf # v1
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
       - name: Run cargo test
-        run: cargo test --locked --all-targets
+        run: cargo test --locked --workspace --all-targets
+        env:
+          CHAINZ_REQUIRE_TOOLS: "1"
 
   lints:
     name: Lints
@@ -49,7 +59,12 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Run cargo clippy
-        run: cargo clippy --locked --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+
+      - name: Check rustdoc
+        run: cargo doc --locked --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
 
   msrv:
     name: MSRV (1.90)
@@ -67,7 +82,48 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run cargo check
-        run: cargo check --locked --all-targets
+        run: cargo check --locked --workspace --all-targets
+
+  perf:
+    name: Hot-path perf gate (v2 <= 85% of v1)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - name: Checkout v1 (main)
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: v1
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install hyperfine
+        uses: taiki-e/install-action@v2
+        with:
+          tool: hyperfine
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            v1
+
+      - name: Build v1 and v2
+        run: |
+          cargo build --release --locked -p chainz
+          cargo build --release --locked --manifest-path v1/Cargo.toml
+
+      - name: Run perf gate
+        run: scripts/perf-gate.sh v1/target/release/chainz target/release/chainz
+
+      # Exits 1 when the gateway adds 1 ms or more to the p50 round trip
+      # (measured: under 0.1 ms).
+      - name: Gateway latency budget
+        run: cargo run --release --locked -p chainz-serve --example latency
 
   package:
     name: Package
@@ -82,8 +138,8 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Verify publishable package
-        run: cargo package --locked
+      - name: Verify publishable packages
+        run: cargo package --locked --workspace
 
   audit:
     name: Security Audit

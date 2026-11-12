@@ -1,0 +1,25 @@
+[package]
+name = "chainz-serve"
+description = "chainz local RPC gateway: auth, failover, rate-limit smoothing, metrics and a request inspector"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chainz-core.workspace = true
+chainz-rpc.workspace = true
+tokio = { workspace = true, features = ["signal"] }
+bytes.workspace = true
+serde_json.workspace = true
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "http1", "server-graceful"] }
+http-body-util = "0.1"
+sha3 = "0.10"
+hex = "0.4"
+rand = "0.9"
+
+[dev-dependencies]
+tempfile.workspace = true
