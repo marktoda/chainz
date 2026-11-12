@@ -132,6 +132,9 @@ const LISTING_HEALTH: &str = r#"{"version":1,"endpoints":[
 /// `3m ago`.
 const PROBED_AGO_MS: u64 = 200_000;
 
+/// What a sample time in the listing output is pinned to.
+const PINNED_AT_MS: u64 = 1_700_000_000_000;
+
 /// The unix time in ms the listing's health samples were taken.
 fn probed_at_ms() -> u64 {
     let now = std::time::SystemTime::now()
@@ -170,8 +173,11 @@ fn listings() {
         ("var-ls.json", &["var", "ls", "--json"]),
         ("addr-ls.json", &["addr", "ls", "--json"]),
     ] {
-        // The sample time is the run's own: pin it as a token.
-        let out = sb.ok(args).replace(&at.to_string(), "AT_MS");
+        // The sample time is the run's own: pin it to a fixed time, so the
+        // JSON goldens stay JSON.
+        let out = sb
+            .ok(args)
+            .replace(&at.to_string(), &PINNED_AT_MS.to_string());
         golden(&format!("listing/{file}"), &out);
     }
     // Listing never writes.
