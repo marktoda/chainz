@@ -14,12 +14,6 @@ use chainz_rpc::{BlockId, RetryPolicy, RpcClient, Target};
 use serde_json::json;
 use std::collections::BTreeMap;
 
-/// How each request is retried: patiently, since a public endpoint asked
-/// about many tokens in a row often needs it.
-fn retry_policy() -> RetryPolicy {
-    RetryPolicy::patient()
-}
-
 /// One chain's entries and how they fared.
 enum Outcome {
     /// The chain is not in the config: nothing to ask.
@@ -180,7 +174,9 @@ async fn check_chain(
     chain_id: u64,
     tokens: &[&'static BuiltinToken],
 ) -> Outcome {
-    let retry = retry_policy();
+    // Patient: a public endpoint asked about many tokens in a row often
+    // needs it.
+    let retry = RetryPolicy::patient();
     if let Err(e) = retry.run(|| client.check_chain_id(target, chain_id)).await {
         return Outcome::Unreachable(e.to_string());
     }
@@ -284,7 +280,7 @@ mod tests {
 
     #[test]
     fn retries_are_transient_only() {
-        let retry = retry_policy();
+        let retry = RetryPolicy::patient();
         assert!(retry.retries(&chainz_rpc::RpcError::Timeout));
         assert!(retry.retries(&chainz_rpc::RpcError::Http(503)));
         assert!(!retry.retries(&chainz_rpc::RpcError::Rpc {

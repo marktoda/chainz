@@ -22,7 +22,6 @@ fn main() {
     // Shell completion requests (`CHAINZ_COMPLETE=zsh chainz -- …`): one env
     // lookup on every other run.
     if complete::requested() {
-        ui::exit_quietly_on_broken_pipe();
         complete::run();
     }
     let opt = cli::parse();

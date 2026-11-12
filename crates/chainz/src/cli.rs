@@ -41,9 +41,61 @@ const HELP_GROUPS: &[(&str, &[&str])] = &[
 /// grouped under [`HELP_GROUPS`]. Parsing, completion and help all start
 /// here.
 pub fn command() -> clap::Command {
-    let command = Opt::command();
+    let command = Opt::command().mut_subcommand("exec", |exec| {
+        let about = exec
+            .get_about()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        exec.long_about(exec_help(&about))
+    });
     let template = grouped_help(&command);
     command.help_template(template)
+}
+
+/// `exec --help`: `about`, then the variables and tokens of the exec
+/// contract, from `chainz_core` (never a copy of them).
+fn exec_help(about: &str) -> String {
+    let tokens: Vec<String> = chainz_core::names::context_tokens()
+        .map(|t| format!("@{t}"))
+        .collect();
+    let exported = wrap(&chainz_core::contract::CONTRACT_VARS, "  ");
+    let tokens = wrap_text(&format!(
+        "Tokens: {}, any signer name (@funder), labels (@usdc, @myrouter), \
+         and `@name:chain` for another chain. `@@` is a literal @.",
+        tokens.join(" ")
+    ));
+    let shell =
+        wrap_text("With no command, $SHELL opens with the context exported (ctrl-d leaves it).");
+    format!(
+        "{about}\n\n\
+         Exported (each one the chain has; `--explain` shows them):\n{exported}\n\n\
+         {tokens}\n\n{shell}\n\n\
+         Example: chainz exec base -- cast balance @wallet"
+    )
+}
+
+/// The width [`wrap`] keeps help text to.
+const HELP_WIDTH: usize = 72;
+
+/// `words` joined by spaces, on lines of at most [`HELP_WIDTH`] columns,
+/// each starting with `indent`.
+fn wrap(words: &[&str], indent: &str) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    for word in words {
+        match lines.last_mut() {
+            Some(line) if line.chars().count() + 1 + word.chars().count() <= HELP_WIDTH => {
+                line.push(' ');
+                line.push_str(word);
+            }
+            _ => lines.push(format!("{indent}{word}")),
+        }
+    }
+    lines.join("\n")
+}
+
+/// A paragraph of prose, [`wrap`]ped.
+fn wrap_text(text: &str) -> String {
+    wrap(&text.split_whitespace().collect::<Vec<_>>(), "")
 }
 
 /// Parse the process's arguments (exits on a usage error, as clap does).
@@ -113,21 +165,8 @@ pub fn usage_error(path: &[&str], message: &str) -> anyhow::Error {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Run a command with a chain's context (no command: open a subshell)
-    ///
-    /// Exported: ETH_RPC_URL, ETH_RPC_HEADERS (direct only), CHAIN_ID,
-    /// CHAINZ_CHAIN, ETHERSCAN_API_KEY, VERIFIER_URL/VERIFIER_API_KEY
-    /// (non-Etherscan explorers), ETH_FROM, WALLET_ADDRESS, ETH_KEYSTORE,
-    /// RAW_PRIVATE_KEY (--expose-key only), CHAIN_NAME (deprecated).
-    ///
-    /// Tokens: @rpc @chainid @chain @wallet @explorer @explorer_key,
-    /// any signer name (@funder), labels (@usdc, @myrouter), and
-    /// `@name:chain` for another chain. `@@` is a literal @.
-    ///
-    /// With no command, $SHELL opens with the context exported (ctrl-d
-    /// leaves it).
-    ///
-    /// Example: chainz exec base -- cast balance @wallet
-    #[command(visible_alias = "x", verbatim_doc_comment)]
+    // The long help lists the contract from chainz_core: see `exec_help`.
+    #[command(visible_alias = "x")]
     Exec(ExecArgs),
 
     /// Print a chain's context as shell exports: eval "$(chainz env base)"
@@ -177,13 +216,13 @@ pub enum Command {
     /// Edit config.toml, or one chain's table, in $EDITOR (validated on save)
     Edit(EditArgs),
 
-    /// Key references with cached addresses: add, ls, rm, migrate
+    /// Key references with cached addresses
     Signer {
         #[command(subcommand)]
         cmd: SignerCommand,
     },
 
-    /// Name addresses: `label 0x…`, `… | chainz label`, add, ls, rm, import
+    /// Name addresses; `label 0x…` looks one up, `… | chainz label` labels text
     #[command(args_conflicts_with_subcommands = true)]
     Label {
         #[command(subcommand)]
@@ -192,7 +231,7 @@ pub enum Command {
         args: LabelArgs,
     },
 
-    /// Values for ${NAME} in config (kept in secrets.toml): set, ls, rm
+    /// Values for ${NAME} in config (kept in secrets.toml)
     Var {
         #[command(subcommand)]
         cmd: VarCommand,
@@ -852,19 +891,23 @@ mod tests {
     /// mentions one.
     #[test]
     fn the_readme_documents_no_hidden_flag() {
-        let readme = include_str!("../../../README.md");
-        let mut hidden = Vec::new();
-        for sub in Opt::command().get_subcommands() {
-            for arg in sub.get_arguments().filter(|a| a.is_hide_set()) {
+        fn walk(command: &clap::Command, path: &str, hidden: &mut Vec<String>) {
+            for arg in command.get_arguments().filter(|a| a.is_hide_set()) {
                 if let Some(long) = arg.get_long() {
-                    hidden.push(format!("{} --{long}", sub.get_name()));
+                    hidden.push(format!("{path} --{long}"));
                 }
             }
+            for sub in command.get_subcommands() {
+                let path = format!("{path} {}", sub.get_name());
+                walk(sub, path.trim_start(), hidden);
+            }
         }
-        assert!(
-            hidden.contains(&"doctor --tokens".to_string()),
-            "{hidden:?}"
-        );
+        let readme = include_str!("../../../README.md");
+        let mut hidden = Vec::new();
+        walk(&Opt::command(), "", &mut hidden);
+        for nested in ["doctor --tokens", "signer add --key"] {
+            assert!(hidden.iter().any(|h| h == nested), "{hidden:?}");
+        }
         for flag in &hidden {
             assert!(
                 !readme.contains(flag.as_str()),
@@ -946,11 +989,11 @@ mod tests {
         assert!(help.contains("exec, x"), "{help}");
     }
 
-    /// `exec --help` restates the contract by hand: it must name every
-    /// exported variable and every context token.
+    /// `exec --help` names every exported variable and every context
+    /// token.
     #[test]
     fn exec_help_names_the_whole_contract() {
-        let command = Opt::command();
+        let command = super::command();
         let exec = command.find_subcommand("exec").unwrap();
         let help = exec.get_long_about().unwrap().to_string();
         for name in chainz_core::contract::CONTRACT_VARS {
