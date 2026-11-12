@@ -154,7 +154,8 @@ pub enum ErrorClass {
     Rpc,
     /// See [`RpcError::ChainMismatch`].
     ChainMismatch,
-    /// [`RpcError::InvalidResponse`] or [`RpcError::InvalidEndpoint`].
+    /// [`RpcError::InvalidResponse`], [`RpcError::BodyRead`] or
+    /// [`RpcError::InvalidEndpoint`].
     Invalid,
     /// See [`RpcError::Unsupported`].
     Unsupported,
@@ -174,9 +175,7 @@ impl ErrorClass {
             ErrorClass::Unsupported => "unsupported",
         }
     }
-}
 
-impl ErrorClass {
     /// The class as words for a sentence ("the endpoint: connection
     /// failed"), where [`as_str`](Self::as_str) is the stable label.
     pub fn phrase(self) -> &'static str {

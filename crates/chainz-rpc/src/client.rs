@@ -10,6 +10,8 @@ use crate::error::RpcError;
 use crate::hex;
 use crate::target::Target;
 
+/// The `User-Agent` of every request chainz makes.
+pub(crate) const USER_AGENT: &str = concat!("chainz/", env!("CARGO_PKG_VERSION"));
 /// Default whole-request timeout for [`RpcClient::new`].
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Connect timeout used by every [`RpcClient`].
@@ -126,7 +128,7 @@ impl RpcClient {
             // included) to whatever host it names: answer it as an HTTP
             // status instead.
             .redirect(reqwest::redirect::Policy::none())
-            .user_agent(concat!("chainz/", env!("CARGO_PKG_VERSION")))
+            .user_agent(USER_AGENT)
             .build()
             .expect("reqwest client with rustls builds");
         RpcClient { http }

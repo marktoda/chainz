@@ -1,8 +1,8 @@
 //! Classification: ok / lag / slow / down for chains, ok / lagging /
 //! failing for endpoints.
 
-use chainz_rpc::health::{CHAIN_LAG, Health, classify};
-use chainz_rpc::{ErrorClass, HealthSample};
+use chainz_rpc::health::CHAIN_LAG;
+use chainz_rpc::{ErrorClass, Health, HealthSample, classify};
 
 use super::state::ChainState;
 use super::update::Head;

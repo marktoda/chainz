@@ -99,6 +99,10 @@ pub async fn probe_capabilities(client: &RpcClient, target: &Target) -> Capabili
 
 /// `Some(false)` when the error is a definite refusal by the server,
 /// `None` when it is a transport problem that says nothing about support.
+///
+/// Narrower than [`refuses_range`] on purpose: here a "no" is final, so
+/// only the statuses that mean "not here" count, and an auth or quota
+/// status (401, 402, ...) says nothing about the method.
 fn refusal(e: &RpcError) -> Option<bool> {
     match e {
         RpcError::Rpc { .. } | RpcError::Http(400 | 403 | 404 | 405 | 501) => Some(false),
@@ -166,6 +170,10 @@ async fn max_logs_range(client: &RpcClient, target: &Target) -> Option<u64> {
 
 /// Whether an `eth_getLogs` failure is the server refusing the range: an
 /// RPC error or a 4xx status (429 is [`RpcError::RateLimited`], not this).
+///
+/// Wider than [`refusal`] on purpose: a refused range is retried with a
+/// smaller one, and providers answer an oversized range with assorted 4xx
+/// statuses; a 4xx that isn't about the range fails the smaller ones too.
 fn refuses_range(e: &RpcError) -> bool {
     matches!(e, RpcError::Rpc { .. } | RpcError::Http(400..=499))
 }

@@ -11,7 +11,7 @@ use std::task::Poll;
 
 use bytes::Bytes;
 use chainz_rpc::control::{
-    EventsOptions, MetricsSnapshot, RequestRecord, Route, Status, write_line,
+    ControlRoute, EventsOptions, MetricsSnapshot, RequestRecord, Status, write_line,
 };
 use http_body_util::BodyExt;
 use hyper::body::{Body, Frame, Incoming};
@@ -40,7 +40,7 @@ pub(crate) async fn handle<S: ControlState>(
     request: Request<Incoming>,
     stopped: watch::Receiver<bool>,
 ) -> Response<BoxBody> {
-    let Some(route) = Route::from_path(request.uri().path()) else {
+    let Some(route) = ControlRoute::from_path(request.uri().path()) else {
         return plain(StatusCode::NOT_FOUND, "");
     };
     if request.method().as_str() != route.method() {
@@ -51,9 +51,9 @@ pub(crate) async fn handle<S: ControlState>(
         return response;
     }
     match route {
-        Route::Status => json_reply(&state.status()),
-        Route::Metrics => json_reply(&state.metrics()),
-        Route::Reload => match state.reload().await {
+        ControlRoute::Status => json_reply(&state.status()),
+        ControlRoute::Metrics => json_reply(&state.metrics()),
+        ControlRoute::Reload => match state.reload().await {
             Ok(()) => plain(StatusCode::NO_CONTENT, ""),
             Err(error) => {
                 let mut response = Response::new(full(format!("{error:#}\n")));
@@ -61,7 +61,7 @@ pub(crate) async fn handle<S: ControlState>(
                 response
             }
         },
-        Route::Events => {
+        ControlRoute::Events => {
             let options = match EventsOptions::from_query(request.uri().query().unwrap_or("")) {
                 Ok(options) => options,
                 Err(error) => {

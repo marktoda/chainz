@@ -15,22 +15,17 @@ use crate::client::{RpcClient, check_status};
 use crate::error::{LIMIT_EXCEEDED, RpcError};
 use crate::target::Target;
 
-/// Which failures a [`RetryPolicy`] retries on the same endpoint.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RetryOn {
-    /// Retry nothing.
-    Nothing,
-    /// Retry every transient failure ([`RpcError::is_transient`]) and
-    /// every rate limit ([`RpcError::is_rate_limited`]; a 429 only while
-    /// its wait is at most [`RetryPolicy::max_retry_after`]).
-    Transient,
-}
-
 /// How [`RetryPolicy::run`] (and so [`HttpUpstream::send`]) retries on the
 /// same endpoint. Per-attempt timeouts are the [`RpcClient`]'s.
+///
+/// What is retried is fixed: every transient failure
+/// ([`RpcError::is_transient`]) and every rate limit
+/// ([`RpcError::is_rate_limited`]; a 429 only while its wait is at most
+/// [`RetryPolicy::max_retry_after`]). One attempt retries nothing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RetryPolicy {
-    /// Total attempts, including the first (0 is treated as 1).
+    /// Total attempts, including the first (0 is treated as 1); 1 retries
+    /// nothing.
     pub max_attempts: u32,
     /// Wait before the first retry; doubles after each retry.
     pub backoff: Duration,
@@ -39,8 +34,6 @@ pub struct RetryPolicy {
     /// A 429 asking to wait longer than this is returned immediately as
     /// [`RpcError::RateLimited`] instead of being waited out.
     pub max_retry_after: Duration,
-    /// Which failures are retried.
-    pub retry_on: RetryOn,
 }
 
 impl RetryPolicy {
@@ -51,7 +44,6 @@ impl RetryPolicy {
             backoff: Duration::from_millis(100),
             max_backoff: Duration::from_secs(1),
             max_retry_after: Duration::ZERO,
-            retry_on: RetryOn::Nothing,
         }
     }
 
@@ -63,7 +55,6 @@ impl RetryPolicy {
             backoff: Duration::from_millis(100),
             max_backoff: Duration::from_secs(1),
             max_retry_after: Duration::from_secs(2),
-            retry_on: RetryOn::Transient,
         }
     }
 
@@ -76,17 +67,13 @@ impl RetryPolicy {
             backoff: Duration::from_millis(500),
             max_backoff: Duration::from_secs(4),
             max_retry_after: Duration::from_secs(10),
-            retry_on: RetryOn::Transient,
         }
     }
 
-    /// Whether this policy retries `error` (attempts and `Retry-After`
-    /// limits aside).
+    /// Whether this policy retries `error` at all (how many attempts are
+    /// left and `Retry-After` limits aside).
     pub fn retries(&self, error: &RpcError) -> bool {
-        match self.retry_on {
-            RetryOn::Nothing => false,
-            RetryOn::Transient => error.is_transient() || error.is_rate_limited(),
-        }
+        self.max_attempts > 1 && (error.is_transient() || error.is_rate_limited())
     }
 
     /// Run `call` (one request through [`RpcClient`], say) and retry it per
@@ -223,7 +210,6 @@ mod tests {
             backoff: Duration::from_millis(1),
             max_backoff: Duration::from_millis(2),
             max_retry_after: Duration::from_millis(50),
-            retry_on: RetryOn::Transient,
         }
     }
 

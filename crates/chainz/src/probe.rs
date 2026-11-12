@@ -9,8 +9,8 @@ use anyhow::{Result, anyhow};
 use chainz_core::model::{Chain, Endpoint};
 use chainz_core::redact;
 use chainz_core::{Chainz, Tx, names};
-use chainz_rpc::health::{self, EndpointProbe, Health, Ranking};
-use chainz_rpc::{HealthStore, ProbeResult, RpcClient, Target};
+use chainz_rpc::health;
+use chainz_rpc::{EndpointProbe, Health, HealthStore, ProbeResult, Ranking, RpcClient, Target};
 
 use crate::{net, ui, view};
 
@@ -113,7 +113,7 @@ impl ChainProbes {
         let p50: Vec<Option<Duration>> = self
             .probes
             .iter()
-            .map(|p| store.p50(p.chain_id, &p.endpoint))
+            .map(|p| health::p50(&store.samples(p.chain_id, &p.endpoint)))
             .collect();
         Ranking::with_p50(&self.probes, &p50)
     }

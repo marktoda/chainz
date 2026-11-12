@@ -30,20 +30,6 @@ pub struct ChainlistEntry {
     /// RPC URLs; some contain `${VAR}` placeholders for API keys.
     #[serde(default)]
     pub rpc: Vec<String>,
-    /// The native currency.
-    #[serde(rename = "nativeCurrency", default)]
-    pub native_currency: Option<NativeCurrency>,
-}
-
-/// A chain's native currency.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
-pub struct NativeCurrency {
-    /// Name (e.g. `Ether`).
-    pub name: String,
-    /// Symbol (e.g. `ETH`).
-    pub symbol: String,
-    /// Decimals (usually 18).
-    pub decimals: u8,
 }
 
 /// Why the registry could not be read.
@@ -55,9 +41,6 @@ pub enum ChainlistError {
     /// The registry (downloaded) was not valid JSON.
     #[error("the chain registry is malformed")]
     Parse,
-    /// The cache could not be written.
-    #[error("could not write the chain registry cache: {0}")]
-    Io(#[from] io::Error),
     /// No entry with that chain ID.
     #[error("chain ID {0} is not in the chain registry")]
     NotFound(u64),
@@ -167,7 +150,7 @@ fn cache_is_fresh(cache_dir: &Path, ttl: Duration) -> bool {
 async fn download(url: &str) -> Result<Vec<u8>, ChainlistError> {
     let client = reqwest::Client::builder()
         .timeout(FETCH_TIMEOUT)
-        .user_agent(concat!("chainz/", env!("CARGO_PKG_VERSION")))
+        .user_agent(crate::client::USER_AGENT)
         .build()
         .map_err(|_| ChainlistError::Fetch("could not build HTTP client".into()))?;
     let resp = client.get(url).send().await.map_err(|e| {
@@ -229,10 +212,8 @@ mod tests {
         let entries = parse(SAMPLE.as_bytes()).unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].short_name, "eth");
-        assert_eq!(entries[0].native_currency.as_ref().unwrap().decimals, 18);
         assert_eq!(entries[1].chain_id, 8453);
         assert!(entries[1].rpc.is_empty());
-        assert!(entries[1].native_currency.is_none());
         assert!(matches!(parse(b"{}"), Err(ChainlistError::Parse)));
     }
 

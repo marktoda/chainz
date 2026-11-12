@@ -27,6 +27,8 @@ pub mod probe;
 pub mod target;
 pub mod upstream;
 
+// The items most callers need, at the root. Import these from here (not
+// from their module), so each has one import path.
 pub use capabilities::{Capabilities, probe_capabilities};
 pub use client::{BlockHeader, BlockId, RpcClient};
 pub use error::{ErrorClass, RpcError};
@@ -34,4 +36,4 @@ pub use health::{EndpointProbe, Health, Ranking, classify};
 pub use history::{HealthSample, HealthStore};
 pub use probe::{ProbeResult, probe, probe_all};
 pub use target::Target;
-pub use upstream::{HttpUpstream, RetryOn, RetryPolicy};
+pub use upstream::{HttpUpstream, RetryPolicy};

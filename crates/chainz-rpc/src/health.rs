@@ -34,41 +34,34 @@ pub const CHAIN_LAG: u64 = 3;
 /// A failover endpoint must be within this many blocks of the chain's head
 /// high-water mark to take a read.
 pub const FAILOVER_LAG: u64 = 2;
-/// Successful samples the median latency ([`HealthStore::p50`]) is taken
-/// over.
+/// Successful samples the median latency ([`p50`]) is taken over.
 pub const P50_WINDOW: usize = 16;
 
 /// Median latency over the last [`P50_WINDOW`] successful samples of a
-/// history (oldest first); the lower median for even counts. `None` when
-/// none succeeded.
+/// history (oldest first, as [`HealthStore::samples`] gives them); the
+/// lower median for even counts. `None` when none succeeded.
 pub fn p50<'a, I>(samples: I) -> Option<Duration>
 where
     I: IntoIterator<Item = &'a HealthSample>,
     I::IntoIter: DoubleEndedIterator,
 {
-    p50_over(samples, P50_WINDOW)
-}
-
-/// [`p50`] over the last `window` successful samples.
-pub(crate) fn p50_over<'a, I>(samples: I, window: usize) -> Option<Duration>
-where
-    I: IntoIterator<Item = &'a HealthSample>,
-    I::IntoIter: DoubleEndedIterator,
-{
-    let mut latencies: Vec<u32> = samples
+    let latencies = samples
         .into_iter()
         .rev()
         .filter(|s| s.error.is_none())
-        .take(window)
-        .map(|s| s.latency_ms)
-        .collect();
-    if latencies.is_empty() {
+        .take(P50_WINDOW)
+        .map(|s| s.latency_ms);
+    median(latencies).map(|ms| Duration::from_millis(u64::from(ms)))
+}
+
+/// The median of `values`, the lower one for even counts; `None` for none.
+pub fn median(values: impl IntoIterator<Item = u32>) -> Option<u32> {
+    let mut values: Vec<u32> = values.into_iter().collect();
+    if values.is_empty() {
         return None;
     }
-    latencies.sort_unstable();
-    Some(Duration::from_millis(u64::from(
-        latencies[(latencies.len() - 1) / 2],
-    )))
+    values.sort_unstable();
+    Some(values[(values.len() - 1) / 2])
 }
 
 /// One observation of an endpoint: a fresh probe, or a recorded sample.
@@ -326,6 +319,29 @@ mod tests {
         let failing = Ranking::new(&[err(1, RpcError::Timeout)]);
         assert_eq!((failing.best(), failing.best_healthy()), (Some(0), None));
         assert_eq!(Ranking::new::<ProbeResult>(&[]).best(), None);
+    }
+
+    #[test]
+    fn p50_is_the_lower_median_of_the_last_successes() {
+        let sample = |latency_ms, ok: bool| HealthSample {
+            at_ms: 0,
+            latency_ms,
+            head: ok.then_some(100),
+            error: (!ok).then_some(ErrorClass::Timeout),
+        };
+        assert_eq!(p50(&[]), None);
+        assert_eq!(p50(&[sample(5, false)]), None);
+        // 4 old slow samples fall out of the window of 16; failures are
+        // ignored; 16 left, lower median of 1..=16 is 8.
+        let mut samples: Vec<HealthSample> = (0..4).map(|_| sample(1000, true)).collect();
+        for ms in 1..=16 {
+            samples.push(sample(ms, true));
+            samples.push(sample(1, false));
+        }
+        assert_eq!(p50(&samples), Some(Duration::from_millis(8)));
+        assert_eq!(median([3, 1, 2]), Some(2));
+        assert_eq!(median([4, 1, 3, 2]), Some(2));
+        assert_eq!(median([]), None);
     }
 
     #[test]

@@ -3,8 +3,8 @@ mod common;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use chainz_rpc::upstream::{HttpUpstream, RetryOn, RetryPolicy, rpc_error_code};
-use chainz_rpc::{RpcClient, RpcError};
+use chainz_rpc::upstream::rpc_error_code;
+use chainz_rpc::{HttpUpstream, RetryPolicy, RpcClient, RpcError};
 use common::*;
 use serde_json::json;
 
@@ -122,10 +122,10 @@ async fn limit_exceeded_is_retried_only_when_enabled() {
     assert_eq!(server.hits(), 2);
     assert_eq!(rpc_error_code(&r), None);
 
-    // Disabled: the -32005 body is returned as Ok.
+    // One attempt: the -32005 body is returned as Ok.
     let server = MockHttp::start(|_, req| Resp::rpc_error(req, -32005, "limit exceeded")).await;
     let policy = RetryPolicy {
-        retry_on: RetryOn::Nothing,
+        max_attempts: 1,
         ..fast_policy()
     };
     let r = send(&server, &policy).await.unwrap();

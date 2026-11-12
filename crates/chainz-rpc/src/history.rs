@@ -4,11 +4,9 @@ use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use crate::capabilities::Capabilities;
 use crate::error::ErrorClass;
-use crate::health::P50_WINDOW;
 use crate::probe::ProbeResult;
 
 const FILE_NAME: &str = "health.json";
@@ -166,16 +164,6 @@ impl HealthStore {
         self.entry(chain_id, endpoint)?.samples.back()
     }
 
-    /// Median latency over the last [`P50_WINDOW`] successful samples
-    /// (lower median for even counts); `None` when there are none.
-    pub fn p50(&self, chain_id: u64, endpoint: &str) -> Option<Duration> {
-        self.p50_over(chain_id, endpoint, P50_WINDOW)
-    }
-
-    fn p50_over(&self, chain_id: u64, endpoint: &str, window: usize) -> Option<Duration> {
-        crate::health::p50_over(&self.entry(chain_id, endpoint)?.samples, window)
-    }
-
     /// Cached capabilities for an endpoint.
     pub fn capabilities(&self, chain_id: u64, endpoint: &str) -> Option<&Capabilities> {
         self.entry(chain_id, endpoint)?.capabilities.as_ref()
@@ -324,22 +312,6 @@ mod tests {
         assert_eq!(store.latest(1, "a").unwrap().at_ms, 99);
         assert!(store.samples(2, "a").is_empty());
         assert!(store.latest(1, "b").is_none());
-    }
-
-    #[test]
-    fn p50_over_successful_window() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut store = HealthStore::load(dir.path()).unwrap();
-        assert_eq!(store.p50(1, "a"), None);
-        for (i, ms) in [100, 10, 20, 30].into_iter().enumerate() {
-            store.record(1, "a", sample(i as u64, ms, true));
-        }
-        store.record(1, "a", sample(9, 1, false)); // failures ignored
-        assert_eq!(store.p50_over(1, "a", 3), Some(Duration::from_millis(20)));
-        // window 4 => [10, 20, 30, 100], lower median 20
-        assert_eq!(store.p50_over(1, "a", 4), Some(Duration::from_millis(20)));
-        assert_eq!(store.p50_over(1, "a", 1), Some(Duration::from_millis(30)));
-        assert_eq!(store.p50(1, "a"), Some(Duration::from_millis(20)));
     }
 
     #[test]

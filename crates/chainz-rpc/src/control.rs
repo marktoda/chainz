@@ -39,7 +39,7 @@ const CONTROL_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The control API's endpoints.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Route {
+pub enum ControlRoute {
     /// `GET /_chainz/status`.
     Status,
     /// `GET /_chainz/metrics`.
@@ -50,31 +50,38 @@ pub enum Route {
     Reload,
 }
 
-impl Route {
+impl ControlRoute {
     /// Every route.
-    pub const ALL: [Route; 4] = [Route::Status, Route::Metrics, Route::Events, Route::Reload];
+    pub const ALL: [ControlRoute; 4] = [
+        ControlRoute::Status,
+        ControlRoute::Metrics,
+        ControlRoute::Events,
+        ControlRoute::Reload,
+    ];
 
     /// The request path.
     pub fn path(self) -> &'static str {
         match self {
-            Route::Status => "/_chainz/status",
-            Route::Metrics => "/_chainz/metrics",
-            Route::Events => "/_chainz/events",
-            Route::Reload => "/_chainz/reload",
+            ControlRoute::Status => "/_chainz/status",
+            ControlRoute::Metrics => "/_chainz/metrics",
+            ControlRoute::Events => "/_chainz/events",
+            ControlRoute::Reload => "/_chainz/reload",
         }
     }
 
     /// The HTTP method it takes.
     pub fn method(self) -> &'static str {
         match self {
-            Route::Reload => "POST",
+            ControlRoute::Reload => "POST",
             _ => "GET",
         }
     }
 
     /// The route at `path` (without the query), if any.
-    pub fn from_path(path: &str) -> Option<Route> {
-        Route::ALL.into_iter().find(|route| route.path() == path)
+    pub fn from_path(path: &str) -> Option<ControlRoute> {
+        ControlRoute::ALL
+            .into_iter()
+            .find(|route| route.path() == path)
     }
 }
 
@@ -125,8 +132,8 @@ impl EventsOptions {
             query.push("follow=false".to_string());
         }
         match query.is_empty() {
-            true => Route::Events.path().to_string(),
-            false => format!("{}?{}", Route::Events.path(), query.join("&")),
+            true => ControlRoute::Events.path().to_string(),
+            false => format!("{}?{}", ControlRoute::Events.path(), query.join("&")),
         }
     }
 
@@ -424,9 +431,8 @@ impl std::fmt::Display for RecordStatus {
 
 /// A client for the control socket.
 ///
-/// Every call gives up after 5 s (see [`with_timeout`](Self::with_timeout)),
-/// so a wedged gateway can't hang the caller; only the body of an events
-/// stream is open-ended.
+/// Every call gives up after 5 s, so a wedged gateway can't hang the
+/// caller; only the body of an events stream is open-ended.
 #[derive(Debug, Clone)]
 pub struct ControlClient {
     socket: PathBuf,
@@ -443,7 +449,8 @@ impl ControlClient {
     }
 
     /// Replace the 5 s timeout.
-    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+    #[cfg(test)]
+    fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
     }
@@ -462,12 +469,12 @@ impl ControlClient {
 
     /// `GET /_chainz/status`.
     pub async fn status(&self) -> io::Result<Status> {
-        self.get_json(Route::Status.path()).await
+        self.get_json(ControlRoute::Status).await
     }
 
     /// `GET /_chainz/metrics`.
     pub async fn metrics(&self) -> io::Result<MetricsSnapshot> {
-        self.get_json(Route::Metrics.path()).await
+        self.get_json(ControlRoute::Metrics).await
     }
 
     /// `GET /_chainz/events`; see [`EventsOptions`]. Returns once the server
@@ -482,7 +489,7 @@ impl ControlClient {
         // Only the head is timed: the stream itself runs until either side
         // closes it.
         let mut body = self
-            .timed(self.send(Route::Events.method(), &options.path()))
+            .timed(self.send(ControlRoute::Events.method(), &options.path()))
             .await?;
         let (tx, rx) = mpsc::channel(1024);
         tokio::spawn(async move {
@@ -515,7 +522,7 @@ impl ControlClient {
     /// gateway's reason.
     pub async fn reload(&self) -> io::Result<()> {
         self.timed(async {
-            let route = Route::Reload;
+            let route = ControlRoute::Reload;
             let mut body = self.send(route.method(), route.path()).await?;
             body.read_all().await?;
             Ok(())
@@ -523,9 +530,14 @@ impl ControlClient {
         .await
     }
 
-    async fn get_json<T: DeserializeOwned>(&self, path: &str) -> io::Result<T> {
+    async fn get_json<T: DeserializeOwned>(&self, route: ControlRoute) -> io::Result<T> {
         let bytes = self
-            .timed(async { self.send("GET", path).await?.read_all().await })
+            .timed(async {
+                self.send(route.method(), route.path())
+                    .await?
+                    .read_all()
+                    .await
+            })
             .await?;
         serde_json::from_slice(&bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
@@ -725,11 +737,11 @@ mod tests {
 
     #[test]
     fn routes_round_trip() {
-        for route in Route::ALL {
-            assert_eq!(Route::from_path(route.path()), Some(route));
+        for route in ControlRoute::ALL {
+            assert_eq!(ControlRoute::from_path(route.path()), Some(route));
         }
-        assert_eq!(Route::from_path("/_chainz/nope"), None);
-        assert_eq!(Route::Reload.method(), "POST");
+        assert_eq!(ControlRoute::from_path("/_chainz/nope"), None);
+        assert_eq!(ControlRoute::Reload.method(), "POST");
     }
 
     #[test]
@@ -752,7 +764,7 @@ mod tests {
             let query = path.split_once('?').map_or("", |(_, q)| q);
             assert_eq!(EventsOptions::from_query(query), Ok(options), "{path}");
         }
-        assert_eq!(EventsOptions::default().path(), Route::Events.path());
+        assert_eq!(EventsOptions::default().path(), ControlRoute::Events.path());
         assert_eq!(cases[1].path(), "/_chainz/events?backlog=7&follow=false");
         // `All` is the largest count, which a 2.0 gateway reads as "all".
         assert_eq!(
@@ -806,5 +818,45 @@ mod tests {
         // And without totals, nothing new is written either.
         assert!(!serde_json::to_string(&snapshot).unwrap().contains("totals"));
         assert_eq!(snapshot.window(Window::Long).unwrap().window_secs, 900);
+    }
+
+    #[tokio::test]
+    async fn a_wedged_gateway_times_out() {
+        // Accepts connections, reads the request, never answers.
+        // A short directory: a socket path must fit in sockaddr_un.
+        let mut dir = tempfile::tempdir().unwrap();
+        if dir.path().join("serve.sock").as_os_str().len() >= 100 {
+            dir = tempfile::Builder::new()
+                .prefix("cz")
+                .tempdir_in("/tmp")
+                .unwrap();
+        }
+        let socket = dir.path().join("serve.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let hold = tokio::spawn(async move {
+            let mut open = Vec::new();
+            while let Ok((stream, _)) = listener.accept().await {
+                open.push(stream);
+            }
+        });
+        let client = ControlClient::new(&socket).with_timeout(Duration::from_millis(200));
+        let started = std::time::Instant::now();
+        let error = client.status().await.unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut, "{error}");
+        assert_eq!(
+            client.reload().await.unwrap_err().kind(),
+            std::io::ErrorKind::TimedOut
+        );
+        assert_eq!(
+            client
+                .events(EventsOptions::default())
+                .await
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::TimedOut
+        );
+        assert!(started.elapsed() < Duration::from_secs(5));
+        hold.abort();
+        let _ = hold.await;
     }
 }
