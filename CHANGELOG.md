@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.0.0 - Unreleased
+## 2.0.0 - 2026-11-12
 
 A rewrite of chainz as a local multichain workbench: `exec` is faster and
 hands tools more context, and a gateway (`serve`), a dashboard (`top`) and
